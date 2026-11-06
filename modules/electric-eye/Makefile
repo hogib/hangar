@@ -59,9 +59,25 @@ EE_CFLAGS := -std=gnu99 -Wall -Wextra -pedantic -pthread
 # (HASH: make 4.3 changed how "#" inside $(shell ...) is escaped; a
 # variable holding one reads the same in every version.)
 HASH := \#
+# The probe must link into a real file: zig cc (and clang behind it) skips
+# the link when the output is /dev/null, so a compiler with no OpenMP
+# runtime passed the old probe and then failed at the real link with
+# undefined __kmpc_* symbols. Tried plain first (gcc adds -lgomp itself),
+# then with -lomp (clang/zig with LLVM's libomp installed, which neither
+# adds on its own). OPENMP_LIBS carries what the link needs.
+OMP_PROBE_SRC := $(HASH)include <omp.h>\nint main(void) { return omp_get_max_threads() < 1; }\n
+OMP_PROBE_BIN := $(BUILDDIR)/.omp-probe
 ifeq ($(origin OPENMP),undefined)
-OPENMP := $(shell printf '$(HASH)include <omp.h>\nint main(void) { return omp_get_max_threads() < 1; }\n' | \
-            $(CC) -fopenmp -x c - -o /dev/null >/dev/null 2>&1 && echo 1 || echo 0)
+OPENMP_LIBS := $(shell mkdir -p $(BUILDDIR); \
+  if printf '$(OMP_PROBE_SRC)' | $(CC) -fopenmp -x c - -o $(OMP_PROBE_BIN) >/dev/null 2>&1; then echo; \
+  elif printf '$(OMP_PROBE_SRC)' | $(CC) -fopenmp -x c - -o $(OMP_PROBE_BIN) -lomp >/dev/null 2>&1; then echo -lomp; \
+  else echo none; fi; rm -f $(OMP_PROBE_BIN))
+ifeq ($(OPENMP_LIBS),none)
+OPENMP := 0
+OPENMP_LIBS :=
+else
+OPENMP := 1
+endif
 endif
 ifeq ($(OPENMP),1)
 EE_CFLAGS += -fopenmp
@@ -105,7 +121,7 @@ endif
 
 # -lrt: clock_gettime() lived in librt until glibc 2.17; on anything newer
 # it's an empty stub, so linking it unconditionally costs nothing.
-EE_LDLIBS := $(TURBOJPEG_LIBS) -pthread -lrt -lm
+EE_LDLIBS := $(TURBOJPEG_LIBS) $(OPENMP_LIBS) -pthread -lrt -lm
 
 ALL_CPPFLAGS = $(EE_CPPFLAGS) $(TURBOJPEG_CFLAGS) $(CPPFLAGS)
 ALL_CFLAGS = $(EE_CFLAGS) $(CFLAGS)
