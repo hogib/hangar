@@ -4,3 +4,6 @@ target/
 builddir/
 *.o
 __pycache__/
+
+# Literature survey: fetched papers and code (not redistributed)
+literature/

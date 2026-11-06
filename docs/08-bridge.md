@@ -11,78 +11,124 @@ statistics, with authentication added.
 
 ## The rules
 
-- **A mirrored topic is the same topic on both sides**: same name, same type, same
-  sequence numbers. `(topic, seq)` means the same message on either end of the tether,
-  so provenance and dataset joins need no translation.
+- **A mirrored topic is the same topic on both sides**: same name, same type, and,
+  within one boot of the sender, the same sequence numbers. `(boot id, topic id, seq)`
+  names one message on either end of the tether for good, so provenance and dataset
+  joins need no translation.
+- **Names are unique across the pair.** Module and topic names, and topic ids, are
+  unique across the vehicle and the topside together. The two bridges compare their
+  machines' lists at the handshake and mirror no name that both sides have.
 - **Loss is visible.** A message lost on the tether is a gap in the mirrored topic's
-  sequence numbers.
-- **Commands are never starved.** Traffic is sent in strict priority order under a
-  total rate cap: safety and commands first, files last.
+  sequence numbers. A gap a mirror makes on purpose (`Rate=`) is marked as such.
+- **Commands are never delayed by the bridge's own queues.** Traffic is sent in strict
+  priority order under a total rate cap: safety and commands first, files last. Since
+  the two directions share one medium on the tether, `dataset` and `bulk` traffic
+  backs off when the link's delay rises.
 - **Nothing unauthenticated is accepted.** Every datagram, discovery beacons included,
-  carries a tag computed with a key shared by the two ends.
-- **Times are translated.** The bridge measures the offset between the two monotonic
+  carries a tag computed with a key shared by the two ends, and each direction has its
+  own key. Authentication covers the tether; on each machine, local programs are
+  trusted ([Tunnels](#tunnels)).
+- **Times are translated.** The bridge measures the offset between the two machines'
   clocks and stamps mirrored messages in local time; no time daemon is needed on the
   tether.
 - **A call across the tether is still a call**: the same deadlines, the same refusal
   of expired requests, and the caller identified as a module of the other side.
+- **A silent link is the link's state, not the bridge's failure.** The bridge is
+  judged by its own watchdog and `bridge.<role>.link`, never by the staleness of the
+  topics it receives.
 
 ## Configuration
 
 One file, `/etc/hangar/bridge.conf`, identical on both sides; `up` is from the vehicle
-to the topside.
+to the topside. A bridge's role is its machine's: `Role=vehicle` or `Role=topside` in
+`hangard.conf` ([03-manager](03-manager.md#running-it)).
 
 ```ini
 [Bridge]
-Role=vehicle
 Pair=default
 Key=/etc/hangar/bridge.key
 Port=5614
 MaxRate=20Mbit
 
-[Mirror safety.state hangar.system hangar.modules bridge.link]
+[Mirror safety.state bridge.vehicle.link]
 Direction=up
 Priority=safety
+ExpectRate=10
+StaleAfter=300ms
 
-[Mirror pilot.wrench]
+[Mirror hangar.vehicle.system hangar.vehicle.modules]
+Direction=up
+Priority=safety
+ExpectRate=1
+StaleAfter=3s
+
+# pilot.buttons is published with every pilot.wrench.
+[Mirror pilot.wrench pilot.buttons]
 Direction=down
 Priority=command
+ExpectRate=50
+StaleAfter=100ms
+MaxAge=100ms
 
-[Mirror nav.* mux.state recorder.status *.params]
+[Mirror nav.* mux.state ardusub.state recorder.status *.params]
 Direction=up
 Rate=10
 
+# Event topics whose every message matters.
+[Mirror ardusub.buttons ardusub.param policy.*.active policy.*.load]
+Direction=up
+Delivery=reliable
+
+[Mirror policy.*.eval]
+Direction=up
+
+# A pilot_imitation row carries a cam.nn frame: 17 datagrams.
 [Mirror dataset.*]
 Direction=up
 Priority=dataset
+Delivery=reliable
 
 [Calls]
-Remote=safety.* mux.* recorder.* *.set_params policy_*.*
+Remote=safety.* mux.* mavlink.set_mode recorder.* *.set_params policy_*.*
+
+[Tunnel mavlink]
+Local=127.0.0.1:14670
+Priority=telemetry
+MaxRate=2Mbit
 ```
 
 | `[Bridge]` key | Default | |
 |---|---|---|
-| `Role` | — (required) | `vehicle` or `topside`; the only key that differs between the two copies |
 | `Pair` | `default` | Only a bridge with the same pair name is accepted. A name, not a secret |
 | `Key` | `/etc/hangar/bridge.key` | 32 random bytes, made at installation and copied to the other side |
 | `Port` | `5614` | Data. Discovery is on 5613 (not `hellion`'s 5612, so both can run side by side: [11-electric-eye](11-electric-eye.md#ports)) |
-| `Peer` | `auto` | `auto` (discovery) or a fixed `address` |
-| `MaxRate` | `20Mbit` | Total sending rate, all priorities |
+| `Peer` | `auto` | `auto` (discovery) or the other side's fixed `address`. The one key that may differ between the two copies; the configuration hash leaves it out |
+| `MaxRate` | `20Mbit` | Total sending rate of this side, all priorities ([Priority](#delivery)) |
 
 | `[Mirror <topic or glob> ...]` key | Default | |
 |---|---|---|
 | `Direction` | — (required) | `up` or `down` |
 | `Delivery` | `latest` | `latest` or `reliable` ([Delivery](#delivery)) |
 | `Priority` | `telemetry` | `safety`, `command`, `call`, `telemetry`, `dataset`, `bulk` |
-| `Rate` | every message | The most messages per second sent, newest first |
+| `Rate` | every message | The most messages per second sent, newest first. The receiver marks what it skipped ([Mirrored topics](#mirrored-topics)) |
+| `ExpectRate` | `0` (event topic) | The rate, in Hz, the receiving side declares for the topic: its file's `rate_mhz`. Required for `safety` and `command` priority |
+| `StaleAfter` | 3 periods of `ExpectRate` | When the received topic is stale for its readers: its file's `stale_after_ns`. Only with `ExpectRate`. Required for `safety` and `command` priority |
+| `MaxAge` | none | `command` priority only: a message older than this on arrival is dropped ([Mirrored topics](#mirrored-topics)) |
+
+A `safety` or `command` mirror names its topics; a glob there is refused. The
+receiving side's readers act on `ExpectRate` and `StaleAfter`: on the vehicle,
+`pilot.wrench` goes stale 100 ms after the last command arrived, and the mux counts it
+as zero ([07-safety](07-safety.md#the-mux)).
 
 `[Calls] Remote=` lists the methods of the other side that this side's modules may
 call through the bridge ([Calls](#calls-across-the-tether)). `[Tunnel <name>]` sections
 carry datagrams of another protocol across ([Tunnels](#tunnels)).
 
 Each side sends what its configuration says goes its way, and accepts only what its
-configuration says comes to it. The two bridges compare a hash of their
-configurations when they connect; a difference is reported in `bridge.link` and by
-`hangar check`, and each side still accepts only what its own copy allows.
+configuration says comes to it. A bridge sends only topics written on its own machine,
+never one it receives. The two bridges compare a hash of their configurations when
+they connect; a difference is reported in `bridge.<role>.link` and by `hangar check`,
+and each side still accepts only what its own copy allows.
 
 ## The bridge module
 
@@ -95,16 +141,47 @@ Exec=/usr/lib/hangar/bridge /etc/hangar/bridge.conf
 User=hg-bridge
 
 [Bridge]
+
+[Health]
+Watchdog=1s
 ```
 
-A `[Bridge]` section ([02-manifest](02-manifest.md)) allows the module to publish the
-topics its configuration receives, of any type (the schema comes from the other side),
-provided no local module publishes them; to publish with the sender's sequence numbers
-(`hg_publish_seq`); to serve the stand-in sockets of remote methods; and to name the
-remote caller of a call it forwards. At most one module per machine has it.
+A `[Bridge]` section ([02-manifest](02-manifest.md#bridge)) allows the module:
 
-The bridge waits on its UDP socket and its topics together, through `hg_wait_fd`
-([01-topics](01-topics.md#reading)).
+- to read the topics its configuration sends, without declaring them;
+- to publish the topics its configuration receives, of any type (the schema comes from
+  the other side), provided no local module publishes them, with the sender's sequence
+  numbers and slot flags (`hg_publish_seq`);
+- to serve the stand-in sockets of remote modules, and to name the remote caller of a
+  call it forwards.
+
+At most one module per machine has it. The manager reads the bridge's configuration
+(`BridgeConf` in `hangard.conf`, `/etc/hangar/bridge.conf` by default) and builds the
+module's wiring from its `[Mirror]` and `[Calls]` sections
+([03-manager](03-manager.md#wiring)).
+
+The module is named `bridge` on both machines, the one module name the two share: like
+the manager, it is per-machine infrastructure. Its methods are never remote, its call
+record `bridge.calls` is never mirrored, and its own outputs carry the machine's role.
+The manager adds them, as it adds `<module>.calls`:
+
+| Output | Rate | |
+|---|---|---|
+| `bridge.<role>.link` | 10 Hz, and on change | the link's state ([Link status](#link-status)), published whether the link is up or not |
+| `bridge.<role>.files` | event | files received ([Files](#files)) |
+| method `send` | | send a file ([Files](#files)); `Allow` is the default, `* admin`: every module on this machine and `admin` |
+
+The topics the bridge receives count neither for its readiness nor against its health:
+they go silent whenever the link does, and a tether outage must not restart the
+bridge. The manager judges the bridge by `bridge.<role>.link` and by `Watchdog`.
+
+The bridge waits on its UDP socket, its stand-in sockets, its call replies and its
+topics together, through `hg_wait_fd` ([01-topics](01-topics.md#reading)). It waits by
+futex on the topics of its `safety` and `command` mirrors, and reads the topics its
+globs match on a 10 ms timer, as a module with glob subscriptions does
+([02-manifest](02-manifest.md#subscribe-topic-or-glob-one-per-input)). It makes every
+call with `hg_call_start` ([04-calls](04-calls.md#using-calls)), so no call stops its
+loop.
 
 ## Discovery
 
@@ -115,11 +192,16 @@ broadcast address and IPv6 `ff02::1` of every interface that is up, and listens 
 HANGAR/1 role=vehicle name=rov-1 pair=default port=5614 id=1a2b3c4d tag=9f0c…
 ```
 
-`tag` is the keyed hash of the rest of the line. A bridge with `Peer=auto` connects to
-the one bridge of the opposite role and the same pair heard in the last 5 s, and with
-two or more it chooses none and says so. A beacon only starts a connection attempt;
-whether the other side holds the key is settled by the handshake, so a replayed beacon
-gains nothing.
+`tag` is the keyed hash of the rest of the line, under the shared key. `id` is random,
+drawn when the bridge starts. Beacons with the same `id` are one candidate, from
+whatever address they come. A bridge with `Peer=auto` connects to the one candidate of
+the opposite role and the same pair heard in the last 5 s: it tries the handshake at
+each address it heard that `id` from, and keeps the first that completes. With two or
+more candidates it chooses none and says so (`ambiguous`).
+
+A beacon only starts a connection attempt; whether the other side holds the key is
+settled by the handshake, so a replayed beacon gains nothing, and a beacon never
+changes the peer of a link that is up.
 
 ## The link
 
@@ -128,22 +210,45 @@ UDP, one socket each side. Every datagram:
 | Offset | Type | Field | |
 |---|---|---|---|
 | 0 | char[4] | `magic` | `"HGB1"` |
-| 4 | u8 | `kind` | hello, ping, pong, schema, message, fragment, data, ack |
+| 4 | u8 | `kind` | hello, confirm, ping, pong, schema, message, fragment, data, ack |
 | 5 | u8 | `priority` | |
 | 6 | u16 | `flags` | |
 | 8 | u32 | `link_id` | chosen in the handshake |
 | 12 | u32 | `length` | of the body |
 | 16 | u64 | `packet_seq` | per direction, rising by one |
 | 24 | | body | at most 1200 bytes |
-| end | u8[16] | `tag` | keyed BLAKE2s-128 of header and body, with the link key |
+| end | u8[16] | `tag` | keyed BLAKE2s-128 of header and body, with the sender's direction key; for a hello, with the shared key |
 
-**Handshake.** Each side sends a hello with a fresh random nonce; the link key is the
-keyed hash of both nonces under the shared key. A hello repeated from an earlier
-connection yields a different link key, and a peer without the shared key cannot
-produce a valid tag.
+**Handshake.** Each side sends a hello holding its role, its pair, a fresh random
+nonce of 16 bytes, and its machine's boot id (`/proc/sys/kernel/random/boot_id`). A
+hello that carries the receiver's own role or its own nonce is refused. From the two
+nonces, `n_v` the vehicle's and `n_t` the topside's, each side derives one key per
+direction:
 
-**Replays.** `packet_seq` must be new: a window of the last 64 received numbers, as in
-IPsec, admits reordering and drops duplicates and replays.
+```
+K_up   = BLAKE2s-256(key = K, "up"   ‖ n_v ‖ n_t)    vehicle to topside
+K_down = BLAKE2s-256(key = K, "down" ‖ n_v ‖ n_t)    topside to vehicle
+```
+
+A side tags what it sends with its own direction's key and checks what it receives
+with the other: a datagram tagged with the receiver's own sending key (one of its own
+datagrams sent back to it) fails the check. Each side then sends a confirm under its
+new key. The link is up on a side once it has received a datagram that checks under
+the peer's new key. Until then, a link already up stays up with its old keys: a hello
+replayed from an earlier connection starts at most an attempt that never completes,
+and a peer without the shared key cannot produce a valid tag.
+
+Once the link is up, the two bridges exchange, reliably, their configuration hash and
+their machines' module lists and topic tables (name and id of every topic their
+managers know, mirrored or not). Mirroring and calls start when both are checked. A
+module or topic name that both sides have, or a topic id that two names share, is not
+mirrored or called; `config_match` and `detail` in `bridge.<role>.link`, and
+`hangar check`, name it.
+
+**Replays.** `packet_seq` must be new: a window of the last 64 numbers received in
+each direction, as in IPsec, admits reordering and drops duplicates and replays. The
+window, and `last_rx_ns` in the link status, are updated only by a datagram whose tag
+checks.
 
 **No encryption.** The tether is a cable; what needs protecting is that nobody else
 can be the topside or inject commands, which the tag gives. BLAKE2s is a small, single
@@ -153,58 +258,138 @@ file in either language.
 
 | Delivery | How | For |
 |---|---|---|
-| `latest` | sent once, never retransmitted; a message larger than one datagram is fragmented, and a lost fragment loses the message | commands, telemetry, dataset rows |
-| `reliable` | acknowledged (cumulative and selective), retransmitted, delivered in order | calls, files, and topics that must arrive whole |
+| `latest` | sent once, never retransmitted; a message larger than one datagram is fragmented, and a lost fragment loses the message | commands, telemetry |
+| `reliable` | acknowledged (cumulative and selective), retransmitted, delivered in order | calls, files, event topics whose every message matters, dataset rows (a row with a frame spans many datagrams) |
 
 Mirrored messages are at most 1 MB; a `reliable` mirror whose backlog passes its
 topic's slot count drops the oldest and records the gap. The schema of a mirrored
 topic is sent reliably before its first message.
 
 **Priority.** A strict order: `safety`, `command`, `call`, `telemetry`, `dataset`,
-`bulk`; within one priority, topics take turns. `MaxRate` caps the total. Dataset rows
-and files therefore use what is left after everything else, and can never delay a
-pilot command.
+`bulk`; within one priority, topics take turns. `MaxRate` caps the total each side
+sends. Inside the bridge, a command never waits behind a lower priority.
+
+The link itself is shared. Tether modems (HomePlug-based) are half-duplex: rows going
+up and commands going down use the same medium, along with the video outside the
+bridge, and when the modems' capacity falls below what is sent, packets queue in the
+modems' own buffers, commands behind rows. Each side therefore limits its `dataset`
+and `bulk` traffic, retransmissions included, by the round trip it measures
+([Clocks](#clocks)):
+
+- when a ping's round trip exceeds the minimum of the last 10 s by more than 5 ms, the
+  rate allowed to the two classes is halved, but not below 1% of `MaxRate`;
+- each ping that does not raises it by 1/20 of `MaxRate`, up to what `MaxRate` leaves.
+
+`safety`, `command`, `call` and `telemetry` are never slowed; they are small. The
+vehicle's upload thereby yields to the topside's commands, and the reverse.
 
 ## Mirrored topics
 
-The receiving bridge creates each mirrored topic through the manager, with the
-sender's schema, and publishes every message with:
+The receiving bridge has the manager create each mirrored topic, with the sender's
+schema, the mirror's `ExpectRate` and `StaleAfter`, and the sender's boot id as the
+file's `origin_boot` ([01-topics](01-topics.md#mirrored-topics)). It publishes every
+message with:
 
-- the sender's sequence number (`hg_publish_seq`): numbers rise, and a jump is a loss;
-- `stamp_ns` translated into local monotonic time ([Clocks](#clocks));
+- the sender's sequence number (`hg_publish_seq`). Numbers only rise: a `latest`
+  message whose seq is not above the last one published on the topic (a duplicate, or
+  one overtaken on the way) is dropped and counted (`dropped_old`), and
+  `hg_publish_seq` refuses a seq that does not rise;
+- `stamp_ns` translated into local monotonic time ([Clocks](#clocks)); a stamp of 0
+  (unknown) stays 0;
 - `publish_ns` the local publication time;
-- the provenance unchanged: its `(topic, seq)` pairs refer to messages of the other
-  side, which mean the same message wherever that topic is mirrored or recorded.
+- the sender's slot flags: bit 0, computed from stale inputs, as the sender had it;
+  bit 1 set when the sending bridge skipped messages on purpose before this one
+  (`Rate=`), so readers count those seqs as skipped, not lost;
+- the provenance unchanged, with each reference's flags: its `(topic id, seq)` pairs
+  refer to messages of the other side, which mean the same message wherever that topic
+  is mirrored or recorded.
+
+A gap without bit 1 is a message lost on the tether, or one sent while the link was
+down. The link's own loss is counted from `packet_seq` (`loss_up`, `loss_down`).
+
+**Sender boots.** A mirrored topic's numbers are the sender's for one boot of the
+sender. When a mirrored topic is first created, its `first_seq` is one below the first
+seq received, so the join point is not a gap. When the handshake brings a new boot id
+for the peer (the other machine rebooted), the manager creates a new file for each
+mirrored topic, with the new `origin_boot` and `first_seq` one below the new sender's
+first seq, and sets bit 2 on the old file. Readers reopen it and start a new epoch
+(`info.epoch` changes), which is not counted as a gap. A link that drops and comes
+back with the same boot ids continues the same files.
+
+**Age of commands.** A message can wait in a tether modem's buffer for seconds and
+still arrive. For a `command` mirror with `MaxAge`, the receiver computes the
+message's age from its translated `stamp_ns` (the sender's translated `publish_ns` if
+the stamp is 0), adds the clock's uncertainty, and drops the message, counted in
+`dropped_late`, when the sum exceeds `MaxAge`. A pilot command dropped this way leaves
+`pilot.wrench` to go stale on the vehicle, as a lost one does.
 
 So the dataset pairer runs on the vehicle, where the inputs and their rings are, and
 the rows it publishes reach the trainer through a `dataset.*` mirror.
 
 ## Clocks
 
-Each bridge pings the other ten times a second. From each exchange (sent `t1`,
-received there `t2`, answered there `t3`, received back `t4`) it computes the round
-trip `(t4 − t1) − (t3 − t2)` and the offset `((t2 − t1) + (t3 − t4)) / 2`, and keeps
-the offset of the exchange with the shortest round trip in the last 10 s. The
-uncertainty is half that round trip. Both are published in `bridge.link` and recorded,
-so an offline tool can refine the alignment of two recordings afterwards.
+Each bridge pings the other ten times a second. Pings and pongs carry
+`CLOCK_MONOTONIC_RAW` times, which no time daemon slews (the topside laptop usually
+runs one). From each exchange (sent `t1`, received there `t2`, answered there `t3`,
+received back `t4`) it computes the round trip `(t4 − t1) − (t3 − t2)` and the offset
+`((t2 − t1) + (t3 − t4)) / 2`. A pong that answers no ping this side sent, or gives a
+round trip that is not positive, is discarded.
+
+The bridge keeps the offset of the exchange with the shortest round trip in the last
+10 s. Its uncertainty is half that round trip plus the sample's age × 500 ppm: the
+two clocks drift apart while the sample ages, crystals by tens of ppm each, and the
+bound is set well above that.
+
+Stamps and deadlines are in `CLOCK_MONOTONIC`. Each side reads its `CLOCK_MONOTONIC`
+and `CLOCK_MONOTONIC_RAW` together at every ping and converts between the two with
+the newest pair; the conversion's error grows by at most 500 ppm of the time since
+that pair, and is counted in the uncertainty. When the peer's boot id changes, the
+samples are discarded and the estimate starts over.
+
+The offset and its uncertainty are published in `bridge.<role>.link` and recorded, so
+an offline tool can refine the alignment of two recordings afterwards.
 
 ## Calls across the tether
 
 A module that calls a method of the other side declares it as usual (`[Call
-safety.arm]`). If `[Calls] Remote=` lists it, the manager creates the method's socket
-on this side and hands it to the bridge, which serves it as a stand-in: it forwards
-each request reliably, the other bridge makes the call locally, and the reply comes
-back.
+safety.arm]` in the topside's `pilot_console`). A method is remote on a side when
+`[Calls] Remote=` lists it and its module is not enabled on that side. An entry is
+never applied to a module enabled on this machine: no stand-in is made for it, and the
+call stays local. With the file identical on both sides, `safety.*` makes a stand-in
+on the topside and none on the vehicle, where `safety` runs; `*.set_params` makes
+stand-ins on each side for the modules of the other that local modules call. For each
+remote module that a local module calls, the manager creates the module's socket and
+wake word on this side, at the module's usual address
+([04-calls](04-calls.md#names-and-addresses)), and hands the socket to the bridge when
+it attaches ([03-manager](03-manager.md#starting-a-module)). The bridge serves it as a
+stand-in: it forwards each request reliably, the other bridge makes the call locally
+with `hg_call_start`, and the reply comes back. Many calls may be in flight;
+neither bridge's loop waits for one.
 
-- **The caller is named.** The far bridge makes the call naming the original caller as
-  `topside:pilot_console` (or `topside:admin:<user>`), in the request envelope's
-  `on_behalf_of` field, which servers honour only from the bridge
-  ([04-calls](04-calls.md#callers)). `Allow` lists name remote callers that way.
+At the handshake, each side checks its stand-ins against the module list the other
+side sends. A module enabled on both sides is refused as remote, and `hangar check`
+reports it; with module names unique across the pair, that is a configuration error.
+
+- **The caller is named.** The near bridge identifies the caller of a stand-in as
+  every server does ([04-calls](04-calls.md#callers)): a module by `SO_PEERCRED` and
+  the registry, an operator by membership of `hangar-admin` on this machine
+  (`SO_PEERGROUPS`); any other process is refused with `HG_E_DENIED`. The far bridge
+  makes the call naming that caller with the peer's role in front, in the request
+  envelope's `on_behalf_of` field, which servers honour only from the bridge:
+  `topside:pilot_console`, or `topside:admin:<user>` for an operator the topside
+  checked. `Allow` lists name remote callers by the tokens `topside:<module>`,
+  `topside:*` (every module of the topside) and `topside:admin`. The default `Allow` admits nobody from the other side, so a method
+  meant to be called across the tether names its callers.
 - **Deadlines are translated**, and shortened by the clock's uncertainty, so a request
-  that expired on the way is dropped unexecuted.
+  that expired on the way is dropped unexecuted. A reply that comes back after the
+  caller's deadline is discarded.
+- **The stand-in behaves as a server.** It applies the limits of
+  [04-calls](04-calls.md#protocol) to its connections, and after writing a reply it
+  increments the caller's wake word.
 - **No link, no call.** With the link down, the stand-in answers `HG_E_NOLINK` at once:
-  nothing ran. A link lost after the request was sent gives `HG_E_LOST`: the outcome is
-  unknown, and the far side's call record says what happened.
+  nothing ran. With the link up and no such module on the other side, it answers
+  `HG_E_NOSERVER`. A link lost after the request was sent gives `HG_E_LOST`: the
+  outcome is unknown, and the far side's call record says what happened.
 
 ## Files
 
@@ -212,56 +397,101 @@ back.
 in chunks, resuming after a disconnection, and checks a BLAKE2s-256 hash of the whole
 file before it is made visible. The receiver puts it in
 `/var/lib/hangar/bridge/files/<name>` (group `hangar`, mode 0640) and publishes
-`bridge.files`: `{name, size, hash, from, received_ns}`. Trained weights go down this
-way ([09-learning](09-learning.md)), and recordings come up after a dive.
+`bridge.<role>.files`: `{name, size, hash, from, received_ns}`. Trained weights go
+down this way, sent by the topside's `trainer` module
+([09-learning](09-learning.md)), and recordings come up after a dive.
 
 ## Tunnels
 
 A datagram channel for a protocol that is not hangar's, MAVLink above all
-([10-mavlink](10-mavlink.md#the-topsides-mavlink-module)):
+([10-mavlink](10-mavlink.md#the-topsides-mavlink-module)), as in the configuration
+above:
 
-```ini
-[Tunnel mavlink]
-Local=127.0.0.1:14670
-Priority=telemetry
-MaxRate=2Mbit
-```
+| `[Tunnel <name>]` key | Default | |
+|---|---|---|
+| `Local` | — (required) | A loopback address and port, the same on both sides |
+| `Priority` | `telemetry` | |
+| `MaxRate` | — (required) | The tunnel's share of `MaxRate` |
 
-Each datagram a local program sends to `Local` arrives at the other side's `Local`
-address, authenticated like everything else, and the reverse. Nothing is added: no
-retransmission and no ordering, as the protocol inside expects of UDP. Only programs
-on the machine itself can reach `Local`.
+Each bridge binds `Local`. A datagram a local program sends to `Local` crosses the
+tether, authenticated like everything else; the far bridge sends it from its own
+`Local` to the last local address that sent a datagram to that `Local`, and drops it
+if none has yet. Each side's program therefore sends to `Local` and receives the other
+side's datagrams there. Nothing is added: no retransmission and no ordering, as the
+protocol inside expects of UDP.
+
+Only programs on the machine itself can reach `Local`, and any of them can: the bridge
+authenticates the tether, not the program. What may pass from the tunnel to the
+device behind it is decided by the program at the far end: for MAVLink, the vehicle's
+`mavlink` module, which forwards to ArduSub only what its allow-list admits
+([10-mavlink](10-mavlink.md)).
 
 ## Link status
 
-`bridge.link`, 10 Hz and on change:
+`bridge.<role>.link`, 10 Hz and on change, whether the link is up or not:
 
 | Field | |
 |---|---|
 | `state` | `off`, `searching`, `connecting`, `up`, `ambiguous`, `refused` |
-| `peer` | address and name |
-| `last_rx_ns` | when the last valid datagram arrived (the safety module's `tether` trigger) |
-| `rtt_ns`, `loss_up`, `loss_down` | |
+| `peer` | address, name and `id` |
+| `peer_boot_id` | the other machine's boot id, from the handshake |
+| `last_rx_ns` | when the last datagram whose tag and `packet_seq` checked arrived (on the vehicle, the safety module's `tether` trigger) |
+| `rtt_ns`, `rtt_min_ns` | the last round trip, and the minimum of the last 10 s |
+| `loss_up`, `loss_down` | datagrams lost, from `packet_seq` |
 | `rate[6]` | bytes per second sent, per priority |
+| `low_rate` | the rate allowed now to `dataset` and `bulk` ([Delivery](#delivery)) |
 | `clock_offset_ns`, `clock_uncertainty_ns` | |
-| `config_match` | whether the two configurations agree |
+| `dropped_old`, `dropped_late` | mirrored messages dropped: seq not above the last published; older than `MaxAge` |
+| `config_match` | whether the two configurations agree and no module or topic name or id collides |
 | `detail` | one line: why, or what |
 
 ## Recordings on both sides
 
 When a recorder starts a session, its id is sent across, and each side's
-`session.ini` names the other's: the two recordings of a dive point at each other, and
-`bridge.link`'s recorded clock offsets align them.
+`session.ini` names the other's session and the other machine's boot id: the two
+recordings of a dive point at each other, `(boot id, topic id, seq)` names each
+mirrored message in both, and the recorded clock offsets of `bridge.<role>.link` align
+them. The topside's recorder is a module of another name than the vehicle's
+(`topside_recorder`), as every module is.
 
 ## Tests
 
 - Loss, reordering and duplication (`netem`): `latest` loses whole messages and shows
-  the gaps; `reliable` delivers everything in order; duplicates and replays are dropped.
-- A wrong key, a modified datagram, a replayed hello: rejected, and counted.
-- Priorities: with dataset rows and a file saturating `MaxRate`, the latency of
-  `pilot.wrench` stays at its unloaded value.
-- Clock: offset within its stated uncertainty against a known offset, under load.
-- Calls: deadlines across the link; `HG_E_NOLINK` and `HG_E_LOST`; `on_behalf_of`
-  ignored from anything but the bridge.
+  the gaps; `reliable` delivers everything in order; duplicates and replays are
+  dropped; a `latest` message overtaken by a newer one is dropped and counted, never
+  published.
+- A wrong key, a modified datagram, a replayed hello, a datagram or a hello reflected
+  back to its sender: rejected, counted, and none of them moves `last_rx_ns` or the
+  replay window.
+- Handshake: a replayed hello leaves a live link up and never completes; a restarted
+  peer reconnects.
+- Priorities, over a link narrower than `MaxRate` and shared by both directions
+  (`netem` and `tbf` at 5 Mbit for both together, with video): dataset rows going up
+  and a file going down; once the rates settle, the median latency of `pilot.wrench`
+  stays within 5 ms of its unloaded value, and `low_rate` falls and recovers.
+- `Rate=`: a mirror at 10 Hz of a 200 Hz topic; readers on the other side count the
+  skipped seqs as skipped and none as lost; `loss_up` counts only datagrams lost.
+- Staleness: tether pulled with a non-zero stick; `pilot.wrench` on the vehicle stale
+  within its `StaleAfter`; the bridge neither unready nor restarted through a 60 s
+  outage.
+- `MaxAge`: commands delayed 300 ms in a queue (`netem delay`) are dropped and counted.
+- Boot epochs: the topside rebooted mid-run, then the vehicle; on the other side each
+  mirrored topic gets a new file and a new epoch, no gap is counted, and commands and
+  dataset rows resume. A first connection counts no gap.
+- Clock: offset within its stated uncertainty against a known offset, under load, and
+  with the topside's `CLOCK_MONOTONIC` slewed at 500 ppm; pongs with no ping and
+  negative round trips discarded.
+- Flags and stamps: a message flagged as computed from stale inputs arrives flagged; a
+  stamp of 0 arrives as 0.
+- Names: a module or topic name, or a topic id, present on both sides: not mirrored or
+  called, and reported in `config_match` and by `hangar check`.
+- Calls: deadlines across the link; `HG_E_NOLINK`, `HG_E_NOSERVER` and `HG_E_LOST`;
+  `on_behalf_of` ignored from anything but the bridge; a remote call held for its whole
+  deadline while `pilot.wrench` keeps its rate and pings keep their period; a caller
+  outside `hangar-admin` and not a module refused at the stand-in.
+- Tunnels: datagrams reach the last local sender on the other side, and are dropped
+  before any has sent.
 - Files: resume after the link drops; a corrupted file never becomes visible.
-- Discovery: two candidates, no choice; another pair, refused.
+- Dataset rows with a `cam.nn` frame under 1% datagram loss: every row arrives whole.
+- Discovery: one `id` heard from two addresses (a replayed beacon): the handshake picks
+  the address that completes; two candidates, no choice; another pair, refused.

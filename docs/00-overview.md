@@ -28,7 +28,16 @@ dive: the same samples stream live to a trainer on the topside GPU, and what it 
 is deployed back to the vehicle while it runs ([09-learning](09-learning.md)). That
 loop, from provenance-joined samples to a model running on the vehicle, is what hangar
 is for; everything else exists to make it cheap and trustworthy. A neural network is
-itself just another module.
+itself just another module, and so is the trainer on the topside.
+
+The vehicle and the topside each run their own manager and modules; `Role=vehicle` or
+`Role=topside` in each machine's `hangard.conf` says which it is. The tether bridge
+joins them: it mirrors chosen topics and forwards calls ([08-bridge](08-bridge.md)).
+Module and topic names are unique across the vehicle and the topside together, so a
+name means one thing on either side; the manager's and the bridge's own topics carry
+the machine's role (`hangar.vehicle.system`, `bridge.topside.link`). The two bridges
+compare their module and topic lists when they connect and refuse to mirror a name
+that exists on both.
 
 ## Principles
 
@@ -40,8 +49,10 @@ itself just another module.
    at start and never grow. A message is one row of a tensor with no decoding step.
 4. **One writer per topic.** Two sources that must merge go through a mux module.
 5. **Failure is local and visible.** A crashed module is restarted alone; a module
-   that is alive but publishing stale data is treated as failed; anything that gives
-   up says why in one line.
+   that is alive but no longer publishes at its declared rate, or misses its watchdog,
+   is treated as failed; anything that gives up says why in one line. The bridge is
+   judged by its own watchdog and `bridge.<role>.link`, not by the topics it receives,
+   which go quiet when the tether does.
 6. **Documented bytes.** Every file format is specified to the byte, so a reader can
    be written in any language. Python needs `mmap` and `numpy`.
 7. **Static binaries, no runtime dependencies.** The build produces programs that run
@@ -61,7 +72,11 @@ itself just another module.
 ## Budgets
 
 Each budget is a test in CI, measured on the release build; a change that breaks one
-fails the build.
+fails the build. The manager binary's budget is settled together with the language:
+a Rust program that only prints a line, built with its standard library and every
+size option set, is 288 KB dynamically linked, before a static libc is added; a C
+program that calls everything the manager needs from libc is 54 KB, static with musl,
+on AArch64.
 
 | What | Budget |
 |---|---|
@@ -86,7 +101,9 @@ by a script in the repository.
 - Variable-length messages (strings and arrays have fixed capacities).
 - Containers. Modules are processes; isolation uses users and permissions.
 - Big-endian machines, and anything not Linux.
-- Replacing ArduSub in the first version: it runs as a supervised module
+- Replacing ArduSub in the first version: it runs as a supervised module. Only the
+  vehicle's `mavlink` module and its Neutral command talk to it, over signed MAVLink;
+  messages from the ground station reach it only through that module's allow-list
   ([10-mavlink](10-mavlink.md)).
 
 ## Documents
