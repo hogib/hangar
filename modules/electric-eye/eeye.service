@@ -1,0 +1,64 @@
+# eeye: the camera, the effect chain, and the frame bus (docs/bus.md).
+#
+# Installed by install.sh, which runs it only on the machine where eeye
+# belongs: the ROV in placement B, topside in placement A. By hand:
+#   sudo install -m 0755 builddir/eeye /usr/local/bin/
+#   sudo useradd --system --gid video --no-create-home --shell /usr/sbin/nologin eeye
+#   sudo cp eeye.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now eeye
+#
+# Logs:   journalctl -u eeye -f
+# Config: /var/lib/eeye/effects.json -- edited live by hellion's page, or by
+#         hand; changes apply within a moment, no restart.
+
+[Unit]
+Description=eeye - camera effects and the frame bus (electric-eye)
+After=systemd-udevd.service
+
+# Give up escalating restarts, rather than retrying forever, after 5
+# failures within 60 seconds: a persistent problem should surface as a
+# failed service in `systemctl status eeye`, not a silent restart loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The same user as hellion.service: hellion writes this config file and
+# reads its .status and .health beside it, and both read and write each
+# other's frame bus files in /dev/shm. Group video for the camera, the
+# loopback device, and so that people in 'video' can run `hellion top`.
+User=eeye
+Group=video
+
+# /var/lib/eeye, created and owned by the service user: the effects config,
+# its .status/.health, and eeye's own raw recordings if record_path is set.
+StateDirectory=eeye
+StateDirectoryMode=0775
+WorkingDirectory=/var/lib/eeye
+ExecStart=/usr/local/bin/eeye /var/lib/eeye/effects.json
+
+# No capabilities at all, and nothing eeye runs (rpicam-vid) can gain any.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=full
+
+# libgomp's default OMP_WAIT_POLICY is "active": every OpenMP worker
+# busy-spins between the once-per-frame parallel regions. Measured on a
+# 12-core host: ~178% CPU idling down to ~15-19% with this one setting. eeye
+# re-execs itself with it if unset, so this line documents the setting
+# rather than being required.
+Environment=OMP_WAIT_POLICY=passive
+
+# SIGTERM to eeye alone, which stops its rpicam-vid child in order; anything
+# still running after the timeout is killed.
+KillMode=mixed
+TimeoutStopSec=15
+
+# A missing camera is retried inside eeye without a restart (see
+# video_threads.c). This is for what retrying cannot fix: a bus stream that
+# changed size, a loopback device that went away.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+CompileFlags:
+  Add: 
+    - "-xc"
+    - "-std=gnu99"
+InlayHints:
+  BlockEnd: true
+Diagnostics:
+  UnusedIncludes: Strict
+  ClangTidy:
+    Add: 
+      - readability-duplicate-include
+      - misc-include-cleaner

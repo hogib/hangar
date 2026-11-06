@@ -1,0 +1,532 @@
+// _POSIX_C_SOURCE before any header include: -std=c99 puts glibc in strict
+// ISO mode, which hides pipe()/fork()/kill() unless a feature-test macro
+// asks for them explicitly. Same guard as v4l2_in.c/config.c/eeye.c.
+#define _POSIX_C_SOURCE 200809L
+
+#include "rpicam_in.h"
+#include "camera_ctrl.h"
+#include "child_proc.h"
+#include "jpeg_decode.h"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+
+// JPEG quality handed to rpicam-vid. This is the *capture* quality, well
+// above what a preview would use, because everything downstream -- the
+// effect chain, the recording tap, the virtual camera, the frame bus --
+// sees only what arrives here. Compression artifacts introduced at this
+// point are permanent.
+static const unsigned rpicam_jpeg_quality = 93;
+
+// Upper bound on one buffered JPEG. A 4:2:0 frame at quality 93 runs a few
+// hundred KB even at 1080p, so this is generous headroom rather than a
+// tight fit -- but it is a hard cap: a stream that never yields a complete
+// frame within it is treated as a protocol failure instead of growing the
+// buffer without limit.
+static const size_t rpicam_max_frame_bytes = 16u * 1024 * 1024;
+
+// How long to wait for data before concluding the child has wedged. The
+// child is spawned with a framerate, so frames should arrive on that
+// cadence; this is several frame intervals even at low rates.
+static const int rpicam_poll_timeout_ms = 4000;
+
+// How long rpicam_in_close() gives rpicam-vid to exit on SIGTERM before
+// killing it. It normally goes at once.
+static const int rpicam_stop_grace_ms = 1000;
+
+struct RpicamIn {
+  ChildProc proc; // rpicam-vid; proc.out_fd is its stdout
+
+  uint32_t width; // source geometry, before downscale
+  uint32_t height;
+  uint32_t downscale;
+
+  // FORMAT_YUV420 reads the ISP's raw output instead of MJPEG (see
+  // capture_yuv420); every other value means MJPEG here.
+  CaptureFormat format;
+  // yuv420 layout, from rpicam-vid's stride padding rule: Y rows padded to
+  // a multiple of 64 bytes, U and V rows to 32. No framing in the stream,
+  // so a frame is exactly yuv_frame_bytes.
+  size_t y_stride;
+  size_t c_stride;
+  size_t yuv_frame_bytes;
+
+  JpegDecoder *decoder; // MJPEG only
+
+  // Accumulates bytes from the pipe until a complete JPEG is present.
+  // Whatever follows a decoded frame stays here and is carried into the
+  // next call rather than discarded -- a single read() routinely straddles
+  // a frame boundary.
+  uint8_t *buf;
+  size_t buf_cap;
+  size_t buf_len;
+
+  bool eof; // the child closed its stdout / exited
+
+  // Where find_jpeg_end should resume scanning the frame at the head of
+  // buf, so each read only scans the bytes it added. 0 = from the start.
+  size_t scan_pos;
+};
+
+// Runs `rpicam-vid --list-cameras` and reports whether it named at least
+// one camera. Both the binary being absent (not a Pi, or rpicam-apps not
+// installed) and it running but finding nothing (no ribbon cable attached)
+// answer the same question -- "is this backend the right one here?" -- so
+// they collapse into one false rather than being distinguished.
+bool rpicam_in_available(void) {
+  // Not installed is the usual answer on anything but a Pi, so it is
+  // checked quietly rather than reported as a failed spawn.
+  if (!child_program_exists("rpicam-vid"))
+    return false;
+
+  ChildProc proc;
+  char *const argv[] = {"rpicam-vid", "--list-cameras", NULL};
+  if (!child_spawn(&proc, "rpicam_in", argv,
+                   CHILD_PIPE_STDOUT | CHILD_STDERR_TO_STDOUT |
+                       CHILD_NULL_STDIN))
+    return false;
+
+  // Generous: listing cameras starts libcamera, which takes a moment.
+  char out[4096];
+  child_read_all(proc.out_fd, out, sizeof out, 10000);
+
+  // Its exit status is part of the answer, so wait for it to exit by
+  // itself rather than stopping it.
+  int status = -1;
+  if (!child_wait(&proc, 5000, &status))
+    status = child_stop(&proc, rpicam_stop_grace_ms);
+  else
+    child_stop(&proc, 0); // closes the pipe
+  if (status < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    return false;
+
+  // rpicam-vid prints "Available cameras" followed by an indexed list when
+  // it finds any, and "No cameras available!" when it doesn't. Keying on
+  // the negative is the more robust of the two: the positive header's
+  // exact wording has changed across releases, whereas a run that found
+  // nothing is unambiguous.
+  return strstr(out, "No cameras available") == NULL;
+}
+
+static size_t scan_entropy(const uint8_t *data, size_t size, size_t pos,
+                           size_t *resume);
+
+// Finds the end of the first complete JPEG in `data`, returning its total
+// length, or 0 if it isn't all here yet.
+//
+// This walks marker segments to reach SOS and only then scans the
+// entropy-coded data for EOI, rather than scanning the whole buffer for
+// FF D9 outright. Inside entropy-coded data a literal FF is always stuffed
+// (FF 00) or a restart marker (FF D0-D7), so FF D9 there genuinely is the
+// end -- but *before* SOS, an APP segment carrying an embedded thumbnail
+// or vendor blob can contain those two bytes as ordinary payload, and a
+// naive scan would truncate the frame there.
+//
+// Returns SIZE_MAX if the data is not a JPEG at all (no SOI), which the
+// caller treats as a stream-level failure rather than "need more bytes".
+//
+// *resume carries scan progress across calls on the same, growing buffer:
+// 0 to start fresh, and on a "need more bytes" return it is set to where
+// the next call can pick up -- past the header walk and past every byte of
+// entropy-coded data already ruled out. Without it, a frame arriving over
+// several pipe reads was rescanned from byte 0 after every one of them.
+static size_t find_jpeg_end_resumable(const uint8_t *data, size_t size,
+                                      size_t *resume) {
+  if (*resume > 0 && *resume < size)
+    return scan_entropy(data, size, *resume, resume);
+  if (size < 2)
+    return 0;
+  if (data[0] != 0xFF || data[1] != 0xD8)
+    return SIZE_MAX; // not SOI -- the stream is not what we think it is
+
+  size_t pos = 2;
+  // Marker-segment walk, up to SOS.
+  while (pos + 4 <= size) {
+    if (data[pos] != 0xFF)
+      return SIZE_MAX; // desynchronized: a marker must start here
+    uint8_t marker = data[pos + 1];
+    if (marker == 0xFF) {
+      ++pos; // fill byte before the real marker code
+      continue;
+    }
+    if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+      pos += 2; // markers with no length field (TEM, RSTn, SOI)
+      continue;
+    }
+    if (marker == 0xD9)
+      return pos + 2; // EOI before any SOS: empty but complete
+    if (marker == 0xDA) {
+      pos += 2 + (((size_t)data[pos + 2] << 8) | data[pos + 3]);
+      break; // entropy-coded data starts here
+    }
+    size_t seg_len = ((size_t)data[pos + 2] << 8) | data[pos + 3];
+    if (seg_len < 2)
+      return SIZE_MAX; // malformed
+    pos += 2 + seg_len;
+  }
+  if (pos >= size)
+    return 0; // SOS header not fully buffered yet
+
+  return scan_entropy(data, size, pos, resume);
+}
+
+// The one-shot form, for callers (and tests) with a complete buffer.
+__attribute__((unused)) static size_t find_jpeg_end(const uint8_t *data,
+                                                    size_t size) {
+  size_t resume = 0;
+  return find_jpeg_end_resumable(data, size, &resume);
+}
+
+// The entropy-coded part of find_jpeg_end, from `pos` on. The only
+// unstuffed FF sequences in it are markers, so memchr can skip straight
+// from one FF to the next instead of testing every byte.
+static size_t scan_entropy(const uint8_t *data, size_t size, size_t pos,
+                           size_t *resume) {
+  while (pos + 1 < size) {
+    // Up to size - 2: an FF found there still has its marker byte in range.
+    const uint8_t *ff = memchr(data + pos, 0xFF, size - pos - 1);
+    if (!ff) {
+      pos = size - 1; // the last byte may be an FF whose marker is unread
+      break;
+    }
+    pos = (size_t)(ff - data);
+    uint8_t marker = data[pos + 1];
+    if (marker == 0x00 || marker == 0xFF) {
+      pos += 2; // stuffed literal FF, or a fill byte
+      continue;
+    }
+    if (marker >= 0xD0 && marker <= 0xD7) {
+      pos += 2; // restart marker
+      continue;
+    }
+    if (marker == 0xD9)
+      return pos + 2; // EOI -- frame complete
+    // Any other marker after SOS (e.g. a multi-scan progressive JPEG's
+    // next SOS/DHT) means more segments follow; step over the marker and
+    // keep going. rpicam-vid emits baseline JPEG so this is defensive.
+    pos += 2;
+  }
+  *resume = pos;
+  return 0; // need more bytes
+}
+
+// Pulls more bytes from the pipe into in->buf. Returns false only on a
+// hard failure (the child died, the pipe broke, the frame cap was hit);
+// a timeout with no data is reported by the caller's own retry budget.
+//
+// Never reads past `limit` bytes buffered: the yuv420 path reads exactly one
+// frame at a time (it has no framing to find a boundary with afterwards);
+// MJPEG passes SIZE_MAX.
+static bool fill_buffer(RpicamIn *in, size_t limit) {
+  if (in->eof)
+    return false;
+
+  if (in->buf_len == in->buf_cap) {
+    if (in->buf_cap >= rpicam_max_frame_bytes) {
+      printf("rpicam_in: no complete JPEG within %zu bytes; giving up on "
+             "this stream\n",
+             rpicam_max_frame_bytes);
+      return false;
+    }
+    size_t want = in->buf_cap ? in->buf_cap * 2 : 256u * 1024;
+    if (want > rpicam_max_frame_bytes)
+      want = rpicam_max_frame_bytes;
+    uint8_t *grown = realloc(in->buf, want);
+    if (!grown) {
+      printf("rpicam_in: out of memory growing the frame buffer\n");
+      return false;
+    }
+    in->buf = grown;
+    in->buf_cap = want;
+  }
+
+  size_t room = in->buf_cap - in->buf_len;
+  if (limit - in->buf_len < room)
+    room = limit - in->buf_len;
+  size_t n = 0;
+  switch (child_read_some(in->proc.out_fd, in->buf + in->buf_len, room,
+                          rpicam_poll_timeout_ms, &n)) {
+  case CHILD_IO_OK:
+    in->buf_len += n;
+    return true;
+  case CHILD_IO_TIMEOUT:
+    printf("rpicam_in: timed out waiting for data from rpicam-vid\n");
+    return false;
+  case CHILD_IO_EOF:
+    printf("rpicam_in: rpicam-vid closed its output\n");
+    in->eof = true;
+    return false;
+  case CHILD_IO_ERROR:
+  default:
+    printf("rpicam_in: read failed: %s\n", strerror(errno));
+    return false;
+  }
+}
+
+// Box-averages (or, at downscale 1, copies) one stride-padded yuv420 frame
+// from in->buf into the frame's I422 planes. 4:2:0 chroma is half height,
+// so at downscale 1 each chroma row is written twice -- the same line
+// doubling decode_420_to_i422 does for 4:2:0 JPEGs. At downscale n, output
+// chroma sample (cx, oy) covers source chroma columns [cx*n, cx*n + n) and
+// rows [oy*n/2, oy*n/2 + n/2): n * n/2 samples, a power of two.
+static void unpack_yuv420(const RpicamIn *in, VideoFrame *frame) {
+  const uint32_t n = in->downscale;
+  const uint8_t *y_src = in->buf;
+  const uint8_t *u_src = y_src + in->y_stride * in->height;
+  const uint8_t *v_src = u_src + in->c_stride * (in->height / 2);
+  const uint32_t out_w = frame->width, out_h = frame->height;
+  const uint32_t chroma_w = out_w / 2;
+
+  if (n == 1) {
+    for (uint32_t y = 0; y < out_h; ++y)
+      memcpy(frame->raw_planes[0] + (size_t)y * frame->stride[0],
+             y_src + (size_t)y * in->y_stride, out_w);
+    for (uint32_t sy = 0; sy < out_h / 2; ++sy) {
+      for (int p = 1; p <= 2; ++p) {
+        const uint8_t *row = (p == 1 ? u_src : v_src) + (size_t)sy * in->c_stride;
+        uint8_t *dst = frame->raw_planes[p];
+        memcpy(dst + (size_t)(2 * sy) * frame->stride[p], row, chroma_w);
+        memcpy(dst + (size_t)(2 * sy + 1) * frame->stride[p], row, chroma_w);
+      }
+    }
+    return;
+  }
+
+  const uint32_t y_shift = 2u * (uint32_t)__builtin_ctz(n);
+  const uint32_t c_rows = n / 2;
+  const uint32_t c_shift = y_shift - 1; // n * n/2 samples
+#pragma omp parallel for
+  for (uint32_t oy = 0; oy < out_h; ++oy) {
+    uint8_t *y_row = frame->raw_planes[0] + (size_t)oy * frame->stride[0];
+    for (uint32_t ox = 0; ox < out_w; ++ox) {
+      uint32_t sum = 0;
+      for (uint32_t dy = 0; dy < n; ++dy) {
+        const uint8_t *r = y_src + (size_t)(oy * n + dy) * in->y_stride;
+        for (uint32_t dx = 0; dx < n; ++dx)
+          sum += r[ox * n + dx];
+      }
+      y_row[ox] = (uint8_t)((sum + (1u << (y_shift - 1))) >> y_shift);
+    }
+    for (int p = 1; p <= 2; ++p) {
+      const uint8_t *plane = p == 1 ? u_src : v_src;
+      uint8_t *c_row = frame->raw_planes[p] + (size_t)oy * frame->stride[p];
+      for (uint32_t cx = 0; cx < chroma_w; ++cx) {
+        uint32_t sum = 0;
+        for (uint32_t dy = 0; dy < c_rows; ++dy) {
+          const uint8_t *r =
+              plane + (size_t)(oy * c_rows + dy) * in->c_stride;
+          for (uint32_t dx = 0; dx < n; ++dx)
+            sum += r[cx * n + dx];
+        }
+        c_row[cx] = (uint8_t)((sum + (1u << (c_shift - 1))) >> c_shift);
+      }
+    }
+  }
+}
+
+// One yuv420 frame: exactly yuv_frame_bytes off the pipe, no framing to
+// find. Any read failure is a stream failure -- with no markers there is no
+// way to resynchronize on a partial frame, so the caller reopens.
+static bool capture_yuv420(RpicamIn *in, VideoFrame *frame) {
+  while (in->buf_len < in->yuv_frame_bytes) {
+    if (!fill_buffer(in, in->yuv_frame_bytes))
+      return false;
+  }
+  unpack_yuv420(in, frame);
+  frame->source_jpeg_len = 0; // never was a JPEG
+  in->buf_len = 0;
+  return true;
+}
+
+bool rpicam_in_capture(RpicamIn *in, VideoFrame *frame) {
+  if (in->format == FORMAT_YUV420)
+    return capture_yuv420(in, frame);
+
+  // Same retry budget and rationale as v4l2_in_capture(): an isolated
+  // corrupt frame is absorbed, a format mismatch returns immediately.
+  for (int attempt = 0; attempt < 5; attempt++) {
+    size_t frame_len =
+        find_jpeg_end_resumable(in->buf, in->buf_len, &in->scan_pos);
+
+    if (frame_len == SIZE_MAX) {
+      printf("rpicam_in: rpicam-vid's output is not a JPEG stream\n");
+      return false;
+    }
+    if (frame_len == 0) {
+      if (!fill_buffer(in, SIZE_MAX))
+        return false;
+      // Not a failed attempt -- no frame was available to try yet.
+      --attempt;
+      continue;
+    }
+
+    JpegDecodeResult result =
+        jpeg_decode_frame(in->decoder, in->buf, frame_len, frame);
+
+    // Consume this frame either way: leaving a frame that failed to decode
+    // at the head of the buffer would make every subsequent attempt retry
+    // the same bad bytes forever.
+    memmove(in->buf, in->buf + frame_len, in->buf_len - frame_len);
+    in->buf_len -= frame_len;
+    in->scan_pos = 0;
+
+    if (result == JPEG_DECODE_OK)
+      return true;
+    if (result == JPEG_DECODE_FORMAT_MISMATCH)
+      return false; // not transient; the decode path already said why
+
+    printf("rpicam_in: dropped a frame (attempt %d/5)\n", attempt + 1);
+  }
+
+  printf("rpicam_in: too many consecutive capture failures; giving up\n");
+  return false;
+}
+
+RpicamIn *rpicam_in_open(uint32_t width, uint32_t height,
+                         uint32_t framerate_hint, uint32_t downscale,
+                         const CameraControls *controls,
+                         CaptureFormat format) {
+  const bool yuv420 = format == FORMAT_YUV420;
+  if (downscale == 0)
+    downscale = 1;
+
+  char width_arg[16], height_arg[16], fps_arg[16], quality_arg[16];
+  snprintf(width_arg, sizeof width_arg, "%u", width);
+  snprintf(height_arg, sizeof height_arg, "%u", height);
+  snprintf(fps_arg, sizeof fps_arg, "%u", framerate_hint);
+  snprintf(quality_arg, sizeof quality_arg, "%u", rpicam_jpeg_quality);
+
+  // -t 0: run until killed. -n: no preview window (there is no display on
+  // a submersible, and drawing one costs real CPU). --flush: push each
+  // frame out as soon as it is encoded rather than letting it sit in a
+  // stdio buffer, which otherwise adds latency proportional to the buffer
+  // size -- exactly the wrong trade for a live pilot's view. -o -: stdout.
+  // Room for the fixed flags above plus whatever camera controls add.
+  // rpicam takes controls as spawn-time arguments rather than as
+  // something settable on a running process, which is why they are built
+  // here and why changing them means restarting the child.
+  char *argv[48];
+  char ctrl_storage[512];
+  size_t argc = 0;
+  argv[argc++] = "rpicam-vid";
+  argv[argc++] = "--codec";
+  argv[argc++] = yuv420 ? "yuv420" : "mjpeg";
+  argv[argc++] = "--width";
+  argv[argc++] = width_arg;
+  argv[argc++] = "--height";
+  argv[argc++] = height_arg;
+  argv[argc++] = "--framerate";
+  argv[argc++] = fps_arg;
+  if (!yuv420) {
+    argv[argc++] = "--quality";
+    argv[argc++] = quality_arg;
+  }
+  argv[argc++] = "-t";
+  argv[argc++] = "0";
+  argv[argc++] = "-n";
+  argv[argc++] = "--flush";
+
+  if (controls && camera_ctrl_any_set(controls)) {
+    int extra = camera_ctrl_rpicam_args(
+        controls, argv + argc, (sizeof argv / sizeof argv[0]) - argc - 3,
+        ctrl_storage, sizeof ctrl_storage);
+    if (extra < 0) {
+      // Truncating would silently hand the camera a different
+      // configuration than the operator asked for.
+      printf("rpicam_in: too many camera controls to pass; ignoring them\n");
+    } else {
+      argc += (size_t)extra;
+    }
+  }
+
+  argv[argc++] = "-o";
+  argv[argc++] = "-";
+  argv[argc] = NULL;
+
+  RpicamIn *in = (RpicamIn *)calloc(1, sizeof(RpicamIn));
+  if (!in)
+    return NULL;
+
+  // rpicam-vid writes progress and camera-tuning chatter to stderr on
+  // every run; it is left attached to this process's stderr so a real
+  // failure (missing camera, bad geometry) is visible to the operator
+  // rather than swallowed.
+  if (!child_spawn(&in->proc, "rpicam_in", argv,
+                   CHILD_PIPE_STDOUT | CHILD_NULL_STDIN)) {
+    free(in);
+    return NULL;
+  }
+  in->width = width;
+  in->height = height;
+  in->downscale = downscale;
+  in->format = yuv420 ? FORMAT_YUV420 : FORMAT_MJPEG;
+
+  // yuv420 moves ~41MB/s at 720p30 through this pipe; a 1MB pipe buffer
+  // (up from 64KB) takes that in a few reads per frame instead of ~20.
+  // Best-effort: past /proc/sys/fs/pipe-max-size this simply fails.
+  if (yuv420)
+    child_set_pipe_size(in->proc.out_fd, 1 << 20);
+
+  if (yuv420) {
+    in->y_stride = ((size_t)width + 63) & ~(size_t)63;
+    in->c_stride = ((size_t)width / 2 + 31) & ~(size_t)31;
+    in->yuv_frame_bytes =
+        in->y_stride * height + 2 * in->c_stride * (height / 2);
+    in->buf = malloc(in->yuv_frame_bytes);
+    if (!in->buf) {
+      rpicam_in_close(in);
+      return NULL;
+    }
+    in->buf_cap = in->yuv_frame_bytes;
+    printf("rpicam_in: capturing raw yuv420 at %ux%u (%zu bytes per frame; "
+           "no JPEG encode or decode)\n",
+           width, height, in->yuv_frame_bytes);
+  } else {
+    in->decoder = jpeg_decoder_create(width, height);
+    if (!in->decoder) {
+      rpicam_in_close(in);
+      return NULL;
+    }
+  }
+
+  // Probe one real frame before declaring success, for the same reason
+  // v4l2_in_open() does: this turns "rpicam-vid isn't installed", "no
+  // camera attached", or "this sensor won't do that geometry" into one
+  // clear failure here rather than a per-frame failure loop once
+  // producer_loop is already running.
+  //
+  // Sized at the *output* geometry so the probe exercises the same scaled
+  // decode the real frames take.
+  VideoFrame *probe = vf_create(width / downscale, height / downscale, 0);
+  if (!probe) {
+    printf("rpicam_in: failed to allocate probe frame\n");
+    rpicam_in_close(in);
+    return NULL;
+  }
+  bool probe_ok = rpicam_in_capture(in, probe);
+  vf_free(probe);
+  if (!probe_ok) {
+    printf("rpicam_in: initial capture probe failed; see the error above\n");
+    rpicam_in_close(in);
+    return NULL;
+  }
+
+  return in;
+}
+
+void rpicam_in_close(RpicamIn *in) {
+  if (!in)
+    return;
+
+  // Closes the pipe, then SIGTERM, then (only if it ignores that) SIGKILL.
+  // rpicam-vid exits promptly on SIGTERM; it would also die of SIGPIPE on
+  // its next write to the closed pipe, but waiting for that would mean
+  // blocking until it happens to write.
+  child_stop(&in->proc, rpicam_stop_grace_ms);
+
+  jpeg_decoder_destroy(in->decoder);
+  free(in->buf);
+  free(in);
+}

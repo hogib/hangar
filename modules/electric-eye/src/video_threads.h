@@ -1,0 +1,132 @@
+#pragma once
+#include "config.h"
+#include "frame_ring_buffer.h"
+#include "health.h"
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <time.h>
+
+// The health snapshot, from the consumer to whoever writes the file.
+// Writing it is file I/O on the SD card (fopen, rename, statvfs), which
+// can block for tens to hundreds of milliseconds while a raw recording
+// fills the card -- not something the thread feeding the pilot's picture
+// can wait on. So the consumer only fills this (a struct copy under a
+// mutex) and stats_loop writes it. `writer` says stats_loop is there to
+// do it; it is optional, and without it the consumer writes the file
+// itself as before.
+typedef struct {
+  pthread_mutex_t lock;
+  HealthSnapshot snap; // under lock
+  bool fresh;          // under lock: snap not yet written
+  bool writer;         // atomic (see compat.h)
+  const char *config_path;
+} HealthMailbox;
+
+static inline void sleep_us(long microseconds) {
+  struct timespec ts;
+  ts.tv_sec = microseconds / 1000000;
+  ts.tv_nsec = (microseconds % 1000000) * 1000;
+
+  nanosleep(&ts, NULL);
+}
+
+// frame_width/frame_height here (as in WorkerArgs and ConsumerArgs) are the
+// *pipeline* geometry -- what every frame in the pool actually is. The
+// producer is the only one of the three that also needs the camera's own
+// geometry, since it is the only one that talks to the camera; everything
+// downstream sees post-downscale frames and nothing else.
+typedef struct {
+  const char *filename;
+  // Which backend producer_loop opens. Resolved from config at startup
+  // (CAPTURE_AUTO is settled there, not here), so by the time the producer
+  // thread starts this is always CAPTURE_V4L2 or CAPTURE_RPICAM. `filename`
+  // is unused by the rpicam backend, which has no device path -- it talks
+  // to a child process.
+  CaptureSource capture_source;
+  // Which pixel format to demand; the rpicam backend only distinguishes
+  // yuv420 from everything else (MJPEG).
+  CaptureFormat capture_format;
+  bool *is_running;
+  // Camera controls are hot-reloadable, so the producer needs the live
+  // config too -- it is the only thread that holds the camera device.
+  const ConfigWatcher *config;
+  FrameRingBuffer *ring_buffer_in;
+  FrameRingBuffer *ring_buffer_free;
+  uint32_t frame_width;
+  uint32_t frame_height;
+  uint32_t capture_width;
+  uint32_t capture_height;
+  uint32_t downscale;
+  // CAPTURE_BUS: the stream to read (see bus_in.h).
+  const char *capture_stream;
+  // Set (with is_running cleared) when the run must end for a restart to
+  // fix it -- a bus stream that came back at a different size. main()
+  // exits non-zero then.
+  bool *restart_needed; // atomic (see compat.h)
+} ProducerArgs;
+
+// How long apply_effect_chain() takes per frame, accumulated by
+// effects_loop and logged (then reset) by stats_loop. The number to watch
+// when tuning OpenMP or the chain on real hardware. Diagnostic only, so
+// every access is relaxed. All three are atomic (see compat.h), as is
+// *is_running in every args struct below.
+typedef struct {
+  uint_fast64_t frames;
+  uint_fast64_t total_ns;
+  uint_fast64_t max_ns;
+} EffectsTiming;
+
+typedef struct {
+  bool *is_running;
+  FrameRingBuffer *ring_buffer_in;
+  FrameRingBuffer *ring_buffer_out;
+  const ConfigWatcher *config;
+  EffectsTiming *timing;
+  uint32_t frame_width;
+  uint32_t frame_height;
+} WorkerArgs;
+
+typedef struct {
+  const char *outpath;
+  bool *is_running;
+  FrameRingBuffer *ring_buffer_out;
+  FrameRingBuffer *ring_buffer_free;
+  const ConfigWatcher *config; // for the recording tap's config
+  // The same path eeye was started with -- consumer_loop writes
+  // "<config_path>.health" beside it (see health.h), so topside can see
+  // recording state rather than assuming it.
+  const char *config_path;
+  uint32_t frame_width;
+  uint32_t frame_height;
+  // Frame bus streams (fbus.h) for the processed and the untouched frame;
+  // "" publishes nothing.
+  const char *bus_pilot;
+  const char *bus_raw;
+  HealthMailbox *health;
+} ConsumerArgs;
+
+// All three rings, read-only from here -- stats_loop only ever calls
+// ring_get_stats() on them, never pushes/pops.
+typedef struct {
+  bool *is_running;
+  EffectsTiming *effects_timing;
+  const FrameRingBuffer *ring_buffer_in;
+  const FrameRingBuffer *ring_buffer_out;
+  const FrameRingBuffer *ring_buffer_free;
+  HealthMailbox *health; // written from here when set
+} StatsArgs;
+
+void *producer_loop(void *arg);
+
+void *effects_loop(void *arg);
+
+void *consumer_loop(void *arg);
+
+/*
+ * Periodically logs each ring's occupancy, high-water mark, and stall
+ * counts (see RingStats in frame_ring_buffer.h) -- real numbers on whether
+ * the 32-slot rings ever actually saturate, in place of estimating. Purely
+ * diagnostic: never touches a ring's contents, only ring_get_stats().
+ */
+void *stats_loop(void *arg);

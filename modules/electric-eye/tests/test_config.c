@@ -1,0 +1,611 @@
+// Includes the translation unit directly so the static parser and its
+// validation are reachable. parse_config() is where every operator-facing
+// config error is decided, and it is pure (buffer in, Config out), so it
+// is both the highest-value and the easiest thing here to test.
+#define _POSIX_C_SOURCE 200809L
+#include "config.c"
+#include "test_harness.h"
+
+static bool parse(const char *json, Config *out) {
+  *out = (Config){0};
+  return parse_config(json, strlen(json), out);
+}
+
+// Every key omitted must yield exactly config_defaults -- the README
+// documents these values, and a drift between the two is invisible until
+// someone relies on an undocumented default.
+static void test_defaults_match_documentation(void) {
+  Config c;
+  CHECK(parse("{}", &c));
+  CHECK_EQ_INT(c.capture_width, 1280);
+  CHECK_EQ_INT(c.capture_height, 720);
+  CHECK_EQ_INT(c.downscale, 1);
+  CHECK_EQ_INT(c.capture_source, CAPTURE_AUTO);
+  CHECK_EQ_INT(c.record_path[0], '\0');
+  CHECK(strcmp(c.capture_device, "/dev/video0") == 0);
+  CHECK(strcmp(c.output_device, "/dev/video10") == 0);
+  // An omitted chain keeps the built-in single-stage sobel default.
+  CHECK_EQ_INT(c.stage_count, 1);
+  CHECK_EQ_INT(c.stages[0].effect, EFFECT_SOBEL);
+}
+
+static void test_empty_chain_is_valid_passthrough(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[]}", &c));
+  CHECK_EQ_INT(c.stage_count, 0);
+}
+
+static void test_chain_order_is_preserved(void) {
+  Config c;
+  // Order is semantic -- blur-then-sobel differs from sobel-then-blur --
+  // so a parser that reordered or deduplicated stages would silently
+  // change the image.
+  CHECK(parse("{\"chain\":[{\"effect\":\"blur\"},{\"effect\":\"sobel\"},"
+              "{\"effect\":\"invert\"}]}",
+              &c));
+  CHECK_EQ_INT(c.stage_count, 3);
+  CHECK_EQ_INT(c.stages[0].effect, EFFECT_BLUR);
+  CHECK_EQ_INT(c.stages[1].effect, EFFECT_SOBEL);
+  CHECK_EQ_INT(c.stages[2].effect, EFFECT_INVERT);
+}
+
+static void test_every_effect_name_parses(void) {
+  const struct { const char *name; EffectType type; } names[] = {
+      {"none", EFFECT_NONE},           {"grayscale", EFFECT_GRAYSCALE},
+      {"invert", EFFECT_INVERT},       {"threshold", EFFECT_THRESHOLD},
+      {"tint", EFFECT_TINT},           {"sobel", EFFECT_SOBEL},
+      {"blur", EFFECT_BLUR},           {"contrast", EFFECT_CONTRAST},
+      {"light", EFFECT_LIGHT},         {"log", EFFECT_LOG},
+      {"canny", EFFECT_CANNY},
+  };
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+    char json[128];
+    snprintf(json, sizeof json, "{\"chain\":[{\"effect\":\"%s\"}]}",
+             names[i].name);
+    Config c;
+    CHECK(parse(json, &c));
+    CHECK_EQ_INT(c.stages[0].effect, names[i].type);
+  }
+}
+
+// light_level is the one field that does NOT default to 0: zero would mean
+// "fully dark and desaturated", so an omitted value has to come back
+// neutral. Every other parameter's zero-init already means "no change".
+static void test_light_level_defaults_neutral(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[{\"effect\":\"light\"}]}", &c));
+  CHECK_EQ_INT(c.stages[0].light_level, 128);
+
+  CHECK(parse("{\"chain\":[{\"effect\":\"light\",\"light_level\":0}]}", &c));
+  CHECK_EQ_INT(c.stages[0].light_level, 0); // explicit 0 must survive
+
+  // Other params keep their zero default.
+  CHECK(parse("{\"chain\":[{\"effect\":\"blur\"}]}", &c));
+  CHECK_EQ_INT(c.stages[0].blur_strength, 0);
+}
+
+static void test_effect_parameters_round_trip(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[{\"effect\":\"tint\",\"tint_u\":90,\"tint_v\":150,"
+              "\"tint_strength\":180}]}",
+              &c));
+  CHECK_EQ_INT(c.stages[0].tint_u, 90);
+  CHECK_EQ_INT(c.stages[0].tint_v, 150);
+  CHECK_EQ_INT(c.stages[0].tint_strength, 180);
+
+  CHECK(parse("{\"chain\":[{\"effect\":\"threshold\",\"threshold_value\":200}]}",
+              &c));
+  CHECK_EQ_INT(c.stages[0].threshold_value, 200);
+
+  CHECK(parse("{\"chain\":[{\"effect\":\"sobel\",\"sobel_threshold\":60}]}", &c));
+  CHECK_EQ_INT(c.stages[0].sobel_threshold, 60);
+
+  CHECK(parse("{\"chain\":[{\"effect\":\"log\",\"log_strength\":3,"
+              "\"log_threshold\":25}]}",
+              &c));
+  CHECK_EQ_INT(c.stages[0].log_strength, 3);
+  CHECK_EQ_INT(c.stages[0].log_threshold, 25);
+}
+
+// Camera controls are a nested object where every field is optional and
+// "absent" must mean "leave the camera alone" -- not 0, which for
+// brightness would be mid-range and for contrast the minimum. The one
+// exception is keep_framerate, set by default (see camera_ctrl.h).
+static void test_camera_controls_default_to_unset(void) {
+  Config c;
+  CHECK(parse("{}", &c));
+  CHECK_EQ_INT(c.camera.keep_framerate, 1);
+  CameraControls others = c.camera;
+  others.keep_framerate = camera_ctrl_unset;
+  CHECK(!camera_ctrl_any_set(&others));
+  CHECK_EQ_INT(c.camera.brightness, camera_ctrl_unset);
+  CHECK_EQ_INT(c.camera.exposure, camera_ctrl_unset);
+
+  // An empty object is valid and changes nothing, the default included.
+  CHECK(parse("{\"camera\":{}}", &c));
+  CHECK_EQ_INT(c.camera.keep_framerate, 1);
+  others = c.camera;
+  others.keep_framerate = camera_ctrl_unset;
+  CHECK(!camera_ctrl_any_set(&others));
+
+  // It can be turned off, letting the camera slow down in dim light.
+  CHECK(parse("{\"camera\":{\"keep_framerate\":false}}", &c));
+  CHECK_EQ_INT(c.camera.keep_framerate, 0);
+  CHECK(!parse("{\"camera\":{\"keep_framerate\":1}}", &c)); // a bool
+
+  // Mentioning one field must not disturb the others.
+  CHECK(parse("{\"camera\":{\"brightness\":10}}", &c));
+  CHECK_EQ_INT(c.camera.brightness, 10);
+  CHECK_EQ_INT(c.camera.contrast, camera_ctrl_unset);
+  CHECK_EQ_INT(c.camera.exposure, camera_ctrl_unset);
+}
+
+static void test_camera_controls_round_trip(void) {
+  Config c;
+  CHECK(parse("{\"camera\":{\"auto_exposure\":false,\"exposure\":25000,"
+              "\"gain\":40,\"auto_white_balance\":false,"
+              "\"white_balance\":3200,\"brightness\":-20,"
+              "\"contrast\":120,\"saturation\":80,\"sharpness\":100}}",
+              &c));
+  CHECK_EQ_INT(c.camera.auto_exposure, 0);
+  CHECK_EQ_INT(c.camera.exposure, 25000);
+  CHECK_EQ_INT(c.camera.gain, 40);
+  CHECK_EQ_INT(c.camera.auto_white_balance, 0);
+  CHECK_EQ_INT(c.camera.white_balance, 3200);
+  CHECK_EQ_INT(c.camera.brightness, -20);
+  CHECK_EQ_INT(c.camera.contrast, 120);
+  CHECK_EQ_INT(c.camera.saturation, 80);
+  CHECK_EQ_INT(c.camera.sharpness, 100);
+}
+
+// Explicit zeros and negatives are real values, not "unset" -- the
+// distinction the sentinel exists to preserve.
+static void test_camera_explicit_zero_is_kept(void) {
+  Config c;
+  CHECK(parse("{\"camera\":{\"gain\":0,\"brightness\":0}}", &c));
+  CHECK(camera_ctrl_any_set(&c.camera));
+  CHECK_EQ_INT(c.camera.gain, 0);
+  CHECK_EQ_INT(c.camera.brightness, 0);
+  CHECK(c.camera.gain != camera_ctrl_unset);
+
+  CHECK(parse("{\"camera\":{\"brightness\":-100}}", &c));
+  CHECK_EQ_INT(c.camera.brightness, -100);
+}
+
+static void test_camera_rejects_bad_values(void) {
+  Config c;
+  // Out of the documented range.
+  CHECK(!parse("{\"camera\":{\"brightness\":200}}", &c));
+  CHECK(!parse("{\"camera\":{\"brightness\":-200}}", &c));
+  CHECK(!parse("{\"camera\":{\"gain\":101}}", &c));
+  CHECK(!parse("{\"camera\":{\"contrast\":300}}", &c));
+  CHECK(!parse("{\"camera\":{\"white_balance\":50}}", &c));  // not Kelvin
+  CHECK(!parse("{\"camera\":{\"exposure\":0}}", &c));        // zero shutter
+  // Wrong types.
+  CHECK(!parse("{\"camera\":{\"auto_exposure\":1}}", &c));   // needs a bool
+  CHECK(!parse("{\"camera\":{\"brightness\":true}}", &c));
+  // Unknown key inside the object, same loud-typo policy as elsewhere.
+  CHECK(!parse("{\"camera\":{\"exposureee\":100}}", &c));
+  CHECK(!parse("{\"camera\":{\"iso\":400}}", &c));
+  // Malformed object.
+  CHECK(!parse("{\"camera\":{\"gain\":10}", &c));
+  CHECK(!parse("{\"camera\":[]}", &c));
+}
+
+// Boundary values must be accepted -- an off-by-one would reject a legal
+// config.
+static void test_camera_boundaries_accepted(void) {
+  Config c;
+  CHECK(parse("{\"camera\":{\"brightness\":100}}", &c));
+  CHECK(parse("{\"camera\":{\"brightness\":-100}}", &c));
+  CHECK(parse("{\"camera\":{\"gain\":100}}", &c));
+  CHECK(parse("{\"camera\":{\"contrast\":0}}", &c));
+  CHECK(parse("{\"camera\":{\"contrast\":200}}", &c));
+}
+
+// The preview moved to hellion, but configs written before that carry
+// stream_raw / stream_frame_interval / stream_quality and must still load:
+// an eeye that refused its own old config would come up with no video.
+// Still type-checked, so a mangled value is caught rather than ignored.
+// Auto visibility changes what the pilot sees, so it is off unless asked
+// for, and only a real JSON bool turns it on.
+static void test_auto_visibility_key(void) {
+  Config c;
+  CHECK(parse("{}", &c));
+  CHECK(c.auto_visibility == false);
+  CHECK(parse("{\"auto_visibility\":true}", &c));
+  CHECK(c.auto_visibility == true);
+  CHECK(parse("{\"auto_visibility\":false}", &c));
+  CHECK(c.auto_visibility == false);
+  CHECK(!parse("{\"auto_visibility\":1}", &c));
+  CHECK(!parse("{\"auto_visibility\":\"on\"}", &c));
+}
+
+static void test_old_preview_keys_still_load(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[{\"effect\":\"blur\"}],\"stream_raw\":true,"
+              "\"stream_frame_interval\":3,\"stream_quality\":60}",
+              &c));
+  CHECK_EQ_INT(c.stages[0].effect, EFFECT_BLUR);
+  CHECK(!parse("{\"stream_raw\":1}", &c));
+  CHECK(!parse("{\"stream_raw\":\"true\"}", &c));
+  CHECK(!parse("{\"stream_frame_interval\":\"3\"}", &c));
+}
+
+// canny's thresholds are seeded to usable defaults rather than 0, which
+// would make it emit an empty map -- the same special-casing light_level
+// gets, and equally easy to lose.
+static void test_canny_threshold_defaults(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[{\"effect\":\"canny\"}]}", &c));
+  CHECK_EQ_INT(c.stages[0].canny_low, 40);
+  CHECK_EQ_INT(c.stages[0].canny_high, 90);
+  CHECK_EQ_INT(c.stages[0].canny_strength, 0); // 0 means 1 pass, see conv.h
+  // Explicit values must survive, including an explicit 0.
+  CHECK(parse("{\"chain\":[{\"effect\":\"canny\",\"canny_low\":0,"
+              "\"canny_high\":255,\"canny_strength\":3}]}",
+              &c));
+  CHECK_EQ_INT(c.stages[0].canny_low, 0);
+  CHECK_EQ_INT(c.stages[0].canny_high, 255);
+  CHECK_EQ_INT(c.stages[0].canny_strength, 3);
+  // Cross-effect parameters stay rejected.
+  CHECK(!parse("{\"chain\":[{\"effect\":\"canny\",\"log_strength\":2}]}",
+               &c));
+  CHECK(!parse("{\"chain\":[{\"effect\":\"log\",\"canny_low\":20}]}", &c));
+}
+
+// log takes its own two parameters and no others -- the per-effect key
+// check has to know about a newly added effect, or it silently accepts
+// anything on it.
+static void test_log_parameter_validation(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[{\"effect\":\"log\"}]}", &c)); // both optional
+  CHECK_EQ_INT(c.stages[0].log_strength, 0);
+  CHECK_EQ_INT(c.stages[0].log_threshold, 0);
+  // Another effect's parameter on a log stage is an error...
+  CHECK(!parse("{\"chain\":[{\"effect\":\"log\",\"tint_u\":90}]}", &c));
+  CHECK(!parse("{\"chain\":[{\"effect\":\"log\",\"blur_strength\":4}]}",
+               &c));
+  // ...and log's parameters on another effect are equally an error.
+  CHECK(!parse("{\"chain\":[{\"effect\":\"blur\",\"log_strength\":3}]}",
+               &c));
+  CHECK(!parse("{\"chain\":[{\"effect\":\"sobel\",\"log_threshold\":3}]}",
+               &c));
+}
+
+// The README documents both presets verbatim; they must parse as printed.
+// An earlier README showed them with trailing "// sepia" comments, which
+// this parser rejects -- so anyone copy-pasting got an error.
+static void test_readme_tint_presets_parse(void) {
+  Config c;
+  CHECK(parse("{\"chain\":[{\"effect\": \"tint\", \"tint_u\": 90, "
+              "\"tint_v\": 150, \"tint_strength\": 180}]}",
+              &c));
+  CHECK(parse("{\"chain\":[{\"effect\": \"tint\", \"tint_u\": 190, "
+              "\"tint_v\": 100, \"tint_strength\": 140}]}",
+              &c));
+}
+
+// A typo must be loud. Silently ignoring an unknown key is how someone
+// spends an hour wondering why a setting does nothing.
+static void test_unknown_keys_are_hard_errors(void) {
+  Config c;
+  CHECK(!parse("{\"bogus_key\":1}", &c));
+  CHECK(!parse("{\"chain\":[],\"downscal\":2}", &c)); // plausible typo
+  // A parameter on an effect that doesn't take it is equally an error.
+  CHECK(!parse("{\"chain\":[{\"effect\":\"blur\",\"tint_u\":90}]}", &c));
+  CHECK(!parse("{\"chain\":[{\"effect\":\"nosucheffect\"}]}", &c));
+}
+
+static void test_malformed_json_is_rejected(void) {
+  Config c;
+  CHECK(!parse("", &c));
+  CHECK(!parse("[]", &c));                       // not an object
+  CHECK(!parse("{\"chain\":[]", &c));            // unterminated
+  CHECK(!parse("{\"chain\":[]} trailing", &c));  // trailing data
+  CHECK(!parse("{\"chain\":[]},", &c));
+  CHECK(!parse("{chain:[]}", &c));               // unquoted key
+  CHECK(!parse("{\"chain\" []}", &c));           // missing colon
+  CHECK(!parse("{\"chain\":[{\"effect\":\"blur\"}", &c));
+}
+
+// Values are parsed as bytes; anything outside 0-255 must be rejected
+// rather than silently truncated into a valid-looking setting.
+static void test_out_of_range_values_rejected(void) {
+  Config c;
+  CHECK(!parse("{\"chain\":[{\"effect\":\"blur\",\"blur_strength\":256}]}", &c));
+  CHECK(!parse("{\"chain\":[{\"effect\":\"blur\",\"blur_strength\":-1}]}", &c));
+  CHECK(!parse("{\"stream_quality\":999}", &c));
+  // 255 is the boundary and must still be accepted.
+  CHECK(parse("{\"chain\":[{\"effect\":\"blur\",\"blur_strength\":255}]}", &c));
+}
+
+static void test_downscale_restricted_to_powers(void) {
+  Config c;
+  const int valid[] = {1, 2, 4, 8};
+  for (size_t i = 0; i < 4; i++) {
+    char json[128];
+    // 1280x720 divides evenly by all four.
+    snprintf(json, sizeof json,
+             "{\"capture_width\":1280,\"capture_height\":720,\"downscale\":%d}",
+             valid[i]);
+    CHECK(parse(json, &c));
+    CHECK_EQ_INT(c.downscale, valid[i]);
+  }
+  const int invalid[] = {0, 3, 5, 6, 7, 16};
+  for (size_t i = 0; i < 6; i++) {
+    char json[128];
+    snprintf(json, sizeof json,
+             "{\"capture_width\":1280,\"capture_height\":720,\"downscale\":%d}",
+             invalid[i]);
+    CHECK(!parse(json, &c));
+  }
+}
+
+// Both dimensions must be a multiple of 2*downscale. Width, so the I422
+// chroma planes stay exactly half-width; height, because a 4:2:0 source
+// (what rpicam-vid emits) has half-height chroma that gets line-doubled
+// into full-height planes, which only lands exactly on an even height.
+//
+// The height half of that rule changed when 4:2:0 support landed -- it
+// used to be a multiple of downscale alone -- so the cases below
+// deliberately include heights divisible by downscale but NOT by
+// 2*downscale, which is exactly what the old rule let through.
+static void test_geometry_divisibility_rule(void) {
+  Config c;
+  const struct { int w, h, ds; bool ok; } cases[] = {
+      {1280, 720, 1, true},   {1280, 720, 2, true},
+      {1280, 720, 4, true},   {640, 480, 2, true},
+      {641, 480, 1, false},   // odd width
+      {640, 481, 1, false},   // odd height
+      {1280, 724, 4, false},  // 724 % 4 == 0 but 724 % 8 != 0
+      {640, 482, 2, false},   // 482 % 2 == 0 but 482 % 4 != 0
+      {1284, 720, 4, false},  // 1284 % 4 == 0 but 1284 % 8 != 0
+      {1280, 728, 4, true},   // both multiples of 8
+      {0, 480, 1, false},     // zero dimensions
+      {640, 0, 1, false},
+  };
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    char json[160];
+    snprintf(json, sizeof json,
+             "{\"capture_width\":%d,\"capture_height\":%d,\"downscale\":%d}",
+             cases[i].w, cases[i].h, cases[i].ds);
+    bool got = parse(json, &c);
+    if (got != cases[i].ok) {
+      printf("    (geometry %dx%d ds=%d: got %s, want %s)\n", cases[i].w,
+             cases[i].h, cases[i].ds, got ? "accept" : "reject",
+             cases[i].ok ? "accept" : "reject");
+    }
+    CHECK(got == cases[i].ok);
+  }
+}
+
+// capture_format decides whether every frame pays for a JPEG decode, so a
+// typo silently costing that is worth refusing outright.
+static void test_capture_format_values(void) {
+  Config c;
+  CHECK(parse("{}", &c));
+  CHECK_EQ_INT(c.capture_format, FORMAT_AUTO); // default preserves old behaviour
+  CHECK(parse("{\"capture_format\":\"auto\"}", &c));
+  CHECK_EQ_INT(c.capture_format, FORMAT_AUTO);
+  CHECK(parse("{\"capture_format\":\"mjpeg\"}", &c));
+  CHECK_EQ_INT(c.capture_format, FORMAT_MJPEG);
+  CHECK(parse("{\"capture_format\":\"yuyv\"}", &c));
+  CHECK_EQ_INT(c.capture_format, FORMAT_YUYV);
+  CHECK(!parse("{\"capture_format\":\"YUYV\"}", &c)); // case-sensitive
+  CHECK(!parse("{\"capture_format\":\"mjpg\"}", &c)); // the v4l2 fourcc, not our name
+  CHECK(!parse("{\"capture_format\":\"h264\"}", &c));
+  CHECK(!parse("{\"capture_format\":1}", &c));          // not a string
+  // Coexists with the other startup-only keys.
+  CHECK(parse("{\"capture_source\":\"v4l2\",\"capture_format\":\"yuyv\","
+              "\"capture_width\":640,\"capture_height\":480,\"downscale\":2}",
+              &c));
+  CHECK_EQ_INT(c.capture_format, FORMAT_YUYV);
+  CHECK_EQ_INT(c.capture_source, CAPTURE_V4L2);
+}
+
+static void test_capture_source_values(void) {
+  Config c;
+  CHECK(parse("{\"capture_source\":\"auto\"}", &c));
+  CHECK_EQ_INT(c.capture_source, CAPTURE_AUTO);
+  CHECK(parse("{\"capture_source\":\"v4l2\"}", &c));
+  CHECK_EQ_INT(c.capture_source, CAPTURE_V4L2);
+  CHECK(parse("{\"capture_source\":\"rpicam\"}", &c));
+  CHECK_EQ_INT(c.capture_source, CAPTURE_RPICAM);
+  CHECK(!parse("{\"capture_source\":\"bogus\"}", &c));
+  CHECK(!parse("{\"capture_source\":2}", &c)); // not a string
+}
+
+static void test_device_paths(void) {
+  Config c;
+  CHECK(parse("{\"capture_device\":\"/dev/v4l/by-id/usb-cam\","
+              "\"output_device\":\"/dev/video42\"}",
+              &c));
+  CHECK(strcmp(c.capture_device, "/dev/v4l/by-id/usb-cam") == 0);
+  CHECK(strcmp(c.output_device, "/dev/video42") == 0);
+
+  // "" turns the v4l2 output off; there is no such thing as no camera.
+  CHECK(parse("{\"output_device\":\"\"}", &c));
+  CHECK_EQ_INT(c.output_device[0], '\0');
+  CHECK(!parse("{\"capture_device\":\"\"}", &c));
+
+  CHECK(!parse("{\"capture_device\":0}", &c));
+  CHECK(!parse("{\"output_device\":true}", &c));
+
+  // Fixed-size fields: an overlong path is refused, not truncated.
+  char json[512];
+  char long_path[max_device_path_len + 8];
+  memset(long_path, 'a', sizeof long_path - 1);
+  long_path[sizeof long_path - 1] = '\0';
+  snprintf(json, sizeof json, "{\"output_device\":\"%s\"}", long_path);
+  CHECK(!parse(json, &c));
+}
+
+static void test_bus_keys(void) {
+  Config c;
+  CHECK(parse("{}", &c));
+  CHECK(strcmp(c.capture_stream, "camera") == 0);
+  CHECK(strcmp(c.bus_pilot, "pilot") == 0);
+  CHECK(strcmp(c.bus_raw, "raw") == 0);
+
+  CHECK(parse("{\"capture_source\":\"bus\",\"capture_stream\":\"rov-cam\","
+              "\"bus_pilot\":\"pilot2\",\"bus_raw\":\"\"}",
+              &c));
+  CHECK_EQ_INT(c.capture_source, CAPTURE_BUS);
+  CHECK(strcmp(c.capture_stream, "rov-cam") == 0);
+  CHECK(strcmp(c.bus_pilot, "pilot2") == 0);
+  CHECK_EQ_INT(c.bus_raw[0], '\0'); // "" publishes nothing
+
+  // Names are file names in a shared directory: nothing that could
+  // escape it, and something to read from.
+  CHECK(!parse("{\"bus_pilot\":\"../x\"}", &c));
+  CHECK(!parse("{\"bus_raw\":\"a b\"}", &c));
+  CHECK(!parse("{\"capture_stream\":\"\"}", &c));
+  CHECK(!parse("{\"capture_stream\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+               &c));
+
+  // A bus stream is already at its publisher's size.
+  CHECK(!parse("{\"capture_source\":\"bus\",\"downscale\":2}", &c));
+  CHECK(parse("{\"capture_source\":\"v4l2\",\"downscale\":2}", &c));
+
+  // Publishing two streams under one name, or reading its own output.
+  CHECK(!parse("{\"bus_pilot\":\"same\",\"bus_raw\":\"same\"}", &c));
+  CHECK(parse("{\"bus_pilot\":\"\",\"bus_raw\":\"\"}", &c)); // both off is fine
+  CHECK(!parse("{\"capture_source\":\"bus\",\"capture_stream\":\"pilot\"}",
+               &c));
+  CHECK(parse("{\"capture_source\":\"v4l2\",\"capture_stream\":\"pilot\"}",
+              &c)); // only matters when actually reading the bus
+}
+
+static void test_record_path_round_trips(void) {
+  Config c;
+  CHECK(parse("{\"record_path\":\"/tmp/out.raw\"}", &c));
+  CHECK(strcmp(c.record_path, "/tmp/out.raw") == 0);
+  CHECK(parse("{\"record_path\":\"\"}", &c));
+  CHECK_EQ_INT(c.record_path[0], '\0');
+}
+
+// Config is copied by value into a fixed-size ring, so an overlong path or
+// an overlong chain must be refused rather than truncated or overflowed.
+static void test_oversized_inputs_rejected(void) {
+  Config c;
+  char json[1024];
+  char long_path[max_record_path_len + 64];
+  memset(long_path, 'a', sizeof long_path - 1);
+  long_path[sizeof long_path - 1] = '\0';
+  snprintf(json, sizeof json, "{\"record_path\":\"%s\"}", long_path);
+  CHECK(!parse(json, &c));
+
+  // One stage past the cap.
+  char chain[2048] = "{\"chain\":[";
+  for (size_t i = 0; i < max_chain_stages + 1; i++)
+    strcat(chain, i ? ",{\"effect\":\"none\"}" : "{\"effect\":\"none\"}");
+  strcat(chain, "]}");
+  CHECK(!parse(chain, &c));
+}
+
+// Exactly max_chain_stages must still be accepted -- an off-by-one here
+// would reject a legal config.
+static void test_max_chain_length_accepted(void) {
+  Config c;
+  char chain[2048] = "{\"chain\":[";
+  for (size_t i = 0; i < max_chain_stages; i++)
+    strcat(chain, i ? ",{\"effect\":\"none\"}" : "{\"effect\":\"none\"}");
+  strcat(chain, "]}");
+  CHECK(parse(chain, &c));
+  CHECK_EQ_INT(c.stage_count, max_chain_stages);
+}
+
+static void test_output_geometry_division(void) {
+  Config c = config_defaults;
+  uint32_t w, h;
+  c.capture_width = 1280; c.capture_height = 720; c.downscale = 2;
+  config_output_geometry(&c, &w, &h);
+  CHECK_EQ_INT(w, 640);
+  CHECK_EQ_INT(h, 360);
+
+  c.downscale = 8;
+  config_output_geometry(&c, &w, &h);
+  CHECK_EQ_INT(w, 160);
+  CHECK_EQ_INT(h, 90);
+
+  // A zero downscale must not divide by zero -- treated as 1.
+  c.downscale = 0;
+  config_output_geometry(&c, &w, &h);
+  CHECK_EQ_INT(w, 1280);
+  CHECK_EQ_INT(h, 720);
+}
+
+// Whitespace and key order must not matter; JSON has no ordering rules and
+// a hand-edited config in the field will not be formatted consistently.
+static void test_whitespace_and_key_order(void) {
+  Config c;
+  CHECK(parse("  {\n  \"downscale\" : 2 ,\n \"capture_width\" : 640,\n"
+              " \"capture_height\": 480\n}  \n",
+              &c));
+  CHECK_EQ_INT(c.downscale, 2);
+  CHECK_EQ_INT(c.capture_width, 640);
+}
+
+// record_format defaults to raw, so existing recordings and their playback
+// commands are unchanged unless an operator opts in.
+static void test_record_format_values(void) {
+  Config c;
+  CHECK(parse("{}", &c));
+  CHECK_EQ_INT(c.record_format, RECORD_RAW);
+  CHECK(parse("{\"record_format\":\"mjpeg\"}", &c));
+  CHECK_EQ_INT(c.record_format, RECORD_MJPEG);
+  CHECK(parse("{\"record_format\":\"raw\"}", &c));
+  CHECK_EQ_INT(c.record_format, RECORD_RAW);
+  CHECK(!parse("{\"record_format\":\"mp4\"}", &c));
+  CHECK(!parse("{\"record_format\":0}", &c));
+}
+
+// yuv420 is the Pi camera's raw output; asking a V4L2 webcam for it is a
+// mistake worth refusing up front. "auto" is settled at startup instead.
+static void test_yuv420_is_rpicam_only(void) {
+  Config c;
+  CHECK(parse("{\"capture_source\":\"rpicam\",\"capture_format\":\"yuv420\"}",
+              &c));
+  CHECK_EQ_INT(c.capture_format, FORMAT_YUV420);
+  CHECK(parse("{\"capture_format\":\"yuv420\"}", &c)); // source "auto"
+  CHECK(!parse("{\"capture_source\":\"v4l2\",\"capture_format\":\"yuv420\"}",
+               &c));
+}
+
+int main(void) {
+  printf("test_config:\n");
+  RUN_TEST(test_defaults_match_documentation);
+  RUN_TEST(test_empty_chain_is_valid_passthrough);
+  RUN_TEST(test_chain_order_is_preserved);
+  RUN_TEST(test_every_effect_name_parses);
+  RUN_TEST(test_light_level_defaults_neutral);
+  RUN_TEST(test_effect_parameters_round_trip);
+  RUN_TEST(test_log_parameter_validation);
+  RUN_TEST(test_canny_threshold_defaults);
+  RUN_TEST(test_old_preview_keys_still_load);
+  RUN_TEST(test_auto_visibility_key);
+  RUN_TEST(test_camera_controls_default_to_unset);
+  RUN_TEST(test_camera_controls_round_trip);
+  RUN_TEST(test_camera_explicit_zero_is_kept);
+  RUN_TEST(test_camera_rejects_bad_values);
+  RUN_TEST(test_camera_boundaries_accepted);
+  RUN_TEST(test_readme_tint_presets_parse);
+  RUN_TEST(test_unknown_keys_are_hard_errors);
+  RUN_TEST(test_malformed_json_is_rejected);
+  RUN_TEST(test_out_of_range_values_rejected);
+  RUN_TEST(test_downscale_restricted_to_powers);
+  RUN_TEST(test_geometry_divisibility_rule);
+  RUN_TEST(test_capture_source_values);
+  RUN_TEST(test_device_paths);
+  RUN_TEST(test_bus_keys);
+  RUN_TEST(test_capture_format_values);
+  RUN_TEST(test_record_path_round_trips);
+  RUN_TEST(test_oversized_inputs_rejected);
+  RUN_TEST(test_max_chain_length_accepted);
+  RUN_TEST(test_output_geometry_division);
+  RUN_TEST(test_whitespace_and_key_order);
+  RUN_TEST(test_record_format_values);
+  RUN_TEST(test_yuv420_is_rpicam_only);
+  TEST_MAIN_END();
+}

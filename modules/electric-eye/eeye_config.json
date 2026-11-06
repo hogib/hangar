@@ -1,0 +1,7 @@
+{
+  "chain": [
+    {"effect": "blur"},
+    {"effect": "sobel"}
+  ],
+  "record_path": ""
+}

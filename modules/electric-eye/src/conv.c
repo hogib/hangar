@@ -1,0 +1,1428 @@
+#include "conv.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Same architecture detection as point_opps.c (duplicated rather than
+// shared via a header, matching that file's existing convention).
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define GS_NEON_AARCH64 1
+#elif defined(__arm__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#define GS_NEON_ARM32 1
+#endif
+
+// Every intrinsic below exists on ARMv7 NEON as well as AArch64 (the
+// AArch64-only horizontal reductions, vminvq/vmaxvq, are only used in
+// point_opps.c), so one guard covers both -- 32-bit Pi OS images would
+// otherwise run all of this file scalar.
+#if defined(GS_NEON_AARCH64) || defined(GS_NEON_ARM32)
+#define GS_NEON 1
+#endif
+
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
+/*
+ * Sobel gradient magnitude for one pixel, given its 3x3 neighborhood.
+ * Intermediates are int32_t: Gx/Gy each range +-1020 (4 * 255), well past
+ * what int8_t/uint8_t hold, and the sum of their magnitudes needs headroom
+ * past that before the final clamp.
+ */
+// threshold: magnitudes below this are clamped to 0, applied after the
+// 255 clamp -- so e.g. threshold=0 (the default; see EffectStage in
+// config.h) keeps every magnitude exactly as computed.
+static inline uint8_t sobel_magnitude(int32_t p00, int32_t p01, int32_t p02,
+                                      int32_t p10, int32_t p12, int32_t p20,
+                                      int32_t p21, int32_t p22,
+                                      uint8_t threshold) {
+  int32_t gx = (p02 + 2 * p12 + p22) - (p00 + 2 * p10 + p20);
+  int32_t gy = (p20 + 2 * p21 + p22) - (p00 + 2 * p01 + p02);
+
+  // |Gx| + |Gy| (L1) instead of sqrt(Gx^2 + Gy^2) (L2, the "true" gradient
+  // magnitude): visually near-identical, no float, no sqrt -- this is what
+  // realtime edge detectors use in practice.
+  int32_t mag = (gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy);
+  uint8_t clamped = (uint8_t)(mag > 255 ? 255 : mag);
+  return clamped < threshold ? 0 : clamped;
+}
+
+#if defined(GS_NEON)
+// 8-lane half of sobel_magnitude: same coefficients (1,2,1)/(1,2,1), same
+// parameter order, operating on a pre-widened 16-bit half of a 16-lane
+// chunk so gx/gy (range +-1020) can go negative without overflow.
+//
+// Verified bit-exact against sobel_magnitude() above by exhaustive test
+// (500 trials -- all-zero, all-max, checkerboard, and random content, at a
+// width not divisible by 16 so the scalar remainder tail below is also
+// exercised) cross-compiled for aarch64 and run under qemu-user emulation;
+// this file has not been built or run on real hardware.
+static inline uint8x8_t sobel_half8(uint16x8_t p00, uint16x8_t p01,
+                                    uint16x8_t p02, uint16x8_t p10,
+                                    uint16x8_t p12, uint16x8_t p20,
+                                    uint16x8_t p21, uint16x8_t p22) {
+  uint16x8_t sum_gx_pos = vaddq_u16(p02, p22);
+  sum_gx_pos = vmlaq_n_u16(sum_gx_pos, p12, 2); // p02 + 2*p12 + p22
+  uint16x8_t sum_gx_neg = vaddq_u16(p00, p20);
+  sum_gx_neg = vmlaq_n_u16(sum_gx_neg, p10, 2); // p00 + 2*p10 + p20
+  // Both sums are non-negative (max 4*255=1020, well inside uint16 range),
+  // so reinterpreting as signed before subtracting changes no values --
+  // it's what lets the subtraction go negative correctly.
+  int16x8_t gx = vsubq_s16(vreinterpretq_s16_u16(sum_gx_pos),
+                           vreinterpretq_s16_u16(sum_gx_neg));
+
+  uint16x8_t sum_gy_pos = vaddq_u16(p20, p22);
+  sum_gy_pos = vmlaq_n_u16(sum_gy_pos, p21, 2); // p20 + 2*p21 + p22
+  uint16x8_t sum_gy_neg = vaddq_u16(p00, p02);
+  sum_gy_neg = vmlaq_n_u16(sum_gy_neg, p01, 2); // p00 + 2*p01 + p02
+  int16x8_t gy = vsubq_s16(vreinterpretq_s16_u16(sum_gy_pos),
+                           vreinterpretq_s16_u16(sum_gy_neg));
+
+  // mag = |gx| + |gy|, always >= 0 and <= 2040 -- vqmovun_s16 saturates
+  // anything past 255 down to it in the same instruction as the narrow,
+  // which is exactly sobel_magnitude's `mag > 255 ? 255 : mag`.
+  int16x8_t mag = vaddq_s16(vabsq_s16(gx), vabsq_s16(gy));
+  return vqmovun_s16(mag);
+}
+
+// 16-lane Sobel: widens each of the 8 neighbor vectors into low/high
+// 8-lane halves, runs sobel_half8 on each half (unchanged, unthresholded --
+// keeps that already-verified kernel untouched), recombines, then applies
+// threshold as a post-step: mask = (mag >= threshold) ? 0xFF : 0x00,
+// result = mag & mask. For any mag/threshold in [0,255] that's exactly
+// `mag < threshold ? 0 : mag` -- mag & 0xFF is mag itself, mag & 0 is 0 --
+// matching sobel_magnitude()'s scalar formula bit-for-bit. Parameter
+// order/names match sobel_magnitude exactly for easy side-by-side
+// comparison.
+static inline uint8x16_t sobel_row16(uint8x16_t p00, uint8x16_t p01,
+                                     uint8x16_t p02, uint8x16_t p10,
+                                     uint8x16_t p12, uint8x16_t p20,
+                                     uint8x16_t p21, uint8x16_t p22,
+                                     uint8x16_t threshold_vec) {
+  uint8x8_t lo = sobel_half8(
+      vmovl_u8(vget_low_u8(p00)), vmovl_u8(vget_low_u8(p01)),
+      vmovl_u8(vget_low_u8(p02)), vmovl_u8(vget_low_u8(p10)),
+      vmovl_u8(vget_low_u8(p12)), vmovl_u8(vget_low_u8(p20)),
+      vmovl_u8(vget_low_u8(p21)), vmovl_u8(vget_low_u8(p22)));
+  uint8x8_t hi = sobel_half8(
+      vmovl_u8(vget_high_u8(p00)), vmovl_u8(vget_high_u8(p01)),
+      vmovl_u8(vget_high_u8(p02)), vmovl_u8(vget_high_u8(p10)),
+      vmovl_u8(vget_high_u8(p12)), vmovl_u8(vget_high_u8(p20)),
+      vmovl_u8(vget_high_u8(p21)), vmovl_u8(vget_high_u8(p22)));
+  uint8x16_t mag = vcombine_u8(lo, hi);
+  uint8x16_t mask = vcgeq_u8(mag, threshold_vec);
+  return vandq_u8(mag, mask);
+}
+#endif // GS_NEON
+
+// Reads one pixel, clamping out-of-bounds coordinates to the nearest valid
+// row/column (clamp-to-edge / replicate padding). Used only at the 1px
+// frame border, where a full 3x3 neighborhood runs off the edge.
+static inline uint8_t clamped_sample(const uint8_t *y_plane, size_t stride,
+                                     uint32_t width, uint32_t height,
+                                     int32_t x, int32_t y) {
+  if (x < 0)
+    x = 0;
+  else if (x >= (int32_t)width)
+    x = (int32_t)width - 1;
+
+  if (y < 0)
+    y = 0;
+  else if (y >= (int32_t)height)
+    y = (int32_t)height - 1;
+
+  return y_plane[(size_t)y * stride + (size_t)x];
+}
+
+// Sobel at (x, y) via clamped sampling. Only for the border: it re-derives
+// all 8 neighbor coordinates and re-checks bounds on every call, which is
+// wasted work in the interior where bounds are already known to be safe.
+static inline uint8_t sobel_at_clamped(const uint8_t *y_plane, size_t stride,
+                                       uint32_t width, uint32_t height,
+                                       int32_t x, int32_t y,
+                                       uint8_t threshold) {
+  return sobel_magnitude(
+      clamped_sample(y_plane, stride, width, height, x - 1, y - 1),
+      clamped_sample(y_plane, stride, width, height, x, y - 1),
+      clamped_sample(y_plane, stride, width, height, x + 1, y - 1),
+      clamped_sample(y_plane, stride, width, height, x - 1, y),
+      clamped_sample(y_plane, stride, width, height, x + 1, y),
+      clamped_sample(y_plane, stride, width, height, x - 1, y + 1),
+      clamped_sample(y_plane, stride, width, height, x, y + 1),
+      clamped_sample(y_plane, stride, width, height, x + 1, y + 1), threshold);
+}
+
+void sobel_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
+                 uint32_t width, uint32_t height, const size_t stride_arr[3],
+                 uint8_t threshold) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+
+  const uint8_t *raw_y = src_planes[0];
+  uint8_t *out_y = dst_planes[0];
+  size_t stride = stride_arr[0];
+#if defined(GS_NEON)
+  uint8x16_t threshold_vec = vdupq_n_u8(threshold);
+#endif
+
+  // Interior: every pixel here has a full 3x3 neighborhood, so read directly
+  // through pointers instead of through clamped_sample's bounds checks. This
+  // is the hot loop -- every pixel except a 1px frame border.
+  //
+  // raw_y is never written by this function (or anything else once the
+  // producer has filled it), so overlapping reads of the same row by
+  // adjacent thread chunks -- row y+1 is both "row_below" for chunk N and
+  // "row_above" for chunk N+1 -- are safe with no synchronization. That is
+  // the property the raw/work split exists to buy.
+  // OpenMP requires the loop directly under #pragma omp parallel for to be
+  // in canonical form: `var < loop-invariant`. `y + 1 < height`, though
+  // equivalent, puts the loop variable inside an expression on the
+  // left-hand side and is rejected at compile time once OpenMP is actually
+  // parsing it (as opposed to silently ignoring the pragma, which is what
+  // let this slip through before OpenMP was wired into the build).
+#pragma omp parallel for
+  for (uint32_t y = 1; y < height - 1; ++y) {
+    const uint8_t *row_above = raw_y + (size_t)(y - 1) * stride;
+    const uint8_t *row = raw_y + (size_t)y * stride;
+    const uint8_t *row_below = raw_y + (size_t)(y + 1) * stride;
+    uint8_t *out_row = out_y + (size_t)y * stride;
+
+#if defined(GS_NEON)
+    // A chunk starting at x covers columns [x, x+15]; the rightmost lane
+    // also needs its +1 neighbor, so the last byte actually read is at
+    // x+16 -- the loop bound reflects that, one further in than a plain
+    // per-pixel NEON loop (e.g. color_tint's) would need.
+    uint32_t x = 1;
+    for (; x + 16 < width; x += 16) {
+      uint8x16_t result = sobel_row16(
+          vld1q_u8(&row_above[x - 1]), vld1q_u8(&row_above[x]),
+          vld1q_u8(&row_above[x + 1]), vld1q_u8(&row[x - 1]),
+          vld1q_u8(&row[x + 1]), vld1q_u8(&row_below[x - 1]),
+          vld1q_u8(&row_below[x]), vld1q_u8(&row_below[x + 1]), threshold_vec);
+      vst1q_u8(&out_row[x], result);
+    }
+    for (; x + 1 < width; ++x) {
+      out_row[x] = sobel_magnitude(row_above[x - 1], row_above[x],
+                                   row_above[x + 1], row[x - 1], row[x + 1],
+                                   row_below[x - 1], row_below[x],
+                                   row_below[x + 1], threshold);
+    }
+#else
+    for (uint32_t x = 1; x + 1 < width; ++x) {
+      out_row[x] = sobel_magnitude(row_above[x - 1], row_above[x],
+                                   row_above[x + 1], row[x - 1], row[x + 1],
+                                   row_below[x - 1], row_below[x],
+                                   row_below[x + 1], threshold);
+    }
+#endif
+  }
+
+  // Border: no full neighborhood exists past the frame edge. Replicate
+  // rather than zero-pad -- zero-padding a bright edge would read as a false
+  // hard line running along the frame boundary that has nothing to do with
+  // the actual scene.
+  for (uint32_t x = 0; x < width; ++x) {
+    out_y[x] =
+        sobel_at_clamped(raw_y, stride, width, height, (int32_t)x, 0, threshold);
+    out_y[(size_t)(height - 1) * stride + x] =
+        sobel_at_clamped(raw_y, stride, width, height, (int32_t)x,
+                         (int32_t)height - 1, threshold);
+  }
+  for (uint32_t y = 1; y + 1 < height; ++y) {
+    out_y[(size_t)y * stride] = sobel_at_clamped(raw_y, stride, width, height,
+                                                 0, (int32_t)y, threshold);
+    out_y[(size_t)y * stride + (width - 1)] =
+        sobel_at_clamped(raw_y, stride, width, height, (int32_t)width - 1,
+                         (int32_t)y, threshold);
+  }
+
+  // plane_sizes[1]/[2] aren't available without a VideoFrame -- both equal
+  // stride*height, exactly how vf_create derives them in the first place.
+  memset(dst_planes[1], 128, stride_arr[1] * height);
+  memset(dst_planes[2], 128, stride_arr[2] * height);
+}
+
+// 5-tap binomial approximation to a Gaussian ([1,4,6,4,1]/16): separable
+// (apply horizontally then vertically, 2*5=10 taps/pixel instead of a 2D
+// kernel's 25), and integer-exact -- the weights sum to a power of two, so
+// normalizing is a plain rounded right-shift, no float, no accumulated
+// rounding error. The same kind of stand-in for a true Gaussian that
+// sobel_magnitude's L1 norm is for a true gradient magnitude: visually
+// indistinguishable, far cheaper.
+static inline uint8_t blur5(int32_t p0, int32_t p1, int32_t p2, int32_t p3,
+                           int32_t p4) {
+  return (uint8_t)((p0 + 4 * p1 + 6 * p2 + 4 * p3 + p4 + 8) >> 4);
+}
+
+#if defined(GS_NEON)
+// 8-lane half of blur5: same weights (1,4,6,4,1)/16, same parameter order,
+// on a pre-widened 16-bit half so the running sum (max 255*16=4080) can't
+// overflow. The +8 before the shift is the same round-to-nearest bias
+// blur5 adds, done here so vshrn_n_u16's plain truncating narrow-shift
+// matches blur5's `(... + 8) >> 4` exactly -- no separate rounding
+// instruction needed.
+//
+// Verified bit-exact against blur5() by exhaustive test (500 trials --
+// all-zero, all-max, checkerboard, and random content, at a width not
+// divisible by 16 so the scalar remainder tail is also exercised)
+// cross-compiled for aarch64 and run under qemu-user emulation; this file
+// has not been built or run on real hardware.
+static inline uint8x8_t blur5_half8(uint16x8_t p0, uint16x8_t p1,
+                                    uint16x8_t p2, uint16x8_t p3,
+                                    uint16x8_t p4) {
+  uint16x8_t sum = vaddq_u16(p0, p4);
+  sum = vmlaq_n_u16(sum, p1, 4);
+  sum = vmlaq_n_u16(sum, p3, 4);
+  sum = vmlaq_n_u16(sum, p2, 6);
+  sum = vaddq_u16(sum, vdupq_n_u16(8));
+  // Every lane's sum here is <= 4088 (255*16 + 8), so sum >> 4 <= 255.5
+  // truncated to 255 -- always fits the low 8 bits vshrn_n_u16 keeps, same
+  // as blur5's plain uint8_t cast never needing to saturate.
+  return vshrn_n_u16(sum, 4);
+}
+
+// 16-lane blur5: widens each of the 5 neighbor vectors into low/high 8-lane
+// halves, runs blur5_half8 on each half, recombines. Parameter order/names
+// match blur5 exactly for easy side-by-side comparison.
+static inline uint8x16_t blur5_row16(uint8x16_t p0, uint8x16_t p1,
+                                     uint8x16_t p2, uint8x16_t p3,
+                                     uint8x16_t p4) {
+  uint8x8_t lo = blur5_half8(vmovl_u8(vget_low_u8(p0)), vmovl_u8(vget_low_u8(p1)),
+                             vmovl_u8(vget_low_u8(p2)), vmovl_u8(vget_low_u8(p3)),
+                             vmovl_u8(vget_low_u8(p4)));
+  uint8x8_t hi = blur5_half8(vmovl_u8(vget_high_u8(p0)), vmovl_u8(vget_high_u8(p1)),
+                             vmovl_u8(vget_high_u8(p2)), vmovl_u8(vget_high_u8(p3)),
+                             vmovl_u8(vget_high_u8(p4)));
+  return vcombine_u8(lo, hi);
+}
+#endif // GS_NEON
+
+// Edge-clamped blur5 at column x -- the left and right 2px of every row,
+// and whatever the NEON chunks leave over.
+static inline uint8_t blur5_clamped(const uint8_t *row, uint32_t width,
+                                    uint32_t x) {
+  int32_t xm2 = (int32_t)x < 2 ? 0 : (int32_t)x - 2;
+  int32_t xm1 = (int32_t)x < 1 ? 0 : (int32_t)x - 1;
+  int32_t xp1 =
+      (int32_t)x + 1 >= (int32_t)width ? (int32_t)width - 1 : (int32_t)x + 1;
+  int32_t xp2 =
+      (int32_t)x + 2 >= (int32_t)width ? (int32_t)width - 1 : (int32_t)x + 2;
+  return blur5(row[xm2], row[xm1], row[x], row[xp1], row[xp2]);
+}
+
+// Horizontal pass for one row: src row -> out_row (width bytes).
+//
+// Border (2px on every edge -- a 5-tap kernel spans x-2..x+2): clamp-to-
+// edge, matching Sobel's replicate-rather-than-zero-pad reasoning --
+// zero-padding would read as a false soft vignette at the frame boundary
+// that has nothing to do with the actual scene.
+static void blur_row_h(const uint8_t *row, uint8_t *out_row, uint32_t width) {
+  uint32_t x = 0;
+  // x < 2 always needs the left-edge clamp.
+  for (; x < 2 && x < width; ++x)
+    out_row[x] = blur5_clamped(row, width, x);
+#if defined(GS_NEON)
+  // Two loads per 16 pixels instead of five: a covers x-2..x+13 and b
+  // x+14..x+29, and vext slides the window across them for the four
+  // shifted taps. The rightmost lane's +2 neighbour is x+17, but b is a
+  // full 16 bytes, so the last byte loaded is x+29 -- hence the bound.
+  for (; x + 30 <= width; x += 16) {
+    uint8x16_t a = vld1q_u8(&row[x - 2]);
+    uint8x16_t b = vld1q_u8(&row[x + 14]);
+    vst1q_u8(&out_row[x],
+             blur5_row16(a, vextq_u8(a, b, 1), vextq_u8(a, b, 2),
+                         vextq_u8(a, b, 3), vextq_u8(a, b, 4)));
+  }
+  // One more chunk with five separate loads, which only reads up to its
+  // own +2 neighbour (x+17), so the scalar tail stays short.
+  for (; x + 17 < width; x += 16) {
+    vst1q_u8(&out_row[x],
+             blur5_row16(vld1q_u8(&row[x - 2]), vld1q_u8(&row[x - 1]),
+                         vld1q_u8(&row[x]), vld1q_u8(&row[x + 1]),
+                         vld1q_u8(&row[x + 2])));
+  }
+#endif
+  // Interior columns need no clamp: a plain loop the compiler can
+  // vectorize. Without NEON this is most of the row; calling
+  // blur5_clamped per pixel here was measured at 1.6x the time on x86 --
+  // which is where the effects run in placement A.
+  for (; x + 2 < width; ++x)
+    out_row[x] = blur5(row[x - 2], row[x - 1], row[x], row[x + 1], row[x + 2]);
+  // The right edge's 2px clamp, or the whole row when it is under 5px.
+  for (; x < width; ++x)
+    out_row[x] = blur5_clamped(row, width, x);
+}
+
+// Vertical pass for one output row, from five horizontally-blurred rows.
+// No per-x clamping needed: the caller already clamped the row choice, and
+// every column in a row is equally safe to read, so the NEON chunk can
+// cover the whole width down to a plain remainder tail.
+static void blur_row_v(const uint8_t *r_m2, const uint8_t *r_m1,
+                       const uint8_t *r_0, const uint8_t *r_p1,
+                       const uint8_t *r_p2, uint8_t *out_row, uint32_t width) {
+  uint32_t x = 0;
+#if defined(GS_NEON)
+  for (; x + 16 <= width; x += 16) {
+    vst1q_u8(&out_row[x],
+             blur5_row16(vld1q_u8(&r_m2[x]), vld1q_u8(&r_m1[x]),
+                         vld1q_u8(&r_0[x]), vld1q_u8(&r_p1[x]),
+                         vld1q_u8(&r_p2[x])));
+  }
+#endif
+  for (; x < width; ++x)
+    out_row[x] = blur5(r_m2[x], r_m1[x], r_0[x], r_p1[x], r_p2[x]);
+}
+
+// --- Team-parallel blur -------------------------------------------------
+//
+// Everything below runs *inside* one `#pragma omp parallel` region per
+// gaussian_blur()/blur_luma_into() call, called by every thread of the
+// team, rather than opening a region per pass per plane. Under
+// OMP_WAIT_POLICY=passive each region start is a futex wake of the whole
+// team, and the old structure (one region per horizontal pass and one per
+// vertical pass, for each of three planes) paid that six times per blur.
+//
+// Each thread owns a contiguous band of output rows [y0, y1) and blurs it
+// in a single sweep: horizontal results go into a 5-row rolling window, and
+// each output row is produced as soon as its five inputs exist. That window
+// is a few KB and stays in L1, where the old two-pass structure wrote the
+// whole horizontal result to memory and read it back.
+
+// Rows of `row_cap` bytes each thread needs: the 5-row rolling window, plus
+// the two rows just below its band (see blur_plane_team).
+static const uint32_t blur_rows_per_thread = 7;
+
+static uint8_t *blur_rows;    // team_size * blur_rows_per_thread rows
+static size_t blur_rows_cap;
+static uint8_t *halfres_scratch;  // one half-resolution plane
+static size_t halfres_scratch_cap;
+// Ping-pong partners for repeated passes (see blur_plane_repeated_team):
+// one full plane (luma-sized, so chroma fits), one half-resolution plane.
+static uint8_t *pingpong_scratch;
+static size_t pingpong_scratch_cap;
+static uint8_t *halfres_pingpong;
+static size_t halfres_pingpong_cap;
+static uint8_t *upsample_scratch; // full width x half height
+static size_t upsample_scratch_cap;
+
+static bool grow(uint8_t **buf, size_t *cap, size_t needed) {
+  if (*cap >= needed)
+    return true;
+  uint8_t *grown = realloc(*buf, needed);
+  if (!grown)
+    return false;
+  *buf = grown;
+  *cap = needed;
+  return true;
+}
+
+static int team_size(void) {
+#if defined(_OPENMP)
+  return omp_get_num_threads();
+#else
+  return 1;
+#endif
+}
+
+static int team_index(void) {
+#if defined(_OPENMP)
+  return omp_get_thread_num();
+#else
+  return 0;
+#endif
+}
+
+static int max_team_size(void) {
+#if defined(_OPENMP)
+  return omp_get_max_threads();
+#else
+  return 1;
+#endif
+}
+
+static inline uint32_t clamp_row(int64_t r, uint32_t height) {
+  if (r < 0)
+    return 0;
+  if (r >= (int64_t)height)
+    return height - 1;
+  return (uint32_t)r;
+}
+
+// One full blur pass over one plane, called by every thread of the team.
+// `rows` is this thread's private scratch (blur_rows_per_thread rows of at
+// least `width` bytes).
+//
+// src and dst may be the same buffer -- repeated passes blur in place. That
+// is safe because of the two barriers:
+//  - Before the first: each thread blurs horizontally the rows just outside
+//    its band that its first and last output rows need (y0-2, y0-1 above,
+//    y1, y1+1 below). Those belong to neighbouring bands, and their owners
+//    will overwrite them once the barrier lets everyone start writing.
+//  - Between the barriers: a thread reads only rows inside its own band,
+//    and only rows at or past the one it is writing, so nothing it reads
+//    has been overwritten yet.
+//  - After the second: the next pass, or the caller, may read any row.
+static void blur_plane_team(const uint8_t *src, uint8_t *dst, uint32_t width,
+                            uint32_t height, size_t stride, uint8_t *rows,
+                            bool in_place) {
+  const uint32_t nt = (uint32_t)team_size();
+  const uint32_t t = (uint32_t)team_index();
+  const uint32_t y0 = (uint32_t)((uint64_t)height * t / nt);
+  const uint32_t y1 = (uint32_t)((uint64_t)height * (t + 1) / nt);
+  uint8_t *window = rows;            // 5 rows, row r lives in slot r % 5
+  uint8_t *below = rows + 5 * width; // rows y1 and y1 + 1
+
+  if (y0 < y1) {
+    for (uint32_t r = y0 >= 2 ? y0 - 2 : 0; r < y0; ++r)
+      blur_row_h(src + (size_t)r * stride, window + (size_t)(r % 5) * width,
+                 width);
+    for (uint32_t r = y1; r < y1 + 2 && r < height; ++r)
+      blur_row_h(src + (size_t)r * stride, below + (size_t)(r - y1) * width,
+                 width);
+  }
+  // Only needed in place: with src and dst apart, nobody writes what the
+  // others read.
+  if (in_place) {
+#pragma omp barrier
+  }
+
+  uint32_t next = y0; // next own row still to blur horizontally
+  for (uint32_t y = y0; y < y1; ++y) {
+    const uint32_t need = clamp_row((int64_t)y + 2, height);
+    for (; next <= need && next < y1; ++next)
+      blur_row_h(src + (size_t)next * stride,
+                 window + (size_t)(next % 5) * width, width);
+
+    const uint8_t *r[5];
+    for (int k = 0; k < 5; ++k) {
+      uint32_t ry = clamp_row((int64_t)y + k - 2, height);
+      r[k] = ry >= y1 ? below + (size_t)(ry - y1) * width
+                      : window + (size_t)(ry % 5) * width;
+    }
+    blur_row_v(r[0], r[1], r[2], r[3], r[4], dst + (size_t)y * stride, width);
+  }
+#pragma omp barrier
+}
+
+// `passes` repetitions of blur_plane_team(), from src (untouched unless it
+// is dst) into dst. With a `scratch` plane of dst's size, the passes
+// alternate between dst and scratch, ordered so the last one writes dst:
+// a pass between two different buffers needs one team barrier, where a
+// pass in place needs two -- at blur strength 20 on three planes, 60
+// barriers fewer per frame. Without scratch, every pass after the first
+// blurs dst in place (see blur_plane_team for why that is safe). The
+// arithmetic is the same either way, so is every output byte.
+static void blur_plane_repeated_team(const uint8_t *src, uint8_t *dst,
+                                     uint32_t width, uint32_t height,
+                                     size_t stride, uint32_t passes,
+                                     uint8_t *rows, uint8_t *scratch) {
+  if (!scratch) {
+    blur_plane_team(src, dst, width, height, stride, rows, src == dst);
+    for (uint32_t p = 1; p < passes; ++p)
+      blur_plane_team(dst, dst, width, height, stride, rows, true);
+    return;
+  }
+  const uint8_t *from = src;
+  for (uint32_t p = 1; p <= passes; ++p) {
+    // Pass p of `passes` writes dst when passes - p is even.
+    uint8_t *to = ((passes - p) % 2 == 0) ? dst : scratch;
+    blur_plane_team(from, to, width, height, stride, rows, from == to);
+    from = to;
+  }
+}
+
+// --- Half-resolution fast path for higher blur_strength values --------
+//
+// blur_plane_repeated's cost is linear in `passes`; downsampling first
+// cuts every one of those repeated passes to a quarter of its pixels (half
+// width * half height) at the fixed one-time cost of one 2x2 box-average
+// down and one 2x bilinear up. That fixed cost isn't worth paying for a
+// single pass -- see halfres_blur_pass_threshold below -- but it pays for
+// itself increasingly well as `passes` climbs, which is exactly the
+// situation that makes blur the dominant cost of a frame in the first
+// place.
+//
+// config.c requires even frame dimensions, so every split below is a clean
+// half with no remainder row/column to special-case.
+
+// 2x2 box average: touches every input pixel exactly once. No benefit to
+// splitting this into two 2:1 passes the way the blur itself is separable
+// -- every output sample already needs exactly its own 4 input samples, so
+// an extra buffer round-trip would only add cost, not remove any.
+static void downsample_box2x2_team(const uint8_t *src, size_t src_stride,
+                                   uint32_t half_w, uint32_t half_h,
+                                   uint8_t *dst) {
+#pragma omp for
+  for (uint32_t y = 0; y < half_h; ++y) {
+    const uint8_t *row0 = src + (size_t)(2 * y) * src_stride;
+    const uint8_t *row1 = src + (size_t)(2 * y + 1) * src_stride;
+    uint8_t *out_row = dst + (size_t)y * half_w;
+    uint32_t x = 0;
+#if defined(GS_NEON)
+    // 16 outputs from 32 bytes of each row: pairwise widening adds give
+    // each output's horizontal pair, the two rows' pairs are added, and
+    // vrshrn(.., 2) is exactly (sum + 2) >> 2. GCC leaves the scalar loop
+    // unvectorized, and this resample is over half of a strength-4 blur.
+    for (; x + 16 <= half_w; x += 16) {
+      const uint8_t *a = row0 + 2 * x, *b = row1 + 2 * x;
+      uint16x8_t lo = vaddq_u16(vpaddlq_u8(vld1q_u8(a)), vpaddlq_u8(vld1q_u8(b)));
+      uint16x8_t hi = vaddq_u16(vpaddlq_u8(vld1q_u8(a + 16)),
+                                vpaddlq_u8(vld1q_u8(b + 16)));
+      vst1q_u8(&out_row[x], vcombine_u8(vrshrn_n_u16(lo, 2), vrshrn_n_u16(hi, 2)));
+    }
+#endif
+    for (; x < half_w; ++x) {
+      uint32_t x0 = 2 * x, x1 = x0 + 1;
+      out_row[x] =
+          (uint8_t)((row0[x0] + row0[x1] + row1[x0] + row1[x1] + 2) >> 2);
+    }
+  }
+}
+
+// One row of the 2x horizontal bilinear upsample below -- standalone so
+// the vertical pass (upsample_bilinear2x) can apply the exact same 3-1/1-3
+// weighting to rows instead of columns.
+//
+// Standard half-pixel-center bilinear upsample for an exact 2x scale
+// factor: output sample 2k sits 1/4 of the way from in[k] toward in[k-1];
+// output sample 2k+1 sits 1/4 of the way from in[k] toward in[k+1]. A
+// fixed 2x scale means those weights (3/4, 1/4) never change, so they're
+// baked in as integers rather than computed per pixel -- no runtime
+// interpolation math, same rounding convention as blur5's "+bias >> shift".
+//
+// An odd-width plane (chroma of a frame whose width is 2 mod 4, e.g.
+// 1366 -> 683) has one more output column than 2 * half_w covers; it
+// replicates the last input sample rather than being left unwritten.
+static void upsample2x_row(const uint8_t *in, uint32_t half_w, uint8_t *out,
+                           uint32_t out_w) {
+  uint32_t k = 0;
+#if defined(GS_NEON)
+  // k = 0 needs its left clamp; then 8 inputs -> 16 outputs at a time for
+  // as long as k+1 stays inside: 3*in[k] once (widening multiply), plus
+  // each neighbour, rounded by vrshrn, interleaved by vst2.
+  if (half_w > 0) {
+    out[0] = (uint8_t)((in[0] + 3 * in[0] + 2) >> 2);
+    out[1] = (uint8_t)((3 * in[0] + in[half_w > 1 ? 1 : 0] + 2) >> 2);
+    k = 1;
+  }
+  for (; k + 9 <= half_w; k += 8) {
+    uint16x8_t three = vmull_u8(vld1_u8(&in[k]), vdup_n_u8(3));
+    uint8x8x2_t pair;
+    pair.val[0] = vrshrn_n_u16(vaddw_u8(three, vld1_u8(&in[k - 1])), 2);
+    pair.val[1] = vrshrn_n_u16(vaddw_u8(three, vld1_u8(&in[k + 1])), 2);
+    vst2_u8(&out[2 * k], pair);
+  }
+#endif
+  for (; k < half_w; ++k) {
+    uint32_t km1 = k == 0 ? 0 : k - 1;
+    uint32_t kp1 = k + 1 >= half_w ? half_w - 1 : k + 1;
+    out[2 * k] = (uint8_t)((1 * in[km1] + 3 * in[k] + 2) >> 2);
+    out[2 * k + 1] = (uint8_t)((3 * in[k] + 1 * in[kp1] + 2) >> 2);
+  }
+  if (out_w > 2 * half_w)
+    out[out_w - 1] = in[half_w - 1];
+}
+
+// Mirrors the blur's own horizontal-then-vertical structure: expand
+// columns first (half_w -> width, one row at a time) into
+// upsample_scratch, then expand rows (half_h -> height) out of that into
+// dst. The implicit barrier at the end of each `omp for` is what lets the
+// vertical pass read rows another thread expanded.
+static void upsample_bilinear2x_team(const uint8_t *small, uint32_t half_w,
+                                     uint32_t half_h, uint8_t *dst,
+                                     uint32_t width, uint32_t height,
+                                     size_t dst_stride) {
+#pragma omp for
+  for (uint32_t y = 0; y < half_h; ++y) {
+    upsample2x_row(small + (size_t)y * half_w, half_w,
+                   upsample_scratch + (size_t)y * width, width);
+  }
+
+#pragma omp for
+  for (uint32_t y = 0; y < height; ++y) {
+    uint32_t k = y / 2;
+    bool lean_down = (y % 2) == 0; // even output row leans toward row k-1
+    uint32_t other =
+        lean_down ? (k == 0 ? 0 : k - 1) : (k + 1 >= half_h ? half_h - 1 : k + 1);
+    const uint8_t *r_k = upsample_scratch + (size_t)k * width;
+    const uint8_t *r_other = upsample_scratch + (size_t)other * width;
+    uint8_t *out_row = dst + (size_t)y * dst_stride;
+    uint32_t x = 0;
+#if defined(GS_NEON)
+    for (; x + 8 <= width; x += 8) {
+      uint16x8_t sum = vaddw_u8(vmull_u8(vld1_u8(&r_k[x]), vdup_n_u8(3)),
+                                vld1_u8(&r_other[x]));
+      vst1_u8(&out_row[x], vrshrn_n_u16(sum, 2));
+    }
+#endif
+    for (; x < width; ++x) {
+      out_row[x] = (uint8_t)((3 * r_k[x] + r_other[x] + 2) >> 2);
+    }
+  }
+}
+
+// Below this many repeat passes, the fixed downsample/upsample cost isn't
+// worth paying: it eats most of the savings right when a single extra
+// full-res pass is already cheap, and a low pass count is the "just soften
+// this a little" case most likely to actually be scrutinized. At and above
+// it, the linear-in-passes savings from blurring a quarter as many pixels
+// per pass clearly wins, and the softening those two extra resize steps
+// add is comparatively unnoticeable on top of an already-heavy blur.
+static const uint32_t halfres_blur_pass_threshold = 4;
+
+// Team-wide: picks the full- or half-resolution path for one plane.
+// `halfres` is decided once per call by the caller (blur_prepare), so every
+// thread takes the same branch and reaches the same barriers.
+static void blur_plane_auto_team(const uint8_t *src, uint8_t *dst,
+                                 uint32_t width, uint32_t height,
+                                 size_t stride, uint32_t passes, bool halfres,
+                                 uint8_t *rows) {
+  if (!halfres) {
+    blur_plane_repeated_team(src, dst, width, height, stride, passes, rows,
+                             passes > 1 ? pingpong_scratch : NULL);
+    return;
+  }
+  uint32_t half_w = width / 2, half_h = height / 2;
+  downsample_box2x2_team(src, stride, half_w, half_h, halfres_scratch);
+  // halfres_scratch is tightly packed, so its own stride is half_w, and
+  // blurring it in place is the same aliasing pass 2+ always relies on.
+  blur_plane_repeated_team(halfres_scratch, halfres_scratch, half_w, half_h,
+                           half_w, passes, rows, halfres_pingpong);
+  upsample_bilinear2x_team(halfres_scratch, half_w, half_h, dst, width, height,
+                           stride);
+}
+
+// Sizes every scratch buffer the team will touch for planes up to
+// width x height, before the parallel region opens (growing them from
+// inside it would need its own synchronization). Returns false on
+// allocation failure; callers then leave dst untouched rather than crash.
+static bool blur_prepare(uint32_t width, uint32_t height, bool halfres) {
+  size_t team = (size_t)max_team_size();
+  if (!grow(&blur_rows, &blur_rows_cap,
+            team * blur_rows_per_thread * (size_t)width))
+    return false;
+  if (halfres &&
+      (!grow(&halfres_scratch, &halfres_scratch_cap,
+             (size_t)(width / 2) * (height / 2)) ||
+       !grow(&halfres_pingpong, &halfres_pingpong_cap,
+             (size_t)(width / 2) * (height / 2)) ||
+       !grow(&upsample_scratch, &upsample_scratch_cap,
+             (size_t)width * (height / 2))))
+    return false;
+  // Full-resolution repeated passes ping-pong through this; luma-sized
+  // (stride == width for every plane a frame has), so chroma fits too.
+  // Grown even when luma goes half-resolution: a plane too small for the
+  // half-resolution path (chroma 1px wide) still takes the full one.
+  if (!grow(&pingpong_scratch, &pingpong_scratch_cap, (size_t)width * height))
+    return false;
+  return true;
+}
+
+// Whether `passes` takes the half-resolution path. Planes narrower or
+// shorter than 2px have no half to blur, so they always stay full-res.
+static bool use_halfres(uint32_t passes, uint32_t width, uint32_t height) {
+  return passes >= halfres_blur_pass_threshold && width >= 2 && height >= 2;
+}
+
+// Blurs `nplanes` planes (Y, then U and V when nplanes == 3) inside one
+// parallel region. Plane 0 is width x height; planes 1 and 2 are chroma,
+// stride[1] wide (exactly the chroma width, no padding -- see vf_create).
+static void blur_planes(const uint8_t *const src_planes[3],
+                        uint8_t *const dst_planes[3], uint32_t width,
+                        uint32_t height, const size_t stride[3],
+                        uint32_t passes, int nplanes) {
+  // The luma plane is the widest, so scratch sized for it fits chroma too.
+  // Chroma is half as wide, so it can take the half-res path only when it
+  // is still at least 2px wide; checked per plane below, but every thread
+  // evaluates it identically.
+  bool halfres_y = use_halfres(passes, width, height);
+  if (!blur_prepare(width, height, halfres_y))
+    return;
+
+  const uint32_t chroma_width = (uint32_t)stride[1];
+#pragma omp parallel
+  {
+    uint8_t *rows = blur_rows + (size_t)team_index() * blur_rows_per_thread *
+                                    (size_t)width;
+    blur_plane_auto_team(src_planes[0], dst_planes[0], width, height,
+                         stride[0], passes, halfres_y, rows);
+    for (int p = 1; p < nplanes; ++p) {
+      blur_plane_auto_team(src_planes[p], dst_planes[p], chroma_width, height,
+                           stride[p], passes,
+                           use_halfres(passes, chroma_width, height), rows);
+    }
+  }
+}
+
+// Full-resolution blur of one plane into `dst` (stride-spaced), for the
+// edge operators' smoothing stage. Never takes the half-resolution path:
+// LoG's sigma and Canny's noise rejection are defined by the pass count.
+static bool blur_luma_into(const uint8_t *src, uint8_t *dst, uint32_t width,
+                           uint32_t height, size_t stride, uint32_t passes) {
+  if (!blur_prepare(width, height, false))
+    return false;
+#pragma omp parallel
+  {
+    uint8_t *rows = blur_rows + (size_t)team_index() * blur_rows_per_thread *
+                                    (size_t)width;
+    blur_plane_repeated_team(src, dst, width, height, stride, passes, rows,
+                             passes > 1 ? pingpong_scratch : NULL);
+  }
+  return true;
+}
+
+// Unlike sobel_edges (luma only, chroma reset to neutral -- an edge map
+// has no meaningful color), blur touches all three planes: it's meant to
+// work as a standalone soft-focus effect on its own, not only as Sobel
+// preprocessing, and blurring luma while leaving chroma sharp would look
+// visually inconsistent (fine detail in color, none in brightness).
+void gaussian_blur(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
+                   uint32_t width, uint32_t height, const size_t stride[3],
+                   uint8_t strength) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+  // 0 and 1 both mean "just the one pass" -- see conv.h.
+  blur_planes(src_planes, dst_planes, width, height, stride,
+              strength == 0 ? 1 : strength, 3);
+}
+
+void gaussian_blur_luma(const uint8_t *const src_planes[3],
+                        uint8_t *const dst_planes[3], uint32_t width,
+                        uint32_t height, const size_t stride[3],
+                        uint8_t strength) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+  blur_planes(src_planes, dst_planes, width, height, stride,
+              strength == 0 ? 1 : strength, 1);
+}
+
+// --- Laplacian of Gaussian (Marr-Hildreth zero-crossing edges) --------
+//
+// Two stages, in the order the name implies: smooth with a Gaussian, then
+// take the Laplacian (the 2nd derivative). Edges are where that response
+// crosses zero, which is what gives this its characteristic output --
+// thin, closed contours, rather than Sobel's thicker gradient ridges.
+//
+// Sigma comes from repeating the existing 5-tap blur rather than from a
+// wider one-shot LoG kernel. Repeated blur passes compose into a wider
+// effective Gaussian (sigma grows as sqrt(passes)), so this reuses a
+// kernel that is already NEON-accelerated and verified bit-exact against
+// its scalar form, instead of introducing a second, separately-tuned
+// smoothing path that would need all of that again.
+//
+// Why not a single fixed 5x5 LoG kernel: sigma would then be hardcoded,
+// and how much fine detail survives is exactly the knob worth having --
+// underwater, backscatter and suspended particulate are high-frequency
+// noise that a wider sigma rejects.
+
+// The Laplacian is signed and, unlike Sobel's magnitude, its *sign* is the
+// entire point -- a zero-crossing is where neighbouring responses differ
+// in sign. So this keeps int16_t rather than clamping into uint8_t.
+//
+// Range: the 3x3 kernel below has a center weight of -4 and four +1
+// neighbours, so with 0..255 inputs the response spans -1020..1020, which
+// int16_t holds comfortably.
+static int16_t *log_response;
+static size_t log_response_cap;
+static uint8_t *log_blurred;
+static size_t log_blurred_cap;
+
+// 4-neighbour Laplacian ([[0,1,0],[1,-4,1],[0,1,0]]) rather than the
+// 8-neighbour variant: after Gaussian smoothing the two are visually
+// near-identical, and this one needs 4 loads per pixel instead of 8.
+static inline int16_t laplacian4(int32_t up, int32_t left, int32_t center,
+                                 int32_t right, int32_t down) {
+  return (int16_t)(up + left + right + down - 4 * center);
+}
+
+// A zero-crossing between two responses, with a slope test. Comparing
+// signs alone marks a crossing wherever the response merely grazes zero,
+// which in a smooth region is just sensor noise -- so the magnitude of the
+// jump across the crossing has to clear `threshold` too. That difference
+// is the local gradient steepness, which is precisely what distinguishes a
+// real edge from noise wobbling around zero.
+#if defined(GS_NEON)
+// 8-lane Laplacian: same kernel and the same operand order as
+// laplacian4() below, on pre-widened 16-bit halves. Inputs are 0..255 and
+// the result spans -1020..1020, so int16 has room with no saturation --
+// which is what makes this bit-exact with the scalar version rather than
+// merely close.
+static inline int16x8_t laplacian4_half8(uint16x8_t up, uint16x8_t left,
+                                         uint16x8_t center, uint16x8_t right,
+                                         uint16x8_t down) {
+  uint16x8_t sum = vaddq_u16(vaddq_u16(up, down), vaddq_u16(left, right));
+  // Reinterpreting before the subtract is what lets the result go
+  // negative correctly; both operands are well inside int16's range.
+  int16x8_t acc = vreinterpretq_s16_u16(sum);
+  return vmlsq_n_s16(acc, vreinterpretq_s16_u16(center), 4);
+}
+
+// 8-lane crosses_zero(): returns an all-ones mask per lane where a real
+// crossing was found. Mirrors the scalar predicate exactly, including its
+// two rejections -- matching signs, and a flat pair of zeros.
+static inline uint16x8_t crosses_zero8(int16x8_t a, int16x8_t b,
+                                       int16x8_t threshold) {
+  const int16x8_t zero = vdupq_n_s16(0);
+  uint16x8_t both_neg = vandq_u16(vcltq_s16(a, zero), vcltq_s16(b, zero));
+  uint16x8_t both_pos = vandq_u16(vcgtq_s16(a, zero), vcgtq_s16(b, zero));
+  uint16x8_t both_zero = vandq_u16(vceqq_s16(a, zero), vceqq_s16(b, zero));
+  uint16x8_t reject = vorrq_u16(vorrq_u16(both_neg, both_pos), both_zero);
+  // The slope test: |a - b| is the gradient steepness across the
+  // crossing, which is what separates a real edge from noise grazing zero.
+  uint16x8_t steep = vcgeq_s16(vabdq_s16(a, b), threshold);
+  return vbicq_u16(steep, reject); // steep AND NOT reject
+}
+#endif // GS_NEON
+
+static inline bool crosses_zero(int16_t a, int16_t b, int32_t threshold) {
+  if ((a < 0 && b < 0) || (a > 0 && b > 0))
+    return false;
+  if (a == 0 && b == 0)
+    return false; // a flat zero region is not an edge
+  int32_t jump = (int32_t)a - (int32_t)b;
+  if (jump < 0)
+    jump = -jump;
+  return jump >= threshold;
+}
+
+void log_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
+               uint32_t width, uint32_t height, const size_t stride_arr[3],
+               uint8_t strength, uint8_t threshold) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+
+  const size_t stride = stride_arr[0];
+  const size_t pixels = (size_t)width * height;
+
+  // The blur below writes through `stride`, but log_blurred is allocated
+  // tightly packed at width*height. Those agree only when stride == width,
+  // which is how vf_create lays out the luma plane -- but relying on that
+  // silently would corrupt memory the day it stops being true, so require
+  // it explicitly, before anything is written.
+  if (stride != (size_t)width)
+    return;
+
+  if (log_blurred_cap < pixels) {
+    uint8_t *grown = realloc(log_blurred, pixels);
+    if (!grown)
+      return; // leave dst untouched rather than crash, as the blur does
+    log_blurred = grown;
+    log_blurred_cap = pixels;
+  }
+  if (log_response_cap < pixels) {
+    int16_t *grown = realloc(log_response, pixels * sizeof *log_response);
+    if (!grown)
+      return;
+    log_response = grown;
+    log_response_cap = pixels;
+  }
+
+  // Stage 1: Gaussian. 0 and 1 both mean a single pass, matching
+  // blur_strength's documented behaviour so the two knobs read the same
+  // way. The blurred plane is tightly packed (width-spaced, no stride
+  // padding) since it never leaves this function.
+  const uint32_t passes = strength == 0 ? 1 : strength;
+  if (!blur_luma_into(src_planes[0], log_blurred, width, height, stride,
+                      passes))
+    return;
+
+  // Stage 2: Laplacian over the blurred plane, into a signed buffer.
+  // Borders replicate rather than zero-pad, for the same reason Sobel's do:
+  // zero-padding manufactures a hard response along the frame edge that
+  // isn't in the scene.
+#pragma omp parallel for
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint32_t y_up = y == 0 ? 0 : y - 1;
+    const uint32_t y_dn = y + 1 >= height ? height - 1 : y + 1;
+    const uint8_t *row_up = log_blurred + (size_t)y_up * width;
+    const uint8_t *row = log_blurred + (size_t)y * width;
+    const uint8_t *row_dn = log_blurred + (size_t)y_dn * width;
+    int16_t *out = log_response + (size_t)y * width;
+
+    uint32_t x = 0;
+#if defined(GS_NEON)
+    // x == 0 needs the left-edge clamp, so it is left to the scalar
+    // formula below rather than folded into a vector chunk.
+    for (; x < 1 && x < width; ++x) {
+      const uint32_t x_l = x == 0 ? 0 : x - 1;
+      const uint32_t x_r = x + 1 >= width ? width - 1 : x + 1;
+      out[x] = laplacian4(row_up[x], row[x_l], row[x], row[x_r], row_dn[x]);
+    }
+    // A chunk starting at x covers columns [x, x+15]; the rightmost lane
+    // also needs its +1 neighbour, so the last byte read is at x+16.
+    for (; x + 16 < width; x += 16) {
+      const uint8x16_t up = vld1q_u8(&row_up[x]);
+      const uint8x16_t dn = vld1q_u8(&row_dn[x]);
+      const uint8x16_t l = vld1q_u8(&row[x - 1]);
+      const uint8x16_t c = vld1q_u8(&row[x]);
+      const uint8x16_t r = vld1q_u8(&row[x + 1]);
+      vst1q_s16(&out[x], laplacian4_half8(vmovl_u8(vget_low_u8(up)),
+                                          vmovl_u8(vget_low_u8(l)),
+                                          vmovl_u8(vget_low_u8(c)),
+                                          vmovl_u8(vget_low_u8(r)),
+                                          vmovl_u8(vget_low_u8(dn))));
+      vst1q_s16(&out[x + 8], laplacian4_half8(vmovl_u8(vget_high_u8(up)),
+                                              vmovl_u8(vget_high_u8(l)),
+                                              vmovl_u8(vget_high_u8(c)),
+                                              vmovl_u8(vget_high_u8(r)),
+                                              vmovl_u8(vget_high_u8(dn))));
+    }
+#endif
+    for (; x < width; ++x) {
+      const uint32_t x_l = x == 0 ? 0 : x - 1;
+      const uint32_t x_r = x + 1 >= width ? width - 1 : x + 1;
+      out[x] = laplacian4(row_up[x], row[x_l], row[x], row[x_r], row_dn[x]);
+    }
+  }
+
+  // Stage 3: mark zero-crossings. Each pixel is compared against its right
+  // and lower neighbour only -- checking all four would mark both sides of
+  // every crossing, doubling every contour's width and losing the
+  // thin-line property that is the reason to use this operator at all.
+  uint8_t *out_y = dst_planes[0];
+#pragma omp parallel for
+  for (uint32_t y = 0; y < height; ++y) {
+    const int16_t *resp = log_response + (size_t)y * width;
+    const int16_t *resp_dn =
+        log_response + (size_t)(y + 1 >= height ? y : y + 1) * width;
+    uint8_t *out_row = out_y + (size_t)y * stride;
+
+    uint32_t x = 0;
+#if defined(GS_NEON)
+    const int16x8_t thr = vdupq_n_s16((int16_t)threshold);
+    // Stops 16 short of the end so the rightmost lane's +1 neighbour is
+    // always in bounds; the tail below handles the final column, where
+    // there is no right neighbour to compare against.
+    for (; x + 16 < width; x += 16) {
+      uint8x8_t part[2];
+      for (int half = 0; half < 2; ++half) {
+        const uint32_t xo = x + (uint32_t)half * 8;
+        const int16x8_t here = vld1q_s16(&resp[xo]);
+        const uint16x8_t cr = crosses_zero8(here, vld1q_s16(&resp[xo + 1]), thr);
+        const uint16x8_t cd = crosses_zero8(here, vld1q_s16(&resp_dn[xo]), thr);
+        // Either direction marks the pixel, matching the scalar's
+        // short-circuit || (which only skips work, never changes result).
+        part[half] = vmovn_u16(vorrq_u16(cr, cd));
+      }
+      vst1q_u8(&out_row[x], vcombine_u8(part[0], part[1]));
+    }
+#endif
+    for (; x < width; ++x) {
+      const int16_t here = resp[x];
+      bool edge = false;
+      if (x + 1 < width)
+        edge = crosses_zero(here, resp[x + 1], threshold);
+      if (!edge && y + 1 < height)
+        edge = crosses_zero(here, resp_dn[x], threshold);
+      out_row[x] = edge ? 255 : 0;
+    }
+  }
+
+  // Same as sobel_edges: the result is a luma-only edge map, so neutralize
+  // chroma rather than carrying through colour that no longer corresponds
+  // to anything in the output.
+  memset(dst_planes[1], 128, stride_arr[1] * height);
+  memset(dst_planes[2], 128, stride_arr[2] * height);
+}
+
+// --- Canny edge detection ---------------------------------------------
+//
+// Four stages: Gaussian smooth, gradient with direction, non-maximum
+// suppression, hysteresis. The result is what Sobel's magnitude is not --
+// thinned to single-pixel ridges and filtered by connectivity, so a weak
+// edge survives only if it joins a strong one.
+//
+// Every choice below was made from measurement at 1280x720 rather than
+// from the textbook; the two that matter most went against what the
+// obvious optimization would have been. See the notes at each stage.
+
+// Scratch, grown lazily like blur_rows/log_response above. Separate
+// buffers rather than one interleaved struct: each stage sweeps its
+// inputs linearly, so keeping them apart keeps every access sequential.
+static uint8_t *canny_blurred;
+static size_t canny_blurred_cap;
+static uint8_t *canny_mag;
+static size_t canny_mag_cap;
+static uint8_t *canny_dir;
+static size_t canny_dir_cap;
+// Seeds found per row of non-maximum suppression (see stage 3).
+static uint32_t *canny_row_seeds;
+static size_t canny_row_seeds_cap;
+static uint32_t *canny_stack;
+static size_t canny_stack_cap;
+
+// Gradient direction quantized to the 4 sectors NMS actually needs, using
+// integer comparisons only -- no atan2, no float, not even a divide.
+//
+// The sector boundaries are at 22.5 and 67.5 degrees, where tan is
+// ~0.4142 and ~2.4142. Multiplying through by 10 turns those into the
+// integer ratios 4/10 and 24/10, so a comparison of |gy|*10 against
+// |gx|*4 and |gx|*24 picks the same sector a float atan2 would. Same
+// trade as sobel_magnitude's L1 norm: visually identical, far cheaper.
+typedef enum {
+  CANNY_DIR_HORIZONTAL = 0, // gradient points left/right -> compare E/W
+  CANNY_DIR_DIAG_NESW = 1,  // -> compare NE/SW
+  CANNY_DIR_VERTICAL = 2,   // -> compare N/S
+  CANNY_DIR_DIAG_NWSE = 3,  // -> compare NW/SE
+} CannyDir;
+
+#if defined(GS_NEON)
+// 8-lane gradient: magnitude (L1, clamped to 255) and quantized direction
+// in one pass over a pre-widened 16-bit half.
+//
+// gx and gy each span +-1020 and their L1 sum +-2040, both well inside
+// int16, so nothing saturates before the deliberate clamp -- which is
+// what keeps this bit-exact with the scalar version.
+//
+// The direction test is the same integer comparison the scalar uses
+// (|gy|*10 against |gx|*4 and |gx|*24, the integer form of tan(22.5) and
+// tan(67.5)). |gy|*24 reaches 24480, still inside int16.
+static inline void canny_gradient8(uint16x8_t a_l, uint16x8_t a_c,
+                                   uint16x8_t a_r, uint16x8_t r_l,
+                                   uint16x8_t r_r, uint16x8_t b_l,
+                                   uint16x8_t b_c, uint16x8_t b_r,
+                                   int16x8_t *mag_out, uint16x8_t *dir_out) {
+  uint16x8_t right = vaddq_u16(vmlaq_n_u16(vaddq_u16(a_r, b_r), r_r, 2),
+                               vdupq_n_u16(0));
+  uint16x8_t left = vmlaq_n_u16(vaddq_u16(a_l, b_l), r_l, 2);
+  int16x8_t gx = vsubq_s16(vreinterpretq_s16_u16(right),
+                           vreinterpretq_s16_u16(left));
+
+  uint16x8_t down = vmlaq_n_u16(vaddq_u16(b_l, b_r), b_c, 2);
+  uint16x8_t up = vmlaq_n_u16(vaddq_u16(a_l, a_r), a_c, 2);
+  int16x8_t gy = vsubq_s16(vreinterpretq_s16_u16(down),
+                           vreinterpretq_s16_u16(up));
+
+  int16x8_t ax = vabsq_s16(gx), ay = vabsq_s16(gy);
+  int16x8_t l1 = vaddq_s16(ax, ay);
+  *mag_out = vminq_s16(l1, vdupq_n_s16(255));
+
+  // Sector selection, branchless. Horizontal (0) when |gy|*10 < |gx|*4,
+  // vertical (2) when |gy|*10 > |gx|*24, else a diagonal chosen by
+  // whether gx and gy agree in sign: 1 when they do, 3 when they differ.
+  int16x8_t ay10 = vmulq_n_s16(ay, 10);
+  uint16x8_t is_h = vcltq_s16(ay10, vmulq_n_s16(ax, 4));
+  uint16x8_t is_v = vcgtq_s16(ay10, vmulq_n_s16(ax, 24));
+  const int16x8_t zero = vdupq_n_s16(0);
+  // Scalar uses (gx > 0) == (gy > 0); replicate that exactly, including
+  // how zero compares.
+  uint16x8_t agree = vceqq_u16(vcgtq_s16(gx, zero), vcgtq_s16(gy, zero));
+  uint16x8_t diag = vbslq_u16(agree, vdupq_n_u16(1), vdupq_n_u16(3));
+  uint16x8_t dir = vbslq_u16(is_h, vdupq_n_u16(0),
+                             vbslq_u16(is_v, vdupq_n_u16(2), diag));
+  *dir_out = dir;
+}
+#endif // GS_NEON
+
+static inline uint8_t quantize_direction(int32_t gx, int32_t gy) {
+  int32_t ax = gx < 0 ? -gx : gx;
+  int32_t ay = gy < 0 ? -gy : gy;
+  if (ay * 10 < ax * 4)
+    return CANNY_DIR_HORIZONTAL;
+  if (ay * 10 > ax * 24)
+    return CANNY_DIR_VERTICAL;
+  // Diagonal: which one depends on whether gx and gy agree in sign.
+  return ((gx > 0) == (gy > 0)) ? CANNY_DIR_DIAG_NESW : CANNY_DIR_DIAG_NWSE;
+}
+
+// Zeroes the 1px frame border of a tightly packed width x height plane.
+static void clear_border(uint8_t *plane, uint32_t width, uint32_t height) {
+  memset(plane, 0, width);
+  memset(plane + (size_t)(height - 1) * width, 0, width);
+  for (uint32_t y = 1; y + 1 < height; ++y) {
+    plane[(size_t)y * width] = 0;
+    plane[(size_t)y * width + width - 1] = 0;
+  }
+}
+
+static bool canny_grow(void **buf, size_t *cap, size_t needed) {
+  if (*cap >= needed)
+    return true;
+  void *grown = realloc(*buf, needed);
+  if (!grown)
+    return false;
+  *buf = grown;
+  *cap = needed;
+  return true;
+}
+
+void canny_edges(const uint8_t *const src_planes[3],
+                 uint8_t *const dst_planes[3], uint32_t width, uint32_t height,
+                 const size_t stride_arr[3], uint8_t strength, uint8_t low,
+                 uint8_t high) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+  if (width < 3 || height < 3)
+    return; // no interior pixel has a full 3x3 neighborhood
+
+  const size_t stride = stride_arr[0];
+  const size_t pixels = (size_t)width * height;
+
+  // The scratch planes are tightly packed at width*height, which only
+  // matches what blur_plane_repeated writes when stride == width. That is
+  // how vf_create lays out the luma plane, but relying on it silently
+  // would corrupt memory the day it stops being true. Same guard as
+  // log_edges.
+  if (stride != (size_t)width)
+    return;
+
+  if (!canny_grow((void **)&canny_blurred, &canny_blurred_cap, pixels) ||
+      !canny_grow((void **)&canny_mag, &canny_mag_cap, pixels) ||
+      !canny_grow((void **)&canny_dir, &canny_dir_cap, pixels) ||
+      !canny_grow((void **)&canny_row_seeds, &canny_row_seeds_cap,
+                  (size_t)height * sizeof *canny_row_seeds) ||
+      !canny_grow((void **)&canny_stack, &canny_stack_cap,
+                  pixels * sizeof *canny_stack))
+    return; // leave dst untouched rather than crash, as the blur does
+
+  // Callers may pass them in either order; swapping is friendlier than
+  // producing a silently empty edge map.
+  if (low > high) {
+    uint8_t t = low;
+    low = high;
+    high = t;
+  }
+
+  // --- Stage 1: Gaussian ------------------------------------------------
+  //
+  // Mandatory, and at least one pass even when strength is 0 -- this is
+  // not a quality knob, it is what bounds the cost of stage 4.
+  //
+  // Measured at 1280x720: hysteresis on unsmoothed noise takes 10.81ms,
+  // versus 0.48ms on structured content -- a 23x swing, worst exactly
+  // when conditions are worst, since backscatter in murky water IS the
+  // noise case. One blur pass costs 0.07ms and drops that 10.81ms to
+  // 0.51ms. Skipping it to save 0.07ms risks 10ms.
+  const uint32_t passes = strength == 0 ? 1 : strength;
+  if (!blur_luma_into(src_planes[0], canny_blurred, width, height, stride,
+                      passes))
+    return;
+
+  // --- Stage 2: gradient magnitude and direction ------------------------
+  //
+  // Kept as its own pass, writing mag/dir to memory, rather than fused
+  // into stage 3. Fusing keeps a 3-row window in cache but recomputes
+  // every gradient up to three times, and measurement says that costs
+  // more than the memory traffic it saves: 0.68ms for two passes versus
+  // 0.94ms fused, at byte-identical output.
+  //
+  // The loop below writes every interior magnitude, so only the 1px border
+  // needs clearing -- NMS reads it as the neighbour of an interior pixel.
+  // Direction needs no clearing at all: NMS reads it only for interior
+  // pixels, all of which this loop writes.
+  clear_border(canny_mag, width, height);
+#pragma omp parallel for
+  for (uint32_t y = 1; y < height - 1; ++y) {
+    const uint8_t *above = canny_blurred + (size_t)(y - 1) * width;
+    const uint8_t *row = canny_blurred + (size_t)y * width;
+    const uint8_t *below = canny_blurred + (size_t)(y + 1) * width;
+    uint32_t x = 1;
+#if defined(GS_NEON)
+    // A chunk starting at x covers [x, x+15] and its rightmost lane needs
+    // the +1 neighbour, so the last byte read is x+16.
+    for (; x + 16 < width; x += 16) {
+      const uint8x16_t al = vld1q_u8(&above[x - 1]), ac = vld1q_u8(&above[x]),
+                       ar = vld1q_u8(&above[x + 1]);
+      const uint8x16_t rl = vld1q_u8(&row[x - 1]), rr = vld1q_u8(&row[x + 1]);
+      const uint8x16_t bl = vld1q_u8(&below[x - 1]), bc = vld1q_u8(&below[x]),
+                       br = vld1q_u8(&below[x + 1]);
+      int16x8_t m0, m1;
+      uint16x8_t d0, d1;
+      canny_gradient8(vmovl_u8(vget_low_u8(al)), vmovl_u8(vget_low_u8(ac)),
+                      vmovl_u8(vget_low_u8(ar)), vmovl_u8(vget_low_u8(rl)),
+                      vmovl_u8(vget_low_u8(rr)), vmovl_u8(vget_low_u8(bl)),
+                      vmovl_u8(vget_low_u8(bc)), vmovl_u8(vget_low_u8(br)),
+                      &m0, &d0);
+      canny_gradient8(vmovl_u8(vget_high_u8(al)), vmovl_u8(vget_high_u8(ac)),
+                      vmovl_u8(vget_high_u8(ar)), vmovl_u8(vget_high_u8(rl)),
+                      vmovl_u8(vget_high_u8(rr)), vmovl_u8(vget_high_u8(bl)),
+                      vmovl_u8(vget_high_u8(bc)), vmovl_u8(vget_high_u8(br)),
+                      &m1, &d1);
+      vst1q_u8(&canny_mag[(size_t)y * width + x],
+               vcombine_u8(vqmovun_s16(m0), vqmovun_s16(m1)));
+      vst1q_u8(&canny_dir[(size_t)y * width + x],
+               vcombine_u8(vmovn_u16(d0), vmovn_u16(d1)));
+    }
+#endif
+    for (; x + 1 < width; ++x) {
+      // Same Sobel kernels as sobel_magnitude, and the same L1 norm.
+      int32_t gx = (above[x + 1] + 2 * row[x + 1] + below[x + 1]) -
+                   (above[x - 1] + 2 * row[x - 1] + below[x - 1]);
+      int32_t gy = (below[x - 1] + 2 * below[x] + below[x + 1]) -
+                   (above[x - 1] + 2 * above[x] + above[x + 1]);
+      int32_t mag = (gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy);
+      canny_mag[(size_t)y * width + x] = (uint8_t)(mag > 255 ? 255 : mag);
+      canny_dir[(size_t)y * width + x] = quantize_direction(gx, gy);
+    }
+  }
+
+  // --- Stage 3: non-maximum suppression, labelled ------------------------
+  //
+  // Keep a pixel only if it is a local maximum along the gradient
+  // direction -- i.e. across the edge, not along it. This is what thins a
+  // Sobel-style ridge several pixels wide down to a single pixel.
+  //
+  // What is kept is written straight into the output as a label for stage
+  // 4: 255 at or above `high` (an edge outright: a seed), 1 at or above
+  // `low` (a candidate, an edge only if connected to one), 0 otherwise. A
+  // zero threshold labels nothing, as before: high == 0 seeds nothing and
+  // low == 0 extends nothing. Each row's seeds are collected as it is
+  // labelled, into that row's own region of the stack (a row has at most
+  // `width` of them), so finding them needs no serial pass over the frame.
+  //
+  // The border must read as 0: it then never seeds or extends a contour,
+  // which is what lets stage 4 skip bounds checks.
+  uint8_t *out_y = dst_planes[0];
+  const uint8_t strong_at = high, weak_at = low; // low <= high, swapped above
+  clear_border(out_y, width, height);
+  canny_row_seeds[0] = canny_row_seeds[height - 1] = 0;
+#pragma omp parallel for
+  for (uint32_t y = 1; y < height - 1; ++y) {
+    const uint8_t *above = canny_mag + (size_t)(y - 1) * width;
+    const uint8_t *row = canny_mag + (size_t)y * width;
+    const uint8_t *below = canny_mag + (size_t)(y + 1) * width;
+    const uint8_t *dir = canny_dir + (size_t)y * width;
+    uint8_t *out = out_y + (size_t)y * width;
+    uint32_t x = 1;
+#if defined(GS_NEON)
+    // Branchless: all four candidate pairs come out of the same 3x3 window
+    // (eight overlapping row loads, shared by every lane), and vbslq picks
+    // each lane's pair by its direction. The rightmost lane needs its +1
+    // neighbour, so the last byte read is x+16.
+    const uint8x16_t dir_h = vdupq_n_u8(CANNY_DIR_HORIZONTAL);
+    const uint8x16_t dir_nesw = vdupq_n_u8(CANNY_DIR_DIAG_NESW);
+    const uint8x16_t dir_v = vdupq_n_u8(CANNY_DIR_VERTICAL);
+    // A zero threshold labels nothing: compare against 256 in effect, by
+    // masking the comparison off.
+    const uint8x16_t strong_v = vdupq_n_u8(strong_at);
+    const uint8x16_t weak_v = vdupq_n_u8(weak_at);
+    const uint8x16_t strong_on = vdupq_n_u8(strong_at ? 0xff : 0);
+    const uint8x16_t weak_on = vdupq_n_u8(weak_at ? 0xff : 0);
+    const uint8x16_t one = vdupq_n_u8(1);
+    for (; x + 16 < width; x += 16) {
+      const uint8x16_t m = vld1q_u8(&row[x]);
+      const uint8x16_t al = vld1q_u8(&above[x - 1]), ac = vld1q_u8(&above[x]),
+                       ar = vld1q_u8(&above[x + 1]);
+      const uint8x16_t rl = vld1q_u8(&row[x - 1]), rr = vld1q_u8(&row[x + 1]);
+      const uint8x16_t bl = vld1q_u8(&below[x - 1]), bc = vld1q_u8(&below[x]),
+                       br = vld1q_u8(&below[x + 1]);
+      const uint8x16_t d = vld1q_u8(&dir[x]);
+      const uint8x16_t is_h = vceqq_u8(d, dir_h);
+      const uint8x16_t is_nesw = vceqq_u8(d, dir_nesw);
+      const uint8x16_t is_v = vceqq_u8(d, dir_v);
+      // Same pairs as the scalar switch below, NW/SE as the default.
+      const uint8x16_t a =
+          vbslq_u8(is_h, rl, vbslq_u8(is_nesw, ar, vbslq_u8(is_v, ac, al)));
+      const uint8x16_t b =
+          vbslq_u8(is_h, rr, vbslq_u8(is_nesw, bl, vbslq_u8(is_v, bc, br)));
+      const uint8x16_t keep = vandq_u8(vcgeq_u8(m, a), vcgtq_u8(m, b));
+      const uint8x16_t kept = vandq_u8(m, keep);
+      const uint8x16_t strong =
+          vandq_u8(vcgeq_u8(kept, strong_v), strong_on);
+      const uint8x16_t weak = vandq_u8(vcgeq_u8(kept, weak_v), weak_on);
+      vst1q_u8(&out[x], vbslq_u8(strong, strong, vandq_u8(weak, one)));
+    }
+#endif
+    for (; x + 1 < width; ++x) {
+      const uint8_t m = row[x];
+      uint8_t a, b;
+      switch (dir[x]) {
+      case CANNY_DIR_HORIZONTAL:
+        a = row[x - 1];
+        b = row[x + 1];
+        break;
+      case CANNY_DIR_DIAG_NESW:
+        a = above[x + 1];
+        b = below[x - 1];
+        break;
+      case CANNY_DIR_VERTICAL:
+        a = above[x];
+        b = below[x];
+        break;
+      default:
+        a = above[x - 1];
+        b = below[x + 1];
+        break;
+      }
+      // Asymmetric comparison -- >= against one neighbour, > against the
+      // other -- rather than >= against both.
+      //
+      // A step edge produces a symmetric ridge: the two pixels straddling
+      // it have *equal* magnitude, so >= on both sides keeps both and the
+      // contour comes out 2px wide, defeating the whole point of this
+      // stage. Using > on one side breaks that tie deterministically,
+      // keeping the first of the pair. It still preserves a genuine
+      // plateau along the ridge (where the comparison that matters is the
+      // >= one), which is what a strict > on both sides would erase.
+      const uint8_t kept = (m >= a && m > b) ? m : 0;
+      out[x] = (strong_at && kept >= strong_at) ? 255
+               : (weak_at && kept >= weak_at)   ? 1
+                                                : 0;
+    }
+    // This row's seeds, into its own region of the stack.
+    uint32_t *seeds = canny_stack + (size_t)y * width;
+    uint32_t n = 0;
+    for (uint32_t sx = 1; sx + 1 < width; ++sx)
+      if (out[sx] == 255)
+        seeds[n++] = (uint32_t)((size_t)y * width + sx);
+    canny_row_seeds[y] = n;
+  }
+
+  // --- Stage 4: hysteresis ----------------------------------------------
+  //
+  // Seeds (255) are edges outright; candidates (1) are edges only if
+  // connected to one. This is the stage that makes Canny's output cleaner
+  // than a plain threshold: it keeps the faint continuation of a real edge
+  // while dropping equally faint isolated noise.
+  //
+  // Serial stack flood fill rather than a parallel bounded sweep. The
+  // sweep caps the worst case (4.31ms vs 15.53ms on pure noise) but is
+  // twice as slow on realistic content (0.93ms vs 0.46ms), and only
+  // approximates the connectivity this computes exactly. What used to be
+  // serial around it -- a memset of the output and a scan of the whole
+  // frame for seeds -- is now parallel (stage 3 and the clean-up below);
+  // the fill visits seeds in a different order, but the connected set it
+  // marks is the same, and so is every output byte.
+  //
+  // The rows' seeds are compacted into one stack first. No pixel on the
+  // 1px border is ever pushed (it is labelled 0), so every popped pixel
+  // has a full 8-neighbourhood, with no bounds check or i / width needed.
+  size_t sp = 0;
+  for (uint32_t y = 1; y + 1 < height; ++y) {
+    uint32_t n = canny_row_seeds[y];
+    if (n && sp != (size_t)y * width)
+      memmove(canny_stack + sp, canny_stack + (size_t)y * width,
+              n * sizeof *canny_stack);
+    sp += n;
+  }
+
+  const ptrdiff_t w = (ptrdiff_t)width;
+  const ptrdiff_t neighbours[8] = {-w - 1, -w, -w + 1, -1, 1, w - 1, w, w + 1};
+  while (sp > 0) {
+    const size_t i = canny_stack[--sp];
+    for (int n = 0; n < 8; ++n) {
+      const size_t j = (size_t)((ptrdiff_t)i + neighbours[n]);
+      if (out_y[j] == 1) {
+        out_y[j] = 255;
+        canny_stack[sp++] = (uint32_t)j;
+      }
+    }
+  }
+
+  // Candidates no seed reached are not edges: 1 -> 0, 255 stays.
+#pragma omp parallel for
+  for (uint32_t y = 0; y < height; ++y) {
+    uint8_t *out = out_y + (size_t)y * width;
+    for (uint32_t x = 0; x < width; ++x)
+      out[x] = (uint8_t)(0u - (uint32_t)(out[x] >> 7));
+  }
+
+  // Luma-only edge map, so neutralize chroma -- same contract as
+  // sobel_edges and log_edges.
+  memset(dst_planes[1], 128, stride_arr[1] * height);
+  memset(dst_planes[2], 128, stride_arr[2] * height);
+}

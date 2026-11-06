@@ -1,0 +1,136 @@
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "json_cursor.h"
+
+/*
+ * Camera controls -- exposure, gain, white balance and the usual image
+ * adjustments -- expressed once, portably, and applied by whichever
+ * capture backend is in use.
+ *
+ * This matters more underwater than anywhere else: auto exposure hunts in
+ * low contrast, auto white balance fails once everything is uniformly
+ * blue-green, and no effect in the chain can recover detail the sensor
+ * never captured in the first place.
+ *
+ * PORTABILITY
+ * -----------
+ * The two backends are not merely different APIs, they disagree on units
+ * and ranges. V4L2 exposes integer controls whose ranges are per-device
+ * (the dev webcam's brightness is -64..64, its gain 0..128; another camera
+ * will differ) and its exposure is in 100us units. rpicam-vid takes float
+ * CLI flags with fixed semantics and exposure in 1us.
+ *
+ * So the fields below are in stable, documented units of their own, and
+ * each backend converts. Percent-style ranges with an explicit neutral,
+ * rather than raw device units, are what let one config work on both a USB
+ * webcam and a Pi camera -- the same reasoning behind light_level's
+ * neutral-at-128 in config.h.
+ *
+ * UNSET vs ZERO
+ * -------------
+ * Every field is optional, and "not mentioned in the config" has to mean
+ * "leave the camera alone" rather than "set to 0" -- otherwise omitting
+ * brightness would silently drive it to one end of its range. Hence the
+ * sentinel below rather than a plain 0 default.
+ */
+
+// Distinguishes "the operator did not mention this" from any value they
+// could legitimately ask for. Chosen well outside every field's range. An
+// enum so config.c's static config_defaults can use it in an initializer.
+enum { camera_ctrl_unset = INT32_MIN };
+
+typedef struct {
+  // Auto toggles. These must be applied *before* their manual siblings:
+  // a camera rejects a manual value while its auto mode is on, and
+  // reports EPERM for it -- the same errno a genuine permissions problem
+  // gives (verified on the dev webcam). See camera_ctrl_apply.
+  int32_t auto_exposure;      // 0 = manual, 1 = auto
+  int32_t auto_white_balance; // 0 = manual, 1 = auto
+
+  int32_t exposure;      // microseconds; ignored by the camera while auto
+  int32_t gain;          // 0-100, percent of the device's own range
+  int32_t white_balance; // Kelvin (~2800-6500 typical)
+
+  // Percent-style, 100 = neutral / leave as-is, so a config carrying
+  // these means the same thing on any camera.
+  int32_t brightness; // -100..100, 0 = neutral
+  int32_t contrast;   // 0..200, 100 = neutral
+  int32_t saturation; // 0..200, 100 = neutral
+  int32_t sharpness;  // 0..200, 100 = neutral
+
+  // 1: the camera keeps its frame rate in auto exposure; 0: it may lower
+  // it to expose longer in dim light. Many UVC webcams can do the latter
+  // (V4L2's "exposure_dynamic_framerate"), and do it silently: on one
+  // tested webcam it was on, and a dim scene dropped 30fps to 17. For a
+  // pilot -- and for RTP timestamps and recordings, which assume a steady
+  // rate -- a steady frame rate is the better default, so eeye's config
+  // sets this to 1 unless told otherwise (see config.c).
+  int32_t keep_framerate;
+} CameraControls;
+
+// All fields unset -- the state meaning "change nothing".
+void camera_ctrl_init(CameraControls *c);
+
+/*
+ * The "camera" object of a config, as JSON: shared by eeye's config and
+ * hellion, which carries it to the ROV in placement A. Fields present in
+ * the object are set in *out; absent ones are left as they were (so the
+ * caller decides the defaults). Unknown keys, wrong types and values out
+ * of range are refused with the reason in err.
+ *
+ * camera_ctrl_parse reads one object at a cursor (json_cursor.h);
+ * camera_ctrl_parse_json a whole document that is nothing but that object.
+ */
+bool camera_ctrl_parse(Cursor *c, CameraControls *out, char *err,
+                       size_t err_cap);
+bool camera_ctrl_parse_json(const char *json, size_t len, CameraControls *out,
+                            char *err, size_t err_cap);
+
+// The fields of `c` that are set, as a JSON object camera_ctrl_parse_json
+// reads back to the same controls. Returns its length, or -1 if `cap` is
+// too small.
+int camera_ctrl_to_json(const CameraControls *c, char *out, size_t cap);
+
+// Whether any field is actually set. Lets callers skip the whole apply
+// path (and its logging) when no controls are configured at all.
+bool camera_ctrl_any_set(const CameraControls *c);
+
+// Field-by-field equality, for deciding whether a reloaded config
+// actually changed anything -- issuing ioctls per frame for an unchanged
+// config would be pointless syscall traffic.
+bool camera_ctrl_equal(const CameraControls *a, const CameraControls *b);
+
+/*
+ * Applies `c` to an open V4L2 device.
+ *
+ * Best-effort by design, and that is not laziness: cameras differ in
+ * which controls they expose, so one unsupported or out-of-range field
+ * must not abandon the rest. Unsupported controls are skipped, values
+ * outside the device's own range are clamped to it, and both are logged
+ * once rather than silently.
+ *
+ * Ordering is not optional. Auto toggles are written first, in the same
+ * pass, because a manual value written while auto is on fails with EPERM
+ * -- indistinguishable from a real permissions error unless you know to
+ * expect it. When that happens anyway, it is reported as an ordering
+ * problem, never as "check your video group".
+ *
+ * Returns the number of controls successfully applied.
+ */
+int camera_ctrl_apply(int fd, const CameraControls *c);
+
+/*
+ * Builds rpicam-vid arguments for `c`, appending to `argv` (which must
+ * have room for `argv_cap` entries including the NULL rpicam_in.c adds).
+ * Strings are written into `storage`, a caller-owned scratch buffer, so
+ * this allocates nothing.
+ *
+ * Returns the number of argv entries written, or -1 if the buffers are
+ * too small.
+ */
+int camera_ctrl_rpicam_args(const CameraControls *c, char *argv[],
+                            size_t argv_cap, char *storage,
+                            size_t storage_cap);

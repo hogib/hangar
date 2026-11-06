@@ -1,0 +1,11 @@
+{
+  "name": "rov",
+  "role": "rov",
+  "placement": "b",
+  "control": "8091",
+  "eeye_config": "/var/lib/eeye/effects.json",
+  "pipelines": [
+    {"name": "pilot-up", "source": "bus:pilot", "framerate": 30,
+     "sinks": ["rtp:auto:5610"]}
+  ]
+}
