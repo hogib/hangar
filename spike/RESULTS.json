@@ -1,0 +1,545 @@
+{
+ "machine": "x86_64 Linux 7.2.14-arch1-1, 12 cores, desktop session active (firefox) during runs; runs strictly sequential",
+ "date": "2026-11-07",
+ "c": {
+  "bench": {
+   "Os": {
+    "publish_ns": 29.25,
+    "publish16_ns": 26.62,
+    "latest_ns": 19.25,
+    "torn": 0,
+    "torn_msgs_read_median": 251836127,
+    "torn_published_median": 64113664,
+    "lost_wake": {
+     "timeouts": 0,
+     "gaps": 0,
+     "received_median": 100000,
+     "sent": 100000
+    },
+    "raw": [
+     {
+      "publish_ns": 29.25,
+      "publish16_ns": 26.73,
+      "latest_ns": 19.25
+     },
+     {
+      "publish_ns": 29.25,
+      "publish16_ns": 26.62,
+      "latest_ns": 18.98
+     },
+     {
+      "publish_ns": 29.39,
+      "publish16_ns": 26.54,
+      "latest_ns": 20.77
+     }
+    ]
+   },
+   "O2": {
+    "publish_ns": 28.67,
+    "publish16_ns": 27.09,
+    "latest_ns": 19.25,
+    "torn": 0,
+    "torn_msgs_read_median": 260988969,
+    "torn_published_median": 65609728,
+    "lost_wake": {
+     "timeouts": 0,
+     "gaps": 0,
+     "received_median": 100000,
+     "sent": 100000
+    },
+    "raw": [
+     {
+      "publish_ns": 28.82,
+      "publish16_ns": 27.09,
+      "latest_ns": 18.67
+     },
+     {
+      "publish_ns": 28.67,
+      "publish16_ns": 27.08,
+      "latest_ns": 19.25
+     },
+     {
+      "publish_ns": 28.48,
+      "publish16_ns": 27.1,
+      "latest_ns": 19.6
+     }
+    ]
+   }
+  },
+  "latency_under_manager_1kHz_256B_20s": {
+   "runs": [
+    {
+     "msgs": 20016,
+     "gaps": 0,
+     "torn": 0,
+     "p50_us": 5.5,
+     "p99_us": 19.5,
+     "max_us": 435.2,
+     "reopens": 0
+    },
+    {
+     "msgs": 20016,
+     "gaps": 1,
+     "torn": 0,
+     "p50_us": 5.4,
+     "p99_us": 10.8,
+     "max_us": 217.2,
+     "reopens": 0
+    },
+    {
+     "msgs": 20016,
+     "gaps": 0,
+     "torn": 0,
+     "p50_us": 5.4,
+     "p99_us": 11.7,
+     "max_us": 239.5,
+     "reopens": 0
+    }
+   ],
+   "median": {
+    "p50_us": 5.4,
+    "p99_us": 11.7,
+    "max_us": 239.5
+   }
+  },
+  "restart_crash_after_2000_1kHz_15s": {
+   "starts": 6,
+   "restarts": 5,
+   "aborts": 6,
+   "backoffs_s": [
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.6,
+    2.0
+   ],
+   "listener": {
+    "msgs": 11812,
+    "gaps": 0,
+    "torn": 0,
+    "p50_us": 5.5,
+    "p99_us": 18.9,
+    "max_us": 281.3,
+    "reopens": 5
+   },
+   "core_dumped": false,
+   "registry_samples": [
+    "--- t=3 live=1063341 ",
+    "hangar-registry 1",
+    "talker 1063341 3611406 running 1 0.1",
+    "proc 1063341 starttime 3611406",
+    "--- t=6 live=1063392 ",
+    "hangar-registry 1",
+    "talker 1063392 3611626 running 2 0.2",
+    "proc 1063392 starttime 3611626",
+    "--- t=9 live=",
+    "hangar-registry 1",
+    "talker 0 0 backoff 4 0.8",
+    "--- t=12 live=",
+    "hangar-registry 1",
+    "talker 0 0 backoff 5 1.6",
+    "--- end live=",
+    "hangar-registry 1",
+    "talker 0 0 backoff 6 2"
+   ]
+  },
+  "idle_manager_30s": {
+   "rss_kb_t0": 136,
+   "rss_kb_t30": 136,
+   "vol_t0": 2,
+   "vol_t30": 2,
+   "nonvol_t0": 0,
+   "nonvol_t30": 0,
+   "cpu_ticks_t0": 0,
+   "cpu_ticks_t30": 0,
+   "vol_delta": 0,
+   "nonvol_delta": 0,
+   "cpu_ticks_delta": 0
+  },
+  "rss_kb_at_1kHz": {
+   "runs": [
+    {
+     "talker_rss_kb": 120,
+     "listener_rss_kb": 204,
+     "manager_rss_kb": 136,
+     "talker_hwm_kb": 120,
+     "listener_hwm_kb": 204
+    },
+    {
+     "talker_rss_kb": 124,
+     "listener_rss_kb": 204,
+     "manager_rss_kb": 136,
+     "talker_hwm_kb": 124,
+     "listener_hwm_kb": 204
+    },
+    {
+     "talker_rss_kb": 124,
+     "listener_rss_kb": 204,
+     "manager_rss_kb": 144,
+     "talker_hwm_kb": 124,
+     "listener_hwm_kb": 204
+    }
+   ],
+   "talker_median": 124,
+   "listener_median": 204,
+   "manager_median": 136
+  },
+  "sizes_bytes": {
+   "spike-manager": {
+    "x86_64-linux-musl": {
+     "Os": 50504,
+     "O2": 55064
+    },
+    "aarch64-linux-musl": {
+     "Os": 56984,
+     "O2": 62768
+    }
+   },
+   "talker": {
+    "x86_64-linux-musl": {
+     "Os": 48160,
+     "O2": 50504
+    },
+    "aarch64-linux-musl": {
+     "Os": 55016,
+     "O2": 59936
+    }
+   },
+   "listener": {
+    "x86_64-linux-musl": {
+     "Os": 53912,
+     "O2": 62760
+    },
+    "aarch64-linux-musl": {
+     "Os": 59008,
+     "O2": 66368
+    }
+   },
+   "bench": {
+    "x86_64-linux-musl": {
+     "Os": 49128,
+     "O2": 59200
+    },
+    "aarch64-linux-musl": {
+     "Os": 54544,
+     "O2": 61528
+    }
+   }
+  },
+  "build": {
+   "clean_release_x86_64_s_median": 0.23,
+   "runs_s": [
+    0.24,
+    0.21,
+    0.57,
+    1.27,
+    0.23,
+    0.22,
+    0.21,
+    0.24,
+    0.24
+   ],
+   "whole_build_sh_wall_s": [
+    1.09,
+    1.48,
+    2.14
+   ],
+   "note": "4 binaries compiled in parallel; musl prebuilt in zig global cache"
+  }
+ },
+ "rust": {
+  "bench": {
+   "s": {
+    "publish_ns": 35.34,
+    "publish16_ns": 26.47,
+    "latest_ns": 21.55,
+    "torn": 0,
+    "torn_msgs_read_median": 225690705,
+    "torn_published_median": 74381312,
+    "lost_wake": {
+     "timeouts": 0,
+     "gaps": 0,
+     "received_median": 100000,
+     "sent": 100000
+    },
+    "raw": [
+     {
+      "publish_ns": 35.33,
+      "publish16_ns": 26.46,
+      "latest_ns": 21.55
+     },
+     {
+      "publish_ns": 35.34,
+      "publish16_ns": 26.47,
+      "latest_ns": 21.22
+     },
+     {
+      "publish_ns": 35.38,
+      "publish16_ns": 26.49,
+      "latest_ns": 22.9
+     }
+    ]
+   },
+   "3": {
+    "publish_ns": 31.23,
+    "publish16_ns": 26.56,
+    "latest_ns": 17.61,
+    "torn": 0,
+    "torn_msgs_read_median": 314097904,
+    "torn_published_median": 95625216,
+    "lost_wake": {
+     "timeouts": 0,
+     "gaps": 0,
+     "received_median": 100000,
+     "sent": 100000
+    },
+    "raw": [
+     {
+      "publish_ns": 31.46,
+      "publish16_ns": 26.65,
+      "latest_ns": 17.53
+     },
+     {
+      "publish_ns": 31.23,
+      "publish16_ns": 26.52,
+      "latest_ns": 17.71
+     },
+     {
+      "publish_ns": 30.96,
+      "publish16_ns": 26.56,
+      "latest_ns": 17.61
+     }
+    ]
+   }
+  },
+  "latency_under_manager_1kHz_256B_20s": {
+   "runs": [
+    {
+     "msgs": 20001,
+     "gaps": 0,
+     "torn": 0,
+     "p50_us": 5.4,
+     "p99_us": 18.7,
+     "max_us": 238.9,
+     "reopens": 0
+    },
+    {
+     "msgs": 20001,
+     "gaps": 0,
+     "torn": 0,
+     "p50_us": 5.1,
+     "p99_us": 20.0,
+     "max_us": 343.4,
+     "reopens": 0
+    },
+    {
+     "msgs": 20001,
+     "gaps": 0,
+     "torn": 0,
+     "p50_us": 6.7,
+     "p99_us": 19.8,
+     "max_us": 218.7,
+     "reopens": 0
+    }
+   ],
+   "median": {
+    "p50_us": 5.4,
+    "p99_us": 19.8,
+    "max_us": 238.9
+   }
+  },
+  "restart_crash_after_2000_1kHz_15s": {
+   "starts": 6,
+   "restarts": 5,
+   "aborts": 5,
+   "backoffs_s": [
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.6
+   ],
+   "listener": {
+    "msgs": 11572,
+    "gaps": 0,
+    "torn": 0,
+    "p50_us": 5.4,
+    "p99_us": 14.5,
+    "max_us": 124.3,
+    "reopens": 5
+   },
+   "core_dumped": true,
+   "registry_samples": [
+    "--- t=3 live=1064697 ",
+    "hangar-registry 1",
+    "talker 1064697 3623922 running 1 0.1",
+    "proc 1064697 starttime 3623922",
+    "--- t=6 live=1064730 ",
+    "hangar-registry 1",
+    "talker 1064730 3624148 running 2 0.2",
+    "proc 1064730 starttime 3624148",
+    "--- t=9 live=",
+    "hangar-registry 1",
+    "talker 1064754 3624395 backoff 4 0.8",
+    "--- t=12 live=",
+    "hangar-registry 1",
+    "talker 1064780 3624682 backoff 5 1.6",
+    "--- end live=1064812 ",
+    "hangar-registry 1",
+    "talker 1064812 3625048 running 5 1.6",
+    "proc 1064812 starttime 3625048"
+   ]
+  },
+  "idle_manager_30s": {
+   "rss_kb_t0": 480,
+   "rss_kb_t30": 480,
+   "vol_t0": 2,
+   "vol_t30": 2,
+   "nonvol_t0": 0,
+   "nonvol_t30": 0,
+   "cpu_ticks_t0": 0,
+   "cpu_ticks_t30": 0,
+   "vol_delta": 0,
+   "nonvol_delta": 0,
+   "cpu_ticks_delta": 0
+  },
+  "rss_kb_at_1kHz": {
+   "runs": [
+    {
+     "talker_rss_kb": 376,
+     "listener_rss_kb": 484,
+     "manager_rss_kb": 480,
+     "talker_hwm_kb": 376,
+     "listener_hwm_kb": 484
+    },
+    {
+     "talker_rss_kb": 400,
+     "listener_rss_kb": 484,
+     "manager_rss_kb": 412,
+     "talker_hwm_kb": 400,
+     "listener_hwm_kb": 484
+    },
+    {
+     "talker_rss_kb": 380,
+     "listener_rss_kb": 548,
+     "manager_rss_kb": 412,
+     "talker_hwm_kb": 380,
+     "listener_hwm_kb": 548
+    }
+   ],
+   "talker_median": 380,
+   "listener_median": 484,
+   "manager_median": 412
+  },
+  "sizes_bytes": {
+   "spike-manager": {
+    "x86_64-unknown-linux-musl": {
+     "s": 434736,
+     "3": 463408
+    },
+    "aarch64-unknown-linux-musl": {
+     "s": 381576,
+     "3": 406872
+    }
+   },
+   "talker": {
+    "x86_64-unknown-linux-musl": {
+     "s": 410160,
+     "3": 430640
+    },
+    "aarch64-unknown-linux-musl": {
+     "s": 365720,
+     "3": 382832
+    }
+   },
+   "listener": {
+    "x86_64-unknown-linux-musl": {
+     "s": 434736,
+     "3": 459312
+    },
+    "aarch64-unknown-linux-musl": {
+     "s": 385552,
+     "3": 403760
+    }
+   },
+   "bench": {
+    "x86_64-unknown-linux-musl": {
+     "s": 516688,
+     "3": 561744
+    },
+    "aarch64-unknown-linux-musl": {
+     "s": 456976,
+     "3": 493184
+    }
+   }
+  },
+  "build": {
+   "clean_release_x86_64_s_median": 3.165,
+   "runs_s": [
+    3.17,
+    3.16,
+    3.22,
+    3.14
+   ],
+   "whole_build_sh_wall_s": [
+    13.95,
+    14.59,
+    14.29
+   ],
+   "note": "cargo clean then cargo build --release (std prebuilt)"
+  }
+ },
+ "interop": {
+  "c_talker_rust_listener_5s": {
+   "msgs": 5001,
+   "gaps": 0,
+   "torn": 0,
+   "p50_us": 5.3,
+   "p99_us": 21.8,
+   "max_us": 214.2,
+   "reopens": 0
+  },
+  "rust_talker_c_listener_5s": {
+   "msgs": 5016,
+   "gaps": 0,
+   "torn": 0,
+   "p50_us": 5.5,
+   "p99_us": 19.1,
+   "max_us": 357.6,
+   "reopens": 0
+  },
+  "replacement_c_writer_then_rust_writer": {
+   "c_listener": {
+    "msgs": 4016,
+    "gaps": 0,
+    "torn": 0,
+    "p50_us": 5.7,
+    "p99_us": 18.5,
+    "max_us": 130.9,
+    "reopens": 1
+   },
+   "rust_listener": {
+    "msgs": 4001,
+    "gaps": 0,
+    "torn": 0,
+    "p50_us": 5.5,
+    "p99_us": 9.3,
+    "max_us": 226.2,
+    "reopens": 1
+   }
+  },
+  "interoperate": true
+ },
+ "anomalies": [
+  "Rust talker does not disable core dumps (C calls prctl(PR_SET_DUMPABLE,0)): each --crash-after abort was \"core dumped\" via systemd-coredump (5 dumps in coredumpctl); restart cycle ~2.26 s vs C 2.20 s, so Rust saw 5 aborts in the 15 s window vs 6 for C.",
+  "Rust talker has no SIGTERM handler: under the manager it is \"killed by signal 15\" and standalone exits 143 without close(), leaving flags=0 (C talker exits 0 and sets flags bit 0 closed).",
+  "C writes writer_pid at header offset 152 (as docs/01-topics.md defines); Rust leaves it 0 (SPEC.md lists no field there). Did not affect interop.",
+  "C listener reports gaps=1 in one of three 20 s latency runs (no torn, max 217 us); likely the ring backlog it reads at attach (starts at W-K+2) being overwritten before it is read; Rust starts at the next message and showed 0 gaps.",
+  "msgs differ by design: C listener counts the ~15 backlog messages at attach (20016) vs Rust 20001.",
+  "Registry in backoff: C writes pid/starttime 0 0; Rust keeps the dead pid and starttime. Running with 0 failures: C delay_s 0, Rust 0.1.",
+  "Rust RSS ~3-4x C (manager idle 480 vs 136 kB; talker ~380 vs ~122 kB; listener ~484-548 vs 204 kB); binaries ~8x larger.",
+  "Both idle managers: 0 voluntary/nonvoluntary context switches and 0 CPU ticks over 30 s.",
+  "One C clean-build timing outlier (1.27 s, others 0.21-0.57 s), probably desktop load."
+ ]
+}

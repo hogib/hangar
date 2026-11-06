@@ -1,0 +1,6 @@
+# The aarch64 musl target links with the rust-lld that rustup ships (the host `cc`
+# cannot link aarch64 objects). rustc passes the self-contained musl crt objects and
+# libc itself, so a plain ld.lld invocation is all that is needed.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld"]
