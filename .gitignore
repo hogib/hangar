@@ -1,0 +1,6 @@
+# Spike and future build outputs
+out/
+target/
+builddir/
+*.o
+__pycache__/
