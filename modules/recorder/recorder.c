@@ -38,7 +38,7 @@
 
 #define DRAIN_NS 50000000u
 #define DRAIN_NEED_NS 60000000u       /* drain interval + 10 ms of wake-up jitter */
-#define DUMP_DEBOUNCE_NS 5000000000ull
+#define DUMP_DEBOUNCE_NS 2000000000ull
 #define CLOCK_TOPIC (REC_MAX_TOPICS - 1) /* the writer's slot for hangar.clock.hgr */
 #define MAX_TOPICS (REC_MAX_TOPICS - 1)
 #define MAX_MODULES 64
@@ -560,6 +560,7 @@ static void note_special(struct rtopic *t, const unsigned char *payload)
 static void record_message(int i, const struct hg_info *info, const void *payload)
 {
 	struct rtopic *t = &topics[i];
+	int was_active = active;
 	t->records++;
 	if (t->have_epoch && info->epoch != t->epoch) {
 		/* A new epoch: a new file, and the black box starts over so one
@@ -584,8 +585,6 @@ static void record_message(int i, const struct hg_info *info, const void *payloa
 	t->skipped += info->skipped;
 	struct hgr_record r;
 	hgr_record_init(&r, info, lost, info->skipped);
-	if (t->role)
-		note_special(t, payload);
 	if (rings[i].cap)
 		bb_push(&rings[i], &r, payload);
 	if (t->keep_last && t->last_payload) {
@@ -593,25 +592,38 @@ static void record_message(int i, const struct hg_info *info, const void *payloa
 		memcpy(t->last_payload, payload, t->meta.payload_bytes);
 		t->have_last = 1;
 	}
-	if (!active || t->pol.policy == HGR_OFF)
-		return;
-	if (t->pol.every_n > 1 && info->seq % t->pol.every_n != 0) {
-		/* Left out by policy: not a gap, but a loss before it still
-		 * belongs to the next record written. */
-		t->pending_lost = lost;
-		return;
+	if (active && t->pol.policy != HGR_OFF) {
+		if (t->pol.every_n > 1 && info->seq % t->pol.every_n != 0) {
+			/* Left out by policy: not a gap, but a loss before it still
+			 * belongs to the next record written. */
+			t->pending_lost = lost;
+		} else {
+			if (!t->file_open)
+				write_open(i);
+			if (!t->file_open ||
+			    writer_push(&W, WQ_RECORD, (uint32_t)i, &r, sizeof r, payload,
+					t->pol.policy == HGR_META ? 0 : t->meta.payload_bytes) < 0)
+				/* The disk is behind: this record is lost, and the next
+				 * one carries it and whatever it carried. */
+				t->pending_lost = lost + 1;
+			else if (lost)
+				t->gaps++;
+		}
 	}
-	if (!t->file_open)
-		write_open(i);
-	if (!t->file_open || writer_push(&W, WQ_RECORD, (uint32_t)i, &r, sizeof r, payload,
-					 t->pol.policy == HGR_META ? 0 : t->meta.payload_bytes) < 0) {
-		/* The disk is behind: this record is lost, and the next one
-		 * carries it and whatever it carried. */
-		t->pending_lost = lost + 1;
-		return;
+	/* What the message says comes after it is recorded: the message that
+	 * disarms is the session's last; the one that arms, when it starts a
+	 * session here, goes in as its first (an event topic's newest message
+	 * is written by session_start already). */
+	if (t->role)
+		note_special(t, payload);
+	if (!was_active && active && !t->keep_last && t->pol.policy != HGR_OFF &&
+	    !(t->pol.every_n > 1 && info->seq % t->pol.every_n != 0)) {
+		if (!t->file_open)
+			write_open(i);
+		if (t->file_open && writer_push(&W, WQ_RECORD, (uint32_t)i, &r, sizeof r, payload,
+						 t->pol.policy == HGR_META ? 0 : t->meta.payload_bytes) < 0)
+			t->pending_lost = 1;
 	}
-	if (lost)
-		t->gaps++;
 }
 
 static void drain(void)
@@ -770,7 +782,9 @@ int main(int argc, char **argv)
 		logf_("cannot start the writer thread: %s", strerror(errno));
 		return 3;
 	}
-	glob = hg_sub_open("*", NULL);
+	/* From the oldest message still in each ring: a topic that appears is
+	 * recorded from its first messages, not from the newest alone. */
+	glob = hg_sub_open_from("*", NULL, HG_OLDEST);
 	if (!glob) {
 		logf_("cannot subscribe to *: %s (the manifest needs [Subscribe *])", strerror(errno));
 		return 4;

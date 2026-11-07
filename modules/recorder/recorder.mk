@@ -26,7 +26,7 @@ RECORDER_BIN := $(BUILDDIR)/recorder
 PAIRER_BIN := $(BUILDDIR)/pairer
 RECORDER_TOYDIR := $(TESTDIR)/recorder-modules
 RECORDER_TOYS := prov_chain
-RECORDER_TESTS := rec_hgr rec_dataset
+RECORDER_TESTS := rec_hgr rec_dataset rec_recorder
 RECORDER_LIB_TESTS := rec_hgr rec_dataset
 
 $(OBJDIR)/modules/recorder/%.o: EE_CFLAGS := $(HG_CFLAGS)
@@ -65,9 +65,10 @@ all: $(RECORDER_BIN) $(PAIRER_BIN)
 # dataset suites also write the small files python/tests/fixtures/ holds.
 define recorder_test_rule
 $(TESTDIR)/test_$(1): $(OBJDIR)/modules/recorder/tests/test_$(1).o $(call obj,$(HGR_SRC)) $(call obj,$(HG_SRC)) \
-		lib/hg/hg_manager_stub.c $(OBJDIR)/msg/depth.o $(OBJDIR)/msg/imu.o $(OBJDIR)/msg/wrench.o \
+		$(OBJDIR)/lib/hg/hg_manager_stub.o $(OBJDIR)/msg/depth.o $(OBJDIR)/msg/imu.o $(OBJDIR)/msg/wrench.o \
 		$(OBJDIR)/msg/empty.o $(OBJDIR)/msg/recorder_start.o $(OBJDIR)/msg/recorder_status.o \
-		$(OBJDIR)/msg/recorder_session.o $(OBJDIR)/msg/pairer_status.o $(OBJDIR)/msg/recorder_clock.o
+		$(OBJDIR)/msg/recorder_session.o $(OBJDIR)/msg/pairer_status.o $(OBJDIR)/msg/recorder_clock.o \
+		$(OBJDIR)/msg/safety_state.o $(OBJDIR)/msg/hangar_system.o $(OBJDIR)/msg/hangar_modules.o
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(RECORDER_CPPFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(HG_LDLIBS) $$(LDLIBS)
 endef
