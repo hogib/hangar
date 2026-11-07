@@ -1,8 +1,14 @@
-# Electric Eye -- GNU make build.
+# hangar -- GNU make build.
 #
-#   make                   builddir/eeye, optimized with debug info (-O2 -g)
-#   make BUILD=release     builddir/eeye, -O3, no debug info
-#   make BUILD=debug       builddir/eeye-d, unoptimized
+# The start of hangar's build. For now it builds the two legacy electric-eye
+# programs from legacy/ (their glue) and lib/ (the library code hangar
+# keeps), and runs their test suites. Ported from electric-eye's Makefile;
+# its comments were kept where they still apply.
+#
+#   make                   builddir/eeye and builddir/hellion, optimized
+#                          with debug info (-O2 -g)
+#   make BUILD=release     -O3, no debug info
+#   make BUILD=debug       builddir/eeye-d and hellion-d, unoptimized
 #   make check             build and run every test suite (-j is fine)
 #   make clean
 #
@@ -13,10 +19,16 @@
 # Everything is overridable from the command line or environment: CC,
 # HOSTCC, CFLAGS, CPPFLAGS, LDFLAGS, LDLIBS, BUILDDIR, PKG_CONFIG, and
 #   OPENMP=0|1                   default: on if $(CC) can build with it
+#   NEON=0|1                     default: on (matters on 32-bit ARM only)
 #   TURBOJPEG_CFLAGS/_LIBS       default: pkg-config, else -lturbojpeg
+#   TIMEOUT                      default: coreutils timeout, where present
 # e.g. a libjpeg-turbo built from source into /opt/ljt:
 #   make TURBOJPEG_CFLAGS=-I/opt/ljt/include \
 #        TURBOJPEG_LIBS='/opt/ljt/lib/libturbojpeg.a'
+# A static aarch64 build whose suites run under qemu (see tools/cross/):
+#   make BUILD=release CC="zig cc -target aarch64-linux-musl -mcpu=cortex_a76" \
+#        HOSTCC="zig cc" LDFLAGS=-static TURBOJPEG_CFLAGS=... TURBOJPEG_LIBS=... \
+#        TIMEOUT="qemu-aarch64 -0" check
 
 BUILDDIR ?= builddir
 BUILD ?= debugoptimized
@@ -46,10 +58,20 @@ endif
 OBJDIR := $(BUILDDIR)/obj-$(BUILD)
 TESTDIR := $(BUILDDIR)/tests-$(BUILD)
 
+# Layout. lib/<x>/ holds the library code hangar keeps: a file there
+# includes only lib/, the system headers and libturbojpeg. legacy/eeye/ and
+# legacy/hellion/ hold the two programs' glue (config, the frame bus,
+# status, the threads), which may include lib/; lib/ never includes
+# legacy/. Each directory's tests sit in its tests/.
+LIBDIRS := lib/common lib/vision lib/camera lib/proc lib/net lib/video
+LEGACYDIRS := legacy/eeye legacy/hellion
+LIB_CPPFLAGS := $(addprefix -I,$(LIBDIRS))
+LEGACY_CPPFLAGS := $(LIB_CPPFLAGS) $(addprefix -I,$(LEGACYDIRS))
+
 CFLAGS ?= $(OPTFLAGS)
 # _FILE_OFFSET_BITS=64: recordings pass 2GB quickly, and on 32-bit ARM
 # (most Pis) off_t is 32 bits without it.
-EE_CPPFLAGS := -Isrc -D_FILE_OFFSET_BITS=64
+EE_CPPFLAGS := -D_FILE_OFFSET_BITS=64
 EE_CFLAGS := -std=gnu99 -Wall -Wextra -pedantic -pthread
 
 # OpenMP: the #pragma omp loops in conv.c/point_opps.c are written to be
@@ -128,56 +150,58 @@ ALL_CFLAGS = $(EE_CFLAGS) $(CFLAGS)
 ALL_LDFLAGS = $(EE_LDFLAGS) $(LDFLAGS)
 ALL_LDLIBS = $(EE_LDLIBS) $(LDLIBS)
 
+# eeye: its glue from legacy/eeye/, plus the library code it is built on.
 SRC := \
-	src/eeye.c \
-	src/auto_vis.c \
-	src/bus_in.c \
-	src/camera_ctrl.c \
-	src/child_proc.c \
-	src/config.c \
-	src/conv.c \
-	src/effect_chain.c \
-	src/fbus.c \
-	src/frame_ring_buffer.c \
-	src/health.c \
-	src/img_stats.c \
-	src/jpeg_decode.c \
-	src/video_frame.c \
-	src/point_opps.c \
-	src/recorder.c \
-	src/rpicam_in.c \
-	src/v4l2_in.c \
-	src/v4l2_out.c \
-	src/video_threads.c \
-	src/virtual_cam.c
+	legacy/eeye/eeye.c \
+	legacy/eeye/bus_in.c \
+	legacy/eeye/config.c \
+	legacy/eeye/effect_chain.c \
+	legacy/eeye/fbus.c \
+	legacy/eeye/frame_ring_buffer.c \
+	legacy/eeye/health.c \
+	legacy/eeye/recorder.c \
+	legacy/eeye/rpicam_in.c \
+	legacy/eeye/v4l2_in.c \
+	legacy/eeye/video_threads.c \
+	lib/camera/camera_ctrl.c \
+	lib/camera/jpeg_decode.c \
+	lib/camera/v4l2_out.c \
+	lib/camera/virtual_cam.c \
+	lib/proc/child_proc.c \
+	lib/vision/auto_vis.c \
+	lib/vision/conv.c \
+	lib/vision/img_stats.c \
+	lib/vision/point_opps.c \
+	lib/vision/video_frame.c
 
-# hellion: its own sources, plus the shared modules from src/ it reuses
-# (the frame bus, child processes, camera capture, the loopback output).
+# hellion: its own glue, plus the modules it shares with eeye (the frame
+# bus and the two camera inputs from legacy/eeye/; child processes, camera
+# capture and the loopback output from lib/).
 HSRC := \
-	hellion/check.c \
-	hellion/control.c \
-	hellion/discovery.c \
-	hellion/ffmpeg.c \
-	hellion/hconfig.c \
-	hellion/hlog.c \
-	hellion/hstatus.c \
-	hellion/http.c \
-	hellion/jpeg.c \
-	hellion/main.c \
-	hellion/pipeline.c \
-	hellion/hrecord.c \
-	hellion/sinks.c \
-	hellion/top.c \
-	hellion/udp_relay.c \
-	src/camera_ctrl.c \
-	src/child_proc.c \
-	src/fbus.c \
-	src/jpeg_decode.c \
-	src/rpicam_in.c \
-	src/v4l2_in.c \
-	src/v4l2_out.c \
-	src/video_frame.c \
-	src/virtual_cam.c
+	legacy/hellion/check.c \
+	legacy/hellion/control.c \
+	legacy/hellion/hconfig.c \
+	legacy/hellion/hlog.c \
+	legacy/hellion/hrecord.c \
+	legacy/hellion/hstatus.c \
+	legacy/hellion/main.c \
+	legacy/hellion/pipeline.c \
+	legacy/hellion/sinks.c \
+	legacy/hellion/top.c \
+	legacy/eeye/fbus.c \
+	legacy/eeye/rpicam_in.c \
+	legacy/eeye/v4l2_in.c \
+	lib/camera/camera_ctrl.c \
+	lib/camera/jpeg_decode.c \
+	lib/camera/v4l2_out.c \
+	lib/camera/virtual_cam.c \
+	lib/net/discovery.c \
+	lib/net/http.c \
+	lib/net/jpeg.c \
+	lib/proc/child_proc.c \
+	lib/video/ffmpeg.c \
+	lib/video/udp_relay.c \
+	lib/vision/video_frame.c
 
 obj = $(patsubst %.c,$(OBJDIR)/%.o,$(1))
 
@@ -190,21 +214,26 @@ $(BUILDDIR)/$(EXE): $(call obj,$(SRC))
 $(BUILDDIR)/$(HEXE): $(call obj,$(HSRC)) $(OBJDIR)/gen/page.o
 	$(CC) $(ALL_CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(ALL_LDLIBS)
 
-# The web page goes inside the binary: hellion/web/index.html becomes a C
-# array through a small tool built for the build machine (HOSTCC), so a
+# The web page goes inside the binary: legacy/hellion/web/index.html becomes
+# a C array through a small tool built for the build machine (HOSTCC), so a
 # cross build still runs it here.
-$(BUILDDIR)/embed: hellion/embed.c
+$(BUILDDIR)/embed: legacy/hellion/embed.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -O2 -o $@ $<
 
-$(OBJDIR)/gen/page.c: hellion/web/index.html $(BUILDDIR)/embed
+$(OBJDIR)/gen/page.c: legacy/hellion/web/index.html $(BUILDDIR)/embed
 	@mkdir -p $(dir $@)
 	$(BUILDDIR)/embed page_html $< $@
 
 $(OBJDIR)/gen/page.o: $(OBJDIR)/gen/page.c
 	$(CC) $(ALL_CFLAGS) -c -o $@ $<
 
-$(OBJDIR)/hellion/%.o: EE_CPPFLAGS += -Ihellion
+# Include paths follow the layout: lib/ code (and its tests) sees only
+# lib/; legacy code (and its tests) sees lib/ and legacy/. Objects keep
+# their source path under $(OBJDIR), so same-named files in different
+# directories cannot collide.
+$(OBJDIR)/lib/%.o: EE_CPPFLAGS += $(LIB_CPPFLAGS)
+$(OBJDIR)/legacy/%.o: EE_CPPFLAGS += $(LEGACY_CPPFLAGS)
 
 # -MMD -MP: each object also writes a .d file listing the headers it read,
 # included below, so editing a header rebuilds exactly what uses it.
@@ -216,55 +245,80 @@ $(OBJDIR)/%.o: %.c
 # (rather than linking against it) so the file-static helpers -- the config
 # parser, the JPEG frame splitter, the negotiation ranker -- are reachable
 # without widening their visibility in the shipping build just to test them.
-TESTS := config ring_buffer jpeg_framing negotiation jpeg_decode log_edges \
-	canny health camera_ctrl recorder effect_chain child_proc \
-	virtual_cam fbus hellion http auto_vis
+# A suite's source lives in the tests/ of the directory it exercises.
+VISION_TESTS := canny log_edges auto_vis
+CAMERA_TESTS := jpeg_decode camera_ctrl virtual_cam
+PROC_TESTS := child_proc
+NET_TESTS := http
+EEYE_TESTS := config ring_buffer jpeg_framing negotiation health recorder \
+	effect_chain fbus
+HELLION_TESTS := hellion
+TESTS := $(VISION_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
+	$(EEYE_TESTS) $(HELLION_TESTS)
 
 # Extra translation units each test needs beyond the one it includes:
 # rpicam_in.c and v4l2_in.c both reference the shared JPEG decoder and the
 # frame pool, so those get linked in alongside.
-test_config_SRC := src/camera_ctrl.c src/fbus.c
+test_config_SRC := lib/camera/camera_ctrl.c legacy/eeye/fbus.c
 test_ring_buffer_SRC :=
-test_jpeg_framing_SRC := src/camera_ctrl.c src/child_proc.c src/jpeg_decode.c \
-	src/video_frame.c
-test_negotiation_SRC := src/jpeg_decode.c src/video_frame.c
-test_jpeg_decode_SRC := src/jpeg_decode.c src/video_frame.c
-test_log_edges_SRC := src/conv.c src/video_frame.c
-test_canny_SRC := src/conv.c src/video_frame.c
+test_jpeg_framing_SRC := lib/camera/camera_ctrl.c lib/proc/child_proc.c \
+	lib/camera/jpeg_decode.c lib/vision/video_frame.c
+test_negotiation_SRC := lib/camera/jpeg_decode.c lib/vision/video_frame.c
+test_jpeg_decode_SRC := lib/camera/jpeg_decode.c lib/vision/video_frame.c
+test_log_edges_SRC := lib/vision/conv.c lib/vision/video_frame.c
+test_canny_SRC := lib/vision/conv.c lib/vision/video_frame.c
 test_health_SRC :=
 test_camera_ctrl_SRC :=
-test_recorder_SRC := src/frame_ring_buffer.c src/health.c src/video_frame.c
+test_recorder_SRC := legacy/eeye/frame_ring_buffer.c legacy/eeye/health.c \
+	lib/vision/video_frame.c
 test_child_proc_SRC :=
 test_fbus_SRC :=
 test_http_SRC :=
-test_auto_vis_SRC := src/img_stats.c
-test_hellion_SRC := hellion/discovery.c hellion/ffmpeg.c hellion/hconfig.c hellion/hlog.c \
-	hellion/hstatus.c hellion/http.c hellion/jpeg.c hellion/udp_relay.c \
-	hellion/pipeline.c hellion/hrecord.c hellion/sinks.c src/camera_ctrl.c \
-	src/child_proc.c \
-	src/fbus.c src/jpeg_decode.c src/rpicam_in.c src/v4l2_in.c src/v4l2_out.c \
-	src/video_frame.c src/virtual_cam.c
-test_virtual_cam_SRC := src/child_proc.c src/v4l2_out.c src/video_frame.c
-test_effect_chain_SRC := src/auto_vis.c src/camera_ctrl.c src/config.c src/conv.c \
-	src/fbus.c src/img_stats.c src/point_opps.c src/video_frame.c
+test_auto_vis_SRC := lib/vision/img_stats.c
+test_hellion_SRC := legacy/hellion/hconfig.c legacy/hellion/hlog.c \
+	legacy/hellion/hstatus.c legacy/hellion/pipeline.c legacy/hellion/hrecord.c \
+	legacy/hellion/sinks.c legacy/eeye/fbus.c legacy/eeye/rpicam_in.c \
+	legacy/eeye/v4l2_in.c lib/camera/camera_ctrl.c lib/camera/jpeg_decode.c \
+	lib/camera/v4l2_out.c lib/camera/virtual_cam.c lib/net/discovery.c \
+	lib/net/http.c lib/net/jpeg.c lib/proc/child_proc.c lib/video/ffmpeg.c \
+	lib/video/udp_relay.c lib/vision/video_frame.c
+test_virtual_cam_SRC := lib/proc/child_proc.c lib/camera/v4l2_out.c \
+	lib/vision/video_frame.c
+test_effect_chain_SRC := legacy/eeye/config.c legacy/eeye/fbus.c \
+	lib/camera/camera_ctrl.c lib/vision/auto_vis.c lib/vision/conv.c \
+	lib/vision/img_stats.c lib/vision/point_opps.c lib/vision/video_frame.c
 
-$(OBJDIR)/tests/%.o: EE_CPPFLAGS += -Itests -Ihellion
-
+# $(1): suite name, $(2): the directory whose tests/ holds its source.
 define test_rule
-$(TESTDIR)/test_$(1): $(OBJDIR)/tests/test_$(1).o $(call obj,$(test_$(1)_SRC))
+$(TESTDIR)/test_$(1): $(OBJDIR)/$(2)/tests/test_$(1).o $(call obj,$(test_$(1)_SRC))
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(ALL_CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(ALL_LDLIBS)
 endef
-$(foreach t,$(TESTS),$(eval $(call test_rule,$(t))))
+$(foreach t,$(VISION_TESTS),$(eval $(call test_rule,$(t),lib/vision)))
+$(foreach t,$(CAMERA_TESTS),$(eval $(call test_rule,$(t),lib/camera)))
+$(foreach t,$(PROC_TESTS),$(eval $(call test_rule,$(t),lib/proc)))
+$(foreach t,$(NET_TESTS),$(eval $(call test_rule,$(t),lib/net)))
+$(foreach t,$(EEYE_TESTS),$(eval $(call test_rule,$(t),legacy/eeye)))
+$(foreach t,$(HELLION_TESTS),$(eval $(call test_rule,$(t),legacy/hellion)))
 
 # A hung suite fails instead of stalling the run, where coreutils has
-# timeout (8.0+, so Debian 6 on).
+# timeout (8.0+, so Debian 6 on). Overridable: TIMEOUT="qemu-aarch64 -0"
+# runs a cross build's suites under qemu user-mode emulation (qemu then
+# takes the 60 as the program's argv[0], which the suites ignore).
 TIMEOUT := $(shell command -v timeout >/dev/null 2>&1 && echo timeout)
+
+# Suites run from the repository root, except one: test_hellion loads the
+# shipped example configs by the path they had in electric-eye's own tree
+# ("hellion/examples/..."), so it runs from legacy/, which is that tree's
+# root now.
+test_hellion_CWD := legacy
 
 # Each suite's output goes to a log beside its binary and is printed only
 # on failure, so a parallel run stays readable.
 define run_suite
-	@if $(if $(TIMEOUT),$(TIMEOUT) $(2)) $(3) > $(TESTDIR)/$(1).log 2>&1; then \
+	@if ($(if $(test_$(1)_CWD),cd $(test_$(1)_CWD) &&) \
+	     $(if $(TIMEOUT),$(TIMEOUT) $(2)) $(abspath $(3))) \
+	     > $(TESTDIR)/$(1).log 2>&1; then \
 	  echo "ok    $(1)"; \
 	else \
 	  echo "FAIL  $(1)"; cat $(TESTDIR)/$(1).log; exit 1; \
@@ -280,18 +334,18 @@ check: $(CHECKS)
 
 # Fuzzes hellion's HTTP parsers with libFuzzer (needs clang): the one part
 # of hellion that parses bytes from the network. Not part of `check` --
-# it runs until FUZZ_SECONDS is up. Seeds live in tests/fuzz_http_seeds/;
+# it runs until FUZZ_SECONDS is up. Seeds live in lib/net/tests/fuzz_http_seeds/;
 # anything new it finds goes into $(BUILDDIR)/fuzz-http-corpus/.
 FUZZ_CC ?= clang
 FUZZ_SECONDS ?= 60
 .PHONY: fuzz-http
 fuzz-http:
 	@mkdir -p $(BUILDDIR)/fuzz-http-corpus
-	$(FUZZ_CC) -g -O1 -std=gnu99 -Isrc -Ihellion \
+	$(FUZZ_CC) -g -O1 -std=gnu99 $(LIB_CPPFLAGS) \
 	  -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
-	  -o $(BUILDDIR)/fuzz_http tests/fuzz_http.c
+	  -o $(BUILDDIR)/fuzz_http lib/net/tests/fuzz_http.c
 	$(BUILDDIR)/fuzz_http -max_total_time=$(FUZZ_SECONDS) -max_len=9000 \
-	  $(BUILDDIR)/fuzz-http-corpus tests/fuzz_http_seeds
+	  $(BUILDDIR)/fuzz-http-corpus lib/net/tests/fuzz_http_seeds
 
 clean:
 	rm -rf $(BUILDDIR)

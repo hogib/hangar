@@ -26,16 +26,19 @@ ninja -C ljt-build turbojpeg-static        # ljt-build/libturbojpeg.a
 No `nasm` is needed on aarch64 (its SIMD is intrinsics); x86-64 builds of
 libjpeg-turbo with SIMD do need it.
 
-## electric-eye, static aarch64
+## electric-eye (`legacy/eeye`, `legacy/hellion`), static aarch64
+
+The root `Makefile` builds the library code under `lib/` and the legacy programs under
+`legacy/`:
 
 ```sh
-make -C modules/electric-eye BUILD=release BUILDDIR=out/aarch64 \
+make BUILD=release BUILDDIR=out/aarch64 \
   CC="zig cc -target aarch64-linux-musl -mcpu=cortex_a76" HOSTCC="zig cc" \
   LDFLAGS=-static \
   TURBOJPEG_CFLAGS="-Iljt-src/libjpeg-turbo-3.2.0/src -Iljt-build" \
   TURBOJPEG_LIBS="ljt-build/libturbojpeg.a"
 # the test suites, run under qemu user-mode emulation:
-make -C modules/electric-eye ... TIMEOUT="qemu-aarch64 -0" check
+make ... TIMEOUT="qemu-aarch64 -0" check
 ```
 
 OpenMP is not available in static musl builds (zig ships no OpenMP runtime), so the

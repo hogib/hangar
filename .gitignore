@@ -7,3 +7,16 @@ __pycache__/
 
 # Literature survey: fetched papers and code (not redistributed)
 literature/
+
+# electric-eye (legacy/, lib/), merged from its .gitignore: compiler
+# by-products, and the reload-status and health files eeye writes beside its
+# config file (see legacy/eeye/config.h and health.h).
+*.d
+*.a
+*.so
+*.so.*
+*.gch
+*.json.status
+*.json.health
+build/
+dist/
