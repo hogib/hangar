@@ -168,6 +168,11 @@ fi
 want hangard "$builddir/hangard"
 want hangar "$builddir/hangar"
 want dawn-patrold "$builddir/dawn-patrold"
+want hangar-safety "$builddir/hangar-safety"
+want hangar-mux "$builddir/hangar-mux"
+want hangar-mavlink "$builddir/hangar-mavlink"
+want recorder "$builddir/recorder"
+want pairer "$builddir/pairer"
 for t in "$ROOT"/lib/hg/tests/test_hg_*.c; do
 	[ -e "$t" ] || continue
 	s=$(basename "$t" .c)

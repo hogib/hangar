@@ -20,9 +20,10 @@ library with calls and parameters, the manager, the message-type generator, the
 simulator's physics, the inference runtime, the benchmark harness, the web console
 and the phase-1 modules (`safety`, `mux`, `mavlink`) are implemented and tested, the
 last of them against a fake ArduSub and the Gazebo + ArduSub SITL container of
-`tools/sim/`; the first test on a vehicle's Pi is planned
-([bench/PI-TEST.md](bench/PI-TEST.md)). Nothing has run on a vehicle yet. The
-recorder, the tether bridge and the learning loop are next.
+`tools/sim/`; the recorder, its `.hgr` recording files, dataset specifications and the
+live pairer that turns provenance into training rows are implemented and tested; the
+first test on a vehicle's Pi is planned ([bench/PI-TEST.md](bench/PI-TEST.md)). Nothing
+has run on a vehicle yet. The tether bridge and the learning loop are next.
 
 ## Layout
 
@@ -35,13 +36,13 @@ recorder, the tether bridge and the learning loop are next.
 | `lib/sim/` | the simulator's physics: a 6-DOF model, the T200 thrust data, the fit |
 | `lib/nn/` | the inference runtime and the `.hgw` weights file |
 | `hangard/`, `hangar/` | the manager and the command-line tool |
-| `modules/` | the modules: `safety`, `mux`, `mavlink` (vehicle and topside), `console` (Dawn Patrol) |
+| `modules/` | the modules: `safety`, `mux`, `mavlink` (vehicle and topside), `recorder`, `pairer`, `console` (Dawn Patrol) |
 | `profiles/` | manifest sets for the two simulation roots |
 | `msg/` | message types (`.msg`) and their generated headers |
 | `tools/msggen/`, `tools/mavgen/`, `tools/equivalence/`, `tools/cross/`, `tools/release.sh`, `tools/sim/` | the message generator, the MAVLink generator, the operator-equivalence check against electric-eye v0.3.1, cross-build recipes, the release build, the simulator container |
 | `bench/` | the benchmark harness and the Pi test plan |
 | `legacy/` | electric-eye's `eeye` and `hellion`, run unchanged as legacy modules until their replacements exist |
-| `python/` | the topside package: schema parsing, the `.hgw` writer, the PyTorch exporter |
+| `python/` | the topside package: schema parsing, `.hgr` and dataset readers, the `.hgw` writer, the PyTorch exporter |
 | `spike/`, `literature/`, `proposal/` | the language spike, the literature survey (not in git), the research proposal |
 
 ## Building
