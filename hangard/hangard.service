@@ -1,0 +1,32 @@
+# /etc/systemd/system/hangard.service (docs/03-manager.md "Running it")
+[Unit]
+Description=hangar module manager
+# Never give up restarting the manager.
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+# The manager pings every 2 s from its event loop; hung for 10 s, it is restarted.
+WatchdogSec=10
+ExecStart=/usr/bin/hangard
+# A planned restart or an upgrade: re-execute in place, keeping every module.
+ExecReload=/usr/bin/hangar restart-manager
+# Modules outlive a manager crash and are adopted again.
+KillMode=process
+# The manager's own cgroup subtree, for one cgroup per module (optional).
+Delegate=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_SYS_NICE CAP_IPC_LOCK CAP_KILL CAP_CHOWN CAP_FOWNER
+# Inherited by modules, which lower it unless LockMemory=yes.
+LimitMEMLOCK=infinity
+# journald limits the whole service as one: every module's lines together.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20000
+AmbientCapabilities=
+NoNewPrivileges=no
+RuntimeDirectory=hangar
+RuntimeDirectoryPreserve=yes
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

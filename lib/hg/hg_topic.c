@@ -16,13 +16,19 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "hg_control.h"
 #include "hg_sys.h"
+
+#ifndef PR_SET_DUMPABLE
+#define PR_SET_DUMPABLE 4
+#endif
 
 _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2, "64-bit atomics must be lock-free");
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "32-bit atomics must be lock-free");
@@ -384,11 +390,66 @@ static const struct hg_wiring *wiring; /* NULL when unwired */
 static int inited;
 static char init_err[160];
 static char module_name[32];
+static const char *control_path;       /* $HANGAR_CONTROL: the manager's socket, or NULL */
+
+/* The module page (docs/03 "Module page"): HGPAGE01, 4 KB, handed over by
+ * the manager with the `page` request; the module holds the only writable
+ * descriptor. */
+struct hg_page {
+	char magic[8];                  /*  0 */
+	uint64_t instance;              /*  8, the manager's */
+	_Atomic uint64_t ready_instance;/* 16 */
+	_Atomic uint64_t alive_ns;      /* 24 */
+	unsigned char reserved[32];     /* 32 */
+	char status[128];               /* 64 */
+	unsigned char rest[4096 - 192];
+};
+_Static_assert(sizeof(struct hg_page) == 4096, "page size");
+_Static_assert(offsetof(struct hg_page, status) == 64, "page status offset");
+static struct hg_page *page;
+
+static int fetch_page(void)
+{
+	char reply[256];
+	int fd = -1;
+	if (hg_control_call(control_path, "page", 4, reply, sizeof reply, &fd, 1) < 0) {
+		snprintf(init_err, sizeof init_err, "page request: %s", strerror(errno));
+		return -1;
+	}
+	if (fd < 0) {
+		char *nl = strchr(reply, '\n');
+		if (nl)
+			*nl = 0;
+		snprintf(init_err, sizeof init_err, "page refused: %.120s", reply);
+		errno = EACCES;
+		return -1;
+	}
+	void *m = mmap(NULL, sizeof(struct hg_page), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	int e = errno;
+	close(fd);
+	if (m == MAP_FAILED) {
+		snprintf(init_err, sizeof init_err, "cannot map the page: %s", strerror(e));
+		errno = e;
+		return -1;
+	}
+	if (memcmp(m, "HGPAGE01", 8) != 0) {
+		munmap(m, sizeof(struct hg_page));
+		snprintf(init_err, sizeof init_err, "the page is not HGPAGE01");
+		errno = EPROTO;
+		return -1;
+	}
+	page = m;
+	return 0;
+}
 
 int hg_init(void)
 {
 	if (inited)
 		return 0;
+	/* First: a process is dumpable again after exec, and until now another
+	 * process of the same user could copy descriptors out of it (docs/01
+	 * "Permissions"). */
+	prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
 	init_err[0] = 0;
 	const char *fd_s = getenv("HANGAR_WIRING");
 	const char *file = getenv("HANGAR_WIRING_FILE");
@@ -417,6 +478,10 @@ int hg_init(void)
 	const char *env_name = getenv("HANGAR_MODULE");
 	snprintf(module_name, sizeof module_name, "%s",
 		 wiring ? wiring->module : env_name && *env_name ? env_name : "standalone");
+	const char *ctl = getenv("HANGAR_CONTROL");
+	control_path = ctl && *ctl ? ctl : NULL;
+	if (control_path && fetch_page() < 0)
+		return -1;
 	inited = 1;
 	return 0;
 }
@@ -443,18 +508,45 @@ const char *hg_module_name(void)
 	return module_name;
 }
 
-/* The module page needs a manager to hand it over: stage 2. */
+/* The module page: no-ops without a manager (standalone mode has no page). */
 void hg_ready(void)
 {
+	ensure_init();
+	if (!page)
+		return;
+	uint64_t inst;
+	memcpy(&inst, &page->instance, 8);
+	atomic_store_explicit(&page->ready_instance, inst, memory_order_release);
 }
 
 void hg_alive(void)
 {
+	ensure_init();
+	if (!page)
+		return;
+	atomic_store_explicit(&page->alive_ns, hg_now_ns(), memory_order_relaxed);
 }
 
 void hg_status(const char *line)
 {
-	(void)line;
+	ensure_init();
+	if (!page)
+		return;
+	char buf[sizeof page->status];
+	memset(buf, 0, sizeof buf);
+	if (line)
+		snprintf(buf, sizeof buf, "%s", line);
+	/* One line: a newline would break `hangar top`'s table. */
+	for (char *c = buf; *c; c++)
+		if (*c == '\n' || *c == '\r')
+			*c = ' ';
+	memcpy(page->status, buf, sizeof buf);
+}
+
+/* Whether this module has a manager to open its topics. */
+static int under_manager(void)
+{
+	return control_path != NULL;
 }
 
 /* ---- Registry ---------------------------------------------------------- */
@@ -492,6 +584,8 @@ struct hg_pub {
 	uint32_t topic_id;
 	uint32_t last_flags;    /* slot flags of the last message: transitive stale through own outputs */
 	int mirror;             /* opened with hg_pub_open_mirror */
+	uint32_t rate_mhz;      /* a rated output counts toward readiness */
+	int published;          /* at least once by this process */
 	char name[48];
 	int n_inputs;
 	struct link inputs[HG_MAX_REFS];
@@ -631,6 +725,86 @@ static int zero16(const unsigned char *b)
 	return memcmp(b, z, 16) == 0;
 }
 
+/* The `open` request to the manager (hg_control.h), and the mapping of the
+ * descriptor it hands back. The file is complete when it arrives: header
+ * written, wake file created, renamed into place, the directory word bumped.
+ * Fills p->h, slots, wake and seq; -1 with errno. */
+static int pub_open_managed(hg_pub *p, const char *name, const struct hg_type *type, int mirror,
+			    const unsigned char origin_boot[16], uint64_t first_seq,
+			    const char *wake_path)
+{
+	char req[HG_CONTROL_MAX];
+	int n = snprintf(req, sizeof req, "open %s hash=%016llx payload=%u schema=%u", name,
+			 (unsigned long long)type->hash, type->payload_bytes, type->schema_bytes);
+	if (mirror) {
+		char boot[33];
+		for (int i = 0; i < 16; i++)
+			snprintf(boot + 2 * i, 3, "%02x", origin_boot[i]);
+		n += snprintf(req + n, sizeof req - (size_t)n, " boot=%s first=%llu", boot,
+			      (unsigned long long)first_seq);
+	}
+	if (n < 0 || (size_t)n + 1 + type->schema_bytes > sizeof req) {
+		errno = EMSGSIZE;
+		return -1;
+	}
+	req[n++] = '\n';
+	memcpy(req + n, type->schema, type->schema_bytes);
+	n += (int)type->schema_bytes;
+
+	char reply[256];
+	int fd = -1;
+	if (hg_control_call(control_path, req, (size_t)n, reply, sizeof reply, &fd, 1) < 0)
+		return -1;
+	if (fd < 0) {
+		/* "err <reason>": the manifest refused it. EACCES for an undeclared
+		 * topic, EPROTOTYPE for a type, EBUSY for a second writer. */
+		errno = strstr(reply, "type") ? EPROTOTYPE : strstr(reply, "writer") ? EBUSY : EACCES;
+		return -1;
+	}
+	struct stat st;
+	struct layout l;
+	void *m = MAP_FAILED;
+	if (fstat(fd, &st) < 0)
+		goto fail;
+	if (st.st_size < (off_t)HEADER_BYTES) {
+		errno = EPROTO;
+		goto fail;
+	}
+	m = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (m == MAP_FAILED)
+		goto fail;
+	if (read_layout(m, (uint64_t)st.st_size, &l) < 0 || l.payload_bytes != type->payload_bytes ||
+	    l.type_hash != type->hash || l.stride != p->stride) {
+		errno = EPROTO;
+		goto fail;
+	}
+	p->h = m;
+	p->map_len = (size_t)st.st_size;
+	p->slots = (unsigned char *)m + HEADER_BYTES;
+	p->mask = l.slot_count - 1;
+	p->rate_mhz = l.rate_mhz;
+	p->seq = atomic_load_explicit(&p->h->write_seq, memory_order_acquire);
+	p->wake = map_wake(wake_path, 0);
+	if (!p->wake && errno == ENOENT)
+		p->wake = map_wake(wake_path, 1);
+	if (!p->wake)
+		goto fail;
+	(void)dir_word();
+	close(fd);
+	return 0;
+fail:;
+	int e = errno;
+	if (m != MAP_FAILED)
+		munmap(m, (size_t)st.st_size);
+	close(fd);
+	errno = e;
+	return -1;
+}
+
+/* Every rated output of the wiring opened and published once: the module
+ * is ready (docs/02 "Ready is having published"). */
+static void note_published(hg_pub *p);
+
 static void link_init(struct link *l, const char *name)
 {
 	memset(l, 0, sizeof *l);
@@ -737,12 +911,27 @@ static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror
 	p->map_len = HEADER_BYTES + (size_t)op.slots * p->stride;
 	p->topic_id = hg_fnv1a32(name);
 	p->mirror = mirror;
+	p->rate_mhz = op.rate_mhz;
 	snprintf(p->name, sizeof p->name, "%s", name);
 	if (op.line) {
 		for (int i = 0; i < op.line->n_inputs; i++)
 			link_init(&p->inputs[p->n_inputs++], op.line->inputs[i]);
 		for (int i = 0; i < op.line->n_sources; i++)
 			link_init(&p->sources[p->n_sources++], op.line->sources[i]);
+	}
+
+	/* Under a manager the file is the manager's to create (docs/03 "Opening
+	 * topics"): the library asks over the control socket and maps what it
+	 * is handed. */
+	if (under_manager()) {
+		if (pub_open_managed(p, name, type, mirror, origin_boot, first_seq, wake_path) < 0) {
+			int e = errno;
+			free(p);
+			errno = e;
+			return NULL;
+		}
+		reg_pubs[reg_npubs++] = p;
+		return p;
 	}
 
 	/* An existing file continues write_seq, unless it is a mirror of
@@ -1149,7 +1338,31 @@ static int publish_common(hg_pub *p, const void *payload, size_t len, uint64_t s
 		}
 	}
 	publish_slot(p, p->seq + 1, stamp_ns, now, stale ? HG_SLOT_STALE : 0, out, n_out, payload, len);
+	if (!p->published)
+		note_published(p);
 	return 0;
+}
+
+static void note_published(hg_pub *p)
+{
+	p->published = 1;
+	if (!page || !wiring)
+		return;
+	int rated = 0;
+	for (int i = 0; i < wiring->n_pubs; i++) {
+		const struct hg_wiring_pub *w = &wiring->pubs[i];
+		if (!w->rate_mhz)
+			continue;
+		rated++;
+		int done = 0;
+		for (int k = 0; k < reg_npubs; k++)
+			if (reg_pubs[k]->published && strcmp(reg_pubs[k]->name, w->topic) == 0)
+				done = 1;
+		if (!done)
+			return;
+	}
+	if (rated)
+		hg_ready();
 }
 
 int hg_publish(hg_pub *p, const void *payload, size_t len, uint64_t stamp_ns)

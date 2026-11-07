@@ -150,3 +150,19 @@ parser's `struct hg_schema` is about 12 KB and lives where the caller puts it.
 - Sanitizers: `check-tsan` and `check-asan` rebuild the hg suites with no
   suppression; a compiler without the runtime makes the target say `skip`. gcc,
   clang and `zig cc` 0.17 all pass both.
+
+## Stage 2a additions (the manager's side: hangard/README.md)
+
+- `hg_control.h/.c`: the control socket's wire format and client (`page`, `open`,
+  the admin requests), one `SOCK_SEQPACKET` connection per request, a descriptor by
+  `SCM_RIGHTS`; it retries while the manager is not listening, as docs/03 says a
+  module waits for a restarting manager.
+- `hg_init` sets `PR_SET_DUMPABLE` 0 first, always; with `HANGAR_CONTROL` set it then
+  fetches the module page and maps it. `hg_ready`, `hg_alive`, `hg_status` write the
+  page (no-ops without one), and a publish on the last unpublished rated output of the
+  wiring sets `ready_instance` by itself (docs/02 "Ready is having published").
+- `hg_pub_open` under a manager sends `open` with the hash, payload size and schema
+  text and maps the descriptor it gets back (validated with the same header checks
+  as a reader's); standalone mode is unchanged. A refusal maps to `EACCES`,
+  `EPROTOTYPE` or `EBUSY` from the words of the manager's reason.
+- `HG_SRC` in the Makefile gained `hg_control.c`; every stage-1 suite is unchanged.
