@@ -13,6 +13,9 @@
 # default; or the base BlueROV2, frame vectored), SIM_IMAGE, SIM_NAME;
 # HANGAR_SIM=1 puts hangar in the loop: SITL's MAVLink goes to the vehicle's
 # mavlink module on 14560 instead of QGC's 14550 (tools/sim/hangar-up.sh).
+# SIM_HEADLESS=1 runs Gazebo's server without its GUI (gz sim -s): no display
+# needed, for a machine reached over ssh or a topside server; the physics and
+# SITL are the same, there is just nothing to look at but the topics.
 set -euo pipefail
 
 here=$(command dirname -- "$(command realpath -- "${BASH_SOURCE[0]}")")
@@ -47,9 +50,13 @@ cmd_up() {
     # QT_QPA_PLATFORM=xcb"). So the GUI uses the host's XWayland display through
     # the X socket; the Wayland socket is passed too, for anything else in the
     # container that wants it, and is not what Gazebo uses.
-    : "${DISPLAY:?DISPLAY is not set; the Gazebo GUI needs the XWayland display (SETUP.md)}"
+    local -a display=()
+    if [ "${SIM_HEADLESS:-0}" != 1 ]; then
+        : "${DISPLAY:?DISPLAY is not set; the Gazebo GUI needs the XWayland display (SETUP.md), or SIM_HEADLESS=1}"
+        display=(-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -e QT_QPA_PLATFORM=xcb)
+    fi
     local -a wayland=()
-    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/$WAYLAND_DISPLAY" ]; then
+    if [ "${SIM_HEADLESS:-0}" != 1 ] && [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/$WAYLAND_DISPLAY" ]; then
         wayland=(-e WAYLAND_DISPLAY=wayland-0
                  -v "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:/tmp/wayland-0"
                  -e XDG_RUNTIME_DIR=/tmp)
@@ -68,18 +75,18 @@ cmd_up() {
     docker run --detach --name "$name" \
         --gpus all \
         --net=host \
-        -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
-        -e QT_QPA_PLATFORM=xcb \
+        "${display[@]}" \
         "${wayland[@]}" \
         "${input[@]}" \
         -e SIM_CONFIG="$config" \
         -e HANGAR_SIM="${HANGAR_SIM:-0}" \
+        -e SIM_HEADLESS="${SIM_HEADLESS:-0}" \
         -v "$work:/home/sim/work" \
         -v "$here:/home/sim/hangar-sim:ro" \
         "$image" sleep infinity >/dev/null
     docker exec "$name" /home/sim/hangar-sim/launch.sh start
     cat <<MSG
-started $name ($config). Gazebo's window should appear; then start QGroundControl.
+started $name ($config). ${SIM_HEADLESS:+Headless: no window. }Gazebo's window should appear unless headless; then start QGroundControl.
   logs:   $work/{gazebo,mavproxy,ardusub}.log
   inside: $0 tmux    (Ctrl-b d detaches; window 'sitl' has the MAVProxy prompt)
   stop:   $0 down

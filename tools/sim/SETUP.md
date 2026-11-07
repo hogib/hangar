@@ -120,12 +120,33 @@ checks, since most of the work turned out to be done already.
 QGroundControl; `tools/sim/hangar-up.sh up` then starts two managers on the host from
 `profiles/sim-vehicle` and `profiles/sim-topside` (roots `/dev/shm/hangar-vehicle` and
 `/dev/shm/hangar-topside`, joined by the same-host shim until the bridge exists), and
-QGroundControl connects to the topside's `topside_mavlink` module on 14550 as it would
-to a vehicle. Before the first arm, `HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar
+the topside's `topside_mavlink` module sends the vehicle's heartbeat to QGroundControl's
+listening port, 127.0.0.1:14550, as a vehicle would, and answers QGC at the address it
+replies from. Before the first arm, `HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar
 ardusub-setup` sets SITL's parameters from `profiles/sim-vehicle/ardusub.params`, and
 `... hangar check` runs the arming checklist. Dawn Patrol serves both roots on 8080 and
-8081. `make check-sitl HANGAR_SITL=1` runs the chain test against the container. The
-rest of this section is the plan this was built from; what is still open is marked.
+8081. `make check-sitl HANGAR_SITL=1` runs the chain test against the container.
+
+**Flown, 2026-11-07, from a terminal over ssh.** With `SIM_HEADLESS=1 HANGAR_SIM=1
+tools/sim/run.sh up` Gazebo runs its server alone (`gz sim -s`, no display needed) and
+`tools/sim/pilot` stands in for QGroundControl: it listens on 14550, learns the
+topside module's address from the vehicle heartbeat, and sends a GCS heartbeat,
+`MANUAL_CONTROL` at 20 Hz and arm/disarm commands from a script on its command line:
+
+```sh
+make pilot                                   # builddir/pilot
+builddir/pilot arm hold 2 fwd 8 down 6 yaw 5 up 4 hold 2 disarm
+HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar echo nav.depth --count 1   # meanwhile
+```
+
+That sortie, through `topside_mavlink` → `pilot.wrench` → mux → `ctl.wrench` → the gate →
+`mavlink` → SITL → Gazebo, took the BlueROV2 from the surface to 4 m, through a full
+turn, and back up, with ArduSub's thruster outputs (`thr.out`) following each step and
+returning to 1500 on disarm. What the flight corrected is in `modules/mavlink/README.md`
+"Deviations" 10 to 14 (the disarm answer window, ArduSub armed at module start, the
+telemetry topics' `StaleAfter`, ArduSub 4.7's parameter names, the one disarm button
+ArduSub's arming check demands). The rest of this section is the plan this was built
+from; what is still open is marked.
 
 Without `HANGAR_SIM`, QGroundControl talks to SITL directly through MAVProxy on 14550;
 there is no hangar in the loop. When the two `mavlink` modules of [docs/10](../../docs/10-mavlink.md)

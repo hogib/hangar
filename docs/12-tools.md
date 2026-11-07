@@ -140,9 +140,9 @@ and holds everything hangar relies on:
 | Parameters | Value | |
 |---|---|---|
 | `JS_GAIN_DEFAULT`, `JS_GAIN_MIN`, `JS_GAIN_MAX`, `JS_THR_GAIN` | 1 | the pilot gain pinned, so a `wrench` axis means the same thrust at every moment ([07-safety](07-safety.md#the-mux)) |
-| `BTNn_FUNCTION`, `BTNn_SFUNCTION`, n = 0 to 31 | 0 (none) | no button does anything inside ArduSub; the topside module handles buttons ([10-mavlink](10-mavlink.md#buttons)) |
-| `FS_GCS_ENABLE`, `FS_LEAK_ENABLE`, `FS_BATT_ENABLE`, and the other `FS_*` | as required | ArduSub's own failsafes, the backstop behind hangar's ([07-safety](07-safety.md#failsafe)) |
-| `SYSID_MYGCS` (`MAV_GCS_SYSID` in later versions) | the id the vehicle's `mavlink` module sends under | ArduSub takes pilot input from that id alone |
+| `BTNn_FUNCTION`, `BTNn_SFUNCTION`, n = 0 to 15 | 0 (none), except `BTN15_FUNCTION` 4 (disarm) | no button does anything inside ArduSub; the topside module handles buttons ([10-mavlink](10-mavlink.md#buttons)). ArduSub refuses to arm without a disarm or arm-toggle button, and hangar never sends that button |
+| `FS_GCS_ENABLE`, `FS_LEAK_ENABLE`, `BATT_FS_LOW_ACT` (`FS_BATT_ENABLE` before ArduSub 4.6), and the other `FS_*` | as required | ArduSub's own failsafes, the backstop behind hangar's ([07-safety](07-safety.md#failsafe)) |
+| `MAV_GCS_SYSID` (`SYSID_MYGCS` before ArduPilot 4.6) | the id the vehicle's `mavlink` module sends under | ArduSub takes pilot input from that id alone. A name the firmware does not know is never answered, and `hangar check` reports the parameters as not read |
 | `MAVn_OPTIONS`, the mode and arming parameters the deployed build needs | as required | |
 
 `hangar ardusub-setup` is one call, `mavlink.setup`, as `admin:<user>` (or

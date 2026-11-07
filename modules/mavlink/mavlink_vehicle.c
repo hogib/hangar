@@ -40,6 +40,7 @@
 #define ARM_COLLECT_AFTER_ACK_NS 500000000ull
 #define DISARM_RETRY_NS 100000000ull
 #define DISARM_TRIES 3
+#define DISARM_ANSWER_NS 2500000000ull   /* two HEARTBEATs (1 Hz) and a margin before a disarm counts as unanswered */
 #define DISARM_REPEAT_NS 1000000000ull
 #define CLOCK_BUCKETS 10               /* a 10 s window, one bucket per second */
 #define RATE_REQUEST_RETRY_NS 5000000000ull
@@ -78,6 +79,7 @@ static struct {
 	uint64_t disarm_next_ns;
 	uint64_t disarm_since_ns;
 	int disagreement;              /* ArduSub armed outside the window: reported as armed, disarmed again */
+	int ever_disarmed;             /* ArduSub seen disarmed by this instance: an arm after that, outside the window, is ArduSub's own */
 	/* Parameters. */
 	struct mc_param params[MC_MAX_PARAMS];
 	int n_params;
@@ -98,7 +100,7 @@ static struct {
 	int in_window;                 /* the last judgement of the safety view */
 	struct hg_gate_safety safety;
 	char gate_why[160];
-	char status[128];
+	char status[256];
 	struct ardusub_state last_published;
 } A;
 
@@ -241,10 +243,27 @@ static void publish_state(uint64_t now)
 		mod_log(WHO, "hg_publish(ardusub.state): %s", strerror(errno));
 	A.last_published = s;
 	A.next_state_ns = now + 100000000ull;
-	char line[128];
-	mod_fmt(line, sizeof line, "ardusub %s mode %u params %u; gate %s%s%s; rx %llu rejected %llu",
+	/* Parameters still unanswered after setup, the first few by name: a
+	 * name ArduSub's version does not know is never answered. */
+	char unread[96] = "";
+	if (A.params_state == 0 && !A.setup_pending && A.n_params) {
+		int n = 0;
+		for (int i = 0; i < A.n_params && n < 3; i++)
+			if (!A.param_have[i]) {
+				size_t u = strlen(unread);
+				mod_fmt(unread + u, sizeof unread - u, "%s%s", n ? "," : "; unanswered: ", A.params[i].id);
+				n++;
+			}
+	}
+	char line[256];
+	mod_fmt(line, sizeof line, "ardusub %s mode %u params %u; gate %s%s%s%s; rx %llu rejected %llu (%s)",
 		A.armed == 1 ? "armed" : A.armed == 2 ? "disarming" : "disarmed", A.mode, A.params_state, A.gate_why,
-		A.mismatch[0] ? "; differs: " : "", A.mismatch, (unsigned long long)L.received, (unsigned long long)L.rejected);
+		A.mismatch[0] ? "; differs: " : "", A.mismatch, unread, (unsigned long long)L.received,
+		(unsigned long long)L.rejected, L.last_reject[0] ? L.last_reject : "-");
+	if (L.unknown) {
+		size_t u = strlen(line);
+		mod_fmt(line + u, sizeof line - u, " unknown-id %llu", (unsigned long long)L.unknown);
+	}
 	if (strcmp(line, A.status) != 0) {
 		mod_fmt(A.status, sizeof A.status, "%s", line);
 		hg_status(line);
@@ -312,6 +331,7 @@ static void on_frame(void *ctx, const struct mav_frame *f)
 			A.armed = 0;
 			A.disarm_pending = 0;
 			A.disagreement = 0;
+			A.ever_disarmed = 1;
 		} else if (A.disarm_pending && !A.disagreement && A.disarm_sends <= DISARM_TRIES) {
 			A.armed = 2; /* disarming: hangar asked, ArduSub has not answered yet */
 		} else {
@@ -323,7 +343,15 @@ static void on_frame(void *ctx, const struct mav_frame *f)
 		struct mav_command_ack a;
 		mav_unpack_command_ack(f->payload, f->len, &a);
 		if (a.command == MAV_CMD_COMPONENT_ARM_DISARM) {
-			if (A.arm_result == 255 && A.collecting && !A.collect_until_ns) {
+			int arm_attempt = A.arm_result == 255 && A.collecting && !A.collect_until_ns;
+			if (!arm_attempt && A.disarm_pending && a.result == MAV_RESULT_ACCEPTED) {
+				/* The disarm's answer: ArduSub disarms before it acknowledges, and
+				 * its HEARTBEAT, at 1 Hz, confirms it within the second. */
+				A.armed = 0;
+				A.disarm_pending = 0;
+				A.disagreement = 0;
+			}
+			if (arm_attempt) {
 				A.arm_result = a.result;
 				A.collect_until_ns = now + ARM_COLLECT_AFTER_ACK_NS;
 				if (!A.arm_reason[0]) {
@@ -626,10 +654,18 @@ static void tick(uint64_t now)
 		start_disarm(now, 0); /* the window closed: hangar's own disarm, `disarming` meanwhile */
 	A.in_window = window;
 	if (!window && A.seen && A.armed == 1 && !A.disarm_pending) {
-		/* ArduSub armed outside the window: disarmed, and reported as armed,
-		 * the disagreement the safety module's autopilot trigger reads. */
-		mod_log(WHO, "ArduSub armed outside hangar's window: disarming it");
-		start_disarm(now, 1);
+		if (!A.ever_disarmed) {
+			/* Armed before this instance saw it (a restart of this module, a
+			 * previous run): hangar's own disarm, `disarming` meanwhile; no
+			 * window of this instance was open for ArduSub to have left. */
+			mod_log(WHO, "ArduSub armed when this module started: disarming it");
+			start_disarm(now, 0);
+		} else {
+			/* ArduSub armed outside the window: disarmed, and reported as armed,
+			 * the disagreement the safety module's autopilot trigger reads. */
+			mod_log(WHO, "ArduSub armed outside hangar's window: disarming it");
+			start_disarm(now, 1);
+		}
 	}
 	if (A.seen && A.armed == 1 && A.mode != MANUAL_MODE && !A.disarm_pending) {
 		/* Out of MANUAL, neutral input is not stop: disarmed at the first
@@ -640,8 +676,11 @@ static void tick(uint64_t now)
 	if (A.disarm_pending && now >= A.disarm_next_ns) {
 		if (A.disarm_sends < DISARM_TRIES) {
 			send_disarm(now);
+		} else if (A.armed != 0 && now < A.disarm_since_ns + DISARM_ANSWER_NS) {
+			A.disarm_next_ns = now + DISARM_RETRY_NS; /* the answer may still come: the HEARTBEAT is 1 Hz */
 		} else if (A.armed != 0) {
-			/* Three sends unanswered: a disagreement; try again in a second. */
+			/* Three sends and two heartbeat periods without ArduSub reporting
+			 * disarmed: a disagreement; try again in a second. */
 			if (A.armed == 2)
 				mod_log(WHO, "disarm unanswered after %d sends: ArduSub reported armed", A.disarm_sends);
 			A.armed = 1;

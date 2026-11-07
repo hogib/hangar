@@ -39,9 +39,19 @@ $(MAVLINK_FAKE): $(OBJDIR)/modules/mavlink/tests/fake_ardusub.o $(OBJDIR)/module
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ -lm $(LDLIBS)
 
-.PHONY: mavlink-all
-mavlink-all: $(MAVLINK_BIN)
-all: $(MAVLINK_BIN)
+# tools/sim/pilot: the scripted stand-in for QGroundControl that flies the simulator
+# from a terminal (tools/sim/SETUP.md "Flown"); MAVLink framing from this module.
+PILOT_BIN := $(BUILDDIR)/pilot
+$(OBJDIR)/tools/sim/%.o: EE_CFLAGS := $(HG_CFLAGS)
+$(OBJDIR)/tools/sim/%.o: EE_CPPFLAGS := -Imodules/mavlink
+$(PILOT_BIN): $(OBJDIR)/tools/sim/pilot.o $(OBJDIR)/modules/mavlink/mav.o $(OBJDIR)/modules/mavlink/sha256.o
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(LDLIBS)
+
+.PHONY: mavlink-all pilot
+mavlink-all: $(MAVLINK_BIN) $(PILOT_BIN)
+pilot: $(PILOT_BIN)
+all: $(MAVLINK_BIN) $(PILOT_BIN)
 
 # The framing suite needs no manager.
 $(TESTDIR)/test_mav_frame: $(OBJDIR)/modules/mavlink/tests/test_mav_frame.o $(OBJDIR)/modules/mavlink/mav.o \

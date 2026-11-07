@@ -129,7 +129,7 @@ static void write_vehicle(void)
 	tfmt(key, sizeof key, "%s/etc/hangar/mavlink.key", root_v);
 	write_file(key, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n");
 	tfmt(params, sizeof params, "%s/etc/hangar/ardusub.params", root_v);
-	write_file(params, "SYSID_MYGCS 255\nFS_GCS_ENABLE 1\nJS_GAIN_DEFAULT 1\nJS_GAIN_MAX 1\nJS_GAIN_MIN 1\nBTN0_FUNCTION 0\n");
+	write_file(params, "MAV_GCS_SYSID 255\nFS_GCS_ENABLE 1\nJS_GAIN_DEFAULT 1\nJS_GAIN_MAX 1\nJS_GAIN_MIN 1\nBTN0_FUNCTION 0\n");
 	tfmt(conf, sizeof conf, "%s/etc/hangar/mavlink.conf", root_v);
 	char text[1024];
 	if (sitl)
@@ -170,9 +170,9 @@ static void write_vehicle(void)
 			    "[Publish ardusub.manual_control]\nType=manual_control\nRate=50\nActuator=yes\nInputs=ctl.wrench\n"
 			    "[Publish ardusub.state]\nType=ardusub_state\nRate=10\nInputs=safety.state\n"
 			    "[Publish ardusub.param]\nType=ardusub_param\n"
-			    "[Publish nav.attitude]\nType=attitude\nRate=50\n[Publish nav.imu]\nType=imu\nRate=50\n"
-			    "[Publish nav.depth]\nType=depth\nRate=50\n[Publish power.battery]\nType=battery\nRate=2\n"
-			    "[Publish thr.out]\nType=thruster_out\nRate=50\n"
+			    "[Publish nav.attitude]\nType=attitude\nRate=50\nStaleAfter=500ms\n[Publish nav.imu]\nType=imu\nRate=50\nStaleAfter=500ms\n"
+			    "[Publish nav.depth]\nType=depth\nRate=50\nStaleAfter=500ms\n[Publish power.battery]\nType=battery\nRate=2\nStaleAfter=3s\n"
+			    "[Publish thr.out]\nType=thruster_out\nRate=50\nStaleAfter=500ms\n"
 			    "[Actuator]\nCommand=ctl.wrench\nNeutral=%s --neutral %s\n"
 			    "[Serve arm]\nRequest=arm_req\nReply=arm_rep\nAllow=safety\n"
 			    "[Serve setup]\nRequest=empty\nReply=empty\nAllow=admin topside:admin\n"
@@ -457,14 +457,23 @@ static void test_start(void)
 		CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "call", "mavlink.setup", (char *)NULL), 0);
 	}
 	t0 = now_ms();
-	while ((!have_ap || last_ap.params != 1) && now_ms() - t0 < (sitl ? 30000 : 5000))
+	/* Parameters confirmed and a HEARTBEAT seen (mode 19 comes from it, at 1 Hz). */
+	while ((!have_ap || last_ap.params != 1 || last_ap.mode != 19) && now_ms() - t0 < (sitl ? 30000 : 5000))
 		pump(100);
 	CHECK_EQ_INT(last_ap.params, 1);
 	CHECK_EQ_INT(last_ap.armed, 0);
 	CHECK_EQ_INT(last_ap.mode, 19);
-	/* The checklist passes now (mux and mavlink ready, battery from ArduSub). */
+	/* The checklist passes now (mux and mavlink ready, battery from ArduSub). It is
+	 * a live judgement: a 2 Hz battery message or a telemetry stream that SITL has
+	 * just been asked for can leave it false for a moment, so it is polled. */
 	use_root(0);
-	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "call", "safety.check", (char *)NULL), 0);
+	t0 = now_ms();
+	for (;;) {
+		CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "call", "safety.check", (char *)NULL), 0);
+		if (strcmp(cli_field(cli_out, "ok"), "1") == 0 || now_ms() - t0 > (uint64_t)(sitl ? 10000 : 3000))
+			break;
+		pump(200);
+	}
 	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
 	if (strcmp(cli_field(cli_out, "ok"), "1") != 0)
 		printf("    check: %s\n", cli_out);

@@ -21,7 +21,8 @@ struct mav_link {
 	int have_peer;
 	uint8_t sysid, compid, seq;
 	struct mav_signing signing;
-	uint64_t sent, received, rejected;
+	uint64_t sent, received, rejected;   /* rejected: bad CRC, bad signature, truncated */
+	uint64_t unknown;                    /* well-formed frames of a message id not generated */
 	char last_reject[64];
 	int tlog_fd;                 /* -1: none */
 };

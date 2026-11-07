@@ -122,7 +122,11 @@ behind hangar's `tether` trigger, whatever hangar did.
 ### ArduSub's parameters
 
 `/etc/hangar/ardusub.params` pins the joystick gains to 1, every button function to
-none, the failsafes hangar relies on, and `SYSID_MYGCS`; its contents and the
+none but one, the failsafes hangar relies on, and `MAV_GCS_SYSID` (`SYSID_MYGCS` before
+ArduPilot 4.6; a name the firmware does not know is never answered, and `hangar check`
+reports the parameters as not read). The one button is `disarm`: ArduSub refuses to arm
+unless some button is disarm or arm-toggle, and hangar never sends that button, so
+the assignment only satisfies the check. The file's contents and the
 `hangar ardusub-setup` command are in [12-tools](12-tools.md#hangar-ardusub-setup).
 The module serves `mavlink.setup`, accepted only while `safety.state` is `disarmed`
 and ArduSub is disarmed: beside its loop it sends a `PARAM_SET` for each line of the
@@ -193,7 +197,10 @@ Reply=empty
 Allow=admin topside:admin
 ```
 
-plus the telemetry topics of its configuration ([Telemetry](#telemetry)). It is an
+plus the telemetry topics of its configuration ([Telemetry](#telemetry)), each with
+`StaleAfter=500ms` (`power.battery` 3 s): they are relayed from ArduSub, and at the
+default three periods, 60 ms, every scheduler hiccup of the autopilot or the link would
+be an input fault for the safety module. It is an
 actuator module, so its methods admit only the callers listed. The manager adds the
 request topics of its callers (`safety.req`, `hangar.vehicle.admin.req`, and
 `subglob *.req` for the topside's `hangar.topside.admin.req`, since `mavlink.setup` is
@@ -410,8 +417,10 @@ from the network goes to QGroundControl alone, never to the vehicle.
 
 ### Buttons
 
-ArduSub acts on no button: every `BTNn_FUNCTION` and `BTNn_SFUNCTION` is none, and the
-vehicle's module sends `buttons` and `buttons2` as 0. What a button does is decided on
+ArduSub acts on no button: every `BTNn_FUNCTION` and `BTNn_SFUNCTION` is none, except
+the one `disarm` assignment its arming check demands ([ArduSub's
+parameters](#ardusubs-parameters)), and the vehicle's module sends `buttons` and
+`buttons2` as 0, so that button is never pressed. What a button does is decided on
 the topside, in `topside_mavlink.conf`:
 
 ```ini

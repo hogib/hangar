@@ -444,6 +444,7 @@ int main(int argc, char **argv)
 	}
 	/* The factory table: what SITL has before hangar ardusub-setup. */
 	add_param("SYSID_MYGCS", 255);
+	add_param("MAV_GCS_SYSID", 255); /* the 4.6+ name of the same parameter */
 	add_param("FS_GCS_ENABLE", 0);
 	add_param("FS_LEAK_ENABLE", 0);
 	add_param("FS_BATT_ENABLE", 0);

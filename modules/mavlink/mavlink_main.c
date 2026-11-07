@@ -123,7 +123,9 @@ int mav_link_receive(struct mav_link *l, void (*fn)(void *ctx, const struct mav_
 				break; /* a truncated frame: the rest of the datagram is dropped */
 			off += used;
 			if (!f.valid) {
-				if (used > 1) {
+				if (used > 1 && strncmp(why, "unknown", 7) == 0) {
+					l->unknown++; /* a message outside tools/mavgen/messages.txt: not an error */
+				} else if (used > 1) {
 					l->rejected++;
 					snprintf(l->last_reject, sizeof l->last_reject, "%s", why);
 				}

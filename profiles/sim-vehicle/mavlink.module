@@ -38,22 +38,35 @@ Type=ardusub_param
 [Publish nav.attitude]
 Type=attitude
 Rate=50
+# Relayed from ArduSub: three periods (60 ms) would make every scheduler hiccup an
+# input fault for safety; half a second is the loss that matters.
+StaleAfter=500ms
 
 [Publish nav.imu]
 Type=imu
 Rate=50
+# Relayed from ArduSub: three periods (60 ms) would make every scheduler hiccup an
+# input fault for safety; half a second is the loss that matters.
+StaleAfter=500ms
 
 [Publish nav.depth]
 Type=depth
 Rate=50
+# Relayed from ArduSub: three periods (60 ms) would make every scheduler hiccup an
+# input fault for safety; half a second is the loss that matters.
+StaleAfter=500ms
 
 [Publish power.battery]
 Type=battery
 Rate=2
+StaleAfter=3s
 
 [Publish thr.out]
 Type=thruster_out
 Rate=50
+# Relayed from ArduSub: three periods (60 ms) would make every scheduler hiccup an
+# input fault for safety; half a second is the loss that matters.
+StaleAfter=500ms
 
 [Actuator]
 Command=ctl.wrench

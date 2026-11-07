@@ -25,7 +25,7 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
 
 ## The vehicle's module
 
-- The ground station ArduSub knows: `SYSID_MYGCS` from `ardusub.params` (else `SysId=`),
+- The ground station ArduSub knows: `MAV_GCS_SYSID` (`SYSID_MYGCS` before ArduPilot 4.6) from `ardusub.params` (else `SysId=`),
   component 190; no `HEARTBEAT`; `MANUAL_CONTROL` at 50 Hz from the actuator gate
   (`lib/hg/hg_gate.h`), neutral when the gate is closed, with docs/10's mapping (`z`
   0..1000, 500 neutral; `s` pitch and `t` roll in the MAVLink 2 extension fields as
@@ -118,6 +118,28 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
 9. **The HUD rates** (`ATTITUDE` 10 Hz, depth 5 Hz) are the module's choice; docs/10
    gives none. `pilot.wrench` is published from a 20 ms timer rather than on each
    `MANUAL_CONTROL`, so its rate is the declared 50 Hz whatever QGC's send rate is.
+
+10. **A disarm hangar asks for is answered by ArduSub's `COMMAND_ACK`**, and otherwise
+    judged unanswered only after 2.5 s (two `HEARTBEAT` periods and a margin), not after
+    the three sends 100 ms apart: the armed flag comes from the 1 Hz `HEARTBEAT`, and
+    judging it 300 ms after the request made every ordinary disarm against SITL a
+    disagreement. Found in the first flight against SITL.
+11. **ArduSub armed when the module starts** (a restart of the module, a previous run) is
+    hangar's own disarm, `disarming` meanwhile, not a disagreement: no window of this
+    instance was open for ArduSub to have left. An arm outside the window after the
+    module has once seen ArduSub disarmed is the disagreement docs/07 describes.
+12. **The telemetry topics carry `StaleAfter=500ms`** (`power.battery` 3 s) in the
+    manifest: at three periods, 60 ms, every scheduler hiccup of ArduSub or the link made
+    `nav.depth` an input fault for the safety module and a failsafe while armed. Half a
+    second of missing depth is the loss that matters.
+13. **The status line names up to three parameters still unanswered after `setup`** and
+    counts well-formed frames of message ids outside `tools/mavgen/messages.txt` as
+    `unknown-id`, not as rejected: a name the firmware does not know is never answered,
+    and ArduSub streams dozens of message types the module does not read.
+14. **`ardusub.params` uses the names of ArduSub 4.7** (`MAV_GCS_SYSID`, `BATT_FS_LOW_ACT`)
+    and assigns one button, `BTN15_FUNCTION 4` (disarm), because ArduSub refuses to arm
+    without a disarm or arm-toggle button; hangar sends every button as 0, so it is
+    never pressed (docs/10 "ArduSub's parameters" says the same).
 
 ## Until the bridge, the recorder, and the vehicle
 

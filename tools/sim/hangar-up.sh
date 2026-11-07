@@ -85,8 +85,9 @@ hangar is up, two managers on this host (the "tether" is the same-host shim, unt
 
 The vehicle's mavlink module waits for SITL on 127.0.0.1:14560:
   HANGAR_SIM=1 $here/run.sh up          (MAVProxy --out 127.0.0.1:14560, no 14550)
-QGroundControl connects to the topside's module on 14550 as it would to a vehicle:
+The topside's module sends the vehicle's heartbeat to QGroundControl's port, 127.0.0.1:14550:
   qgroundcontrol                          (Manual, Disarmed; arm there, drive with the sticks)
+  builddir/pilot arm hold 2 fwd 8 down 6 yaw 5 up 4 hold 2 disarm   (no QGC: tools/sim/pilot.c)
 Before the first arm, once per SITL start (SITL starts with default parameters):
   HANGAR_ROOT=$root_v $builddir/hangar ardusub-setup
   HANGAR_ROOT=$root_v $builddir/hangar check

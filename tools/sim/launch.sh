@@ -32,8 +32,11 @@ start() {
     # with --model JSON, sends to 127.0.0.1:9002 and waits until something answers.
     # -r runs the world on start, -v 4 is verbose. remain-on-exit keeps a crashed
     # window's output on screen.
+    # SIM_HEADLESS=1 (run.sh): the server alone, -s, no GUI process at all.
+    local gz_mode=""
+    [ "${SIM_HEADLESS:-0}" = 1 ] && gz_mode="-s"
     tmux new-session -d -s sim -n gazebo -c /home/sim \
-        "gz sim -v 4 -r $world 2>&1 | tee -a $work/gazebo.log"
+        "gz sim $gz_mode -v 4 -r $world 2>&1 | tee -a $work/gazebo.log"
     tmux set-option -t sim remain-on-exit on
 
     # ArduSub SITL with MAVProxy in front. Flags, from sim_vehicle.py at the pinned tag:
