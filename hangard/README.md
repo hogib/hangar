@@ -1,8 +1,11 @@
-# hangard, stage 2a: the manager and the library's side of it
+# hangard, stages 2a and 2b: the manager, calls and parameters
 
 `hangard` is the module manager of `docs/03-manager.md`, over the manifests of
-`docs/02-manifest.md`; `hangar` is the command of `docs/12-tools.md`, the stage-2a
-subset. Both are GPL-3.0-or-later, C11, nothing beyond libc and the kernel, and build
+`docs/02-manifest.md`; `hangar` is the command of `docs/12-tools.md`, the stage-2
+subset. Stage 2b added calls (`docs/04-calls.md`) and parameters
+(`docs/05-parameters.md`) riding on topics: the library's `hg_call` and `hg_params`
+(`lib/hg/NOTES.md`, "Stage 2b additions"), the manager's `call`, `method`,
+`param-read` and `param-write` requests, and `hangar call` and `hangar param`. Both are GPL-3.0-or-later, C11, nothing beyond libc and the kernel, and build
 static for musl (`zig cc -target aarch64-linux-musl`). The library side (the control
 socket client, the module page, `hg_pub_open` through the manager) is in `lib/hg`
 and stays LGPL. The plan is `lib/hg/PLAN.md`, "Stage 2 as built".
@@ -19,13 +22,15 @@ and stays LGPL. The plan is `lib/hg/PLAN.md`, "Stage 2 as built".
 | `registry.c` | the text registry, `/proc`, users and groups from `/etc/passwd` and `/etc/group` read by hand |
 | `topics.c` | topic files created on a module's behalf by docs/01 "Opening", the dead-writer flag, the directory word, the second-writer check |
 | `health.c` | states and transitions, the health tick, back-off, `Burst`, `OnGiveUp`, exits, stops |
-| `control.c` | the control socket server |
+| `control.c` | the control socket server; since 2b also the operators' calls on `hangar.<role>.admin.req`, `method`, `param-read` and `param-write` |
 | `msg/hangar_system.msg`, `msg/hangar_modules.msg` | the types of `hangar.<role>.system` and `.modules`; `make msg` generates them into `msg/` with the others |
 | `hangard.mk` | the build rules, included by the root Makefile |
 | `hangard.service` | the systemd unit of docs/03 |
-| `tests/` | four suites and the toy modules (below) |
+| `tests/` | six suites and the toy modules (below) |
 | `../hangar/hangar.c` | the command |
 | `../lib/hg/hg_control.h/.c` | the control socket's wire format and client |
+| `../lib/hg/hg_call.h/.c`, `hg_params.h/.c` | calls and parameters in the library (2b) |
+| `../msg/set_params_rep.msg` | the reply of every `set_params` (2b; the manager generates the same type) |
 
 ## Running it standalone, as an ordinary user
 
@@ -79,7 +84,11 @@ are identified by `SO_PEERCRED` and `SO_PEERGROUPS`. The same text is in
 |---|---|---|
 | `page` | a module's main process (`hg_init`) | `ok\n` + the page descriptor (`SCM_RIGHTS`); refused if the pid is not a module's main process, the module is `Legacy`, or `TracerPid` in `/proc/<pid>/status` is not 0 |
 | `open <topic> hash=<16 hex> payload=<bytes> schema=<len>\n<schema bytes>` | a module's main process (`hg_pub_open`) | `ok\n` + the writable topic descriptor. Checked: the topic is one of the module's declared or implicit outputs; the schema parses and hashes to the hash given; the hash is the declared type's (`frame`: any frame schema); no other live process holds the file for writing. Then the file is created by docs/01 "Opening": temporary file, `posix_fallocate`, header, wake file (`O_CREAT`, once per boot), bit 2 and a wake on the old file, rename, directory word bumped and woken. A `boot=<32 hex> first=<seq>` pair (the bridge's mirrored topics) is parsed and refused: no bridge in this stage |
-| `restart-self` | a module's main process | `ok\n`: a stop and a start that counts no failure |
+| `restart-self` | a module's main process | `ok\n`: a stop and a start that counts no failure (a `@restart` parameter changed; the library repeats the request while the manager is not listening) |
+| `call <module>.<method> deadline=<ms> type=<hex> body=<len>\n<body>` | `hangar-admin` | the manager, the one writer of `hangar.<role>.admin.req`, publishes the request envelope with `admin:<user>` in `caller` (the user from `/etc/passwd`, else the uid) and the body after it, and replies `ok <call_id> <caller_id> <module>.rep\n`; the command reads the reply on the server's `.rep` topic. Refused for a method no module here serves (`set_params` of a `[Params]` module counts), for a body larger than the request type, and from outside `hangar-admin`. `type=` is passed through: the server's check is the one that counts (`HG_E_BADTYPE`) |
+| `method <module>.<method>` | group `hangar` | `ok\nreq=<type> hash=<hex> size=<n> rep=<type> hash=<hex> size=<n> deadline=<ms> running=<0\|1> reqschema=<len> repschema=<len>\n` then the two schema texts: what `hangar call` builds a request from by field name |
+| `param-read <module>` | `hangar-admin` | `ok\ntype=<name> hash=<hex> running=<0\|1> schema=<len> file=<len>\n` then the parameter type's text (attributes included) and the saved file, empty when none |
+| `param-write <module>\n<name = value lines>` | `hangar-admin` | for a module that is not running: the saved values (the defaults when there is no file, or when the file is refused: that is what correcting it means, logged) with the lines applied, every field checked against its range, written and `fsync`ed as the module's user from a short-lived child when root, version one above the saved one, set by `admin:<user>`. `ok version=<n>\n`. Refused while the module runs |
 | `status` | group `hangar` | `ok\n`, then `system <nominal\|degraded\|failsafe> <since_ns> <reason>` and one `module <name> <state> <pid> <failures> <last_exit> <since_ns> <status line>` per module; `last_exit` is `exit:<n>`, `signal:<n>`, `unknown` or `-` |
 | `wiring <module>` | group `hangar` | `ok\n` then the wiring text as handed to the module (for `hangar show`) |
 | `start`, `stop`, `restart <module>` | `hangar-admin` | `ok\n` or `err <reason>\n`. A start or restart by hand clears the module's failure history |
@@ -116,7 +125,7 @@ docs/03 says. Without `HANGAR_CONTROL` nothing changes from stage 1 except the
 
 ## Tests
 
-`make check-hangard` (part of `check`) runs four suites, each under 30 s, as an
+`make check-hangard` (part of `check`) runs six suites, each under 30 s, as an
 ordinary user under a `$HANGAR_ROOT` of its own on tmpfs
 (`/dev/shm/hangar-test-<uid>/hangard-<suite>-<pid>`, `$HANGAR_TEST_BASE` overrides):
 
@@ -126,25 +135,57 @@ ordinary user under a `$HANGAR_ROOT` of its own on tmpfs
 | `hangard_run` | a manager with a talker and a listener: ready via the page, `status`/`stop`/`start`/`restart`/`wiring`, `page` refused to a non-module, `open` refused for an undeclared topic, a wrong type and a second writer, the registry's contents and modes, the journald stream protocol against a stand-in socket, the fallback log, `hangar status\|topics\|echo\|hz\|show\|run`, shutdown |
 | `hangard_health` | staleness, back-off doubling, `ResetAfter`, `Burst` → `failed` and `degrade` on `hangar.vehicle.system`, exit 78, never ready after `StartGrace`, the watchdog, an actuator's `Neutral` run on `SIGKILL` and at shutdown, failsafe on a give-up and on a failing `Neutral`, `clear-failsafe`, the shutdown order |
 | `hangard_adopt` | the manager killed with `SIGKILL` under load, adoption, a module killed meanwhile flagged and restarted, a registry pid of another process treated as dead, the system state kept, reload with a changed, a removed and an added manifest and a refused graph, `SIGHUP`, re-exec keeping the modules as children and the manager's sequence numbers, the idle manager's wake-ups |
+| `hangard_calls` | docs/04 under the manager: the toy server and caller, and the suite itself as the wired module `tester` (its wiring fetched with `wiring tester`, written to a file, `HANGAR_WIRING_FILE`), calling in process. A round trip with every reply referencing its request; a request and a data topic ready in one `hg_wait` pass (the lazy server); every status code on purpose: refused with the reason, noroute at once, an undeclared call, a local type mismatch, busy for the sixteenth call with the fifteen then answered, timeout, expired published by the restarted server, the deadline overrun logged, and from a re-executed child as `rawcaller` publishing hand-made envelopes: nomethod, badtype, denied, the `caller` field ignored on a module's topic; the server restarting with requests waiting (served when in time, `HG_E_EXPIRED` when not), a second restart running nothing again; `hangar call` as `admin:<user>` allowed where `Allow` names `admin` and denied elsewhere, refused by the manager for a method nobody serves, JSON, the admin topic's envelopes |
+| `hangard_params` | docs/05 under the manager with the `paramer` toy (`depth_hold_params`): the defaults file written at the first start, the topic's header carrying the attributes; set, stale, range and validator refusals leaving the values in force, every attempt a referenced reply; two clients racing (a re-executed child as `tester2`), one refused as stale and its retry accepted; `@restart`: saved and not applied, `restart_pending` with the old values, the new instance publishing the requester's name, not counted as a failure, the mark cleared; the refusal while pending (the module standalone, with no manager to restart it); exit 78 on an unknown field, a bad value, a value out of range, a validator refusal, a missing header and an empty file, the manager not restarting it; a missing field taking its default, logged; a request queued through a restart applied when in time and expired otherwise; `hangar param get/set/load/reset`, and `set`/`get`/`reset` on a stopped module through `param-write`/`param-read` |
 
 The toy modules (`tests/modules/`, each a few dozen lines over lib/hg): `talker`
 (a rated depth topic; `--stop-after`, `--exit-after`), `listener` (`hg_ready`,
 `hg_alive`), `crasher`, `neverready`, `eventer` (`--stop-alive-after`, `--exit-78`),
 `actuator` and `neutral` (the Neutral command: appends a line to a file;
-`--fail`, `--hang`). `check-tsan-hangard` and `check-asan-hangard` (run by
-`check-tsan`/`check-asan`) rebuild the manifest suite under the sanitizers.
+`--fail`, `--hang`); since 2b `server` (serves `echo`, `refuse`, `nap`, `secret`,
+`adminonly` as its wiring lists them; `--data T` a data topic read beside the
+request topics, `--lazy MS`, `--nap-ms`), `caller` (`--call`, `--mode sync|async`,
+`--count`, `--timeout`, `--out FILE` for the outcomes, `--topic` a rated output kept
+up meanwhile) and `paramer` (`[Params] Type=depth_hold_params`, a validator
+refusing `enabled` with `max_thrust` 0). `check-tsan-hangard` and
+`check-asan-hangard` (run by `check-tsan`/`check-asan`) rebuild the manifest suite
+under the sanitizers; the call and parameter code runs under them in lib/hg's
+`hg_call` suite.
 
-## What stage 2a leaves to 2b and later
+## What stage 2b added in the manager
 
-- Calls and parameters (`docs/04`, `docs/05`): `hg_call_start`/`poll`/`hg_call`,
-  `hg_serve`, the envelopes, `set_params`, saved values, `@restart`; the control
-  requests `call` and `param-write`; publishing on `hangar.<role>.admin.req` (the
-  topic exists, nothing is published on it yet); `hangar call`, `hangar param`. The
-  wiring already carries `serve` and `call` lines with the generated types, and the
-  `.req`/`.rep`/`.params` outputs with 16 slots, so a 2b module needs no wiring change.
-  Not emitted yet: the implicit `serve set_params` line of a module with `[Params]`
-  (its request type `set_params:<type>` is 2b's); the `.rep` payload already allows for
-  `set_params_rep`.
+- **The implicit `serve set_params` line** of a module with `[Params]` (docs/05: a
+  method like any other), with the generated types `set_params:<type>` (`u64
+  base_version`, then the parameter struct's fields) and `set_params_rep`
+  (`msg/set_params_rep.msg`; the manager generates the same canonical form, so a
+  module linking the generated file and one that does not agree on the hash). Its
+  `Allow` list is the section's, else `* admin`, else none for `safety`, `mux` and a
+  module with an actuator output; the graph check applies to `[Call x.set_params]`
+  like any call. The `.rep` payload of a `[Params]` module allows for the 16-byte
+  reply (2a sized it for 8).
+- **Three wiring additions** (`lib/hg/NOTES.md` deviation 13): `role <role>`, the
+  word `actuator` on an actuator output's `pub` line, `noroute=1` on a `call` line
+  nothing serves on either side.
+- **The control requests** `call`, `method`, `param-read`, `param-write` (table
+  above). `restart-self` was complete in 2a. The admin topic's `call_id` counts from
+  1 and continues across a re-exec (`calls <n>` in the hand-off state); after a
+  crash it starts again, which the command tolerates by matching `received_ns`
+  against its request as the library does.
+- **`hangar call <module>.<method> [field=value ...] [--timeout MS] [--json]`**: the
+  request built from the method's request schema (`method`), `call` through the
+  manager, the reply read from the server's `.rep` topic (subscribed before the
+  request is published, so none is missed), decoded by the reply schema. Exit 0 on
+  `HG_OK`, 1 otherwise, the status and reason printed.
+- **`hangar param get|set|load|reset <module> ...`** (docs/05's table): `get` from
+  the topic while the module runs, else the saved file, else the defaults; `set`
+  reads the topic, applies the fields and calls `set_params` as `admin:<user>`,
+  repeating up to three times when refused as stale; `load` applies a saved file's
+  lines as one change; `reset` applies the defaults from the schema's attributes
+  (the topic's header, or `param-read`'s type) to the named fields or all. For a
+  module that is not running the same four go through `param-write`.
+
+## What remains for the bridge and later
+
 - The bridge (`docs/08`): `bridge.conf`, `mirror` lines, `subglob *.req` for methods
   the bridge carries, `remote=1` calls, mirrored opens (`boot=`/`first=`). A manifest
   with `[Bridge]` is refused, saying so.
@@ -153,6 +194,9 @@ The toy modules (`tests/modules/`, each a few dozen lines over lib/hg): `talker`
   `docs/09`).
 - `hangar check`, `top`, `graph`, `bench`; `hangar echo` of a `.req`/`.rep` body by its
   type hash (the envelope decodes like any schema).
+- Mirrored request topics: `hg_pub_open_mirror` and the manager's `open` need the
+  sending module's name for the header's `writer` (`lib/hg/NOTES.md`, "What stage 2b
+  leaves"); the `subglob *.req` line and `*.req` among a server's `Sources`.
 - Running the suites as root (user switching, `SCHED_FIFO`, capabilities, cgroups) on
   a machine or VM; they are skipped and reported here.
 
@@ -233,3 +277,18 @@ to decide. Nothing here changes behaviour silently.
     source is `hangard/msg/hangar_system.msg`: the generator prints the stem's
     canonical place. The `.msg` sources live here so that the manager's types are the
     manager's; `make msg` regenerates both.
+20. **`param-write` replaces a saved file it cannot read.** docs/05 says the file is
+    corrected through `param-write`; a file refused at load (an unknown field, a bad
+    value) could not be the base of the correction, so the defaults are, with the
+    `# version` line's number when it parses, and the log says so. A file that loads
+    is the base, as the text says.
+21. **`method` is a control request docs/03 does not list**, read by group `hangar`:
+    `hangar call` builds a request by field name and needs the request type's
+    schema, which no topic header carries (a `.req` header has the envelope and a
+    byte array). The manager has the type from `MsgDir`; the request hands it over.
+    `param-read` exists for the same reason on a module that is not running.
+22. **A control packet is 17 KB** (`HG_CONTROL_MAX` 17408): a 16 KB request body
+    with its `call` line fits one `SOCK_SEQPACKET` message.
+23. **The admin request's `caller` is `admin:<name>` from `/etc/passwd`**, the uid
+    as digits when it has no line (a user namespace, a test), so that the token is
+    never empty.

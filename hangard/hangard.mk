@@ -5,7 +5,7 @@
 # and the kernel, so everything here builds static for musl.
 #
 #   make hangard-all        builddir/hangard, builddir/hangar, the toy modules
-#   make check-hangard      the four suites (part of check)
+#   make check-hangard      the six suites (part of check)
 #   make check-tsan-hangard / check-asan-hangard
 #                           the library-side suite (manifests, wiring) under a sanitizer
 #   make msg                also regenerates msg/hangar_{system,modules}.{h,c}
@@ -18,9 +18,9 @@ HANGARD_SRC := hangard/hangard.c hangard/conf.c hangard/registry.c hangard/topic
 HANGAR_CLI_SRC := hangar/hangar.c $(HANGARD_CORE_SRC)
 HANGARD_MSG_SRC := hangard/msg/hangar_system.msg hangard/msg/hangar_modules.msg
 HANGARD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ihangard -Imsg -Ilib/common
-HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral
+HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral server caller paramer
 HANGARD_TOYDIR := $(TESTDIR)/hangard-modules
-HANGARD_TESTS := hangard_manifest hangard_run hangard_health hangard_adopt
+HANGARD_TESTS := hangard_manifest hangard_run hangard_health hangard_adopt hangard_calls hangard_params
 HANGARD_LIB_TESTS := hangard_manifest
 
 # Everything under hangard/, hangar/ and msg/ takes lib/hg's flags.
@@ -39,7 +39,9 @@ $(BUILDDIR)/hangar: $(call obj,$(HANGAR_CLI_SRC)) $(call obj,$(HG_SRC))
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
 
-$(HANGARD_TOYDIR)/%: $(OBJDIR)/hangard/tests/modules/%.o $(call obj,$(HG_SRC)) $(OBJDIR)/msg/depth.o
+HANGARD_MSG_OBJS := $(OBJDIR)/msg/depth.o $(OBJDIR)/msg/depth_hold_params.o $(OBJDIR)/msg/set_params_rep.o \
+	$(OBJDIR)/msg/empty.o
+$(HANGARD_TOYDIR)/%: $(OBJDIR)/hangard/tests/modules/%.o $(call obj,$(HG_SRC)) $(HANGARD_MSG_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
 
@@ -53,7 +55,7 @@ all: $(BUILDDIR)/hangard $(BUILDDIR)/hangar
 # built hangard, hangar and toy modules, whose paths they take from the
 # environment, under a $HANGAR_ROOT of their own on tmpfs.
 define hangard_test_rule
-$(TESTDIR)/test_$(1): $(OBJDIR)/hangard/tests/test_$(1).o $(call obj,$(HANGARD_CORE_SRC)) $(call obj,$(HG_SRC)) $(OBJDIR)/msg/depth.o
+$(TESTDIR)/test_$(1): $(OBJDIR)/hangard/tests/test_$(1).o $(call obj,$(HANGARD_CORE_SRC)) $(call obj,$(HG_SRC)) $(HANGARD_MSG_OBJS)
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(HG_LDLIBS) $$(LDLIBS)
 endef

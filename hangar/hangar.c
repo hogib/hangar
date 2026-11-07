@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* hangar: the command-line tool (docs/12-tools.md), stage 2a subset:
+/* hangar: the command-line tool (docs/12-tools.md), stages 2a and 2b:
  *   status, start|stop|restart <module>, reload, restart-manager,
  *   clear-failsafe        over the control socket
  *   show <module>         its wiring (from the manager) and its page
@@ -7,6 +7,14 @@
  *   echo <topic>          messages decoded by the schema in the header
  *   hz <topic>            measured rate and jitter
  *   run <module>          a module in the foreground, wired from its manifest
+ *   call <module>.<method> [field=value ...]
+ *                         a call as admin:<user>, through the manager's
+ *                         hangar.<role>.admin.req (docs/04 "Admin calls");
+ *                         the reply read from the server's .rep topic
+ *   param get|set|load|reset <module> ...
+ *                         parameters (docs/05): the topic, set_params
+ *                         through the manager, or param-write for a module
+ *                         that is not running
  * No daemon behind it: topics and pages are read directly. Plain ANSI
  * output. Paths follow $HANGAR_ROOT like the manager's. */
 #define _GNU_SOURCE
@@ -23,7 +31,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "hg_call.h"
 #include "hg_control.h"
+#include "hg_params.h"
 #include "hg_topic.h"
 #include "manifest.h"
 #include "wiring.h"
@@ -621,12 +631,532 @@ static int cmd_run(int argc, char **argv)
 	setenv("HANGAR_TOPIC_DIR", tdir, 1);
 	setenv("HANGAR_MODULE", m->name, 1);
 	setenv("HANGAR_WIRING_FILE", wpath, 1);
+	setenv("HANGAR_STATE_DIR", tdir, 1); /* a [Params] module's saved file, beside its topics */
 	unsetenv("HANGAR_WIRING");
 	unsetenv("HANGAR_CONTROL");
 	for (int i = 0; i < m->n_env; i++)
 		putenv(m->env[i]);
 	execv(m->exec.argv[0], m->exec.argv);
 	return fail("cannot run %s: %s", m->exec.argv[0], strerror(errno));
+}
+
+/* ---- call and param ---------------------------------------------------------- */
+
+/* One request of any bytes; the reply's length, or -1 after a message. */
+static ssize_t request_bin(const void *req, size_t len, char *reply, size_t replylen)
+{
+	unsetenv("HANGAR_CONTROL");
+	ssize_t n = hg_control_call(control_path(), req, len, reply, replylen, NULL, 0);
+	if (n < 0) {
+		fail("cannot reach the manager at %s: %s", control_path(), strerror(errno));
+		return -1;
+	}
+	if (!hg_control_ok(reply)) {
+		char *nl = strchr(reply, '\n');
+		if (nl)
+			*nl = 0;
+		fail("%s", strncmp(reply, "err ", 4) == 0 ? reply + 4 : reply);
+		return -1;
+	}
+	return n;
+}
+
+/* What the manager says about a method: its types, with their schemas. */
+struct method_info {
+	char req_name[64], rep_name[64];
+	unsigned long long req_hash, rep_hash;
+	unsigned req_size, rep_size, req_schema_len, rep_schema_len;
+	unsigned long long deadline_ms;
+	int running;
+	struct hg_schema req, rep;
+};
+
+static int method_info(const char *target, struct method_info *mi)
+{
+	static char reply[HG_CONTROL_MAX];
+	char req[128];
+	snprintf(req, sizeof req, "method %s", target);
+	ssize_t n = request_bin(req, strlen(req), reply, sizeof reply);
+	if (n < 0)
+		return -1;
+	memset(mi, 0, sizeof *mi);
+	char *line = strchr(reply, '\n');
+	char *end = line ? strchr(line + 1, '\n') : NULL;
+	if (!line || !end)
+		return fail("method: malformed reply");
+	*end = 0;
+	if (sscanf(line + 1, "req=%63s hash=%llx size=%u rep=%63s hash=%llx size=%u deadline=%llu running=%d reqschema=%u repschema=%u",
+		   mi->req_name, &mi->req_hash, &mi->req_size, mi->rep_name, &mi->rep_hash, &mi->rep_size,
+		   &mi->deadline_ms, &mi->running, &mi->req_schema_len, &mi->rep_schema_len) != 10)
+		return fail("method: malformed reply line: %s", line + 1);
+	const char *rq = end + 1, *rp = rq + mi->req_schema_len;
+	if (rp + mi->rep_schema_len > reply + n)
+		return fail("method: the schemas are short");
+	char err[128];
+	if (hg_schema_parse(rq, mi->req_schema_len, &mi->req, err, sizeof err) < 0 ||
+	    hg_schema_parse(rp, mi->rep_schema_len, &mi->rep, err, sizeof err) < 0)
+		return fail("method: schema: %s", err);
+	mi->req.type.name = mi->req_name;
+	mi->rep.type.name = mi->rep_name;
+	return 0;
+}
+
+/* field=value into a request: numbers as written, arrays comma-separated,
+ * text quoted or bare. */
+static int set_field(const struct hg_type *t, unsigned char *buf, const char *kv)
+{
+	const char *eq = strchr(kv, '=');
+	if (!eq || eq == kv)
+		return fail("'%s' is not field=value", kv);
+	char name[80];
+	snprintf(name, sizeof name, "%.*s", (int)(eq - kv), kv);
+	const struct hg_field *f = hg_type_field(t, name);
+	if (!f)
+		return fail("%s: no field %s", t->name, name);
+	const char *v = eq + 1;
+	char quoted[HG_SCHEMA_MAX];
+	if (f->kind == HG_CHAR && v[0] != '"') {
+		snprintf(quoted, sizeof quoted, "\"%s\"", v);
+		v = quoted;
+	}
+	char err[160];
+	if (hg_param_parse(f, v, strlen(v), buf, err, sizeof err) < 0)
+		return fail("%s", err);
+	return 0;
+}
+
+static void print_fields(const struct hg_type *t, const unsigned char *buf, uint32_t from, int json,
+			 const char *const *only, int n_only)
+{
+	int first = 1;
+	for (uint32_t i = from; i < t->n_fields; i++) {
+		const struct hg_field *f = &t->fields[i];
+		if (n_only) {
+			int want = 0;
+			for (int k = 0; k < n_only; k++)
+				if (strcmp(only[k], f->name) == 0)
+					want = 1;
+			if (!want)
+				continue;
+		}
+		if (json) {
+			printf("%s\"%s\":", first ? "" : ",", f->name);
+			print_value(f, buf + f->offset, 1);
+		} else {
+			printf("%-20s ", f->name);
+			print_value(f, buf + f->offset, 0);
+			printf("%s%s\n", f->comment[0] ? "    # " : "", f->comment);
+		}
+		first = 0;
+	}
+}
+
+/* Sends the call and waits for its reply on the server's .rep topic. The
+ * subscription is opened before the request is published, so the reply
+ * cannot be missed. Returns the status, HG_E_TIMEOUT included; -100 when
+ * the manager refused the request. */
+static int do_call(const char *target, const struct method_info *mi, const unsigned char *body, size_t body_len,
+		   long timeout_ms, struct hg_call_reply_envelope *env, unsigned char *rep_body, size_t rep_max)
+{
+	const char *dot = strchr(target, '.');
+	char rep_topic[64];
+	snprintf(rep_topic, sizeof rep_topic, "%.*s.rep", (int)(dot - target), target);
+	topic_dir();
+	hg_sub *sub = hg_sub_open(rep_topic, NULL);
+	if (!sub) {
+		fail("cannot subscribe to %s: %s", rep_topic, strerror(errno));
+		return -100;
+	}
+	static unsigned char req[HG_CONTROL_MAX];
+	int n = snprintf((char *)req, sizeof req, "call %s deadline=%ld type=%016llx body=%zu\n", target, timeout_ms,
+			 mi->req_hash, body_len);
+	memcpy(req + n, body, body_len);
+	static char reply[HG_CONTROL_MAX];
+	if (request_bin(req, (size_t)n + body_len, reply, sizeof reply) < 0) {
+		hg_sub_close(sub);
+		return -100;
+	}
+	unsigned long long call_id;
+	unsigned caller_id;
+	if (sscanf(reply, "ok %llu %u", &call_id, &caller_id) != 2) {
+		hg_sub_close(sub);
+		fail("call: malformed reply %s", reply);
+		return -100;
+	}
+	uint64_t deadline = hg_now_ns() + (uint64_t)timeout_ms * 1000000u;
+	static unsigned char buf[HG_CALL_REP_ENVELOPE + HG_CALL_MAX_PAYLOAD];
+	int status = HG_E_TIMEOUT;
+	memset(env, 0, sizeof *env);
+	for (;;) {
+		struct hg_info info;
+		enum hg_result r = hg_next(sub, buf, sizeof buf, &info);
+		if (r == HG_MSG) {
+			struct hg_call_reply_envelope e;
+			memcpy(&e, buf, sizeof e);
+			if (e.call_id == call_id && e.caller_id == caller_id) {
+				*env = e;
+				status = e.status;
+				size_t have = hg_sub_payload_bytes(sub) - HG_CALL_REP_ENVELOPE;
+				if (have > rep_max)
+					have = rep_max;
+				memcpy(rep_body, buf + HG_CALL_REP_ENVELOPE, have);
+				break;
+			}
+			continue;
+		}
+		uint64_t now = hg_now_ns();
+		if (now >= deadline) {
+			snprintf(env->reason, sizeof env->reason, "no reply within %ld ms", timeout_ms);
+			break;
+		}
+		hg_wait(&sub, 1, (int)((deadline - now) / 1000000u) + 1);
+	}
+	hg_sub_close(sub);
+	return status;
+}
+
+static int cmd_call(int argc, char **argv)
+{
+	const char *target = NULL;
+	long timeout_ms = 1000;
+	int json = 0;
+	char *kv[128];
+	int nkv = 0;
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc)
+			timeout_ms = atol(argv[++i]);
+		else if (strcmp(argv[i], "--json") == 0)
+			json = 1;
+		else if (!target && argv[i][0] != '-')
+			target = argv[i];
+		else if (strchr(argv[i], '=') && nkv < 128)
+			kv[nkv++] = argv[i];
+		else
+			return fail("call: unknown argument %s", argv[i]);
+	}
+	if (!target || !strchr(target, '.') || timeout_ms <= 0)
+		return fail("usage: hangar call <module>.<method> [field=value ...] [--timeout MS] [--json]");
+	static struct method_info mi;
+	if (method_info(target, &mi) < 0)
+		return 1;
+	static unsigned char body[HG_CALL_MAX_PAYLOAD], rep_body[HG_CALL_MAX_PAYLOAD];
+	memset(body, 0, sizeof body);
+	for (int i = 0; i < nkv; i++)
+		if (set_field(&mi.req.type, body, kv[i]))
+			return 1;
+	struct hg_call_reply_envelope env;
+	int st = do_call(target, &mi, body, mi.req.type.payload_bytes, timeout_ms, &env, rep_body, sizeof rep_body);
+	if (st == -100)
+		return 1;
+	if (json) {
+		printf("{\"status\":\"%s\",\"call_id\":%llu,\"reason\":\"%.63s\"", hg_status_name(st),
+		       (unsigned long long)env.call_id, env.reason);
+		if (st == HG_OK) {
+			printf(",\"reply\":{");
+			print_fields(&mi.rep.type, rep_body, 0, 1, NULL, 0);
+			printf("}");
+		}
+		printf("}\n");
+	} else {
+		printf("%s%s%.63s\n", hg_status_name(st), env.reason[0] ? ": " : "", env.reason);
+		if (st == HG_OK)
+			print_fields(&mi.rep.type, rep_body, 0, 0, NULL, 0);
+	}
+	return st == HG_OK ? 0 : 1;
+}
+
+/* ---- param ---- */
+
+/* The newest <module>.params message and its schema; -1 if the topic is
+ * absent (the module has not run). */
+static int params_topic(const char *module, struct hg_schema *schema, unsigned char *buf, size_t buflen,
+			uint32_t *payload)
+{
+	char name[64];
+	snprintf(name, sizeof name, "%s.params", module);
+	topic_dir();
+	hg_sub *s = hg_sub_open(name, NULL);
+	if (!s)
+		return -1;
+	struct hg_info info;
+	enum hg_result r = hg_latest(s, buf, buflen, &info);
+	if (r != HG_MSG) {
+		hg_sub_close(s);
+		return -1;
+	}
+	uint32_t slen;
+	const char *text = hg_sub_schema(s, &slen);
+	char err[128];
+	if (!text || hg_schema_parse(text, slen, schema, err, sizeof err) < 0) {
+		hg_sub_close(s);
+		return -1;
+	}
+	*payload = hg_sub_payload_bytes(s);
+	hg_sub_close(s);
+	return 0;
+}
+
+/* param-read: the type's schema (attributes included) and the saved file. */
+struct saved_params {
+	char type_name[64];
+	int running;
+	struct hg_schema schema;
+	char file[HG_SCHEMA_MAX * 4];
+	unsigned file_len;
+};
+
+static int params_saved(const char *module, struct saved_params *sp)
+{
+	static char reply[HG_CONTROL_MAX];
+	char req[128];
+	snprintf(req, sizeof req, "param-read %s", module);
+	ssize_t n = request_bin(req, strlen(req), reply, sizeof reply);
+	if (n < 0)
+		return -1;
+	memset(sp, 0, sizeof *sp);
+	char *line = strchr(reply, '\n');
+	char *end = line ? strchr(line + 1, '\n') : NULL;
+	unsigned long long hash;
+	unsigned slen = 0;
+	if (!line || !end)
+		return fail("param-read: malformed reply");
+	*end = 0;
+	if (sscanf(line + 1, "type=%63s hash=%llx running=%d schema=%u file=%u", sp->type_name, &hash, &sp->running,
+		   &slen, &sp->file_len) != 5)
+		return fail("param-read: malformed reply line");
+	const char *schema = end + 1, *file = schema + slen;
+	if (file + sp->file_len > reply + n || sp->file_len >= sizeof sp->file)
+		return fail("param-read: short reply");
+	char err[128];
+	if (hg_schema_parse(schema, slen, &sp->schema, err, sizeof err) < 0)
+		return fail("param-read: schema: %s", err);
+	sp->schema.type.name = sp->type_name;
+	memcpy(sp->file, file, sp->file_len);
+	sp->file[sp->file_len] = 0;
+	return 0;
+}
+
+static int cmd_param_get(const char *module, int argc, char **argv, int json)
+{
+	static struct hg_schema schema;
+	static unsigned char buf[64 + HG_SCHEMA_MAX * 8];
+	uint32_t payload;
+	/* The topic, while the module runs; a stopped module's topic still
+	 * holds its last message, but the saved file may have moved on. */
+	static struct saved_params sp;
+	if (params_saved(module, &sp) < 0)
+		return 1;
+	if (sp.running && params_topic(module, &schema, buf, sizeof buf, &payload) == 0) {
+		uint64_t version;
+		memcpy(&version, buf, 8);
+		if (json) {
+			printf("{\"version\":%llu,\"changed_by\":\"%.47s\",\"restart_pending\":%s,\"params\":{",
+			       (unsigned long long)version, (const char *)buf + 8, buf[56] ? "true" : "false");
+			print_fields(&schema.type, buf, 4, 1, (const char *const *)argv, argc);
+			printf("}}\n");
+		} else {
+			printf("# %s.params: version %llu, changed by %.47s%s\n", module, (unsigned long long)version,
+			       (const char *)buf + 8, buf[56] ? ", restart pending" : "");
+			print_fields(&schema.type, buf, 4, 0, (const char *const *)argv, argc);
+		}
+		return 0;
+	}
+	/* Not running: the saved file, or the defaults when it has not run yet. */
+	if (!sp.file_len) {
+		printf("# %s has no %s.params topic and no saved file: it has not run yet; the defaults apply\n", module,
+		       module);
+		static struct hg_param_attr attrs[HG_SCHEMA_MAX_FIELDS];
+		static unsigned char vals[HG_SCHEMA_MAX * 8];
+		char err[160];
+		if (hg_params_attrs(&sp.schema.type, attrs, err, sizeof err) < 0 ||
+		    hg_params_defaults(&sp.schema.type, attrs, vals, err, sizeof err) < 0)
+			return fail("%s", err);
+		print_fields(&sp.schema.type, vals, 0, json, (const char *const *)argv, argc);
+		return 0;
+	}
+	printf("# %s has no %s.params topic (not running); the saved file:\n", module, module);
+	fputs(sp.file, stdout);
+	return 0;
+}
+
+/* Read, modify, set (docs/05 "Setting parameters"), retried up to three
+ * times when refused as stale; or param-write for a module not running.
+ * The changes are field=value pairs, or the lines of a saved file. */
+static int param_apply(const char *module, char **kv, int nkv, const char *lines, size_t lines_len, int json)
+{
+	char target[96];
+	snprintf(target, sizeof target, "%s.set_params", module);
+	static struct method_info mi;
+	if (method_info(target, &mi) < 0)
+		return 1;
+	if (!mi.running) {
+		/* param-write: the manager applies the lines to the saved values. */
+		static char req[HG_CONTROL_MAX];
+		int n = snprintf(req, sizeof req, "param-write %s\n", module);
+		for (int i = 0; i < nkv; i++) {
+			const char *eq = strchr(kv[i], '=');
+			if (!eq)
+				return fail("'%s' is not field=value", kv[i]);
+			char name[80];
+			snprintf(name, sizeof name, "%.*s", (int)(eq - kv[i]), kv[i]);
+			const struct hg_field *f = hg_type_field(&mi.req.type, name);
+			if (!f || strcmp(name, "base_version") == 0)
+				return fail("%s: no parameter %s", module, name);
+			if (f->kind == HG_CHAR && eq[1] != '"')
+				n += snprintf(req + n, sizeof req - (size_t)n, "%s = \"%s\"\n", name, eq + 1);
+			else
+				n += snprintf(req + n, sizeof req - (size_t)n, "%s = %s\n", name, eq + 1);
+			if (n >= (int)sizeof req - 1)
+				return fail("too many changes for one request");
+		}
+		if (lines) {
+			if ((size_t)n + lines_len >= sizeof req)
+				return fail("the file is too large for one request");
+			memcpy(req + n, lines, lines_len);
+			n += (int)lines_len;
+		}
+		static char reply[HG_CONTROL_MAX];
+		if (request_bin(req, (size_t)n, reply, sizeof reply) < 0)
+			return 1;
+		unsigned long long v = 0;
+		sscanf(reply, "ok version=%llu", &v);
+		if (json)
+			printf("{\"written\":true,\"version\":%llu}\n", v);
+		else
+			printf("%s is not running: saved file written, version %llu (applied at its next start)\n", module, v);
+		return 0;
+	}
+	static unsigned char topic[64 + HG_SCHEMA_MAX * 8], body[HG_CALL_MAX_PAYLOAD], rep_body[HG_CALL_MAX_PAYLOAD];
+	static struct hg_schema tschema;
+	for (int attempt = 1; attempt <= 3; attempt++) {
+		uint32_t payload;
+		if (params_topic(module, &tschema, topic, sizeof topic, &payload) < 0)
+			return fail("no %s.params topic: is %s running?", module, module);
+		if (payload < 64 || payload - 64 + 8 > mi.req.type.payload_bytes)
+			return fail("%s.params does not match %s", module, mi.req_name);
+		/* base_version, then the values in force, then the changes. */
+		memset(body, 0, sizeof body);
+		memcpy(body, topic, 8);
+		memcpy(body + 8, topic + 64, payload - 64);
+		for (int i = 0; i < nkv; i++) {
+			if (strncmp(kv[i], "base_version=", 13) == 0)
+				return fail("base_version is not a parameter");
+			if (set_field(&mi.req.type, body, kv[i]))
+				return 1;
+		}
+		if (lines) {
+			struct hg_params_header hdr;
+			char err[160];
+			if (hg_params_file_parse(&mi.req.type, lines, lines_len, body, &hdr, NULL, 0, err, sizeof err) < 0)
+				return fail("%s", err);
+		}
+		struct hg_call_reply_envelope env;
+		int st = do_call(target, &mi, body, mi.req.type.payload_bytes, (long)mi.deadline_ms * 10 + 1000, &env,
+				 rep_body, sizeof rep_body);
+		if (st == -100)
+			return 1;
+		if (st == HG_E_REFUSED && strncmp(env.reason, "stale", 5) == 0 && attempt < 3) {
+			fprintf(stderr, "hangar: %s; retrying\n", env.reason);
+			continue;
+		}
+		uint64_t version = 0;
+		memcpy(&version, rep_body, 8);
+		if (json)
+			printf("{\"status\":\"%s\",\"reason\":\"%.63s\",\"version\":%llu,\"restarting\":%s}\n",
+			       hg_status_name(st), env.reason, (unsigned long long)version, rep_body[8] ? "true" : "false");
+		else if (st == HG_OK)
+			printf("%s: version %llu%s\n", module, (unsigned long long)version,
+			       rep_body[8] ? " saved; the module restarts to apply it" : "");
+		else
+			printf("%s%s%.63s\n", hg_status_name(st), env.reason[0] ? ": " : "", env.reason);
+		return st == HG_OK ? 0 : 1;
+	}
+	return 1;
+}
+
+/* The defaults of the named fields (all when none), as field=value text. */
+static int param_reset(const char *module, int argc, char **argv, int json)
+{
+	static struct hg_schema tschema;
+	static unsigned char topic[64 + HG_SCHEMA_MAX * 8];
+	static struct saved_params sp;
+	static struct hg_param_attr attrs[HG_SCHEMA_MAX_FIELDS];
+	const struct hg_type *t;
+	uint32_t from = 0, payload;
+	if (params_topic(module, &tschema, topic, sizeof topic, &payload) == 0) {
+		t = &tschema.type;
+		from = 4; /* version, changed_by, restart_pending, reserved */
+	} else {
+		if (params_saved(module, &sp) < 0)
+			return 1;
+		t = &sp.schema.type;
+	}
+	char err[160];
+	if (hg_params_attrs(t, attrs, err, sizeof err) < 0)
+		return fail("%s", err);
+	static char text[HG_SCHEMA_MAX * 2];
+	static char *kv[HG_SCHEMA_MAX_FIELDS];
+	int n = 0, nkv = 0;
+	for (uint32_t i = from; i < t->n_fields; i++) {
+		const struct hg_field *f = &t->fields[i];
+		if (argc) {
+			int want = 0;
+			for (int k = 0; k < argc; k++)
+				if (strcmp(argv[k], f->name) == 0)
+					want = 1;
+			if (!want)
+				continue;
+		}
+		kv[nkv++] = text + n;
+		if (attrs[i].dflt_len)
+			n += snprintf(text + n, sizeof text - (size_t)n, "%s=%.*s", f->name, (int)attrs[i].dflt_len,
+				      attrs[i].dflt) + 1;
+		else
+			n += snprintf(text + n, sizeof text - (size_t)n, "%s=%s", f->name, f->kind == HG_CHAR ? "\"\"" : "0") + 1;
+	}
+	for (int k = 0; k < argc; k++)
+		if (!hg_type_field(t, argv[k]))
+			return fail("%s: no parameter %s", module, argv[k]);
+	return param_apply(module, kv, nkv, NULL, 0, json);
+}
+
+static int cmd_param(int argc, char **argv)
+{
+	int json = 0;
+	char *args[128];
+	int n = 0;
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--json") == 0)
+			json = 1;
+		else if (n < 128)
+			args[n++] = argv[i];
+	}
+	if (n < 2)
+		return fail("usage: hangar param get|set|load|reset <module> ...");
+	const char *what = args[0], *module = args[1];
+	if (strcmp(what, "get") == 0)
+		return cmd_param_get(module, n - 2, args + 2, json);
+	if (strcmp(what, "set") == 0) {
+		if (n < 3)
+			return fail("usage: hangar param set <module> field=value ...");
+		return param_apply(module, args + 2, n - 2, NULL, 0, json);
+	}
+	if (strcmp(what, "load") == 0) {
+		if (n != 3)
+			return fail("usage: hangar param load <module> <file>");
+		static char text[HG_SCHEMA_MAX * 4];
+		int fd = open(args[2], O_RDONLY | O_CLOEXEC);
+		if (fd < 0)
+			return fail("cannot read %s: %s", args[2], strerror(errno));
+		ssize_t len = read(fd, text, sizeof text - 1);
+		close(fd);
+		if (len < 0)
+			return fail("cannot read %s: %s", args[2], strerror(errno));
+		return param_apply(module, NULL, 0, text, (size_t)len, json);
+	}
+	if (strcmp(what, "reset") == 0)
+		return param_reset(module, n - 2, args + 2, json);
+	return fail("param: %s is not get, set, load or reset", what);
 }
 
 /* ---- main ---------------------------------------------------------------- */
@@ -644,6 +1174,13 @@ static void usage(void)
 	      "  echo <topic> [--rate] [--json] [--fields a,b] [--count N]\n"
 	      "  hz <topic> [--seconds N]\n"
 	      "  run <module>                a module in the foreground, wired from its manifest\n"
+	      "  call <module>.<method> [field=value ...] [--timeout MS] [--json]\n"
+	      "                              a call as admin:<user> through the manager; the reply decoded\n"
+	      "  param get <module> [field ...]           the values in force, from <module>.params\n"
+	      "  param set <module> field=value ...       read, modify, set_params; retried when stale\n"
+	      "  param load <module> <file>               a saved file, set as one change\n"
+	      "  param reset <module> [field ...]         back to the defaults\n"
+	      "                              (a module that is not running: its saved file, through the manager)\n"
 	      "Paths follow $HANGAR_ROOT; $HANGAR_CONTROL and $HANGAR_TOPIC_DIR override.\n",
 	      stderr);
 }
@@ -680,6 +1217,10 @@ int main(int argc, char **argv)
 		return cmd_hz(argc - 2, argv + 2);
 	if (strcmp(cmd, "run") == 0)
 		return cmd_run(argc - 2, argv + 2);
+	if (strcmp(cmd, "call") == 0)
+		return cmd_call(argc - 2, argv + 2);
+	if (strcmp(cmd, "param") == 0)
+		return cmd_param(argc - 2, argv + 2);
 	usage();
 	return 2;
 }

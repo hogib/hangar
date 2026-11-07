@@ -18,7 +18,29 @@
  *       the writable topic descriptor (SCM_RIGHTS), or "err <reason>\n".
  *   restart-self
  *       From a module's main process: stop and start it without counting a
- *       failure. Reply "ok\n" or "err <reason>\n".
+ *       failure (a @restart parameter changed). Reply "ok\n" or "err <reason>\n".
+ *   call <module>.<method> deadline=<ms> type=<16 hex> body=<len>\n<body bytes>
+ *       hangar-admin (hangar call, hangar param set). The manager publishes
+ *       the request on hangar.<role>.admin.req with admin:<user> in the
+ *       envelope's caller field, which servers trust on that topic alone,
+ *       and replies "ok <call_id> <caller_id> <server>.rep\n": the command
+ *       reads the reply on the server's .rep topic, keeping the one whose
+ *       call_id and caller_id are these. Refused when no module serves the
+ *       method. type= is the request type's hash (the server checks it).
+ *   method <module>.<method>
+ *       Anyone in group hangar: the method's types, "ok\nreq=<type>
+ *       hash=<hex> size=<n> rep=<type> hash=<hex> size=<n> deadline=<ms>
+ *       running=<0|1> reqschema=<len> repschema=<len>\n" then the two
+ *       schema texts, so a command can build a request by field name.
+ *   param-read <module>
+ *       hangar-admin: "ok\ntype=<name> hash=<hex> running=<0|1>
+ *       schema=<len> file=<len>\n" then the parameter type's schema text
+ *       (attributes included) and the saved file, empty if none.
+ *   param-write <module>\n<name = value lines>
+ *       hangar-admin, for a module that is not running: the saved values
+ *       with these lines applied, ranges checked, written and fsync'ed as
+ *       the module's user with the version one above the saved one, set by
+ *       admin:<user>. Reply "ok version=<n>\n".
  *   status
  *       Anyone in group hangar. Reply "ok\n" then one line per item:
  *         system <nominal|degraded|failsafe> <since_ns> <reason...>
@@ -40,7 +62,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#define HG_CONTROL_MAX 16384
+#define HG_CONTROL_MAX 17408  /* a 16 KB request body and its line fit one packet */
 
 /* Connects to the socket at path (NULL: $HANGAR_CONTROL). -1 with errno;
  * ENOENT or ECONNREFUSED while the manager is not listening. */

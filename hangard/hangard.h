@@ -214,6 +214,7 @@ struct hangard {
 	uint64_t registry_written_ns;
 	int reexec_state_fd;     /* the state handed to us by our predecessor, or -1 */
 	int need_prune;          /* a removed module stopped: drop its entry */
+	uint64_t next_call_id;   /* of hangar.<role>.admin.req; continued across a re-exec */
 };
 
 extern struct hangard G;
@@ -245,6 +246,8 @@ int registry_read(const char *path, struct reg_entry *out, int max, enum sys_sta
 /* Users and groups from /etc/passwd and /etc/group, read by hand. */
 int lookup_user(const char *name, uid_t *uid, gid_t *gid);
 int lookup_group(const char *name, gid_t *gid);
+/* The name of uid, or its number as text when /etc/passwd has no line. */
+void lookup_user_name(uid_t uid, char *out, size_t len);
 
 /* ---- topics.c ------------------------------------------------------------ */
 

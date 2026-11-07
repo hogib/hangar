@@ -226,7 +226,7 @@ PROC_TESTS := child_proc
 NET_TESTS := http
 EEYE_TESTS := config ring_buffer health recorder fbus
 HELLION_TESTS := hellion
-HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd
+HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd hg_call
 TESTS := $(VISION_TESTS) $(COMMON_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
 	$(EEYE_TESTS) $(HELLION_TESTS) $(HG_TESTS)
 
@@ -267,7 +267,8 @@ test_effect_chain_SRC := lib/vision/auto_vis.c lib/vision/conv.c \
 # needs nothing but libc and the kernel, so its suites link without
 # libturbojpeg and build where a cross toolchain has none. The manager stub
 # is test-only: it goes into the suites, never into HG_SRC.
-HG_SRC := lib/hg/hg_topic.c lib/hg/hg_type.c lib/hg/hg_wiring.c lib/hg/hg_control.c
+HG_SRC := lib/hg/hg_topic.c lib/hg/hg_type.c lib/hg/hg_wiring.c lib/hg/hg_control.c \
+	lib/hg/hg_call.c lib/hg/hg_params.c
 HG_CFLAGS := -std=c11 -Wall -Wextra -pedantic -pthread
 HG_LDLIBS := -pthread -lrt
 $(OBJDIR)/lib/hg/%.o: EE_CFLAGS := $(HG_CFLAGS)

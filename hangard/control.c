@@ -13,9 +13,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include "hg_call.h"
 #include "hg_control.h"
+#include "hg_params.h"
 
 int control_open(void)
 {
@@ -434,6 +437,343 @@ static void req_clear_failsafe(int fd)
 	ok_reply(fd);
 }
 
+/* ---- Calls and parameters (docs/04 "Admin calls", docs/05) ------------- */
+
+/* The method <module>.<method> of an enabled module, set_params included. */
+static const struct mf_serve *find_method(const char *target, struct module **mod, char *err, size_t errlen)
+{
+	const char *dot = strchr(target, '.');
+	if (!dot || dot == target || !dot[1]) {
+		mf_fmt(err, errlen, "'%s' is not <module>.<method>", target);
+		return NULL;
+	}
+	char name[MF_NAME];
+	mf_fmt(name, sizeof name, "%.*s", (int)(dot - target), target);
+	struct module *m = module_find(name);
+	if (!m || !m->mf || m->mf->refused) {
+		mf_fmt(err, errlen, "no module serves %s: %s is %s", target, name,
+			 !m || !m->mf ? "not a module here" : "refused");
+		return NULL;
+	}
+	for (int i = 0; i < m->mf->n_serves; i++)
+		if (strcmp(m->mf->serves[i].method, dot + 1) == 0) {
+			*mod = m;
+			return &m->mf->serves[i];
+		}
+	mf_fmt(err, errlen, "no module serves %s: %s has no method %s", target, name, dot + 1);
+	return NULL;
+}
+
+/* "call <module>.<method> deadline=<ms> type=<hex> body=<len>\n<body>": the
+ * manager, the one writer of hangar.<role>.admin.req, publishes the request
+ * with admin:<user> in the envelope, and answers with the call id and the
+ * topic id the reply will name as caller_id. */
+static void req_call(int fd, const struct peer *p, char *req, size_t len)
+{
+	char *nl = memchr(req, '\n', len);
+	if (!nl) {
+		err_reply(fd, "call: malformed request");
+		return;
+	}
+	*nl = 0;
+	const unsigned char *body = (const unsigned char *)nl + 1;
+	size_t body_len = len - (size_t)((const char *)body - req);
+	char *save, *target = strtok_r(req + 5, " ", &save), *tok;
+	unsigned long long deadline_ms = 1000, type_hash = 0, blen = 0;
+	int have_type = 0;
+	if (!target) {
+		err_reply(fd, "call: no method");
+		return;
+	}
+	while ((tok = strtok_r(NULL, " ", &save))) {
+		if (sscanf(tok, "deadline=%llu", &deadline_ms) == 1 || sscanf(tok, "body=%llu", &blen) == 1)
+			continue;
+		if (sscanf(tok, "type=%llx", &type_hash) == 1) {
+			have_type = 1;
+			continue;
+		}
+		err_reply(fd, "call: unknown key %s", tok);
+		return;
+	}
+	char err[MF_ERR];
+	struct module *m = NULL;
+	const struct mf_serve *sv = find_method(target, &m, err, sizeof err);
+	if (!sv) {
+		err_reply(fd, "%s", err);
+		return;
+	}
+	const struct mf_type *rq = mf_type_at(&G.set, sv->req_idx);
+	if (blen != body_len || !rq || body_len > rq->payload_bytes || body_len > HG_CALL_MAX_PAYLOAD) {
+		err_reply(fd, "call: the body is %zu bytes; %s takes %u", body_len, target, rq ? rq->payload_bytes : 0);
+		return;
+	}
+	if (!deadline_ms || deadline_ms > 3600000ull) {
+		err_reply(fd, "call: the deadline is in ms, 1 to 3600000");
+		return;
+	}
+	static unsigned char payload[HG_CALL_REQ_ENVELOPE + HG_CALL_MAX_PAYLOAD];
+	struct hg_call_request_envelope env;
+	memset(&env, 0, sizeof env);
+	uint64_t now = hg_now_ns();
+	env.call_id = G.next_call_id++;
+	env.deadline_ns = now + deadline_ms * 1000000ull;
+	env.request_type = have_type ? type_hash : rq->hash;
+	char rep_topic[MF_TOPIC];
+	mf_fmt(rep_topic, sizeof rep_topic, "%s.rep", m->name);
+	env.target_id = hg_topic_id(rep_topic);
+	mf_fmt(env.method, sizeof env.method, "%s", sv->method);
+	char user[64];
+	lookup_user_name(p->uid, user, sizeof user);
+	mf_fmt(env.caller, sizeof env.caller, "admin:%s", user);
+	memset(payload, 0, sizeof payload);
+	memcpy(payload, &env, sizeof env);
+	memcpy(payload + HG_CALL_REQ_ENVELOPE, body, body_len);
+	if (hg_publish_with(G.pub_admin, payload, sizeof payload, now, HG_NO_REFS, NULL, 0) < 0) {
+		err_reply(fd, "cannot publish on the admin topic: %s", strerror(errno));
+		return;
+	}
+	char ok[160];
+	int n = mf_fmt(ok, sizeof ok, "ok %llu %u %s\n", (unsigned long long)env.call_id,
+			 hg_pub_topic_id(G.pub_admin), rep_topic);
+	reply(fd, ok, (size_t)n, -1);
+	hd_log("call %s by admin:%s: call %llu, deadline %llu ms", target, user, (unsigned long long)env.call_id,
+	       deadline_ms);
+}
+
+/* "method <module>.<method>": its types, with their schemas, for a command
+ * building a request by field name. */
+static void req_method(int fd, const char *target)
+{
+	char err[MF_ERR];
+	struct module *m = NULL;
+	const struct mf_serve *sv = find_method(target, &m, err, sizeof err);
+	if (!sv) {
+		err_reply(fd, "%s", err);
+		return;
+	}
+	const struct mf_type *rq = mf_type_at(&G.set, sv->req_idx), *rp = mf_type_at(&G.set, sv->rep_idx);
+	if (!rq || !rp) {
+		err_reply(fd, "internal: %s has unresolved types", target);
+		return;
+	}
+	static char buf[HG_CONTROL_MAX];
+	int n = mf_fmt(buf, sizeof buf,
+			 "ok\nreq=%s hash=%016llx size=%u rep=%s hash=%016llx size=%u deadline=%llu running=%d reqschema=%u repschema=%u\n",
+			 rq->name, (unsigned long long)rq->hash, rq->payload_bytes, rp->name, (unsigned long long)rp->hash,
+			 rp->payload_bytes, (unsigned long long)(sv->deadline_ns / 1000000u), m->pid ? 1 : 0,
+			 rq->schema_bytes, rp->schema_bytes);
+	if ((size_t)n + rq->schema_bytes + rp->schema_bytes >= sizeof buf) {
+		err_reply(fd, "the schemas do not fit a reply");
+		return;
+	}
+	memcpy(buf + n, rq->schema, rq->schema_bytes);
+	n += (int)rq->schema_bytes;
+	memcpy(buf + n, rp->schema, rp->schema_bytes);
+	n += (int)rp->schema_bytes;
+	reply(fd, buf, (size_t)n, -1);
+}
+
+static struct module *params_module(int fd, const char *name)
+{
+	struct module *m = module_find(name);
+	if (!m || !m->mf || m->mf->refused) {
+		err_reply(fd, "no module %s", name);
+		return NULL;
+	}
+	if (!m->mf->has_params) {
+		err_reply(fd, "%s has no [Params]", name);
+		return NULL;
+	}
+	return m;
+}
+
+static int read_whole(const char *path, char *buf, size_t len)
+{
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	ssize_t n = read(fd, buf, len - 1);
+	close(fd);
+	if (n < 0)
+		return -1;
+	buf[n] = 0;
+	return (int)n;
+}
+
+/* "param-read <module>": the parameter type's schema (attributes included)
+ * and the saved file, for hangar param on a module that is not running. */
+static void req_param_read(int fd, const char *name)
+{
+	struct module *m = params_module(fd, name);
+	if (!m)
+		return;
+	const struct mf_type *pt = mf_type_at(&G.set, m->mf->params_idx);
+	static char file[HG_SCHEMA_MAX * 4];
+	char path[HD_PATH + 48];
+	mf_fmt(path, sizeof path, "%s/%s/params", G.paths.var, name);
+	int flen = read_whole(path, file, sizeof file);
+	if (flen < 0)
+		flen = 0;
+	static char buf[HG_CONTROL_MAX];
+	int n = mf_fmt(buf, sizeof buf, "ok\ntype=%s hash=%016llx running=%d schema=%u file=%d\n", pt->name,
+			 (unsigned long long)pt->hash, m->pid ? 1 : 0, pt->schema_bytes, flen);
+	if ((size_t)n + pt->schema_bytes + (size_t)flen >= sizeof buf) {
+		err_reply(fd, "the file does not fit a reply");
+		return;
+	}
+	memcpy(buf + n, pt->schema, pt->schema_bytes);
+	n += (int)pt->schema_bytes;
+	memcpy(buf + n, file, (size_t)flen);
+	n += flen;
+	reply(fd, buf, (size_t)n, -1);
+}
+
+/* Writes text to path as the module's user when root, in a short-lived
+ * child, with fsync: no control loop waits on it (docs/05 "Correcting the
+ * parameters of a module that is not running"). */
+static int write_as_module(const struct module *m, const char *path, const char *text, size_t len,
+			   char *err, size_t errlen)
+{
+	uid_t uid = 0;
+	gid_t gid = 0;
+	int switch_user = G.is_root && lookup_user(m->mf->user, &uid, &gid) == 0;
+	char dir[HD_PATH + 48];
+	mf_fmt(dir, sizeof dir, "%s/%s", G.paths.var, m->name);
+	if (mkdir(dir, 0750) == 0 && switch_user)
+		(void)chown(dir, uid, gid);
+	int errp[2];
+	if (pipe2(errp, O_CLOEXEC) < 0) {
+		mf_fmt(err, errlen, "pipe: %s", strerror(errno));
+		return -1;
+	}
+	pid_t pid = fork();
+	if (pid < 0) {
+		mf_fmt(err, errlen, "fork: %s", strerror(errno));
+		close(errp[0]);
+		close(errp[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		int e = 0;
+		char tmp[HD_PATH + 80];
+		mf_fmt(tmp, sizeof tmp, "%s.tmp.%ld", path, (long)getpid());
+		if (switch_user && (setgid(gid) < 0 || setuid(uid) < 0))
+			e = errno;
+		int fd = e ? -1 : open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
+		if (!e && fd < 0)
+			e = errno;
+		if (!e && write(fd, text, len) != (ssize_t)len)
+			e = errno ? errno : EIO;
+		if (!e && fsync(fd) < 0)
+			e = errno;
+		if (fd >= 0)
+			close(fd);
+		if (!e && rename(tmp, path) < 0)
+			e = errno;
+		if (e)
+			unlink(tmp);
+		ssize_t w = write(errp[1], &e, sizeof e);
+		(void)w;
+		_exit(e ? 1 : 0);
+	}
+	close(errp[1]);
+	int e = EIO;
+	ssize_t r;
+	while ((r = read(errp[0], &e, sizeof e)) < 0 && errno == EINTR)
+		;
+	close(errp[0]);
+	int st;
+	while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
+		;
+	if (r != (ssize_t)sizeof e || e) {
+		mf_fmt(err, errlen, "cannot write %s: %s", path, strerror(r == (ssize_t)sizeof e ? e : EIO));
+		return -1;
+	}
+	return 0;
+}
+
+/* "param-write <module>\n<name = value lines>": the saved values with the
+ * lines applied, ranges checked, the version one above the saved one, set
+ * by admin:<user>. For a module that is not running; a bad saved file is
+ * replaced (that is what correcting it means), its version kept. */
+static void req_param_write(int fd, const struct peer *p, char *req, size_t len)
+{
+	char *nl = memchr(req, '\n', len);
+	const char *lines = nl ? nl + 1 : req + len;
+	size_t lines_len = nl ? len - (size_t)(lines - req) : 0;
+	if (nl)
+		*nl = 0;
+	const char *name = req + 12;
+	while (*name == ' ')
+		name++;
+	struct module *m = params_module(fd, name);
+	if (!m)
+		return;
+	if (m->pid) {
+		err_reply(fd, "%s is running (pid %d): its parameters change through set_params", name, (int)m->pid);
+		return;
+	}
+	const struct mf_type *pt = mf_type_at(&G.set, m->mf->params_idx);
+	struct hg_schema *schema = malloc(sizeof *schema);
+	struct hg_param_attr *attrs = calloc(HG_SCHEMA_MAX_FIELDS, sizeof *attrs);
+	unsigned char *values = calloc(1, pt->payload_bytes + 8);
+	unsigned char present[HG_SCHEMA_MAX_FIELDS];
+	static char text[HG_SCHEMA_MAX * 4];
+	char err[MF_ERR], path[HD_PATH + 48];
+	if (!schema || !attrs || !values) {
+		err_reply(fd, "out of memory");
+		goto out;
+	}
+	if (hg_schema_parse(pt->schema, pt->schema_bytes, schema, err, sizeof err) < 0 ||
+	    (schema->type.name = pt->name, hg_params_attrs(&schema->type, attrs, err, sizeof err)) < 0 ||
+	    hg_params_defaults(&schema->type, attrs, values, err, sizeof err) < 0) {
+		err_reply(fd, "type %s: %s", pt->name, err);
+		goto out;
+	}
+	struct hg_params_header hdr;
+	memset(&hdr, 0, sizeof hdr);
+	mf_fmt(path, sizeof path, "%s/%s/params", G.paths.var, name);
+	int flen = read_whole(path, text, sizeof text);
+	if (flen >= 0) {
+		if (hg_params_file_parse(&schema->type, text, (size_t)flen, values, &hdr, present, 1, err, sizeof err) < 0) {
+			hd_log("param-write %s: the saved file is refused (%s): corrected from the defaults", name, err);
+			hg_params_defaults(&schema->type, attrs, values, err, sizeof err);
+		}
+	}
+	struct hg_params_header given;
+	if (hg_params_file_parse(&schema->type, lines, lines_len, values, &given, present, 0, err, sizeof err) < 0) {
+		err_reply(fd, "param-write %s: %s", name, err);
+		goto out;
+	}
+	char reason[HG_PARAMS_REASON];
+	for (uint32_t i = 0; i < schema->type.n_fields; i++)
+		if (hg_param_check_range(&schema->type.fields[i], &attrs[i], values, reason, sizeof reason) < 0) {
+			err_reply(fd, "param-write %s: %s", name, reason);
+			goto out;
+		}
+	struct hg_params_header out_hdr = { .version = hdr.version + 1 };
+	char user[64];
+	lookup_user_name(p->uid, user, sizeof user);
+	mf_fmt(out_hdr.changed_by, sizeof out_hdr.changed_by, "admin:%s", user);
+	int n = hg_params_file_format(&schema->type, values, &out_hdr, text, sizeof text);
+	if (n < 0 || n >= (int)sizeof text) {
+		err_reply(fd, "param-write %s: the file does not fit", name);
+		goto out;
+	}
+	if (write_as_module(m, path, text, (size_t)n, err, sizeof err) < 0) {
+		err_reply(fd, "param-write %s: %s", name, err);
+		goto out;
+	}
+	char ok[64];
+	n = mf_fmt(ok, sizeof ok, "ok version=%llu\n", (unsigned long long)out_hdr.version);
+	reply(fd, ok, (size_t)n, -1);
+	hd_log("param-write %s by admin:%s: version %llu written", name, user, (unsigned long long)out_hdr.version);
+out:
+	free(schema);
+	free(attrs);
+	free(values);
+}
+
 void control_handle(int fd)
 {
 	static char req[HG_CONTROL_MAX + 1];
@@ -463,7 +803,7 @@ void control_handle(int fd)
 	while (*arg == ' ')
 		arg++;
 	char *nl = strchr(arg, '\n');
-	if (nl && strcmp(word, "open") != 0)
+	if (nl && strcmp(word, "open") != 0 && strcmp(word, "call") != 0 && strcmp(word, "param-write") != 0)
 		*nl = 0;
 
 	if (strcmp(word, "page") == 0) {
@@ -488,6 +828,11 @@ void control_handle(int fd)
 			err_reply(fd, "permission denied: group hangar required");
 		else
 			req_wiring(fd, arg);
+	} else if (strcmp(word, "method") == 0) {
+		if (!is_reader(&p))
+			err_reply(fd, "permission denied: group hangar required");
+		else
+			req_method(fd, arg);
 	} else if (strcmp(word, "clear-failsafe") == 0 &&
 		   (is_admin(&p) || (module_by_pid(p.pid) && strcmp(module_by_pid(p.pid)->name, "safety") == 0))) {
 		req_clear_failsafe(fd);
@@ -499,6 +844,12 @@ void control_handle(int fd)
 		req_start(fd, arg, 1);
 	} else if (strcmp(word, "stop") == 0) {
 		req_stop(fd, arg);
+	} else if (strcmp(word, "call") == 0) {
+		req_call(fd, &p, req, (size_t)n);
+	} else if (strcmp(word, "param-read") == 0) {
+		req_param_read(fd, arg);
+	} else if (strcmp(word, "param-write") == 0) {
+		req_param_write(fd, &p, req, (size_t)n);
 	} else if (strcmp(word, "reload") == 0) {
 		char err[MF_ERR];
 		if (do_reload(err, sizeof err) < 0)

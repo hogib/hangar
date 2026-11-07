@@ -94,6 +94,7 @@ struct mf_serve {
 	char allow[MF_MAX_ALLOW][MF_REF];
 	int line;
 	int req_idx, rep_idx;
+	int implicit;            /* set_params, from [Params] (docs/05): its Allow list resolved */
 };
 
 struct mf_call {
@@ -102,6 +103,7 @@ struct mf_call {
 	char req[MF_TYPE];       /* "" unless given (a method of the other side) */
 	char rep[MF_TYPE];
 	int remote;
+	int noroute;             /* nothing serves it on either side: the library answers HG_E_NOROUTE */
 	int line;
 	int req_idx, rep_idx;
 };

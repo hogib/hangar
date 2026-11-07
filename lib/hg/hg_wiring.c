@@ -308,16 +308,16 @@ static int serve_other(const struct tok *t, size_t k, const char *val, void *ctx
 static int call_other(const struct tok *t, size_t k, const char *val, void *ctx)
 {
 	struct hg_wiring_call *c = ctx;
-	if (key_is(t, k, "remote")) {
-		if (strcmp(val, "0") == 0)
-			c->remote = 0;
-		else if (strcmp(val, "1") == 0)
-			c->remote = 1;
-		else
-			return -1;
-		return 0;
-	}
-	return -1;
+	int *flag = key_is(t, k, "remote") ? &c->remote : key_is(t, k, "noroute") ? &c->noroute : NULL;
+	if (!flag)
+		return -1;
+	if (strcmp(val, "0") == 0)
+		*flag = 0;
+	else if (strcmp(val, "1") == 0)
+		*flag = 1;
+	else
+		return -1;
+	return 0;
 }
 
 static int parse_sub(const struct tok *t, int n, struct hg_wiring_sub *s, const char **what)
@@ -376,6 +376,10 @@ static int parse_pub(const struct tok *t, int n, struct hg_wiring_pub *p, const 
 		if (!k) {
 			if (tok_is(&t[i], "implicit")) {
 				p->implicit = 1;
+				continue;
+			}
+			if (tok_is(&t[i], "actuator")) {
+				p->actuator = 1;
 				continue;
 			}
 			goto bad;
@@ -498,6 +502,12 @@ int hg_wiring_parse(const char *text, size_t len, struct hg_wiring *w, char *err
 		if (tok_is(&t[0], "module")) {
 			if (n != 2 || !tok_copy(&t[1], w->module, sizeof w->module)) {
 				set_err(err, errlen, line, "module needs one name");
+				goto bad;
+			}
+		} else if (tok_is(&t[0], "role")) {
+			if (n != 2 || !tok_copy(&t[1], w->role, sizeof w->role) ||
+			    (strcmp(w->role, "vehicle") != 0 && strcmp(w->role, "topside") != 0)) {
+				set_err(err, errlen, line, "role needs vehicle or topside");
 				goto bad;
 			}
 		} else if (tok_is(&t[0], "sub")) {

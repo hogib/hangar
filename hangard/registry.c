@@ -194,6 +194,29 @@ int lookup_user(const char *name, uid_t *uid, gid_t *gid)
 	return 0;
 }
 
+void lookup_user_name(uid_t uid, char *out, size_t len)
+{
+	FILE *f = fopen("/etc/passwd", "re");
+	char buf[1024];
+	while (f && fgets(buf, sizeof buf, f)) {
+		char *c1 = strchr(buf, ':');
+		char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+		char *c3 = c2 ? strchr(c2 + 1, ':') : NULL;
+		if (!c3)
+			continue;
+		*c3 = 0;
+		if ((uid_t)strtoul(c2 + 1, NULL, 10) == uid) {
+			*c1 = 0;
+			mf_fmt(out, len, "%s", buf);
+			fclose(f);
+			return;
+		}
+	}
+	if (f)
+		fclose(f);
+	mf_fmt(out, len, "%lu", (unsigned long)uid);
+}
+
 int lookup_group(const char *name, gid_t *gid)
 {
 	char buf[4096], *f[4];

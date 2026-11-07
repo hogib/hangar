@@ -1492,6 +1492,65 @@ static int gen_params_type(struct mf_set *s, const char *module, const struct mf
 	return idx;
 }
 
+/* The set_params request of a module with [Params] (docs/05 "Setting
+ * parameters"): u64 base_version, then the parameter struct's fields. */
+static int gen_set_params_type(struct mf_set *s, const struct mf_type *pt, char *why, size_t whylen)
+{
+	char name[MF_TYPE];
+	mf_fmt(name, sizeof name, "set_params:%s", pt->name);
+	int have = type_index(s, name);
+	if (have >= 0)
+		return have;
+	struct hg_schema *parsed = malloc(sizeof *parsed);
+	if (!parsed)
+		return -1;
+	if (hg_schema_parse(pt->schema, pt->schema_bytes, parsed, NULL, 0) < 0) {
+		free(parsed);
+		mf_fmt(why, whylen, "type %s does not parse", pt->name);
+		return -1;
+	}
+	char text[HG_SCHEMA_MAX + 512];
+	int n = mf_fmt(text, sizeof text,
+			 "# set_params:%s: the set_params request (docs/05): the version the change\n"
+			 "# was based on, then the fields of %s\n"
+			 "u64  base_version\n",
+			 pt->name, pt->name);
+	for (uint32_t i = 0; i < parsed->type.n_fields; i++) {
+		const struct hg_field *f = &parsed->fields[i];
+		int w;
+		if (f->kind == HG_CHAR || f->count != 1)
+			w = mf_fmt(text + n, sizeof text - (size_t)n, "%s %s[%u]\n", kind_names[f->kind],
+				     f->name, f->count);
+		else
+			w = mf_fmt(text + n, sizeof text - (size_t)n, "%s %s\n", kind_names[f->kind], f->name);
+		if (w < 0 || n + w >= (int)sizeof text || n + w > HG_SCHEMA_MAX) {
+			free(parsed);
+			mf_fmt(why, whylen, "set_params:%s: the generated schema exceeds %d bytes", pt->name,
+				 HG_SCHEMA_MAX);
+			return -1;
+		}
+		n += w;
+	}
+	free(parsed);
+	char err[160];
+	int idx = add_type(s, name, text, (size_t)n, err, sizeof err);
+	if (idx < 0)
+		mf_fmt(why, whylen, "set_params:%s: %s", pt->name, err);
+	return idx;
+}
+
+/* set_params_rep (msg/set_params_rep.msg): the same canonical form, so the
+ * same hash, whether a module links the generated file or not. */
+static int gen_set_params_rep(struct mf_set *s)
+{
+	static const char text[] =
+		"# set_params_rep: the reply of every module's set_params method (docs/05)\n"
+		"u64  version      # the version now in force, or, with restarting, the one the new instance starts with\n"
+		"u8   restarting   # 1: a @restart field changed; the module restarts to apply it\n";
+	char err[160];
+	return add_type(s, "set_params_rep", text, sizeof text - 1, err, sizeof err);
+}
+
 /* ---- Checks ------------------------------------------------------------- */
 
 static void refuse(struct mf_module *m, int line, const char *fmt, ...)
@@ -1702,6 +1761,39 @@ static void check_module(struct mf_set *s, struct mf_module *m)
 		if (sub->type[0] && resolve_type(s, sub->type, why, sizeof why) < 0)
 			refuse(m, sub->line, "%s", why);
 	}
+	/* [Params] serves set_params like any other method (docs/05): the
+	 * implicit serve line, its types generated, its Allow the section's, or
+	 * the default "* admin", none for safety, mux and an actuator module. */
+	if (m->has_params && !m->refused) {
+		if (m->n_serves == MF_MAX_SERVES) {
+			refuse(m, m->lines[SEC_PARAMS], "more than %d methods with set_params", MF_MAX_SERVES);
+			return;
+		}
+		struct mf_serve *sv = &m->serves[m->n_serves];
+		memset(sv, 0, sizeof *sv);
+		mf_fmt(sv->method, sizeof sv->method, "set_params");
+		mf_fmt(sv->req, sizeof sv->req, "set_params:%s", m->params_type);
+		mf_fmt(sv->rep, sizeof sv->rep, "set_params_rep");
+		sv->deadline_ns = 100000000;
+		sv->implicit = 1;
+		sv->line = m->lines[SEC_PARAMS];
+		sv->allow_set = 1;
+		if (m->params_allow_set) {
+			sv->n_allow = m->n_params_allow;
+			memcpy(sv->allow, m->params_allow, sizeof sv->allow);
+		} else if (!m->has_actuator_output && strcmp(m->name, "safety") != 0 && strcmp(m->name, "mux") != 0) {
+			sv->n_allow = 2;
+			mf_fmt(sv->allow[0], MF_REF, "*");
+			mf_fmt(sv->allow[1], MF_REF, "admin");
+		}
+		sv->req_idx = gen_set_params_type(s, &s->types[m->params_idx], why, sizeof why);
+		sv->rep_idx = gen_set_params_rep(s);
+		if (sv->req_idx < 0 || sv->rep_idx < 0) {
+			refuse(m, m->lines[SEC_PARAMS], "%s", sv->req_idx < 0 ? why : "cannot generate set_params_rep");
+			return;
+		}
+		m->n_serves++;
+	}
 }
 
 /* Adds an implicit pub/sub; refuses when the module is full. */
@@ -1795,8 +1887,10 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 				       c->server, c->method);
 				continue;
 			}
-			/* Without the bridge (not in this stage) nothing routes it. */
+			/* Without the bridge (not in this stage) nothing routes it: the
+			 * call line says so, and the library answers HG_E_NOROUTE. */
 			c->remote = 0;
+			c->noroute = 1;
 			warn(s, "%s: [Call %s.%s]: no module enabled here serves it, and no bridge routes it: HG_E_NOROUTE",
 			     m->name, c->server, c->method);
 		}
@@ -1817,7 +1911,7 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 		}
 	}
 	if (m->n_serves || m->has_params) {
-		uint32_t largest_rep = 8; /* set_params_rep: u64 version */
+		uint32_t largest_rep = 8; /* set_params_rep, 16 bytes, is among the serves when [Params] */
 		for (int i = 0; i < m->n_serves; i++)
 			if (s->types[m->serves[i].rep_idx].payload_bytes > largest_rep)
 				largest_rep = s->types[m->serves[i].rep_idx].payload_bytes;

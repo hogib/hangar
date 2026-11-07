@@ -175,7 +175,7 @@ static inline void hd_setup(const char *tag, const char *conf_extra)
 	const char *src = getenv("HANGAR_MSG_SRC");
 	if (!src || !*src)
 		src = "msg";
-	const char *types[] = { "depth", "safety_state", "wrench", "empty", "imu", NULL };
+	const char *types[] = { "depth", "safety_state", "wrench", "empty", "imu", "depth_hold_params", NULL };
 	for (int i = 0; types[i]; i++) {
 		char from[1024], to[1024];
 		tfmt(from, sizeof from, "%s/%s.msg", src, types[i]);
@@ -197,8 +197,11 @@ static inline void hd_setup(const char *tag, const char *conf_extra)
 	unsetenv("NOTIFY_SOCKET");
 }
 
+/* HD_KEEP in the environment leaves the root in place, for a look at the logs. */
 static inline void hd_teardown(void)
 {
+	if (getenv("HD_KEEP"))
+		return;
 	rm_tree(T_root);
 }
 
@@ -385,6 +388,20 @@ static inline void log_clear(void)
 	(void)truncate(T_log, 0);
 }
 
+/* The wiring the manager handed a module, written to a file: the test
+ * process (or a child of it) then runs as that module with
+ * HANGAR_WIRING_FILE, calling and serving over lib/hg like any module. */
+static inline int wiring_to_file(const char *module, char *path, size_t len)
+{
+	char req[80];
+	tfmt(req, sizeof req, "wiring %s", module);
+	const char *r = ctl(req);
+	if (strncmp(r, "ok\n", 3) != 0)
+		return -1;
+	tfmt(path, len, "%s/%s.wiring", T_root, module);
+	return write_file(path, r + 3);
+}
+
 /* ---- Topic headers ------------------------------------------------------------- */
 
 #define H_FLAGS 36
@@ -504,6 +521,30 @@ static inline int run_cli(char *out, size_t outlen, long timeout_ms, ...)
 		wait_pid_ms(pid, 1000);
 	}
 	return rc;
+}
+
+/* The value printed for a field by hangar call/param get: the rest of the
+ * line that starts with the field's name, its trailing comment dropped. */
+static inline const char *cli_field(const char *out, const char *name)
+{
+	static char val[256];
+	size_t n = strlen(name);
+	val[0] = 0;
+	for (const char *l = out; l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) {
+		if (strncmp(l, name, n) != 0 || l[n] != ' ')
+			continue;
+		l += n;
+		while (*l == ' ')
+			l++;
+		const char *e = strchr(l, '\n');
+		size_t len = e ? (size_t)(e - l) : strlen(l);
+		const char *c = strstr(l, "    #");
+		if (c && (size_t)(c - l) < len)
+			len = (size_t)(c - l);
+		tfmt(val, sizeof val, "%.*s", (int)len, l);
+		return val;
+	}
+	return val;
 }
 
 #endif

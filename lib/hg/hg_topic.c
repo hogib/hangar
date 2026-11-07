@@ -1675,7 +1675,7 @@ static hg_sub *sub_new(const char *name, const struct hg_type *type, enum hg_sta
 	return s;
 }
 
-hg_sub *hg_sub_open_from(const char *name, const struct hg_type *type, enum hg_start from)
+static hg_sub *sub_open(const char *name, const struct hg_type *type, enum hg_start from, int own)
 {
 	if (ensure_init() < 0)
 		return NULL;
@@ -1692,7 +1692,8 @@ hg_sub *hg_sub_open_from(const char *name, const struct hg_type *type, enum hg_s
 			}
 		} else {
 			const struct hg_wiring_sub *l = hg_wiring_find_sub(wiring, name);
-			if (!l && !hg_wiring_glob_matches(wiring, name)) {
+			if (!l && !hg_wiring_glob_matches(wiring, name) &&
+			    !(own && hg_wiring_find_pub(wiring, name))) {
 				errno = EACCES;
 				return NULL;
 			}
@@ -1717,9 +1718,19 @@ hg_sub *hg_sub_open_from(const char *name, const struct hg_type *type, enum hg_s
 	return s;
 }
 
+hg_sub *hg_sub_open_from(const char *name, const struct hg_type *type, enum hg_start from)
+{
+	return sub_open(name, type, from, 0);
+}
+
+hg_sub *hg_sub_open_own(const char *name, const struct hg_type *type, enum hg_start from)
+{
+	return sub_open(name, type, from, 1);
+}
+
 hg_sub *hg_sub_open(const char *name, const struct hg_type *type)
 {
-	return hg_sub_open_from(name, type, HG_NEWEST);
+	return sub_open(name, type, HG_NEWEST, 0);
 }
 
 void hg_sub_close(hg_sub *s)

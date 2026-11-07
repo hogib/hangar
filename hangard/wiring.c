@@ -80,6 +80,9 @@ int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, si
 	out[0] = 0;
 	put(&o, "hangar-wiring 1\n");
 	put(&o, "module %s\n", m->name);
+	/* The module's own role: a server names a mirrored caller
+	 * <role>:<module> with the other side's (docs/04 "Callers"). */
+	put(&o, "role %s\n", s->role);
 	for (int i = 0; i < m->n_subs; i++) {
 		const struct mf_sub *sub = &m->subs[i];
 		if (sub->glob) {
@@ -127,6 +130,8 @@ int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, si
 			for (int k = 0; k < p->n_sources; k++)
 				put(&o, "%s%s", k ? "," : "", p->sources[k]);
 		}
+		if (p->actuator)
+			put(&o, " actuator"); /* hg_call() is refused in this module (docs/04) */
 		if (p->implicit)
 			put(&o, " implicit");
 		put(&o, "\n");
@@ -157,9 +162,9 @@ int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, si
 		const struct mf_type *rq = mf_type_at(s, c->req_idx), *rp = mf_type_at(s, c->rep_idx);
 		if (!rq || !rp)
 			continue;
-		put(&o, "call %s.%s req=%s hash=%016llx size=%u rep=%s hash=%016llx size=%u remote=%d\n", c->server,
+		put(&o, "call %s.%s req=%s hash=%016llx size=%u rep=%s hash=%016llx size=%u remote=%d%s\n", c->server,
 		    c->method, rq->name, (unsigned long long)rq->hash, rq->payload_bytes, rp->name,
-		    (unsigned long long)rp->hash, rp->payload_bytes, c->remote);
+		    (unsigned long long)rp->hash, rp->payload_bytes, c->remote, c->noroute ? " noroute=1" : "");
 	}
 	if (o.overflow) {
 		errno = ENOSPC;

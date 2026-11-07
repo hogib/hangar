@@ -11,9 +11,12 @@ with the wiring of `docs/03-manager.md` and the call topics of `docs/04-calls.md
 | `hg_sys.h` | futex, `futex_waitv`, memfd flags and seals declared by hand; compiles against glibc and musl |
 | `hg_type.h/.c` | the type descriptor of `hg_type_abi.md`, the schema parser (layout, canonical form, FNV-1a 64), `hg_frame_type` |
 | `hg_wiring.h/.c` | the wiring text: `module`, `sub`, `subglob`, `pub` (`inputs=`, `sources=`), `serve`, `call`, `mirror`; durations, rates, globs |
-| `hg_topic.h/.c` | the topic file, writer, reader, provenance, `hg_wait`, `hg_wait_fd`, `hg_init` and the module page stubs |
+| `hg_topic.h/.c` | the topic file, writer, reader, provenance, `hg_wait`, `hg_wait_fd`, `hg_init` and the module page |
+| `hg_control.h/.c` | the control socket's wire format and client (stage 2a) |
+| `hg_call.h/.c` | calls over topics (stage 2b, docs/04): the envelopes, `hg_call_start`/`poll`/`hg_call`, `hg_serve`, caller tokens and Allow lists |
+| `hg_params.h/.c` | parameters (stage 2b, docs/05): the grammar of values, ranges and the saved file; `hg_params_open`, the `<module>.params` topic, `set_params` |
 | `hg_manager_stub.h/.c` | test-only: what the manager does to topic files, plus the publish protocol taken apart for the order guard |
-| `tests/` | eight suites, one per area, on `lib/common/test_harness.h` |
+| `tests/` | nine suites, one per area, on `lib/common/test_harness.h` |
 
 The spike's deviations 1 (exchange before increment), 4 (`write_seq` seq_cst),
 5 ("flags changed" readiness), 7 (resolved as below) and 11 (`HG_ERROR`, length
@@ -166,3 +169,145 @@ parser's `struct hg_schema` is about 12 KB and lives where the caller puts it.
   as a reader's); standalone mode is unchanged. A refusal maps to `EACCES`,
   `EPROTOTYPE` or `EBUSY` from the words of the manager's reason.
 - `HG_SRC` in the Makefile gained `hg_control.c`; every stage-1 suite is unchanged.
+
+## Stage 2b additions: calls and parameters on topics (docs/04, docs/05)
+
+What `hg_call.h/.c` and `hg_params.h/.c` do, and where they depart from the
+text. The manager's side (the implicit `serve set_params` line, the control
+requests `call`, `method`, `param-read` and `param-write`, `hangar call` and
+`hangar param`) is in `hangard/README.md`.
+
+**Calls.** `hg_call_start` fills the request envelope (112 bytes, to the byte of
+`msg/call_request_envelope.msg`; `struct hg_call_request_envelope` in `hg_call.h`
+is the same layout with static asserts, so the library needs no generated file),
+copies the request after it and publishes on `<module>.req` with `HG_NO_REFS`;
+the `.req` output is opened on first use with the generated type `req:<module>`,
+whose text the library builds exactly as the manager does (`hg_call_req_schema`:
+the largest request among the wiring's `call` lines) and checks against the
+wiring's hash. At most 15 calls are in flight (`HG_E_BUSY` for the sixteenth);
+each has a reply buffer, allocated once at the first call (the one allocation,
+15 times the largest reply among the calls). `hg_call_poll` reads the server's
+`.rep` topic in order (opened `HG_OLDEST` at first use), keeps the replies whose
+`caller_id` is this module's `.req` topic id and whose `call_id` is in flight,
+copies them into their pending call's buffer and passes the rest over: another
+caller's, a timed-out call's, or a reply received before the request was
+published (a restarted caller counts from 1 again, and the ring may still hold
+the predecessor's reply to its call 1). `hg_call` is start, then `hg_wait` on the
+server's `.rep` topic until the reply or the timeout; refused in a module with an
+actuator output.
+
+`hg_serve` opens `<module>.rep` with the generated `rep:<module>` (largest reply
+among the `serve` lines), reads every named `.req` subscription of the wiring and
+the matches of `subglob *.req` from the oldest message still in each ring, and
+before opening its `.rep` reads the predecessor's replies in the old file (through
+`hg_sub_open_own`, new in `hg_topic.h`: a module may read its own output), so a
+request already answered, whose reply's `received_ns` is at or after the request's
+`publish_ns`, is skipped (docs/04 "While the server restarts"). The four steps of
+docs/04 "Serving" run in the text's order; the reply carries a reference to the
+request through `hg_publish_with` (the manager puts the request topics among the
+`.rep` output's `Sources`; a hand-written wiring that does not gets unreferenced
+replies and one log line). The topics are taken in turn, one request each round,
+eight per pass; a message addressed to another server (the admin topic carries
+everyone's) is passed over without counting, and nothing is read that the pass
+cannot serve. A handler overrunning its deadline is logged on stderr.
+
+**Parameters.** The attributes (default, range, `@restart`) are parsed from the
+type's own schema text, which the generated descriptor carries verbatim
+(`hg_params_attrs`); the generated `*_META` array is the same information for
+code that wants it as C data. Loading is docs/05's: no file is the first start
+(defaults written, version 1, `changed_by` "saved"); a file without the header
+line, an empty one, an unknown or repeated field, a value that does not parse or
+is out of range, or a validator refusal end the process with status 78 after the
+reason is put on the status line; a missing field takes its default and is
+logged. `set_params` is registered through the ordinary `hg_serve_method`, so the
+Allow check, the type check and the reference to the request are the call
+library's; the handler does steps 2 to 6 of docs/05 "Setting parameters" and,
+for a `@restart` change, saves, publishes `restart_pending` with the values in
+force, answers `restarting = 1`, and asks for `restart-self` once the reply is out
+(`hg_serve_after`, a per-method hook for the library's own use), repeating the
+request while the manager is not listening. The file is written to a temporary
+name and renamed, with no fsync.
+
+### Design deviations, stage 2b
+
+13. **The wiring carries three things docs/03's table does not.** A `role` line
+    (the module's own role: a server names a mirrored caller `<role>:<module>`
+    with the other side's, and docs/04 says the wiring carries it), the bare word
+    `actuator` on a `pub` line (docs/04: `hg_call` is refused in a module with an
+    actuator output, which the library could not know otherwise), and
+    `noroute=1` on a `call` line nothing serves on either side (docs/04:
+    `HG_E_NOROUTE` "known from the wiring"; without the flag the only sign was a
+    `sub <server>.rep` line without a type). The manager writes all three;
+    `hg_wiring_parse` accepts them and a wiring without them still parses.
+
+14. **A validator has no ctx argument.** docs/05's example is
+    `validate(candidate, current, reason)` with `hg_params_open(..., validate,
+    NULL)`; the signature is kept to the letter, and the pointer is reachable as
+    `hg_params_ctx()`. Handlers get theirs as `c->ctx`, so docs/04's
+    `on_arm(c, req, rep, reason)` is also unchanged.
+
+15. **`hg_call_start` returns a status code**, `HG_OK` or `HG_E_BUSY`,
+    `HG_E_NOROUTE`, `HG_E_BADTYPE`, and `HG_E_NOMETHOD` with errno `EACCES` for a
+    call the module did not declare (docs/04: "the library refuses a call its
+    module did not declare", without saying how). docs/04 shows the call without
+    a result. A timeout of 0 or less is the default 100 ms.
+
+16. **The reply type of a refused request is the method's.** docs/04 leaves
+    `reply_type` unspecified when the body is absent; it is the method's reply
+    hash when the method exists, 0 for `HG_E_NOMETHOD`, so a reader can decode the
+    envelope's intent. `received_ns` is set on every reply, expired ones included.
+
+17. **A reply from before the request is not its answer.** Call ids count from 1
+    per caller instance (docs/04) and the `.rep` ring may still hold the
+    predecessor's replies, so `hg_call_poll` also requires `received_ns` at or
+    after the request's publish time. The same rule, the other way, lets a
+    restarted server tell an answered request from a restarted caller's call with
+    the same id.
+
+18. **A `@restart` save is marked in the file's second line** (`, restart` after
+    the time): the new instance publishes with the requester's name and rewrites
+    the line without the mark, so a later plain start says `saved` as docs/05
+    wants both. Nothing in docs/05 says how the new instance tells the two
+    starts apart.
+
+19. **The `.params` topic's header carries the parameter type's text verbatim**,
+    attributes included (the manager's generated `params:<module>` text has the
+    canonical lines only; both hash the same, since the hash ignores attributes),
+    so a UI builds its controls from the header as docs/05 suggests. The
+    canonical lines are used only when the verbatim text would not fit 3584 bytes.
+
+20. **The saved file lives under `$HANGAR_STATE_DIR` when set**, else
+    `$HANGAR_ROOT/var/lib/hangar/<module>/params` as docs/05 says. The manager
+    sets neither (the module's state directory is its working directory, which
+    the library does not rely on); `hangar run` sets the first so a module run by
+    hand has a writable file beside its private topics.
+
+21. **Replies left behind by a restart are only as old as the ring.** The manager
+    creates a fresh file at each restart (`write_seq` continued, slots empty), so
+    a restarted server sees only its predecessor's replies, not the one before:
+    a request answered two restarts ago, still in time, is served again. docs/04
+    allows exactly this ("whose reply has since left the ring, and which is still
+    in time, is served again") and asks for idempotent methods; the suites had to
+    wait out request deadlines before restarting a module twice.
+
+22. **`hg_serve_method` refuses a method the wiring does not list** (`EACCES`), as
+    `hg_pub_open` refuses an undeclared topic; a served method with no handler
+    registered answers `HG_E_NOMETHOD` ("no handler registered"), distinct in its
+    reason from a method the wiring does not know.
+
+### What stage 2b leaves to the bridge and later
+
+- `hg_pub_open_mirror` writes this module's name as the header's `writer`;
+  docs/01 "Mirrored topics" wants the sending module's name there, which the
+  bridge knows from the handshake. The bridge needs a writer argument on that
+  open (and the manager's `open` a `writer=` key), or the caller token of a
+  mirrored request is `<role>:bridge`. The token code itself is ready: the
+  `hg_call` suite creates the mirrored topics as the sending module.
+- A server's `subglob *.req` is opened and polled by `hg_serve`, its matches
+  served and deduplicated against the named subscriptions; the manager does not
+  yet write the line (no bridge configuration), nor `*.req` among the `.rep`
+  output's `Sources`, so a glob match's reply would go out unreferenced.
+- The bridge rewrites `deadline_ns` and `received_ns` into the receiver's clock;
+  nothing in the library assumes otherwise, but nothing tests it.
+- Dataset row types and the policy types (docs/06, docs/09) are untouched: a
+  `Type=dataset:<name>` output is still refused by the manager.

@@ -166,6 +166,11 @@ hg_sub *hg_sub_open(const char *name, const struct hg_type *type);
 /* HG_OLDEST starts hg_next at the oldest message still in the ring instead
  * of the newest. */
 hg_sub *hg_sub_open_from(const char *name, const struct hg_type *type, enum hg_start from);
+/* Opens one of the module's own outputs for reading: a topic the wiring
+ * lists as a pub, not a sub (a restarted server reads its own .rep topic
+ * for the replies it already gave, docs/04 "While the server restarts").
+ * EACCES for a topic that is neither. */
+hg_sub *hg_sub_open_own(const char *name, const struct hg_type *type, enum hg_start from);
 void hg_sub_close(hg_sub *s);
 
 /* The buffer must hold the payload: HG_ERROR with EMSGSIZE if shorter. */

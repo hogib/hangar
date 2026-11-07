@@ -3,7 +3,13 @@
  * what it may subscribe to, publish, serve and call, with the slots, rates,
  * provenance links and types the library takes from here and never from the
  * module's code. Read once by hg_init() from the sealed memfd in
- * $HANGAR_WIRING, or from the file $HANGAR_WIRING_FILE for standalone runs. */
+ * $HANGAR_WIRING, or from the file $HANGAR_WIRING_FILE for standalone runs.
+ *
+ * Beyond docs/03's table the text carries, for the call library (docs/04):
+ * a `role <vehicle|topside>` line (the module's own role, which a server
+ * needs to name a mirrored caller `<role>:<module>`), the bare word
+ * `actuator` on a pub line (hg_call() is refused in such a module), and
+ * `noroute=1` on a call line nothing serves on either side. */
 #ifndef HG_WIRING_H
 #define HG_WIRING_H
 
@@ -43,6 +49,7 @@ struct hg_wiring_pub {
 	uint32_t rate_mhz;
 	uint64_t stale_after_ns;
 	int implicit;
+	int actuator;            /* the manifest's Actuator=yes: hg_call() is refused in this module */
 	int n_inputs;
 	char inputs[4][HG_WIRING_NAME];          /* may be "<role>:<topic>" */
 	int n_sources;
@@ -70,6 +77,7 @@ struct hg_wiring_call {
 	char target[HG_WIRING_NAME + 32]; /* <module>.<method> */
 	struct hg_wiring_method m;
 	int remote;
+	int noroute;             /* nothing serves it on either side: HG_E_NOROUTE at once */
 };
 
 struct hg_wiring_mirror {
@@ -80,6 +88,7 @@ struct hg_wiring_mirror {
 
 struct hg_wiring {
 	char module[32];
+	char role[16];           /* this machine's Role (vehicle, topside); "" if the line is absent */
 	int n_subs, n_globs, n_pubs, n_serves, n_calls, n_mirrors;
 	struct hg_wiring_sub subs[HG_WIRING_MAX_SUBS];
 	struct hg_wiring_glob globs[HG_WIRING_MAX_GLOBS];

@@ -35,6 +35,20 @@ struct hg_type {
 };
 typedef struct hg_type hg_type;
 
+/* The attributes of a parameter type's field (docs/05 "Parameter types"),
+ * as the generator emits them (tools/msggen/README.md): the default, the
+ * range and the @restart mark, as written in the .msg. The generated
+ * headers define the same struct unless this macro says it is here. */
+#ifndef HG_PARAM_META_DEFINED
+#define HG_PARAM_META_DEFINED
+struct hg_param_meta {
+	const char *dflt;     /* "" if none; a list for arrays, quoted text for char */
+	const char *min;      /* "" if no range */
+	const char *max;
+	uint8_t restart;      /* 1: changing it restarts the module */
+};
+#endif
+
 #define HG_SCHEMA_MAX 3584       /* the header's schema field */
 #define HG_SCHEMA_MAX_FIELDS 128
 #define HG_FIELD_NAME_MAX 63     /* hg_type_abi.md; dotted dataset names fit too */

@@ -540,7 +540,17 @@ static void test_implicit(void)
 	}
 	CHECK(rep && rep->implicit && rep->slots == 16);
 	CHECK(rep && strcmp(mf_type_at(&set, rep->type_idx)->name, "rep:mavlink") == 0);
-	CHECK(rep && mf_type_at(&set, rep->type_idx)->payload_bytes == 96 + 8);
+	CHECK(rep && mf_type_at(&set, rep->type_idx)->payload_bytes == 96 + 16); // set_params_rep: 16 bytes
+	// [Params] serves set_params: the implicit serve line with the generated
+	// types and the default Allow list, "* admin".
+	const struct mf_serve *sp = NULL;
+	for (int i = 0; i < m->n_serves; i++)
+		if (strcmp(m->serves[i].method, "set_params") == 0)
+			sp = &m->serves[i];
+	CHECK(sp && sp->implicit && strcmp(sp->req, "set_params:depth") == 0 && strcmp(sp->rep, "set_params_rep") == 0);
+	CHECK(sp && sp->allow_set && sp->n_allow == 2 && strcmp(sp->allow[0], "*") == 0 && strcmp(sp->allow[1], "admin") == 0);
+	CHECK(sp && mf_type_at(&set, sp->req_idx)->payload_bytes == 8 + 16);
+	CHECK(sp && mf_type_at(&set, sp->rep_idx)->payload_bytes == 16);
 	CHECK(par && par->implicit && strcmp(mf_type_at(&set, par->type_idx)->name, "params:mavlink") == 0);
 	CHECK(par && mf_type_at(&set, par->type_idx)->payload_bytes == 64 + 16); // 8+48+1+7, then depth's 12 -> 16
 	int have_req = 0, have_admin = 0;
@@ -637,8 +647,11 @@ static void test_wiring_roundtrip(void)
 	CHECK(p && p->hash == mf_type_find(&set, "req:depth_hold")->hash);
 	p = hg_wiring_find_pub(w, "depth_hold.params");
 	CHECK(p && p->implicit && strcmp(p->type, "params:depth_hold") == 0);
-	CHECK_EQ_INT(w->n_serves, 1);
+	CHECK_EQ_INT(w->n_serves, 2); // reset, and the implicit set_params
 	CHECK(strcmp(w->serves[0].method, "reset") == 0 && w->serves[0].n_allow == 4 && w->serves[0].deadline_ns == 250000000);
+	CHECK(strcmp(w->serves[1].method, "set_params") == 0 && strcmp(w->serves[1].m.rep_type, "set_params_rep") == 0 &&
+	      w->serves[1].m.rep_size == 16);
+	CHECK(strcmp(w->role, "vehicle") == 0);
 	CHECK(w->serves[0].m.req_size == 8 && w->serves[0].m.req_hash == mf_type_find(&set, "empty")->hash);
 	CHECK_EQ_INT(w->n_calls, 1);
 	CHECK(strcmp(w->calls[0].target, "safety.disarm") == 0 && w->calls[0].remote == 0);

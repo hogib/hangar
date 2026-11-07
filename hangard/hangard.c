@@ -733,6 +733,7 @@ int do_reexec(char *err, size_t errlen)
 	fprintf(f, "hangar-reexec 1\n");
 	fprintf(f, "system %s %llu %s\n", sys_state_names[G.sys], (unsigned long long)G.sys_since_ns, G.sys_reason);
 	fprintf(f, "control %d\n", G.ctlfd);
+	fprintf(f, "calls %llu\n", (unsigned long long)G.next_call_id);
 	for (int i = 0; i < G.n_modules; i++) {
 		const struct module *m = &G.modules[i];
 		fprintf(f, "module %s %d %d %llu %s %llu %u %llu %llu %llu %llu %d %d %d %d %016llx %016llx %llu %s %d %d",
@@ -801,6 +802,8 @@ static int startup_from_reexec(void)
 			}
 		} else if (strncmp(line, "control ", 8) == 0) {
 			G.ctlfd = atoi(line + 8);
+		} else if (strncmp(line, "calls ", 6) == 0) {
+			G.next_call_id = strtoull(line + 6, NULL, 10);
 		} else if (strncmp(line, "module ", 7) == 0) {
 			char name[MF_NAME], st[32], after[32];
 			int pid, pidfd, exit_known, exit_status, gave_up, adopted, count_failure, nft, off = 0;
@@ -947,6 +950,8 @@ int main(int argc, char **argv)
 		hd_die("%s", err);
 	G.is_root = geteuid() == 0;
 	G.uid = getuid();
+	if (!G.next_call_id)
+		G.next_call_id = 1;
 	G.sys_since_ns = hg_now_ns();
 	/* Topic files 0640, wake files and the socket 0660, the registry 0600:
 	 * nothing the manager creates is for others; modules get the usual
