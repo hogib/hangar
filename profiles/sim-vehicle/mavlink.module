@@ -7,6 +7,12 @@ Exec=/usr/lib/hangar/hangar-mavlink /etc/hangar/mavlink.conf
 User=hg-mavlink
 SupplementaryGroups=hg-autopilot hangar-rec
 
+# ArduSub boots on its own schedule (SITL takes tens of seconds): the module is
+# ready only once it has heard it and published every rated output, so the
+# default 5 s grace would restart it, and run its Neutral command, until then.
+[Health]
+StartGrace=60s
+
 [Subscribe ctl.wrench]
 [Subscribe safety.state]
 # docs/10 also subscribes safety.params, bridge.vehicle.link, recorder.session and

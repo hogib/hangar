@@ -17,6 +17,7 @@
 #include <sys/timerfd.h>
 
 #include "ardusub_param.h"
+#include <arpa/inet.h>
 #include "ardusub_state.h"
 #include "arm_rep.h"
 #include "arm_req.h"
@@ -572,8 +573,48 @@ static void send_next_param(uint64_t now)
 	A.param_next_ns = now + PARAM_RETRY_NS;
 }
 
+/* ArduSub's address, once learned, goes to <state dir>/peer so that the Neutral
+ * command can send at once instead of waiting for a packet that may never come
+ * (the manager allows it 1 s). Written once per address. */
+static struct sockaddr_in peer_noted;
+
+static void note_peer(void)
+{
+	if (!L.have_peer || memcmp(&L.peer, &peer_noted, sizeof L.peer) == 0)
+		return;
+	char dir[1024], path[1100], text[64], ip[INET_ADDRSTRLEN];
+	if (mod_state_dir(dir, sizeof dir) < 0)
+		return;
+	mod_fmt(path, sizeof path, "%s/peer", dir);
+	inet_ntop(AF_INET, &L.peer.sin_addr, ip, sizeof ip);
+	mod_fmt(text, sizeof text, "%s:%u\n", ip, (unsigned)ntohs(L.peer.sin_port));
+	if (mod_write_file(path, text) < 0)
+		mod_log(WHO, "cannot write %s: %s", path, strerror(errno));
+	else
+		peer_noted = L.peer;
+}
+
+static int peer_file_read(struct sockaddr_in *out)
+{
+	char dir[1024], path[1100], line[64] = "";
+	if (mod_state_dir(dir, sizeof dir) < 0)
+		return -1;
+	mod_fmt(path, sizeof path, "%s/peer", dir);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return -1;
+	if (!fgets(line, sizeof line, f))
+		line[0] = 0;
+	fclose(f);
+	char *nl = strchr(line, '\n');
+	if (nl)
+		*nl = 0;
+	return mc_parse_addr(line, out);
+}
+
 static void tick(uint64_t now)
 {
+	note_peer();
 	/* The gate: the command at 50 Hz, neutral otherwise; the armed agreement
 	 * on every pass from the safety view the gate judged. */
 	const char *why = NULL;
@@ -766,7 +807,14 @@ int mavlink_neutral_main(const char *conf_path)
 		return 1;
 	}
 	A.sysid = C.target_sysid ? C.target_sysid : 1;
-	uint64_t deadline = hg_now_ns() + 1500000000ull;
+	/* The address the module learned, if it ever heard ArduSub; else the next
+	 * packet, within the manager's 1 s. */
+	int from_file = 0;
+	if (!L.have_peer && peer_file_read(&L.peer) == 0) {
+		L.have_peer = 1;
+		from_file = 1;
+	}
+	uint64_t deadline = hg_now_ns() + 600000000ull;
 	while (!L.have_peer && hg_now_ns() < deadline) {
 		struct epoll_event ev;
 		int ep = epoll_create1(EPOLL_CLOEXEC);
@@ -779,11 +827,15 @@ int mavlink_neutral_main(const char *conf_path)
 		mav_link_receive(&L, on_frame_neutral, &now_ctx);
 	}
 	if (!L.have_peer) {
-		fprintf(stderr, "%s --neutral: no packet from ArduSub within 1.5 s and no Peer= configured: nothing sent\n", WHO);
+		/* No Peer=, no address learned by the module in its lifetime, no
+		 * packet now: the module never reached ArduSub, so it never
+		 * commanded it, and there is nothing to make neutral. */
+		fprintf(stderr, "%s --neutral: ArduSub's address is not known (no Peer=, never heard by the module, no packet within 0.6 s): nothing to neutralize\n", WHO);
 		mav_link_close(&L);
-		return 1;
+		return 0;
 	}
 	A.seen = 1;
+	(void)from_file;
 	for (int i = 0; i < 3; i++) {
 		struct mav_manual_control m;
 		memset(&m, 0, sizeof m);

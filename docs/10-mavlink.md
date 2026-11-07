@@ -151,6 +151,11 @@ Exec=/usr/lib/hangar/hangar-mavlink /etc/hangar/mavlink.conf
 User=hg-mavlink
 SupplementaryGroups=hg-autopilot hangar-rec
 
+# Ready is having published every rated output, the telemetry among them, so the
+# module is ready once ArduSub is heard; ArduSub boots on its own schedule.
+[Health]
+StartGrace=60s
+
 [Subscribe ctl.wrench]
 [Subscribe safety.state]
 [Subscribe safety.params]
@@ -238,8 +243,12 @@ refuses while ArduSub is out of MANUAL; an ArduSub restart (`hangar restart ardu
 brings it back.
 
 The `Neutral` command, which the manager runs if the module exits for any reason, sends
-ArduSub neutral manual control and a disarm, signed. ArduSub also stops receiving
-manual control, and its own failsafes act. The meaning of each axis in MANUAL is
+ArduSub neutral manual control and a disarm, signed, to the address of `Peer=` or, when
+ArduSub's address is learned from its packets, to the one the module wrote to its state
+directory on hearing it, so that the command sends at once within the manager's one
+second. A module that never heard ArduSub never commanded it, and its `Neutral` command
+has nothing to send. ArduSub also stops receiving manual control, and its own failsafes
+act. The meaning of each axis in MANUAL is
 verified against ArduSub's source for the version deployed; the table is configuration.
 
 ### Arming and failsafe

@@ -57,8 +57,13 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   reads as the file, 2 with the first mismatch in the status line. `mavlink.setup`
   (`hangar ardusub-setup`): refused unless `safety.state` is disarmed and ArduSub is,
   else a `PARAM_SET` per line, then the read-back.
-- `--neutral`: binds the same port, learns ArduSub's address from its next packet
-  (1.5 s; or `Peer=`), sends neutral manual control and a disarm three times, signed.
+- `--neutral`: binds the same port, takes ArduSub's address from `Peer=`, else from
+  `<state dir>/peer` (written by the module when it first hears ArduSub), else from the
+  next packet within 0.6 s (the manager allows 1 s); sends neutral manual control and a
+  disarm three times, signed. With no address at all the module never reached ArduSub, and
+  the command exits 0 having sent nothing, saying so.
+- The manifest sets `[Restart] StartGrace=60s`: ready is having published every rated
+  output, the telemetry among them, so the module is ready only once ArduSub is heard.
   On `SIGTERM` the module itself sends neutral and a disarm before it exits.
 - Signing: MAVLink 2 signatures on everything sent, every frame received must verify
   (key file, link id 1, timestamps per stream, the one-minute rule) with `Signing=yes`;

@@ -404,8 +404,11 @@ static uint32_t active_triggers(uint64_t now, char reasons[8][64], int all)
 			mod_fmt(reasons[5], 64, "autopilot: no ardusub.state");
 		} else if (now > IN.ap.last_rx_ns + mod_s_to_ns(P.autopilot_silence)) {
 			t |= TRG_AUTOPILOT;
-			mod_fmt(reasons[5], 64, "autopilot: silent for %.1f s",
-				(double)(now - IN.ap.last_rx_ns) / 1e9);
+			if (!IN.ap.last_rx_ns)
+				mod_fmt(reasons[5], 64, "autopilot: ArduSub never heard");
+			else
+				mod_fmt(reasons[5], 64, "autopilot: silent for %.1f s",
+					(double)(now - IN.ap.last_rx_ns) / 1e9);
 		} else if (IN.ap.mode != MANUAL_MODE) {
 			t |= TRG_AUTOPILOT;
 			mod_fmt(reasons[5], 64, "autopilot: mode %u is not MANUAL", IN.ap.mode);
