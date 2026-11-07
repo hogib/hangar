@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* hangar dataset (docs/12-tools.md "Datasets and analysis"; modules/recorder/README.md):
  *
- *   hangar dataset build <spec> <session> [-o <out.hgr>]
+ *   hangar dataset build <spec> <session> [-o <out.hgr>]     (or: hangar dataset <spec> <session>)
  *       the rows of the spec from a session's .hgr files, with lib/hg's join
  *       code (the pairer's): the live rows, except where `late` is set
  *   hangar dataset check <spec> [<policy spec>] [<session>]
@@ -614,5 +614,8 @@ int hangar_dataset_main(int argc, char **argv)
 		return cmd_schema(argc - 1, argv + 1);
 	if (strcmp(argv[0], "pairs") == 0)
 		return cmd_pairs(argc - 1, argv + 1);
+	/* `hangar dataset <spec> <session>`: a build. */
+	if (argc >= 2 && argv[0][0] != '-' && argv[1][0] != '-')
+		return cmd_build(argc, argv);
 	return dfail("unknown subcommand %s (build, check, schema, pairs)", argv[0]);
 }

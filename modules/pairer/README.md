@@ -135,7 +135,7 @@ hangar dataset pairs <session> <module>
 
 `<spec>` is a name (`DatasetDir/<name>.dataset`, `DatasetDir` from `hangard.conf`
 under `$HANGAR_ROOT`, else `/etc/hangar/datasets`) or a path ending in `.dataset`.
-`build` opens `<session>/<anchor>.hgr` and each part's file, refuses a part recorded
+`hangar dataset <spec> <session>` alone is a `build`. `build` opens `<session>/<anchor>.hgr` and each part's file, refuses a part recorded
 other than `full` (naming it) and a topic with more than one epoch in the session,
 binds the row type from the files' headers, runs the join over every anchor record in
 order with the recordings as sources, sets `late` where it joined a message published
