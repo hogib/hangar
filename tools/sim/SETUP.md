@@ -79,7 +79,9 @@ checks, since most of the work turned out to be done already.
    `sudo chmod -R a+rX /opt/qgroundcontrol && sudo ln -sf /opt/qgroundcontrol/AppRun
    /usr/local/bin/qgroundcontrol`. Then `qgroundcontrol` (on Wayland it runs under
    XWayland; `QT_QPA_PLATFORM=xcb qgroundcontrol` if it complains about the display).
-   The Joystick settings page appears only once a vehicle is connected. It listens on UDP 14550 by default and MAVProxy inside
+   A real gamepad is set up under **Vehicle Setup** (the Q icon → Vehicle Setup →
+   **Joystick**), not under Application Settings; that page exists only while a
+   vehicle is connected: calibrate, then tick *Enable joystick input*. It listens on UDP 14550 by default and MAVProxy inside
    the container sends there (`sim_vehicle.py` adds `--out 127.0.0.1:14550` itself;
    `--net=host` makes the container's 127.0.0.1 the host's), so within a few seconds
    QGC shows a connected submarine, `Manual` mode, `Disarmed`.
