@@ -521,4 +521,8 @@ check-sim: $(TESTDIR)/test_sim
 sim-data:
 	sh lib/sim/data/gen_t200_inc.sh > lib/sim/data/t200_thrust.inc
 
+# lib/nn, the inference runtime (lib/nn/nn.mk carries its own rules).
+include lib/nn/nn.mk
+check: check-nn
+
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
