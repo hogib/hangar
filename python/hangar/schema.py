@@ -48,6 +48,7 @@ Layout = namedtuple("Layout", "fields payload_bytes")
 ParamMeta = namedtuple("ParamMeta", "name default min max restart")
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_GENERATED = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*$")
 _FLOAT_CHARS = re.compile(r"^[0-9.eE+-]+$")
 
 
@@ -106,7 +107,7 @@ def _split_comment(line):
     return line, ""
 
 
-def _parse_line(lineno, line, params, seen, file):
+def _parse_line(lineno, line, params, seen, file, generated=False):
     body, comment = _split_comment(line)
     body = body.strip()
     if not body:
@@ -140,13 +141,19 @@ def _parse_line(lineno, line, params, seen, file):
         name = head
     elif kind == "char":
         _err(lineno, "char needs a size: char %s[N]" % name, file)
-    if "." in name:
-        _err(lineno, "dotted name '%s': only generated dataset row types carry dots" % name, file)
-    if not _IDENT.match(name) or not name.isascii():
-        _err(lineno, "'%s' is not a C identifier" % name, file)
-    if name.startswith("_"):
-        _err(lineno, "'%s': names starting with '_' are reserved for generated names "
-             "(padding, _seq)" % name, file)
+    if generated:
+        # A row type the manager (or lib/hg's hg_dataset) generated: dotted
+        # names and a part's _seq, _stamp_ns, _count, _flags (docs/06 "The row").
+        if not _GENERATED.match(name) or not name.isascii():
+            _err(lineno, "'%s' is not a generated field name" % name, file)
+    else:
+        if "." in name:
+            _err(lineno, "dotted name '%s': only generated dataset row types carry dots" % name, file)
+        if not _IDENT.match(name) or not name.isascii():
+            _err(lineno, "'%s' is not a C identifier" % name, file)
+        if name.startswith("_"):
+            _err(lineno, "'%s': names starting with '_' are reserved for generated names "
+                 "(padding, _seq)" % name, file)
     if len(name) > MAX_NAME:
         _err(lineno, "name '%s' is longer than %d bytes" % (name, MAX_NAME), file)
     if name in seen:
@@ -237,7 +244,7 @@ def _check_attrs(f, file):
             _err(f.line, "default has %d values for a scalar" % len(vals), file)
 
 
-def _parse(text, params=True, file=None):
+def _parse(text, params=True, file=None, generated=False):
     """The raw fields of a .msg text, before layout. Raises SchemaError."""
     if isinstance(text, bytes):
         data = text
@@ -253,7 +260,7 @@ def _parse(text, params=True, file=None):
     if lines and lines[-1] == "":
         lines.pop()  # the empty tail after a final newline is not a line
     for lineno, line in enumerate(lines, 1):
-        f = _parse_line(lineno, line, params, seen, file)
+        f = _parse_line(lineno, line, params, seen, file, generated)
         if f is None:
             continue
         if len(fields) >= MAX_FIELDS:
@@ -269,13 +276,15 @@ def _align_up(v, a):
     return (v + a - 1) // a * a
 
 
-def layout_from_schema(text, params=True, file=None):
+def layout_from_schema(text, params=True, file=None, generated=False):
     """Layout(fields, payload_bytes): each field with its offset and size in bytes.
 
     Natural alignment, the struct size rounded up to a multiple of 8, as
     lib/hg/hg_type_abi.md specifies and as the C generator computes.
+    generated=True accepts the dotted and _-prefixed names of a dataset row
+    type (hangar.dataset reads those).
     """
-    raw = _parse(text, params, file)
+    raw = _parse(text, params, file, generated)
     off, maxalign, fields = 0, 1, []
     for f in raw:
         a = KINDS[f.kind][0]
@@ -290,18 +299,18 @@ def layout_from_schema(text, params=True, file=None):
     return Layout(fields, payload)
 
 
-def canonical(text, file=None):
+def canonical(text, file=None, generated=False):
     """The canonical form: one 'type name' or 'type name[N]' per line, each ended by \\n."""
     out = []
-    for f in _parse(text, True, file):
+    for f in _parse(text, True, file, generated):
         out.append("%s %s[%d]\n" % (f.kind, f.name, f.count) if f.is_array
                    else "%s %s\n" % (f.kind, f.name))
     return "".join(out)
 
 
-def type_hash(text, file=None):
+def type_hash(text, file=None, generated=False):
     """FNV-1a 64 of the canonical form, as an int; equal to the C generator's."""
-    return fnv1a64(canonical(text, file).encode("ascii"))
+    return fnv1a64(canonical(text, file, generated).encode("ascii"))
 
 
 def _parse_default(kind, count, d):
@@ -333,7 +342,7 @@ def parse_params(text, file=None):
     return out
 
 
-def dtype_from_schema(text, file=None):
+def dtype_from_schema(text, file=None, generated=False):
     """A numpy structured dtype of the layout, little-endian, itemsize payload_bytes.
 
     char[N] becomes 'S<N>'; an array field a subarray. Padding comes from the
@@ -342,7 +351,7 @@ def dtype_from_schema(text, file=None):
     """
     import numpy  # pylint: disable=import-outside-toplevel
 
-    lay = layout_from_schema(text, True, file)
+    lay = layout_from_schema(text, True, file, generated)
     names, formats, offsets = [], [], []
     for f in lay.fields:
         names.append(f.name)

@@ -844,9 +844,10 @@ int main(int argc, char **argv)
 			hg_alive();
 		}
 	}
+	/* What is in the rings goes into the session before it closes. */
+	drain();
 	if (active)
 		session_stop("shutdown");
-	drain();
 	writer_stop(&W);
 	if (status_pub)
 		hg_pub_close(status_pub);

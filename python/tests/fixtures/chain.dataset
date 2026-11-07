@@ -1,0 +1,29 @@
+# chain.dataset: the suite's spec over the toy chain (modules/recorder/tests)
+[Dataset]
+Anchor=t.c
+AnchorRole=label
+Fields=surge heave
+Lateness=0
+Filter=mask
+ResetAfter=100ms
+Where=t.c.heave >= 0.2 and t.x.depth_m > 0
+
+[Input t.a]
+Join=provenance
+
+[Input t.b]
+Join=provenance
+Window=3
+Fields=gyro
+
+[Input t.x]
+Join=provenance
+Role=filter
+
+[Input t.s]
+Join=asof:0
+Role=label
+Fields=depth_m
+
+[Input t.g]
+Join=provenance

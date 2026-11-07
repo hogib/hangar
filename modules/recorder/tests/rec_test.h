@@ -181,6 +181,7 @@ static inline void rec_setup(const char *tag)
 	write_file(p, "Role=vehicle\n");
 	setenv("HANGAR_ROOT", R_root, 1);
 	setenv("HANGAR_TOPIC_DIR", R_topics, 1);
+	setvbuf(stdout, NULL, _IOLBF, 0); /* a crashed suite still leaves its lines in the log */
 	unsetenv("HANGAR_CONTROL");
 	unsetenv("HANGAR_WIRING");
 	unsetenv("HANGAR_WIRING_FILE");
