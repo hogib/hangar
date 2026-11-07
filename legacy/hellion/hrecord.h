@@ -1,23 +1,19 @@
 #pragma once
 #include "hconfig.h"
+#include "mp4_record.h"
 #include "pipeline.h"
 #include <stdbool.h>
 #include <stddef.h>
 
 /*
  * Topside recording: the H.264 stream exactly as it arrives over the
- * tether, copied into an MP4 by an ffmpeg child, without re-encoding.
- *
- * Starting a recording attaches a local port to the receiving pipeline's
- * UDP relay (udp_relay_attach), so the recorder gets the same packets as
- * the decoder and QGC, and takes nothing from them. The file is
- * fragmented MP4 (see ff_recorder_args): one cut off by a crash or a
- * power loss still plays up to its last keyframe.
- *
- * One recording at a time: "am I recording?" has one answer.
+ * tether, copied into an MP4 by an ffmpeg child, without re-encoding. The
+ * recorder itself is lib/video/mp4_record.h; this is hellion's wiring of
+ * it -- which pipeline is recorded, where the files and the SDP go -- and
+ * the hrec_* names control.c and main.c use.
  */
 
-typedef struct HRec HRec;
+typedef Mp4Rec HRec;
 
 // Picks the pipeline to record ("record_from", else the first with an rtp
 // source) from `pipes`. Never NULL: a recorder with nothing to record

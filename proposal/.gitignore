@@ -1,0 +1,9 @@
+# LaTeX intermediates (see Makefile)
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.xdv

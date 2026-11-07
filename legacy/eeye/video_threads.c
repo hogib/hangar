@@ -320,7 +320,14 @@ void *effects_loop(void *arg) {
     } else {
       memset(&frame->stats, 0, sizeof frame->stats); // valid = false
     }
-    apply_effect_chain_auto(frame, cfg, av, &stats);
+    // The chain is lib/ code and reads an EffectChainConfig (effects.h),
+    // not a Config: the three fields it needs are copied out of the
+    // snapshot (~140 bytes, once per frame).
+    EffectChainConfig chain;
+    memcpy(chain.stages, cfg->stages, sizeof chain.stages);
+    chain.stage_count = cfg->stage_count;
+    chain.auto_visibility = cfg->auto_visibility;
+    apply_effect_chain_auto(frame, &chain, av, &stats);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     record_effects_time(args->timing, &t0, &t1);
 

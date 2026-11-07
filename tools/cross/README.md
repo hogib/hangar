@@ -39,6 +39,9 @@ make BUILD=release BUILDDIR=out/aarch64 \
   TURBOJPEG_LIBS="ljt-build/libturbojpeg.a"
 # the test suites, run under qemu user-mode emulation:
 make ... TIMEOUT="qemu-aarch64 -0" check
+# the operators' hashes against electric-eye v0.3.1, NEON paths included
+# (tools/equivalence/README.md):
+make ... TIMEOUT="qemu-aarch64 -0" equivalence
 ```
 
 OpenMP is not available in static musl builds (zig ships no OpenMP runtime), so the

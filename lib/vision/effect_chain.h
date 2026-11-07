@@ -1,6 +1,6 @@
 #pragma once
 #include "auto_vis.h"
-#include "config.h"
+#include "effects.h"
 #include "img_stats.h"
 #include "video_frame.h"
 
@@ -15,7 +15,7 @@
  * conv.h's neighborhood-op contract and video_frame.h's note on why a
  * third (spare) buffer exists at all.
  */
-void apply_effect_chain(VideoFrame *frame, const Config *cfg);
+void apply_effect_chain(VideoFrame *frame, const EffectChainConfig *cfg);
 
 /*
  * The same, with auto visibility (auto_vis.h) run first when
@@ -24,5 +24,5 @@ void apply_effect_chain(VideoFrame *frame, const Config *cfg);
  * picture. `stats` must describe frame->raw_planes. Sets frame->stats.auto_on
  * to whether it ran.
  */
-void apply_effect_chain_auto(VideoFrame *frame, const Config *cfg,
+void apply_effect_chain_auto(VideoFrame *frame, const EffectChainConfig *cfg,
                              AutoVis *av, const ImgStats *stats);

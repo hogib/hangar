@@ -1,132 +1,16 @@
 #pragma once
 #include "camera_ctrl.h"
+#include "capture.h" // CaptureSource, CaptureFormat
+#include "effects.h" // EffectType, EffectStage, max_chain_stages
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-typedef enum {
-  EFFECT_NONE = 0,
-  EFFECT_GRAYSCALE,
-  EFFECT_INVERT,
-  EFFECT_THRESHOLD,
-  EFFECT_TINT,
-  EFFECT_SOBEL,
-  EFFECT_BLUR,
-  EFFECT_CONTRAST,
-  EFFECT_LIGHT,
-  EFFECT_LOG,
-  EFFECT_CANNY,
-} EffectType;
-
-// Where frames come from. See rpicam_in.h for why a Pi CSI camera needs a
-// separate backend rather than another device path handed to v4l2_in.c.
-typedef enum {
-  CAPTURE_AUTO = 0, // probe for a CSI camera, else V4L2
-  CAPTURE_V4L2,     // a USB/UVC webcam, via v4l2_in.c
-  CAPTURE_RPICAM,   // a Pi CSI camera module, via rpicam_in.c
-  // A frame bus stream (see fbus.h) -- frames another program publishes,
-  // e.g. hellion decoding the ROV's camera topside. Never chosen by
-  // "auto".
-  CAPTURE_BUS,
-} CaptureSource;
-
-// Which pixel format to ask a V4L2 camera for. Only meaningful on the
-// V4L2 backend; the Pi camera path always delivers MJPEG (see rpicam_in.h).
-//
-// This exists because the two formats have very different costs. YUYV is
-// packed 4:2:2 -- the same layout VideoFrame uses, just interleaved -- so
-// capture is a deinterleave into the planes with NO decode at all. MJPEG
-// must be decoded every frame. On a camera that offers both, which one
-// you get should be a decision, not a side effect of probe order.
-//
-// The tradeoff is bandwidth: YUYV is uncompressed, so 1280x720 at 30fps
-// needs ~55 MB/s and will not fit USB 2.0's isochronous ceiling. That is
-// why FORMAT_AUTO still tries MJPEG first -- it is the right default for
-// the cameras most people have.
-typedef enum {
-  FORMAT_AUTO = 0, // MJPEG if offered at this size, else YUYV
-  FORMAT_MJPEG,    // MJPEG only; fail at startup if unavailable
-  FORMAT_YUYV,     // YUYV only; fail at startup if unavailable
-  // rpicam backend only: take the ISP's raw 4:2:0 output instead of having
-  // rpicam-vid software-encode MJPEG that eeye then decodes. Opt-in until
-  // verified on real hardware -- see rpicam_in.c.
-  FORMAT_YUV420,
-} CaptureFormat;
 
 // What the recording tap writes -- see Config.record_format.
 typedef enum {
   RECORD_RAW = 0, // decoded I422 planes, frames back to back (~55MB/s at 720p)
   RECORD_MJPEG,   // the camera's own JPEG bytes, as received
 } RecordFormat;
-
-// One entry in an effect chain. Every stage carries its own parameters
-// (rather than one shared set for the whole Config) so e.g. two EFFECT_TINT
-// stages in the same chain, or a threshold before a tint, each get their
-// own values.
-typedef struct {
-  EffectType effect;
-  uint8_t threshold_value; // used when effect == EFFECT_THRESHOLD
-  uint8_t tint_u;          // used when effect == EFFECT_TINT
-  uint8_t tint_v;
-  uint8_t tint_strength;
-
-  // used when effect == EFFECT_SOBEL: gradient magnitudes below this are
-  // clamped to 0 -- raises the bar for what counts as an edge, so faint
-  // sensor noise doesn't show up as a sea of dim edge pixels. 0 (the
-  // default) keeps every magnitude sobel_edges() would otherwise produce,
-  // identical to not having this field at all.
-  uint8_t sobel_threshold;
-
-  // used when effect == EFFECT_BLUR: how many times to repeat the 5-tap
-  // pass. 0 and 1 both mean a single pass (today's blur, unchanged); each
-  // additional pass roughly doubles that stage's cost, so this is the
-  // knob for "soft focus" vs. "heavily smoothed" rather than a free
-  // parameter to max out.
-  uint8_t blur_strength;
-
-  // used when effect == EFFECT_LIGHT: a single dial over both brightness
-  // (Y) and color saturation (U/V distance from neutral), moved together
-  // -- unlike EFFECT_CONTRAST this is a fixed function of the level, not
-  // the frame's actual content, so it composes into effect_chain.c's
-  // point-op LUT fusion instead of needing its own full-frame pass. 128 =
-  // neutral (also the default when this key is omitted -- see
-  // parse_effect_stage, which seeds this field to 128 before parsing,
-  // unlike every other field here which defaults to a zero-initialized
-  // 0). Below 128: darker and desaturated, down to fully black/gray at 0.
-  // Above 128: brighter and more saturated, up to roughly double
-  // saturation at 255.
-  uint8_t light_level;
-
-  // used when effect == EFFECT_LOG: Gaussian passes before the Laplacian,
-  // so this sets sigma (growing as sqrt(strength)). 0 and 1 both mean a
-  // single pass, same as blur_strength.
-  uint8_t log_strength;
-
-  // used when effect == EFFECT_LOG: how steep the response must be across
-  // a zero-crossing to count as an edge. 0 marks every sign change,
-  // including noise grazing zero in flat regions.
-  uint8_t log_threshold;
-
-  // used when effect == EFFECT_CANNY: Gaussian passes before the gradient.
-  // Unlike the other strength knobs this is never zero -- 0 means 1 --
-  // because the smoothing bounds hysteresis's cost rather than just
-  // setting quality (see conv.h).
-  uint8_t canny_strength;
-
-  // used when effect == EFFECT_CANNY: hysteresis thresholds. At or above
-  // canny_high is an edge outright; between the two only when connected to
-  // one. Defaults (0) would produce an empty map, so parse_effect_stage
-  // seeds them to 40/90 the way it seeds light_level to 128.
-  uint8_t canny_low;
-  uint8_t canny_high;
-} EffectStage;
-
-// Bounds the chain to a fixed-size array rather than something dynamically
-// allocated: Config is copied by value into ConfigWatcher's ring buffer
-// (see config.c) on every reload, and keeping it a plain, pointer-free POD
-// struct is what makes that ring safe without any per-slot allocation or
-// cleanup. 8 is comfortably past any chain that makes visual sense.
-enum { max_chain_stages = 8 };
 
 // Shared with consumer_loop's own local copy of the current recording
 // path (see video_threads.c), so the two can never drift out of sync.

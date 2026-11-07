@@ -87,7 +87,7 @@ static void compare_against_reference(const EffectStage *stages,
                                       size_t count, unsigned seed) {
   VideoFrame *frame = make_frame(64, 32, seed);
 
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.stage_count = count;
   for (size_t i = 0; i < count; i++)
     cfg.stages[i] = stages[i];
@@ -216,7 +216,7 @@ static void test_empty_chain_passes_frame_through(void) {
   // Poison work so a missing copy is visible rather than coincidentally right.
   memset(frame->planes[0], 0x5A, frame->plane_sizes[0]);
 
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.stage_count = 0;
   apply_effect_chain(frame, &cfg);
 
@@ -230,7 +230,7 @@ static void test_empty_chain_passes_frame_through(void) {
 // must still compose correctly across that boundary.
 static void test_point_ops_around_neighborhood_op(void) {
   VideoFrame *frame = make_frame(64, 32, 77);
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.stage_count = 3;
   cfg.stages[0] = (EffectStage){.effect = EFFECT_INVERT};
   cfg.stages[1] = (EffectStage){.effect = EFFECT_SOBEL, .sobel_threshold = 40};
@@ -257,7 +257,7 @@ static void test_point_ops_around_neighborhood_op(void) {
 // `spare`, so the final hand-over is what makes this hold.
 static void test_result_always_lands_in_work_buffer(void) {
   VideoFrame *frame = make_frame(64, 32, 88);
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.stage_count = 2;
   cfg.stages[0] = (EffectStage){.effect = EFFECT_BLUR, .blur_strength = 1};
   cfg.stages[1] = (EffectStage){.effect = EFFECT_SOBEL};
@@ -307,7 +307,7 @@ static void check_blur_then(const EffectStage *stages, size_t count,
                             Finish finish) {
   VideoFrame *frame = make_frame(66, 32, 31);
   VideoFrame *ref = make_frame(66, 32, 31); // same content
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.stage_count = count;
   for (size_t i = 0; i < count; i++)
     cfg.stages[i] = stages[i];
@@ -357,7 +357,7 @@ static void test_blur_keeps_live_chroma(void) {
 static void test_result_in_spare_is_swapped_not_copied(void) {
   VideoFrame *frame = make_frame(64, 32, 21);
   uint8_t *spare_before = frame->spare_data;
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.stage_count = 1;
   cfg.stages[0] = (EffectStage){.effect = EFFECT_SOBEL};
   apply_effect_chain(frame, &cfg);
@@ -373,17 +373,17 @@ static void test_result_in_spare_is_swapped_not_copied(void) {
 // output right.
 static void test_empty_chain_aliasing_is_undone_next_frame(void) {
   VideoFrame *frame = make_frame(64, 32, 5);
-  Config empty = {0};
-  Config invert = {0};
+  EffectChainConfig empty = {0};
+  EffectChainConfig invert = {0};
   invert.stage_count = 1;
   invert.stages[0] = (EffectStage){.effect = EFFECT_INVERT};
-  Config blur = {0};
+  EffectChainConfig blur = {0};
   blur.stage_count = 1;
   blur.stages[0] = (EffectStage){.effect = EFFECT_BLUR};
 
   size_t n = frame->plane_sizes[0];
   uint8_t *raw_copy = malloc(n);
-  const Config *sequence[] = {&empty, &invert, &empty, &blur, &empty,
+  const EffectChainConfig *sequence[] = {&empty, &invert, &empty, &blur, &empty,
                               &empty, &invert, &blur, &invert, &empty};
   for (size_t k = 0; k < sizeof sequence / sizeof sequence[0]; k++) {
     // What the producer does: new camera content into raw.
@@ -415,7 +415,7 @@ static void test_empty_chain_aliasing_is_undone_next_frame(void) {
 // whose buffers still hold the previous frame's chroma.
 static void same_output(const EffectStage *with, size_t nw,
                         const EffectStage *without, size_t nwo) {
-  Config a = {0}, b = {0};
+  EffectChainConfig a = {0}, b = {0};
   a.stage_count = nw;
   b.stage_count = nwo;
   for (size_t i = 0; i < nw; i++)
@@ -459,7 +459,7 @@ static void test_chroma_neutral_flag(void) {
       {{EFFECT_NONE}, 0, false},
   };
   for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
-    Config cfg = {0};
+    EffectChainConfig cfg = {0};
     cfg.stage_count = cases[c].n;
     for (size_t i = 0; i < cases[c].n; i++) {
       cfg.stages[i].effect = cases[c].stages[i];
@@ -510,7 +510,7 @@ static void auto_expected(VideoFrame *f, uint8_t *out[3]) {
   auto_vis_destroy(av);
 }
 
-static void run_auto(VideoFrame *f, const Config *cfg) {
+static void run_auto(VideoFrame *f, const EffectChainConfig *cfg) {
   ImgStats st;
   const uint8_t *raw[3] = {f->raw_planes[0], f->raw_planes[1], f->raw_planes[2]};
   img_stats_compute(raw, f->width, f->height, f->stride, &st);
@@ -529,7 +529,7 @@ static void test_auto_visibility_runs_first(void) {
   auto_expected(frame, expect);
 
   // Empty chain: the result is auto visibility's output, in work.
-  Config cfg = {0};
+  EffectChainConfig cfg = {0};
   cfg.auto_visibility = true;
   run_auto(frame, &cfg);
   CHECK(frame->stats.auto_on);

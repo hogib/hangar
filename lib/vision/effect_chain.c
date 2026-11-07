@@ -102,7 +102,7 @@ static void apply_lut_plane(const uint8_t *src, uint8_t *dst, size_t size,
 // touched_y/u/v come back true only if some stage in the run actually
 // touches that channel, so e.g. a Y-only run (invert, threshold) never
 // pays for a no-op pass over U/V.
-static void fuse_point_op_run(const Config *cfg, size_t *i, uint8_t lut_y[256],
+static void fuse_point_op_run(const EffectChainConfig *cfg, size_t *i, uint8_t lut_y[256],
                               uint8_t lut_u[256], uint8_t lut_v[256],
                               bool *touched_y, bool *touched_u,
                               bool *touched_v) {
@@ -230,7 +230,7 @@ static bool passes_chroma(EffectType e) {
 // chroma reset on every frame. Tint and light are treated as reading
 // chroma even at their no-op settings; being conservative there only costs
 // a skipped optimization, never a wrong frame.
-static void compute_chroma_liveness(const Config *cfg,
+static void compute_chroma_liveness(const EffectChainConfig *cfg,
                                     bool chroma_live[max_chain_stages]) {
   bool live = true; // the output itself shows chroma
   for (size_t i = cfg->stage_count; i-- > 0;) {
@@ -245,14 +245,14 @@ static void compute_chroma_liveness(const Config *cfg,
   }
 }
 
-static void run_chain(VideoFrame *frame, const Config *cfg, ChainBuf cur);
+static void run_chain(VideoFrame *frame, const EffectChainConfig *cfg, ChainBuf cur);
 
 // Whether the chain's output chroma is all 128 whatever the input: its
 // last stage that does anything to chroma resets it (sobel, LoG, canny,
 // grayscale), and everything after either passes chroma through or, like
 // blur, keeps a uniform plane exactly uniform. The frame bus then copies
 // luma only (fbus_writer_publish_frame).
-static bool output_chroma_neutral(const Config *cfg) {
+static bool output_chroma_neutral(const EffectChainConfig *cfg) {
   for (size_t i = cfg->stage_count; i-- > 0;) {
     EffectType e = cfg->stages[i].effect;
     if (kills_chroma(e))
@@ -263,11 +263,11 @@ static bool output_chroma_neutral(const Config *cfg) {
   return false; // the camera's chroma (or auto visibility's)
 }
 
-void apply_effect_chain(VideoFrame *frame, const Config *cfg) {
+void apply_effect_chain(VideoFrame *frame, const EffectChainConfig *cfg) {
   apply_effect_chain_auto(frame, cfg, NULL, NULL);
 }
 
-void apply_effect_chain_auto(VideoFrame *frame, const Config *cfg,
+void apply_effect_chain_auto(VideoFrame *frame, const EffectChainConfig *cfg,
                              AutoVis *av, const ImgStats *stats) {
   // The previous trip through the pool may have left work pointing at raw
   // (an empty chain, see the end of run_chain). Every stage below needs
@@ -288,7 +288,7 @@ void apply_effect_chain_auto(VideoFrame *frame, const Config *cfg,
   run_chain(frame, cfg, cur);
 }
 
-static void run_chain(VideoFrame *frame, const Config *cfg, ChainBuf cur) {
+static void run_chain(VideoFrame *frame, const EffectChainConfig *cfg, ChainBuf cur) {
 
   bool chroma_live[max_chain_stages];
   compute_chroma_liveness(cfg, chroma_live);

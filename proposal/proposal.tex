@@ -1,0 +1,339 @@
+%% proposal.tex -> proposal.pdf
+%%
+%% hangar: a lightweight module system for underwater vehicles, with a
+%% recorded learning loop. Research proposal, in IEEE conference format
+%% (IEEEtran, two columns, IEEEtran.bst). Converted from proposal.md;
+%% refs.bib holds the 30 cited entries, copied from literature/refs.bib,
+%% which is not in the repository.
+%%
+%%   make            proposal.pdf  (tectonic, or latexmk with XeLaTeX)
+%%
+%% Built with XeLaTeX: UTF-8 source, fonts through fontspec. TeX Gyre
+%% Termes, Heros and Cursor stand in for IEEEtran's Times, Helvetica and
+%% Courier, which have no Unicode shapes under XeTeX. (The class selects
+%% its Times family once while it loads, before fontspec can run; the four
+%% "Font shape TU/ptm ... undefined" warnings in the log come from that and
+%% are harmless: every glyph in the PDF is from the TeX Gyre fonts.)
+\documentclass[conference]{IEEEtran}
+
+\usepackage{fontspec}
+\setmainfont{texgyretermes}[Extension=.otf, UprightFont=*-regular,
+  BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\setsansfont{texgyreheros}[Extension=.otf, UprightFont=*-regular,
+  BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\setmonofont{texgyrecursor}[Extension=.otf, UprightFont=*-regular,
+  BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\usepackage{cite}
+\usepackage[hyphens]{url}
+\usepackage{booktabs}
+\usepackage{array}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\title{hangar: a lightweight module system for underwater vehicles, with a
+recorded learning loop}
+
+\author{\IEEEauthorblockN{H. Oğuz Bolat}
+\IEEEauthorblockA{Department of Geomatics Engineering\\
+Yıldız Technical University\\
+İstanbul, Türkiye\\
+oguz.bolat@std.yildiz.edu.tr}}
+
+\IEEEspecialpapernotice{(Research proposal)}
+
+\maketitle
+
+% Decide before sending: whether to add a note on the use of AI tools in
+% preparing this proposal and the literature survey behind it, and how to
+% word it.
+
+\begin{abstract}
+hangar is a module system for remotely operated vehicles (ROVs) of the
+BlueROV2 class, native to Linux and small enough for the vehicle's Raspberry
+Pi. Each function of the vehicle is its own process under one manager;
+processes exchange fixed-size messages through shared memory, and no reader
+can delay a writer. The learning loop is part of this infrastructure, not an
+application on top of it. Every message records, by identifier, the input
+messages it used. One dataset definition produces the same model inputs live,
+offline and inside the running policy. Weights trained on a topside GPU are
+checked by the vehicle before use, run in shadow until an operator promotes
+the evaluated model by its hash, and are demoted automatically. Any thruster
+command can then be traced, by identifiers alone, to the model that produced
+it, the rows that trained it, and the sensor readings and pilot commands
+behind those rows. hangar supports known deployment-time learning schemes
+(pilot takeovers as in HG-DAgger~\cite{kelly2019hgdagger} and
+Sirius~\cite{liu2023sirius}; a residual on a classical controller) and makes
+them recorded, checked and reversible on a Pi. I propose to implement it in
+C11, compare it with ROS~2 on the same Pi, test its failure behaviour on the
+bench, and measure what the loop costs and what its checks catch.
+\end{abstract}
+
+\begin{IEEEkeywords}
+remotely operated vehicles, module system, shared memory, provenance,
+deployment-time learning, Raspberry Pi
+\end{IEEEkeywords}
+
+\section{Motivation and problem}
+
+On every dive the pilot shows how the vehicle should be driven. Learning from
+this data meets three obstacles.
+
+A recording holds messages and timestamps, not which inputs a module used for
+each output, so training pairs are rebuilt by matching times, and features
+built offline can differ from what the model meets on the vehicle. Different
+code paths for training and serving are the most common cause of this
+skew~\cite{breck2019datavalidation}: LeRobot trains on decoded video and
+deploys on raw frames~\cite{cadene2026lerobot}; AquaBot trains on JPEG frames
+and deploys on uncompressed ones, with a time join that can look forward in
+time~\cite{liu2025aquabot}. Message-level provenance exists for ROS, carried
+in headers~\cite{witte2021provenance} or reconstructed from
+traces~\cite{bedard2023messageflow}, but it has not been used to build
+datasets.
+
+Moving a model trained topside onto a running vehicle is, in the systems we
+know of, a manual step outside the middleware, with nothing on the vehicle to
+check the weights or remove a misbehaving model.
+
+ROS~2 brings a DDS participant per process and quadratic discovery to a
+computer that also runs the autopilot and encodes video; its authors measure
+2.1 to 4.3~MB per added process and recommend composition into one process,
+which gives up isolation~\cite{macenski2023composition}.
+
+\section{Proposed approach}
+
+\textbf{Transport and supervision.} A topic is one shared-memory ring per
+output, with one writer and any number of readers; a sequence counter per
+slot, read in Lamport's order~\cite{lamport1977concurrent}, detects torn
+copies. The ring itself is old; iceoryx2 is a current
+example~\cite{iceoryx2}. What differs: readers hold no resources, so a dead or
+stuck reader needs no cleanup and delays nobody, and schema, provenance and a
+staleness flag live in the ring file. The manager restarts a failed module
+alone, with back-off, and moves no data; if it crashes or is re-executed for
+an upgrade, the modules keep running and are adopted again from a small
+registry. This is crash-only design~\cite{candea2003crashonly} and
+one-for-one supervision~\cite{armstrong2003thesis}; the recovery from a
+registry is ROS Rescue's, for the ROS~1 master~\cite{kaveti2019rosrescue}.
+
+\textbf{Provenance and datasets.} Each message lists up to four input
+messages as (topic, sequence number), filled in by the library at publish
+time; an output computed from a stale input is flagged, transitively. This is
+recorded usage, not proven derivation~\cite{provdm2013}. A dataset spec names
+an anchor topic and the inputs joined to it, by provenance or by a bounded
+time join. The same join code runs in the live pairer on the vehicle, in the
+offline build, and in the policy that builds its inputs. Live and offline
+rows are identical except where a \texttt{late} flag marks a message that
+arrived after the live row was emitted. A bridge mirrors topics over the
+tether with their sequence numbers, so a provenance link means the same
+message on both sides, and pilot commands take priority over dataset rows and
+weight files.
+
+\textbf{Policies.} A policy module runs a small inference engine that
+allocates all memory at load. The engine is standard engineering; the
+handover is not. A weights file carries an architecture hash, probe inputs
+with expected outputs and tolerances, and the lineage of its training rows.
+The vehicle checks hashes, finite values, probes and step time against its
+tick budget, warms the model up beside the running one and swaps between two
+ticks; \texttt{revert} restores the previous one. The probe check is
+differential testing in CRADLE's sense~\cite{pham2019cradle}, done by the
+receiving vehicle rather than offline.
+
+\textbf{Safety.} All control sources pass through one multiplexer (the mux)
+that enforces thrust, rate and depth limits per axis; the pilot wins on any
+axis. The mux is a Simplex-style switch~\cite{seto1998simplex} with a
+hand-written envelope and a latched demotion that only a human
+releases~\cite{hobbs2023rta}; SOTER, the closest precedent, switches back
+automatically where hangar waits for an operator~\cite{desai2019soter}. A new
+model runs in shadow until promoted, and is demoted if its output goes stale
+or sits at a limit for too long. One gate per actuator outputs neutral unless
+the vehicle is armed and the command is fresh. The envelope bounds commands,
+not states; it is not a safety proof. In phase~1 ArduSub still drives the
+thrusters, held in MANUAL mode with its failsafes on, and hangar owns the
+ground-station link. Version~1 of the loop drives only in residual mode, a
+bounded correction added to a classical
+controller~\cite{johannink2019residual}, as Neural-Fly did beside an autopilot
+on a Pi~4~\cite{oconnell2022neuralfly}.
+
+\section{Contribution and prior work}
+
+A survey of about 110 works preceded this revision. Every part of hangar has
+prior art; the claim is the combination and where it is done. To our
+knowledge, no system combines the properties above, and none on an embedded
+vehicle behind a tether. hangar claims no new learning method, safety method
+or loop; Table~\ref{tab:prior} names the closest prior work. The secondary
+claims, a smaller footprint than ROS~2 with process isolation kept and safe
+failure behaviour, are not new in kind and are reported as measured.
+
+\begin{table*}[t]
+\caption{Closest prior work}
+\label{tab:prior}
+\centering
+\footnotesize
+\begin{tabular}{@{}L{0.17\textwidth}L{0.79\textwidth}@{}}
+\toprule
+Work & What it has; what hangar adds, or merely combines \\
+\midrule
+SERL and HIL-SERL~\cite{luo2024serl,luo2025hilserl};
+LeRobot~\cite{cadene2026lerobot} &
+The loop's shape is theirs (actor on the robot, learner on a GPU, weights
+pushed back while the robot runs, human takeover in the actor); hangar adds
+checks on received weights, shadow, promotion, demotion and lineage. \\
+Sirius~\cite{liu2023sirius} &
+The scheme is Sirius's and HG-DAgger's~\cite{kelly2019hgdagger} (per-sample
+``who acted'' labels, retraining in rounds during deployment); hangar records
+the per-axis source in the data plane and makes rows, weights and promotions
+traceable. \\
+Neural Simplex~\cite{phan2020neuralsimplex} &
+Shadow mode, retraining while the baseline drives and automatic switch-back,
+in simulation; hangar runs shadow on a real vehicle with an operator, not a
+test, in the switch. \\
+Ford patents~\cite{ford2025onboardvalidation,ford2026invehiclelearning} &
+A newly trained model run in shadow on the vehicle and validated against the
+previous one; a method, not a measured system, and as read without
+hash-bound operator promotion, probe or step-time checks, automatic demotion
+or lineage. \\
+TFX~\cite{baylor2017tfx}, ML Metadata~\cite{mlmd} &
+One transform for training and serving, ``safe to serve'' checks and artefact
+lineage, on servers; hangar moves the checks onto the vehicle and extends
+lineage from artefacts to messages and actuator commands. \\
+Witte and Tichy~\cite{witte2021provenance}; Bédard et
+al.~\cite{bedard2023messageflow} &
+Message-level provenance in ROS, per field in headers or inferred from
+traces; hangar fills fixed-size identifier references at publish time, keeps
+them across the tether and builds datasets from them. \\
+AquaBot~\cite{liu2025aquabot} &
+Pilot demonstrations on a low-cost ROV, behaviour cloning and improvement
+from rollouts, with the policy topside on two GPUs; hangar runs the policy on
+the vehicle under a gate without AquaBot's train/serve skew, and is not the
+first to learn from an ROV pilot. \\
+Carlucho et al.~\cite{carlucho2018adaptive} &
+Online deep reinforcement learning on a real AUV with full authority to the
+network; hangar bounds that authority and records the loop, the supervisor
+layer they list as future work. \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\section{Evaluation plan}
+
+Table~\ref{tab:measure} lists eight measurements that no surveyed work
+reports and that carry the claim. Each is a tool in the repository,
+reproducible by a script. Where the design states a budget, that is the pass
+criterion; the rest are reported as measured.
+
+\begin{table*}[t]
+\caption{Measurements that carry the claim}
+\label{tab:measure}
+\centering
+\footnotesize
+\begin{tabular}{@{}L{0.24\textwidth}L{0.72\textwidth}@{}}
+\toprule
+Quantity & How it is measured \\
+\midrule
+Train/serve mismatch rate, per dive &
+Each policy publishes (anchor sequence, CRC of its input) per tick;
+key-joined against the built rows; share of ticks that differ \\
+Provenance overhead on a Pi &
+Publish latency and memory with 0 and with 4 references, Pi~4 and Pi~5 \\
+Loop latency &
+Newest row a model trained on to its first promoted output, on one clock \\
+Cost of a hot swap &
+Tick jitter and missed ticks before, during and after a weights load at
+50~Hz \\
+What the vehicle-side checks catch &
+Probe, tolerance and step-time refusals over mutated weights files (wrong
+operator semantics, precision change, corrupted weights) \\
+Demotion and envelope-activation rates &
+Per dive and per model, from the mux state and the evaluation topic; false
+demotions listed \\
+Lineage completeness &
+Share of thruster commands traceable to messages; forward queries from a bad
+message to the models it reached \\
+Isolation at what cost &
+Memory (PSS) and latency of N isolated modules against composed
+ROS~2~\cite{macenski2023composition} and iceoryx2~\cite{iceoryx2}, same
+Pi~4, message sizes and rates \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Secondary: a fault campaign with propellers off (SIGKILL per module, 100
+runs; time to \texttt{ready}; time to neutral at the PWM output; manager
+crash and upgrade with calls in flight); pilot overrides per promoted model;
+residual adaptation after a mass change, in water; and the electric-eye port
+hashed against v0.3.1, with video latency no worse than 3.8~ms at
+640$\times$480 and 8.3~ms at 1280$\times$720. The learning tasks run on
+recorded data, then in simulation and on the bench, and in water only when a
+vehicle and a tank are available.
+
+\section{Work plan (draft, to be adjusted)}
+
+\begin{enumerate}
+\item \textbf{Language and literature.} Done; see Status.
+\item \textbf{Core.} Topics, manager, calls, parameters; budgets as tests;
+  the benchmark on a Pi.
+\item \textbf{Vehicle integration.} Safety, mux and gate; ArduSub in
+  simulation; tether bridge; electric-eye supervised unchanged.
+\item \textbf{Data.} Recorder, pairer, offline build; the
+  live-equals-offline test.
+\item \textbf{Learning loop.} Inference engine, weights file, lineage; both
+  tasks on recorded data.
+\item \textbf{Bench and water.} Fault campaign; both tasks on the bench,
+  then in water if possible; electric-eye ported and hashed.
+\item \textbf{Write-up.}
+\end{enumerate}
+
+\section{Risks}
+
+\begin{itemize}
+\item \textbf{Scope and hardware.} Fifteen design documents for one student;
+  each phase ends in a measurable result, and the loop can be shown in
+  simulation and on the bench without wet runs. The work needs a Pi~4 or 5, a
+  topside computer with a GPU and, for wet runs, a vehicle and a tank.
+\item \textbf{The depth-hold example is wrong as designed.} It learns total
+  heave and runs as a residual, so it would sit at its cap. Its label, the
+  heave stick command, is not heave thrust: ArduSub's stock mixer scales all
+  outputs down against the largest input to avoid
+  saturation~\cite{ng2024ardusub}, so the command is not thrust once other
+  axes are active. Label and cap are being reworked; the cap becomes a
+  quantity measured on the vehicle.
+\item \textbf{Narrowed claims.} After the survey and two adversarial reviews,
+  ``byte-identical rows'' became ``identical except where flagged late'';
+  ``computed from'' became ``used''; pilot imitation is HG-DAgger, not DAgger;
+  the envelope gives no state guarantee; and version~1 drives only in
+  residual mode. Three related works and the full claims of the Ford patents
+  are still unread, so the claim may narrow further.
+\item \textbf{Weak policies and footprint.} A few dives may not train a good
+  policy, and the survey found no precedent for a small network on a Pi CPU
+  imitating a pilot from camera frames at 50~Hz. If hangar is not much
+  lighter than composed ROS~2, that is reported.
+\end{itemize}
+
+\section{Current status}
+
+The design is complete in fifteen documents (00--14), including deployment
+(signed releases, upgrade over the tether) and simulation (two managers on
+one machine, a 6-DOF model, a camera fed from recorded footage, scripted
+faults), revised after two adversarial reviews and a simplification pass. The
+language is decided: C11, static musl binaries built with zig cc. A spike
+built the same topic and manager slice in C and in Rust, on x86-64 only: the
+C manager is 50~KB static against 435~KB, idle resident memory 136~KB against
+480~KB, publish 29~ns against 35~ns; wake latency is 5.4~\textmu{}s at the
+median for both, and both showed 0 torn reads over 250 million and 0 lost
+wake-ups. Nothing has run on a Pi. electric-eye v0.3.1~\cite{bolat_eeye},
+whose frame bus, process handling, discovery and configuration hangar builds
+on, is forked into the repository and builds with zig cc natively and as
+static AArch64 musl binaries with NEON; its 17 test suites pass natively and
+under qemu-aarch64. OpenMP is unavailable in static musl builds, so its
+operator loops will use a thread pool when ported. Licences: GPL-3.0-or-later
+for the system, LGPL-3.0-or-later for the module library and the Python
+package. Nothing has run on a vehicle.
+
+% Balances the columns of the last page (IEEEtran's mechanism: a column
+% break before the given reference). Adjust if the text changes.
+\IEEEtriggeratref{23}
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

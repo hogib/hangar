@@ -10,6 +10,8 @@
 #   make BUILD=release     -O3, no debug info
 #   make BUILD=debug       builddir/eeye-d and hellion-d, unoptimized
 #   make check             build and run every test suite (-j is fine)
+#   make equivalence       hash every lib/vision operator's output and
+#                          compare with electric-eye v0.3.1's (tools/equivalence/)
 #   make clean
 #
 # Written for GNU make 3.81 and a C99 compiler (GCC 4.7+ or clang), so it
@@ -155,28 +157,28 @@ SRC := \
 	legacy/eeye/eeye.c \
 	legacy/eeye/bus_in.c \
 	legacy/eeye/config.c \
-	legacy/eeye/effect_chain.c \
 	legacy/eeye/fbus.c \
 	legacy/eeye/frame_ring_buffer.c \
 	legacy/eeye/health.c \
 	legacy/eeye/recorder.c \
-	legacy/eeye/rpicam_in.c \
-	legacy/eeye/v4l2_in.c \
 	legacy/eeye/video_threads.c \
 	lib/camera/camera_ctrl.c \
 	lib/camera/jpeg_decode.c \
+	lib/camera/rpicam_in.c \
+	lib/camera/v4l2_in.c \
 	lib/camera/v4l2_out.c \
 	lib/camera/virtual_cam.c \
 	lib/proc/child_proc.c \
 	lib/vision/auto_vis.c \
 	lib/vision/conv.c \
+	lib/vision/effect_chain.c \
 	lib/vision/img_stats.c \
 	lib/vision/point_opps.c \
 	lib/vision/video_frame.c
 
 # hellion: its own glue, plus the modules it shares with eeye (the frame
-# bus and the two camera inputs from legacy/eeye/; child processes, camera
-# capture and the loopback output from lib/).
+# bus from legacy/eeye/; child processes, the two camera inputs, the
+# loopback output and the MP4 recorder from lib/).
 HSRC := \
 	legacy/hellion/check.c \
 	legacy/hellion/control.c \
@@ -189,10 +191,10 @@ HSRC := \
 	legacy/hellion/sinks.c \
 	legacy/hellion/top.c \
 	legacy/eeye/fbus.c \
-	legacy/eeye/rpicam_in.c \
-	legacy/eeye/v4l2_in.c \
 	lib/camera/camera_ctrl.c \
 	lib/camera/jpeg_decode.c \
+	lib/camera/rpicam_in.c \
+	lib/camera/v4l2_in.c \
 	lib/camera/v4l2_out.c \
 	lib/camera/virtual_cam.c \
 	lib/net/discovery.c \
@@ -200,6 +202,7 @@ HSRC := \
 	lib/net/jpeg.c \
 	lib/proc/child_proc.c \
 	lib/video/ffmpeg.c \
+	lib/video/mp4_record.c \
 	lib/video/udp_relay.c \
 	lib/vision/video_frame.c
 
@@ -246,12 +249,11 @@ $(OBJDIR)/%.o: %.c
 # parser, the JPEG frame splitter, the negotiation ranker -- are reachable
 # without widening their visibility in the shipping build just to test them.
 # A suite's source lives in the tests/ of the directory it exercises.
-VISION_TESTS := canny log_edges auto_vis
-CAMERA_TESTS := jpeg_decode camera_ctrl virtual_cam
+VISION_TESTS := canny log_edges auto_vis effect_chain
+CAMERA_TESTS := jpeg_decode camera_ctrl virtual_cam jpeg_framing negotiation
 PROC_TESTS := child_proc
 NET_TESTS := http
-EEYE_TESTS := config ring_buffer jpeg_framing negotiation health recorder \
-	effect_chain fbus
+EEYE_TESTS := config ring_buffer health recorder fbus
 HELLION_TESTS := hellion
 TESTS := $(VISION_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
 	$(EEYE_TESTS) $(HELLION_TESTS)
@@ -277,15 +279,14 @@ test_http_SRC :=
 test_auto_vis_SRC := lib/vision/img_stats.c
 test_hellion_SRC := legacy/hellion/hconfig.c legacy/hellion/hlog.c \
 	legacy/hellion/hstatus.c legacy/hellion/pipeline.c legacy/hellion/hrecord.c \
-	legacy/hellion/sinks.c legacy/eeye/fbus.c legacy/eeye/rpicam_in.c \
-	legacy/eeye/v4l2_in.c lib/camera/camera_ctrl.c lib/camera/jpeg_decode.c \
+	legacy/hellion/sinks.c legacy/eeye/fbus.c lib/camera/camera_ctrl.c \
+	lib/camera/jpeg_decode.c lib/camera/rpicam_in.c lib/camera/v4l2_in.c \
 	lib/camera/v4l2_out.c lib/camera/virtual_cam.c lib/net/discovery.c \
 	lib/net/http.c lib/net/jpeg.c lib/proc/child_proc.c lib/video/ffmpeg.c \
-	lib/video/udp_relay.c lib/vision/video_frame.c
+	lib/video/mp4_record.c lib/video/udp_relay.c lib/vision/video_frame.c
 test_virtual_cam_SRC := lib/proc/child_proc.c lib/camera/v4l2_out.c \
 	lib/vision/video_frame.c
-test_effect_chain_SRC := legacy/eeye/config.c legacy/eeye/fbus.c \
-	lib/camera/camera_ctrl.c lib/vision/auto_vis.c lib/vision/conv.c \
+test_effect_chain_SRC := lib/vision/auto_vis.c lib/vision/conv.c \
 	lib/vision/img_stats.c lib/vision/point_opps.c lib/vision/video_frame.c
 
 # $(1): suite name, $(2): the directory whose tests/ holds its source.
@@ -331,6 +332,41 @@ $(CHECKS): check-%: $(TESTDIR)/test_%
 	$(call run_suite,$*,60,$<)
 
 check: $(CHECKS)
+
+# Equivalence with electric-eye v0.3.1 (tools/equivalence/README.md): equiv
+# hashes every lib/vision operator's output over a fixed input set, one
+# line per case, and the run fails on any line that differs from the hashes
+# recorded once from v0.3.1. With OpenMP on it runs at 1, 3 and 4 threads
+# (OMP_NUM_THREADS), since a thread count that changes a hash is a bug the
+# paper's figures rest on not having. TIMEOUT runs it as it runs the
+# suites, so TIMEOUT="qemu-aarch64 -0" checks a cross build's NEON paths
+# against the same reference. equiv needs no libturbojpeg.
+EQUIV_SRC := tools/equivalence/equiv.c lib/vision/auto_vis.c lib/vision/conv.c \
+	lib/vision/effect_chain.c lib/vision/img_stats.c lib/vision/point_opps.c \
+	lib/vision/video_frame.c
+EQUIV_REF := tools/equivalence/hashes-v0.3.1.txt
+ifeq ($(OPENMP),1)
+EQUIV_THREADS ?= 1 3 4
+else
+EQUIV_THREADS ?= 1
+endif
+$(OBJDIR)/tools/%.o: EE_CPPFLAGS += $(LIB_CPPFLAGS)
+$(BUILDDIR)/equiv: $(call obj,$(EQUIV_SRC))
+	$(CC) $(ALL_CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(OPENMP_LIBS) -pthread -lrt -lm $(LDLIBS)
+
+.PHONY: equivalence
+equivalence: $(BUILDDIR)/equiv
+	@for t in $(EQUIV_THREADS); do \
+	  out=$(BUILDDIR)/equiv-$$t.txt; \
+	  OMP_NUM_THREADS=$$t $(if $(TIMEOUT),$(TIMEOUT) 1800) $< > $$out || exit 1; \
+	  if cmp -s $$out $(EQUIV_REF); then \
+	    echo "ok    equivalence  threads=$$t  $$(grep -vc '^$(HASH)' $$out) cases match $(EQUIV_REF)"; \
+	  else \
+	    echo "FAIL  equivalence  threads=$$t: cases differing from $(EQUIV_REF):"; \
+	    diff $(EQUIV_REF) $$out | sed -n 's/^[<>] \([^ ]*\) .*/\1/p' | sort -u; \
+	    exit 1; \
+	  fi; \
+	done
 
 # Fuzzes hellion's HTTP parsers with libFuzzer (needs clang): the one part
 # of hellion that parses bytes from the network. Not part of `check` --

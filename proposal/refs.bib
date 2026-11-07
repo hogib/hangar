@@ -1,0 +1,342 @@
+% refs.bib for proposal.tex (hangar research proposal). UTF-8; built with
+% XeLaTeX and IEEEtran.bst (BibTeX).
+%
+% The 30 entries cited in the proposal, copied from literature/refs.bib
+% (not in the repository) in order of first citation. Changed only where
+% IEEEtran.bst cannot process the original fields:
+%   provdm2013                  IEEEtran's techreport prints author, not
+%                               editor: author added as one braced name
+%                               "L. Moreau and P. Missier, Eds."; editor kept.
+%   ford2025onboardvalidation,  patent fields are nationality/type/number and
+%   ford2026invehiclelearning   day/month/year: holder -> assignee (kept in the
+%                               note, since IEEEtran.bst 1.14 does not print
+%                               assignee), type "US Patent" -> nationality
+%                               "US" + type "Patent", day/month from date.
+%   cadene2026lerobot,          no eprint field in IEEEtran: howpublished
+%   kaveti2019rosrescue,        carries the arXiv identifier.
+%   phan2020neuralsimplex
+%   luo2025hilserl              IEEEtran lowercases the first letter of a
+%                               note ("hIL-SERL"): braces added.
+%   carlucho2018adaptive        BibTeX read "De" as a first name ("M. D.
+%                               Paula"): braces around {De Paula}.
+% IEEEtran.bst has no doi field; the doi entries are kept but not printed.
+
+@inproceedings{kelly2019hgdagger,
+  author        = {Michael Kelly and Chelsea Sidrane and Katherine Driggs-Campbell and Mykel J. Kochenderfer},
+  title         = {{HG-DAgger}: Interactive Imitation Learning with Human Experts},
+  booktitle     = {2019 International Conference on Robotics and Automation (ICRA)},
+  pages         = {8077--8083},
+  year          = {2019},
+  doi           = {10.1109/ICRA.2019.8793698},
+  eprint        = {1810.02890},
+  archiveprefix = {arXiv}
+}
+
+@inproceedings{liu2023sirius,
+  author        = {Huihan Liu and Soroush Nasiriany and Lance Zhang and Zhiyao Bao and Yuke Zhu},
+  title         = {Robot Learning on the Job: Human-in-the-Loop Autonomy and Learning During Deployment},
+  booktitle     = {Robotics: Science and Systems XIX},
+  year          = {2023},
+  doi           = {10.15607/RSS.2023.XIX.005},
+  eprint        = {2211.08416},
+  archiveprefix = {arXiv},
+  note = {Extended version in Int. J. Robotics Research 44(10--11), 2025},
+}
+
+@inproceedings{breck2019datavalidation,
+  author    = {Eric Breck and Neoklis Polyzotis and Sudip Roy and Steven Euijong Whang and Martin Zinkevich},
+  title     = {Data Validation for Machine Learning},
+  booktitle = {Proceedings of Machine Learning and Systems (MLSys/SysML 2019)},
+  year      = {2019},
+  url       = {https://proceedings.mlsys.org/paper_files/paper/2019/hash/928f1160e52192e3e0017fb63ab65391-Abstract.html},
+}
+
+@misc{cadene2026lerobot,
+  author        = {Remi Cadene and Simon Aliberts and Francesco Capuano and Michel Aractingi and Adil Zouitine and Pepijn Kooijmans and Jade Choghari and Martino Russi and Caroline Pascal and Steven Palma and Mustafa Shukor and Jess Moss and Alexander Soare and Dana Aubakirova and Quentin Lhoest and Quentin Gallouédec and Thomas Wolf},
+  title         = {{LeRobot}: An Open-Source Library for End-to-End Robot Learning},
+  year          = {2026},
+  eprint        = {2602.22818},
+  archiveprefix = {arXiv},
+  howpublished  = {arXiv:2602.22818},
+}
+
+@inproceedings{liu2025aquabot,
+  author        = {Ruoshi Liu and Huy Ha and Mengxue Hou and Shuran Song and Carl Vondrick},
+  title         = {Self-Improving Autonomous Underwater Manipulation},
+  booktitle     = {2025 IEEE International Conference on Robotics and Automation (ICRA)},
+  pages         = {16915--16922},
+  year          = {2025},
+  doi           = {10.1109/ICRA55743.2025.11128759},
+  eprint        = {2410.18969},
+  archiveprefix = {arXiv}
+}
+
+@inproceedings{witte2021provenance,
+  author    = {Thomas Witte and Matthias Tichy},
+  title     = {Inferred Interactive Controls Through Provenance Tracking of {ROS} Message Data},
+  booktitle = {2021 IEEE/ACM 3rd International Workshop on Robotics Software Engineering (RoSE)},
+  pages     = {67--74},
+  year      = {2021},
+  doi       = {10.1109/RoSE52553.2021.00018}
+}
+
+@article{bedard2023messageflow,
+  author        = {Christophe Bédard and Pierre-Yves Lajoie and Giovanni Beltrame and Michel Dagenais},
+  title         = {Message Flow Analysis with Complex Causal Links for Distributed {ROS} 2 Systems},
+  journal       = {Robotics and Autonomous Systems},
+  volume        = {161},
+  pages         = {104361},
+  year          = {2023},
+  doi           = {10.1016/j.robot.2022.104361},
+  eprint        = {2204.10208},
+  archiveprefix = {arXiv}
+}
+
+@article{macenski2023composition,
+  author        = {Steve Macenski and Alberto Soragna and Michael Carroll and Zhenpeng Ge},
+  title         = {Impact of {ROS} 2 Node Composition in Robotic Systems},
+  journal       = {IEEE Robotics and Automation Letters},
+  volume        = {8},
+  number        = {7},
+  pages         = {3996--4003},
+  year          = {2023},
+  doi           = {10.1109/LRA.2023.3279614},
+  eprint        = {2305.09933},
+  archiveprefix = {arXiv}
+}
+
+@article{lamport1977concurrent,
+  author  = {Leslie Lamport},
+  title   = {Concurrent Reading and Writing},
+  journal = {Communications of the ACM},
+  volume  = {20},
+  number  = {11},
+  pages   = {806--811},
+  year    = {1977},
+  doi     = {10.1145/359863.359878}
+}
+
+@misc{iceoryx2,
+  author       = {{Eclipse iceoryx contributors}},
+  title        = {Eclipse iceoryx2: the true zero-copy data plane},
+  howpublished = {GitHub repository},
+  url          = {https://github.com/eclipse-iceoryx/iceoryx2},
+  year         = {2026},
+  note = {Repository, commit 69973dd},
+}
+
+@inproceedings{candea2003crashonly,
+  author    = {George Candea and Armando Fox},
+  title     = {Crash-Only Software},
+  booktitle = {9th Workshop on Hot Topics in Operating Systems (HotOS IX)},
+  publisher = {USENIX},
+  year      = {2003},
+  url       = {https://www.usenix.org/conference/hotos-ix/crash-only-software}
+}
+
+@phdthesis{armstrong2003thesis,
+  author  = {Joe Armstrong},
+  title   = {Making Reliable Distributed Systems in the Presence of Software Errors},
+  school  = {The Royal Institute of Technology (KTH)},
+  address = {Stockholm, Sweden},
+  year    = {2003},
+  month   = dec
+}
+
+@misc{kaveti2019rosrescue,
+  author        = {Pushyami Kaveti and Hanumant Singh},
+  title         = {{ROS} Rescue: Fault Tolerance System for Robot Operating System},
+  year          = {2019},
+  eprint        = {1910.01078},
+  archiveprefix = {arXiv},
+  howpublished  = {arXiv:1910.01078}
+}
+
+@techreport{provdm2013,
+  author      = {{L. Moreau and P. Missier, Eds.}},
+  editor      = {Luc Moreau and Paolo Missier},
+  title       = {{PROV-DM}: The {PROV} Data Model},
+  institution = {World Wide Web Consortium (W3C)},
+  type        = {W3C Recommendation},
+  year        = {2013},
+  month       = apr,
+  url         = {https://www.w3.org/TR/2013/REC-prov-dm-20130430/}
+}
+
+@inproceedings{pham2019cradle,
+  author    = {Hung Viet Pham and Thibaud Lutellier and Weizhen Qi and Lin Tan},
+  title     = {{CRADLE}: Cross-Backend Validation to Detect and Localize Bugs in Deep Learning Libraries},
+  booktitle = {2019 IEEE/ACM 41st International Conference on Software Engineering (ICSE)},
+  pages     = {1027--1038},
+  year      = {2019},
+  doi       = {10.1109/ICSE.2019.00107}
+}
+
+@inproceedings{seto1998simplex,
+  author    = {D. Seto and B. Krogh and L. Sha and A. Chutinan},
+  title     = {The {Simplex} Architecture for Safe Online Control System Upgrades},
+  booktitle = {Proceedings of the 1998 American Control Conference (ACC)},
+  volume    = {6},
+  pages     = {3504--3508},
+  year      = {1998},
+  doi       = {10.1109/ACC.1998.703255}
+}
+
+@article{hobbs2023rta,
+  author        = {Kerianne Hobbs and Mark Mote and Matthew Abate and Samuel Coogan and Eric Feron},
+  title         = {Run Time Assurance for Safety-Critical Systems: An Introduction to Safety Filtering Approaches for Complex Control Systems},
+  journal       = {IEEE Control Systems},
+  volume        = {43},
+  number        = {2},
+  pages         = {28--65},
+  year          = {2023},
+  doi           = {10.1109/MCS.2023.3234380},
+  eprint        = {2110.03506},
+  archiveprefix = {arXiv},
+}
+
+@inproceedings{desai2019soter,
+  author        = {Ankush Desai and Shromona Ghosh and Sanjit A. Seshia and Natarajan Shankar and Ashish Tiwari},
+  title         = {{SOTER}: A Runtime Assurance Framework for Programming Safe Robotics Systems},
+  booktitle     = {2019 49th Annual IEEE/IFIP International Conference on Dependable Systems and Networks (DSN)},
+  pages         = {138--150},
+  year          = {2019},
+  doi           = {10.1109/DSN.2019.00027},
+  eprint        = {1808.07921},
+  archiveprefix = {arXiv}
+}
+
+@inproceedings{johannink2019residual,
+  author        = {Tobias Johannink and Shikhar Bahl and Ashvin Nair and Jianlan Luo and Avinash Kumar and Matthias Loskyll and Juan Aparicio Ojea and Eugen Solowjow and Sergey Levine},
+  title         = {Residual Reinforcement Learning for Robot Control},
+  booktitle     = {2019 International Conference on Robotics and Automation (ICRA)},
+  pages         = {6023--6029},
+  year          = {2019},
+  doi           = {10.1109/ICRA.2019.8794127},
+  eprint        = {1812.03201},
+  archiveprefix = {arXiv}
+}
+
+@article{oconnell2022neuralfly,
+  author        = {Michael O'Connell and Guanya Shi and Xichen Shi and Kamyar Azizzadenesheli and Anima Anandkumar and Yisong Yue and Soon-Jo Chung},
+  title         = {Neural-Fly Enables Rapid Learning for Agile Flight in Strong Winds},
+  journal       = {Science Robotics},
+  volume        = {7},
+  number        = {66},
+  pages         = {eabm6597},
+  year          = {2022},
+  doi           = {10.1126/scirobotics.abm6597},
+  eprint        = {2205.06908},
+  archiveprefix = {arXiv}
+}
+
+@inproceedings{luo2024serl,
+  author        = {Jianlan Luo and Zheyuan Hu and Charles Xu and You Liang Tan and Jacob Berg and Archit Sharma and Stefan Schaal and Chelsea Finn and Abhishek Gupta and Sergey Levine},
+  title         = {{SERL}: A Software Suite for Sample-Efficient Robotic Reinforcement Learning},
+  booktitle     = {2024 IEEE International Conference on Robotics and Automation (ICRA)},
+  pages         = {16961--16969},
+  year          = {2024},
+  doi           = {10.1109/ICRA57147.2024.10610040},
+  eprint        = {2401.16013},
+  archiveprefix = {arXiv}
+}
+
+@article{luo2025hilserl,
+  author        = {Jianlan Luo and Charles Xu and Jeffrey Wu and Sergey Levine},
+  title         = {Precise and Dexterous Robotic Manipulation via Human-in-the-Loop Reinforcement Learning},
+  journal       = {Science Robotics},
+  volume        = {10},
+  number        = {105},
+  pages         = {eads5033},
+  year          = {2025},
+  doi           = {10.1126/scirobotics.ads5033},
+  eprint        = {2410.21845},
+  archiveprefix = {arXiv},
+}
+
+@misc{phan2020neuralsimplex,
+  author        = {Dung T. Phan and Radu Grosu and Nils Jansen and Nicola Paoletti and Scott A. Smolka and Scott D. Stoller},
+  title         = {Neural Simplex Architecture},
+  year          = {2019},
+  eprint        = {1908.00528},
+  archiveprefix = {arXiv},
+  howpublished  = {arXiv:1908.00528},
+  note = {12th NASA Formal Methods Symposium (NFM 2020)},
+}
+
+@patent{ford2025onboardvalidation,
+  author      = {Sahib Singh and Harsh Bhupendra Bhate and Zaydoun Rawashdeh and Uttara Thakre and Vyacheslav Zavadsky and Srujan Reddy Maram},
+  title       = {Automatic onboard validation of a newly trained vehicle machine learning model},
+  assignee    = {Ford Global Technologies, LLC},
+  nationality = {US},
+  type        = {Patent},
+  number      = {12,468,964 B2},
+  date        = {2025-11-11},
+  day         = {11},
+  month       = nov,
+  year        = {2025},
+  url         = {https://patents.google.com/patent/US12468964B2/en},
+  note = {Assignee: Ford Global Technologies, LLC},
+}
+
+@patent{ford2026invehiclelearning,
+  author      = {Uttara Thakre and Harsh Bhupendra Bhate and Sahib Singh and Zaydoun Rawashdeh and Ziwei Zeng and Senthil Kumar Natarajan and Vyacheslav Zavadsky and Sajit Janardhanan and Suresh Vairamuthu Murugesan},
+  title       = {Online in-vehicle learning for machine learning models},
+  assignee    = {Ford Global Technologies, LLC},
+  nationality = {US},
+  type        = {Patent},
+  number      = {12,561,586 B2},
+  date        = {2026-02-24},
+  day         = {24},
+  month       = feb,
+  year        = {2026},
+  url         = {https://patents.google.com/patent/US12561586B2/en},
+  note = {Assignee: Ford Global Technologies, LLC},
+}
+
+@inproceedings{baylor2017tfx,
+  author    = {Denis Baylor and Eric Breck and Heng-Tze Cheng and Noah Fiedel and Chuan Yu Foo and Zakaria Haque and Salem Haykal and Mustafa Ispir and Vihan Jain and Levent Koc and Chiu Yuen Koo and Lukasz Lew and Clemens Mewald and Akshay Naresh Modi and Neoklis Polyzotis and Sukriti Ramesh and Sudip Roy and Steven Euijong Whang and Martin Wicke and Jarek Wilkiewicz and Xin Zhang and Martin Zinkevich},
+  title     = {{TFX}: A {TensorFlow}-Based Production-Scale Machine Learning Platform},
+  booktitle = {Proceedings of the 23rd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD)},
+  pages     = {1387--1395},
+  year      = {2017},
+  publisher = {ACM},
+  doi       = {10.1145/3097983.3098021}
+}
+
+@misc{mlmd,
+  author       = {{Google}},
+  title        = {{ML Metadata} ({MLMD}): For recording and retrieving metadata associated with {ML} developer and data scientist workflows},
+  howpublished = {GitHub repository},
+  url          = {https://github.com/google/ml-metadata},
+  year         = {2026},
+  note = {Documentation, read 2026-11-07},
+}
+
+@article{carlucho2018adaptive,
+  author  = {Ignacio Carlucho and Mariano {De Paula} and Sen Wang and Yvan Petillot and Gerardo G. Acosta},
+  title   = {Adaptive Low-Level Control of Autonomous Underwater Vehicles Using Deep Reinforcement Learning},
+  journal = {Robotics and Autonomous Systems},
+  volume  = {107},
+  pages   = {71--86},
+  year    = {2018},
+  doi     = {10.1016/j.robot.2018.05.016}
+}
+
+@article{ng2024ardusub,
+  author  = {Patrick Ng and Michael Krieg},
+  title   = {Modifications to {ArduSub} That Improve {BlueROV} {SITL} Accuracy and Design of Hybrid Autopilot},
+  journal = {Applied Sciences},
+  volume  = {14},
+  number  = {17},
+  pages   = {7453},
+  year    = {2024},
+  doi     = {10.3390/app14177453}
+}
+
+@unpublished{bolat_eeye,
+  author = {H. Oğuz Bolat and Hakan Ersoy},
+  title  = {electric-eye: Real-Time Image Enhancement and Low-Latency Video Transport for Remotely Operated Underwater Vehicles},
+  note = {Manuscript describing electric-eye v0.3.1},
+}
+

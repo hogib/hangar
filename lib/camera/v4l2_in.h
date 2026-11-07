@@ -1,5 +1,5 @@
 #pragma once
-#include "config.h"
+#include "capture.h"
 #include "video_frame.h"
 #include <stdbool.h>
 #include <stdint.h>
