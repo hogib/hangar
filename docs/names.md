@@ -9,7 +9,7 @@ electric-eye and hellion were (Judas Priest) and hangar is (Megadeth, *Rust in P
 
 | Module identifier | Program | Named for | Does |
 |---|---|---|---|
-| `console` | **Dawn Patrol** (`dawn-patrol`) | Megadeth, *Rust in Peace* | the operator's page: every managed process, topic and the recent log; later the pilot's controls ([12-tools](12-tools.md), [11-electric-eye](11-electric-eye.md#pilot_console)) |
+| `console` | **Dawn Patrol** (`dawn-patrold`) | Megadeth, *Rust in Peace* | the operator's page: every managed process, topic and the recent log; later the pilot's controls ([12-tools](12-tools.md), [11-electric-eye](11-electric-eye.md#pilot_console)) |
 | `hangard` | hangar | Megadeth, "Hangar 18" | the manager |
 
 Unnamed as yet: `safety`, `mux`, `bridge`, `recorder`, `pairer`, `camera`, `vision`,
@@ -22,5 +22,5 @@ A manifest joins the two:
 # /etc/hangar/modules/console.module
 [Module]
 Description=Dawn Patrol: the operator's page
-Exec=/usr/lib/hangar/dawn-patrol
+Exec=/usr/lib/hangar/dawn-patrold
 ```
