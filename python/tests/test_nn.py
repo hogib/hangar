@@ -6,8 +6,11 @@ golden vectors lib/nn/tests/test_nn.c reads from lib/nn/tests/vectors/.
     HANGAR_NN_WRITE_VECTORS=1 python3 -m unittest python/tests/test_nn.py
 
 The vectors are generated deterministically (seeded, pure Python, no numpy)
-and checked in; the test regenerates them and compares byte for byte, or
-writes them when the environment variable is set or a file is missing.
+and checked in; the test regenerates them and compares: everything exact
+except the floats that pass through libm (within a tolerance, since tanh and
+exp differ by platform in the last ulp), or writes them when the environment
+variable is set or a file is missing. HANGAR_NN_VECTORS points at another
+vectors directory.
 """
 
 import hashlib
@@ -22,7 +25,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 REPO = os.path.dirname(os.path.dirname(HERE))
-VECTORS = os.path.join(REPO, "lib", "nn", "tests", "vectors")
+VECTORS = os.environ.get("HANGAR_NN_VECTORS") or os.path.join(REPO, "lib", "nn", "tests", "vectors")
 
 from hangar.nn import export_torch, hgw, reference  # noqa: E402
 from hangar.nn.hgw import Binding, Buffer, Graph, Header, Op, Tensor  # noqa: E402
@@ -525,8 +528,88 @@ class TestExporter(unittest.TestCase):
             self.assertEqual(f.probes[0].outputs[2][0], f32s(ref[2][0]))
 
 
+def parse_sidecar(text):
+    out = {}
+    for line in text.splitlines():
+        key, _, rest = line.partition(" ")
+        if key == "state":
+            n, _, vals = rest.partition(" ")
+            out["state"] = [float(v) for v in vals.split()]
+            assert len(out["state"]) == int(n)
+        elif key in ("arch",):
+            out[key] = int(rest, 16)
+        elif key == "steps":
+            out[key] = int(rest)
+        else:
+            out[key] = rest
+    return out
+
+
+def within(a, b, rel, abs_):
+    return abs(a - b) <= abs_ + rel * abs(b)
+
+
 class TestVectors(unittest.TestCase):
-    """Regenerates the golden files and compares with the checked-in ones."""
+    """Regenerates the golden files and compares with the checked-in ones.
+
+    Not byte for byte: math.tanh and math.exp are libm calls whose last ulp
+    differs by platform, so the reference's doubles (the sidecar's state, and
+    through f32 rounding one bit of a probe output now and then) may differ
+    between the machine that wrote the vectors and the one checking them.
+    Everything that is not such a float is compared exactly; the floats within
+    a tolerance. The C suite has its own tolerance against the same files.
+    """
+
+    SIDE_REL, SIDE_ABS = 1e-9, 1e-12
+    F32_REL, F32_ABS = 1e-6, 1e-9
+
+    def assert_close_lists(self, got, want, rel, abs_, what):
+        self.assertEqual(len(got), len(want), what)
+        for i, (a, b) in enumerate(zip(got, want)):
+            if not within(a, b, rel, abs_):
+                self.fail(f"{what}[{i}]: {a!r} != {b!r} (rel {rel}, abs {abs_})")
+
+    def assert_hgw_equivalent(self, regenerated, checked_in, name):
+        a, b = hgw.parse(regenerated), hgw.parse(checked_in)
+        # every byte before the data region: header, directory, every record
+        off = struct.unpack_from("<Q", checked_in, 272)[0]
+        self.assertEqual(regenerated[:off], checked_in[:off], f"{name}: header, directory or records differ")
+        self.assertEqual(len(regenerated), len(checked_in))
+        self.assertEqual(a.header, b.header)
+        self.assertEqual(a.sections, b.sections)
+        self.assertEqual(a.ranges, b.ranges)
+        g, h = a.graph, b.graph
+        self.assertEqual((g.buffers, g.ops, g.inputs, g.outputs), (h.buffers, h.ops, h.inputs, h.outputs))
+        self.assertEqual(len(g.tensors), len(h.tensors))
+        for t, u in zip(g.tensors, h.tensors):
+            self.assertEqual((t.name, t.dtype, t.shape), (u.name, u.dtype, u.shape))
+            if t.dtype in ("f32", "f64"):
+                self.assert_close_lists(t.data, u.data, self.F32_REL, self.F32_ABS, f"{name}: tensor {t.name}")
+            else:
+                self.assertEqual(t.data, u.data, f"{name}: tensor {t.name}")
+        self.assertEqual(len(a.probes), len(b.probes))
+        ins = [g.buffers[i].dtype for i in g.input_buffers()]
+        for pi, (p, q) in enumerate(zip(a.probes, b.probes)):
+            self.assertEqual(p.steps, q.steps)
+            for s_ in range(p.steps):
+                for i, dt in enumerate(ins):
+                    if dt in ("f32", "f64"):
+                        self.assert_close_lists(p.inputs[s_][i], q.inputs[s_][i], self.F32_REL, self.F32_ABS,
+                                                f"{name}: probe {pi} step {s_} input {i}")
+                    else:
+                        self.assertEqual(p.inputs[s_][i], q.inputs[s_][i], f"{name}: probe {pi} step {s_} input {i}")
+                for j in range(len(p.outputs[s_])):
+                    self.assert_close_lists(p.outputs[s_][j], q.outputs[s_][j], self.F32_REL, self.F32_ABS,
+                                            f"{name}: probe {pi} step {s_} output {j}")
+
+    def assert_sidecar_equivalent(self, regenerated, checked_in, checked_in_hgw, name):
+        a, b = parse_sidecar(regenerated), parse_sidecar(checked_in)
+        self.assertEqual(set(a), set(b))
+        # the sidecar's hash is that of the checked-in file, not of this run's bytes
+        self.assertEqual(b["blake2s"], hashlib.blake2s(checked_in_hgw).hexdigest(), f"{name}: sidecar blake2s")
+        self.assertEqual(a["arch"], b["arch"], f"{name}: arch")
+        self.assertEqual(a["steps"], b["steps"], f"{name}: steps")
+        self.assert_close_lists(a["state"], b["state"], self.SIDE_REL, self.SIDE_ABS, f"{name}: state")
 
     def test_golden_files(self):
         write = os.environ.get("HANGAR_NN_WRITE_VECTORS") == "1"
@@ -541,20 +624,25 @@ class TestVectors(unittest.TestCase):
                     with open(spath, "w") as f:
                         f.write(side)
                 with open(hpath, "rb") as f:
-                    self.assertEqual(f.read(), data, f"{hpath} differs from the generator's output")
+                    checked_in = f.read()
                 with open(spath) as f:
-                    self.assertEqual(f.read(), side, f"{spath} differs from the generator's output")
+                    checked_in_side = f.read()
+                self.assert_hgw_equivalent(data, checked_in, name)
+                self.assert_sidecar_equivalent(side, checked_in_side, checked_in, name)
 
     def test_golden_probes_reproduce(self):
+        """The reference, over the checked-in file's own graph and probe inputs,
+        gives the file's expected outputs (within the f32 tolerance: libm)."""
         for name in GOLDEN:
             with self.subTest(name=name):
                 f = hgw.read(os.path.join(VECTORS, name + ".hgw"))
                 m = reference.Model(f.graph)
-                for p in f.probes:
+                for pi, p in enumerate(f.probes):
                     out = m.run(p.inputs)
                     for s in range(p.steps):
                         for j in range(len(out[s])):
-                            self.assertEqual(f32s(out[s][j]), p.outputs[s][j])
+                            self.assert_close_lists(f32s(out[s][j]), p.outputs[s][j], self.F32_REL, self.F32_ABS,
+                                                    f"{name}: probe {pi} step {s} output {j}")
 
 
 if __name__ == "__main__":
