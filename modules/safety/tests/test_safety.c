@@ -38,6 +38,7 @@ static struct {
 	char ap_reason[100];
 	char ap_failsafe[50];
 	int ap_frozen;          /* last_rx_ns stops advancing: ArduSub silent */
+	int ap_rogue;           /* report armed even where the mavlink module would say disarming */
 	uint64_t ap_last_rx;
 	int arm_mode;           /* 0 accept, 1 refuse, 2 accept and never report armed */
 	int arms_served;
@@ -250,6 +251,13 @@ static void publish_ap(void)
 	struct ardusub_state ap;
 	memset(&ap, 0, sizeof ap);
 	ap.armed = T.ap_armed;
+	/* What the mavlink module reports between hangar's disarm and ArduSub's
+	 * answer is 2, disarming (modules/mavlink), never armed against a
+	 * safety.state that has outputs off; the fake does the same unless a
+	 * test wants a rogue arm. Without it the 100 ms tick could land between
+	 * the state flip and the test's own T.ap_armed = 0 and fake a disagreement. */
+	if (ap.armed == 1 && !T.ap_rogue && have_state && !last_state.outputs_enabled && last_state.state != 3)
+		ap.armed = 2;
 	ap.system_status = 4;
 	ap.params = T.ap_params;
 	ap.mode = T.ap_mode;
@@ -480,10 +488,12 @@ static void test_autopilot_trigger(void)
 	/* ArduSub armed while hangar is disarmed, judged against the
 	 * safety.state the message references: disagreement at the first message. */
 	pump(200);
+	T.ap_rogue = 1;
 	T.ap_armed = 1;
 	CHECK(wait_safety(2, 0, 1000));
 	CHECK(strstr(last_state.reason, "armed while hangar was disarmed") != NULL);
 	T.ap_armed = 0;
+	T.ap_rogue = 0;
 	pump(200);
 	clear_ok();
 	/* A mode other than MANUAL while armed. clear is refused while it lasts. */

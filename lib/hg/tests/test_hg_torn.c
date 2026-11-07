@@ -12,6 +12,7 @@
 struct shared {
 	atomic_int ready;
 	atomic_int stop;
+	atomic_int progress; /* reads so far, by the last reader to count one */
 	unsigned long long read[READERS], torn[READERS], busy[READERS], gaps[READERS];
 };
 
@@ -29,6 +30,7 @@ static void reader(struct shared *sh, int id)
 					   : hg_latest(s, buf, sizeof buf, &info);
 		if (r == HG_MSG) {
 			nread++;
+			atomic_store_explicit(&sh->progress, (int)nread, memory_order_relaxed);
 			torn += !intact(buf, &info);
 			gaps += info.gap;
 		} else if (r == HG_BUSY) {
@@ -112,14 +114,18 @@ static void test_every_slot_count(void)
 		uint64_t t0 = hg_now_ns();
 		while (atomic_load(&sh->ready) < 1 && ms_since(t0) < 5000)
 			sleep_ms(1);
-		uint64_t end = hg_now_ns() + 300000000ull;
+		/* 300 ms of writing, and longer, up to 3 s, on a machine so loaded
+		 * that the reader has not had 100 reads by then: the property is
+		 * no torn read, the count only shows the reader ran. */
+		uint64_t start = hg_now_ns(), end = start + 300000000ull;
 		do {
 			for (int k = 0; k < 256; k++) {
 				uint64_t n = hg_pub_next_seq(p);
 				fill(buf, n);
 				hg_publish(p, buf, sizeof buf, n);
 			}
-		} while (hg_now_ns() < end);
+		} while (hg_now_ns() < end ||
+			 (atomic_load(&sh->progress) <= 100 && hg_now_ns() < start + 3000000000ull));
 		atomic_store(&sh->stop, 1);
 		CHECK_EQ_INT(wait_child(pid), 0);
 		CHECK_EQ_INT(sh->torn[0], 0);

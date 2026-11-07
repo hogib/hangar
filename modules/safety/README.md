@@ -39,7 +39,8 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
 - The latch: `<state dir>/failsafe`, written through a temporary name and a rename on
   entering failsafe and on every change of its triggers or action, removed by `clear`;
   a start with the file present starts in failsafe with its action and triggers,
-  `by` `latch`.
+  `by` `latch`. The file also records a disarm given in failsafe and an ended hold, so
+  that a restart keeps the outputs off rather than surfacing or holding again.
 
 ## Deviations from docs/07, and why
 
@@ -69,7 +70,8 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
    ready"), since the safety module does not read `ctl.depth_hold`.
 8. **A disarm in failsafe** (never refused) sets `outputs_enabled` off until `clear`,
    rather than leaving a `surface` running: making the vehicle safer is what the
-   caller asked for.
+   caller asked for. The disarm is latched with the failsafe, so a restart of the
+   module does not bring the thrusters back.
 9. **A system-failsafe message older than an accepted `clear-failsafe`** is not read
    as the trigger firing again: the manager publishes `hangar.vehicle.system` nominal
    within its next message, and a tick in between would otherwise re-latch.
