@@ -35,13 +35,15 @@ attaches to either side.
 
 ### `sim_vehicle`
 
-A rigid-body model of the vehicle, stepped at 200 Hz:
+A rigid-body model of the vehicle, stepped at 200 Hz, written in C as an ordinary
+module with no dependencies, so that it ships in the release and runs in the vehicle's
+own continuous integration ([Physics](#physics)):
 
-- six degrees of freedom; mass and inertia, added mass, linear and quadratic drag,
-  buoyancy and the centre of buoyancy above the centre of mass (which gives the
-  restoring moment);
+- six degrees of freedom in the marine-vehicle form (Fossen): rigid-body and added
+  mass, linear and quadratic damping, restoring forces from weight and buoyancy with
+  the centre of buoyancy above the centre of mass;
 - thrusters at the BlueROV2's positions and angles, each a first-order lag on commanded
-  thrust and a thrust curve with a deadband;
+  thrust and a tabulated thrust curve with a deadband;
 - the sea floor and the surface as limits; a current, constant or slowly varying.
 
 It publishes the **truth topics**, `sim.pose` (position and attitude), `sim.velocity`
@@ -108,6 +110,70 @@ the depth band, hang a core. Each fault and its time is published on
 `sim.faults`, so the recording of a run says what was injected when, and a test asserts
 the system's response against it.
 
+## Physics
+
+The simulator is deliberately the simple one, and the choice is settled rather than
+open: a model hangar owns, calibrated from recordings, with a slot for a full simulator
+when an experiment needs rendering.
+
+**The model.** Fossen's rigid-body equation in the body frame,
+
+```
+(M_RB + M_A) ν̇ + (C_RB(ν) + C_A(ν)) ν + (D_lin + D_quad(ν)) ν + g(η) = τ_thrusters + τ_current
+```
+
+with the matrices diagonal, as the published identifications of the BlueROV2 take
+them: `M_A` the added mass, `D_lin` and `D_quad` the linear and quadratic damping per
+axis, `g(η)` the restoring vector from weight `W`, buoyancy `B` and the centre of
+buoyancy's height above the centre of mass, and `τ_current` the damping terms evaluated
+on the velocity relative to the water. Integration is fourth-order Runge–Kutta at
+200 Hz with the quaternion renormalized each step. Nothing in it is novel; it is the
+model used in the BlueROV2 identification and control literature, and the parameter
+defaults are the published heavy-configuration values, each one named with its source
+in `sim_vehicle`'s parameter file so that a replaced value can be traced.
+
+**Thrust.** The T200's thrust against ESC command is tabulated, not fitted: a table of
+thrust in newtons at each pulse width in 4 µs steps, forward and reverse, with the
+deadband around 1500 µs, from the manufacturer's published measurements at the
+battery's nominal voltage, scaled by a voltage factor from `power.battery`. The same
+table, through the same allocation code as the vehicle's thruster mixing, turns
+`thr.out` into applied thrust per axis for the depth-hold label
+([09-learning](09-learning.md#example-adaptive-depth-hold)) and turns the simulated
+command into force in `sim_vehicle`; simulation and vehicle cannot disagree about what a
+pulse width means.
+
+**Calibration.** The published coefficients are defaults, not truth. `hangar sim fit
+<session>` fits buoyancy, the linear and quadratic damping of each axis and the
+thruster lag to a recorded dive (least squares on `nav.*` and `thr.out` over the
+session, with the fitted values and their residuals in a report), and writes them as a
+parameter file the simulator loads. The simulator is thereby something to calibrate,
+not to trust, and its error against the vehicle is a number reported per session.
+
+**What the model leaves out, on purpose**: hull and tether hydrodynamics beyond the
+diagonal terms, wall and surface effects, current fields that vary in space, thruster
+interaction. For version 1 of the learning loop and for the safety bench tests, what
+matters is a vehicle whose buoyancy, drag and payload change on demand, deterministic
+from a seed, in a process that costs nothing; fidelity is bought later, where an
+experiment needs it.
+
+**ArduSub SITL** is the autopilot in phase 1, with `sim_vehicle` as its external
+physics over the JSON interface (`SIM_JSON`): each step sends the time, position,
+attitude, velocities and accelerations, and the IMU and pressure readings, and reads
+back the sixteen servo outputs. The real autopilot code (its MANUAL mixing, its
+failsafes, its parameters as installed by `hangar ardusub-setup`) is thereby in the
+loop on every run. SITL is built from the ArduPilot tree on the development machine;
+nothing of it goes on the vehicle.
+
+**A full simulator later.** Stonefish (the closest fit for ROVs: hydrodynamics, camera
+and sonar rendering, an existing BlueROV2 model) or another renderer plugs in through a
+`sim_bridge` module that takes `sim.thrust` and publishes `sim.pose`, `sim.velocity`
+and `cam.raw` in place of `sim_vehicle`'s physics and `sim_camera`. It is needed when
+imitation from camera frames becomes the experiment and rendered pictures matter; until
+then its dependency tree (C++, OpenGL, a GPU, non-deterministic frame times) buys
+nothing the version-1 experiments use, and it can never run on the Pi or in the
+release's own tests. Gazebo-based stacks are not considered: they bring the ROS
+dependency tree the project exists to avoid.
+
 ## Determinism and replay
 
 `--seed` seeds every simulator's noise. With `--pilot <session>` the pilot input is a
@@ -134,7 +200,15 @@ Navigator's hardware; those are the bench and wet tests of [07-safety](07-safety
 
 - Two namespaces up and down cleanly beside an installed system; discovery over the veth.
 - `sim_vehicle` against hand-computed cases: neutral buoyancy holds depth; a known thrust
-  reaches the expected terminal velocity; restoring moment rights the vehicle.
+  reaches the terminal velocity the damping coefficients give; the restoring moment
+  rights the vehicle; energy decays monotonically with no thrust in still water.
+- The thrust table: the same pulse width gives the same force in `sim_vehicle` and in the
+  depth-hold label's conversion of `thr.out`, over the whole table.
+- `hangar sim fit` on a session recorded in simulation with known parameters recovers
+  them within the report's stated residuals.
+- SITL in the loop: a MANUAL command through the vehicle `mavlink` module moves the
+  simulated vehicle in the commanded direction, and SITL's GCS failsafe fires when the
+  topside heartbeats stop.
 - One writer per topic: with SITL in the loop, `nav.*`, `power.battery` and `thr.out`
   are written by `mavlink`, `vehicle.leak` by `leak`, and `sim_vehicle` writes `sim.*`
   alone; a leak raised on the simulated GPIO line reaches `vehicle.leak` and fires the

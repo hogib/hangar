@@ -58,6 +58,7 @@ One static binary (musl), with subcommands:
 | `hangar ardusub-setup` | Set ArduSub's parameters from `/etc/hangar/ardusub.params` before a dive ([below](#hangar-ardusub-setup), [10-mavlink](10-mavlink.md#ardusubs-parameters)) |
 | `hangar upgrade-vehicle <tarball>` | Upgrade the vehicle from the topside over the tether, with no shell on the vehicle: send the release, call `installer.apply`, confirm both sides match ([13-deployment](13-deployment.md#upgrading-the-vehicle-over-the-tether)) |
 | `hangar sim up\|down [...]` | The whole system on one computer: two managers in two network namespaces, the simulators, a virtual tether with loss, delay and rate from the command line ([14-simulation](14-simulation.md#running-it)) |
+| `hangar sim fit <session>` | Fit the simulator's buoyancy, damping and thruster lag to a recorded dive; writes a parameter file and a residuals report ([14-simulation](14-simulation.md#physics)) |
 | `hangar dataset build\|check\|pairs\|loop-latency` | Datasets from recordings, with the pairer's code ([below](#datasets-and-analysis)) |
 | `hangar msg gen` | `.msg` files to the language's types and to Python dtypes, at build time |
 | `hangar bench` | The targets of [00-overview](00-overview.md#targets), measured, as a report ([below](#the-benchmark)) |
