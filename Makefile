@@ -491,4 +491,34 @@ check-msggen: $(TESTDIR)/test_msggen $(MSGGEN)
 	  echo "ok    schema.py"; \
 	else echo "FAIL  schema.py"; cat $(TESTDIR)/schema_py.log; exit 1; fi
 
+
+# lib/sim: the vehicle simulator's physics (lib/sim/README.md; GPL-3.0-or-later).
+# Pure arithmetic in C11, nothing but libm, so like lib/hg it takes its own
+# flags and links without libturbojpeg. `make check-sim`, part of check, runs
+# its suite from the repository root (the suite reads lib/sim/data/*.csv to
+# check the generated thrust table against it). data/t200_thrust.inc is
+# checked in; `make sim-data` regenerates it from the CSV.
+SIM_SRC := lib/sim/sim_model.c lib/sim/sim_thrust.c lib/sim/sim_noise.c lib/sim/sim_fit.c
+SIM_CFLAGS := -std=c11 -Wall -Wextra -pedantic
+SIM_CPPFLAGS := -Ilib/sim -Ilib/common
+SIM_OBJDIR := $(OBJDIR)/sim
+SIM_LDLIBS := -lm
+
+$(SIM_OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CPPFLAGS) $(CPPFLAGS) $(SIM_CFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+$(TESTDIR)/test_sim: $(SIM_OBJDIR)/lib/sim/tests/test_sim.o $(patsubst %.c,$(SIM_OBJDIR)/%.o,$(SIM_SRC))
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(SIM_LDLIBS) $(LDLIBS)
+
+.PHONY: check-sim sim-data
+CHECKS += check-sim
+check: check-sim
+check-sim: $(TESTDIR)/test_sim
+	$(call run_suite,sim,60,$<)
+
+sim-data:
+	sh lib/sim/data/gen_t200_inc.sh > lib/sim/data/t200_thrust.inc
+
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
