@@ -164,6 +164,16 @@ failsafes, its parameters as installed by `hangar ardusub-setup`) is thereby in 
 loop on every run. SITL is built from the ArduPilot tree on the development machine;
 nothing of it goes on the vehicle.
 
+**A rendered stand-in for development.** On a development machine a Gazebo Harmonic
+world with the `bluerov2_gz` BlueROV2 model, connected to SITL through the
+`ardupilot_gazebo` plugin over the same JSON interface, can take `sim_vehicle`'s place
+behind SITL and be flown from QGroundControl; `tools/sim/` is the recipe, a container
+that leaves nothing on the host but Docker and the GPU runtime. It is a way to look at
+the vehicle while the `mavlink` modules are written, not part of the `sim` profile:
+its camera and pose would enter hangar through the `sim_bridge` module below, as
+`cam.raw` and `sim.pose` over gz-transport, and nothing of it is built or tested with
+hangar (the plugin and the model need no ROS).
+
 **A full simulator later.** Stonefish (the closest fit for ROVs: hydrodynamics, camera
 and sonar rendering, an existing BlueROV2 model) or another renderer plugs in through a
 `sim_bridge` module that takes `sim.thrust` and publishes `sim.pose`, `sim.velocity`
