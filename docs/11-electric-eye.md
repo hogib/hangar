@@ -288,15 +288,20 @@ placement A is a module of another name, `topside_encoder`.
 
 ## Proving the port
 
-Every ported operator is checked against electric-eye v0.3.1 with the paper's method:
-its output hashed over fixed inputs (the three camera photographs and the synthetic
-frames of edge-case sizes), every strength and threshold in steps, 1 to 7 threads. The
-hashes were recorded once from v0.3.1 and are checked into the repository; the
-`make` target `equivalence` computes them from `lib/vision` and compares, natively on
-x86-64, under `qemu-aarch64` on AArch64, and under full-system emulation on ARMv7.
-Every comparison must be identical; a thread count or a NEON path that changed a hash
-fails the target. The visibility correction is checked the same way over its synthetic
-sequences.
+Every ported operator is checked against electric-eye v0.3.1 with the paper's method,
+as the `make` target `equivalence` (`tools/equivalence/`): the output of every operator
+is hashed over a fixed set of 20 615 cases, synthetic frames at seven sizes (1280×720,
+640×480 and the awkward 65×48, 79×33, 31×9, 2×2, 1×1) and five content patterns
+(seeded random, flat, all-max, checkerboard, ramp), every strength and threshold in
+steps, the point operators through one-stage chains, nine multi-stage chains, and the
+visibility correction over 60-frame sequences. The hashes were recorded once from
+v0.3.1 and are checked in (`hashes-v0.3.1.txt`); the target computes them from
+`lib/vision` at 1, 3 and 4 threads where OpenMP is compiled in, and compares. It runs
+natively on x86-64 and as the static AArch64 build under `qemu-aarch64`, which executes
+the NEON paths; every comparison must be identical. The paper's camera photographs are
+not part of the set, so that the target is self-contained and the same everywhere;
+the synthetic sizes cover the vectorization tails the photographs did not. ARMv7 is
+checked when a full-system emulator or a board is available, not in the default target.
 
 The video path is held to the paper's measurement: frame topic to frame topic through
 `encoder` and `video_relay` over loopback, median latency no worse than electric-eye's
