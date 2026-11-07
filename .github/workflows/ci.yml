@@ -1,0 +1,136 @@
+# hangar CI: every suite with gcc, clang and zig cc; the sanitizers; the
+# operator equivalence hashes; cross builds for the vehicle targets.
+#
+# The aarch64 job runs the suites natively on GitHub's arm64 runners (the
+# repository is public, so they are free): the futex suites cannot run under
+# qemu user mode, which has no futex_waitv. A Pi 4 or 5 is still the target
+# the paper measures on (bench/PI-TEST.md).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  check:
+    name: check (${{ matrix.cc }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang, zig]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            build-essential clang libomp-dev libturbojpeg0-dev pkg-config python3
+      - name: Zig
+        if: matrix.cc == 'zig'
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xJf zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+      - name: Build and check
+        run: |
+          case "${{ matrix.cc }}" in
+            gcc)   make -j"$(nproc)" check ;;
+            clang) make -j"$(nproc)" check CC=clang HOSTCC=clang ;;
+            zig)   make -j"$(nproc)" check CC="zig cc" HOSTCC="zig cc" ;;
+          esac
+      - name: Equivalence against electric-eye v0.3.1
+        run: |
+          case "${{ matrix.cc }}" in
+            gcc)   make -j"$(nproc)" equivalence ;;
+            clang) make -j"$(nproc)" equivalence CC=clang HOSTCC=clang ;;
+            zig)   make -j"$(nproc)" equivalence CC="zig cc" HOSTCC="zig cc" ;;
+          esac
+      - name: Suite logs on failure
+        if: failure()
+        run: for f in builddir/tests-*/*.log; do echo "== $f"; cat "$f"; done
+
+  sanitizers:
+    name: sanitizers (gcc)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            build-essential libturbojpeg0-dev pkg-config
+      - name: ThreadSanitizer
+        run: make -j"$(nproc)" check-tsan
+      - name: AddressSanitizer and UBSan
+        run: make -j"$(nproc)" check-asan
+      - name: Suite logs on failure
+        if: failure()
+        run: for f in builddir/tsan/tests-*/*.log builddir/asan/tests-*/*.log; do [ -f "$f" ] && { echo "== $f"; cat "$f"; }; done; true
+
+  aarch64:
+    name: check (gcc, aarch64 native)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            build-essential libturbojpeg0-dev pkg-config python3
+      - name: Kernel
+        run: uname -r  # futex_waitv needs 5.16 or later
+      - name: Build and check
+        run: make -j"$(nproc)" check
+      - name: Equivalence (NEON paths)
+        run: make -j"$(nproc)" equivalence
+      - name: Suite logs on failure
+        if: failure()
+        run: for f in builddir/tests-*/*.log; do echo "== $f"; cat "$f"; done
+
+  cross:
+    name: cross build (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-musl
+            mcpu: cortex_a72
+          - target: arm-linux-musleabihf
+            mcpu: cortex_a53
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xJf zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+      - name: libjpeg-turbo for the target
+        # Static, from the pinned release, with the zig toolchain file of
+        # tools/cross (the aarch64 file; the armv7 one differs only in the
+        # target triple, written here).
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends cmake ninja-build
+          curl -fsSL -o ljt.tar.gz https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.0.tar.gz
+          tar -xzf ljt.tar.gz
+          sed "s/aarch64-linux-musl -mcpu=cortex_a76/${{ matrix.target }} -mcpu=${{ matrix.mcpu }}/; s/CMAKE_SYSTEM_PROCESSOR aarch64/CMAKE_SYSTEM_PROCESSOR ${{ matrix.target == 'aarch64-linux-musl' && 'aarch64' || 'arm' }}/" \
+            tools/cross/zig-aarch64-musl.cmake > zig-target.cmake
+          cmake -S libjpeg-turbo-3.2.0 -B ljt-build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$PWD/zig-target.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_TURBOJPEG=ON -DWITH_JPEG8=ON \
+            -DWITH_SIMD=${{ matrix.target == 'aarch64-linux-musl' && 'ON' || 'OFF' }}
+          ninja -C ljt-build turbojpeg-static
+      - name: Static build of everything
+        run: |
+          make -j"$(nproc)" BUILD=release BUILDDIR=out/cross \
+            CC="zig cc -target ${{ matrix.target }} -mcpu=${{ matrix.mcpu }}" HOSTCC="zig cc" \
+            LDFLAGS=-static \
+            TURBOJPEG_CFLAGS="-I$PWD/libjpeg-turbo-3.2.0/src -I$PWD/ljt-build" \
+            TURBOJPEG_LIBS="$PWD/ljt-build/libturbojpeg.a" \
+            all $(make -s -n check BUILDDIR=out/cross CC="zig cc -target ${{ matrix.target }}" 2>/dev/null | grep -o 'out/cross/tests-release/test_[a-z_0-9]*' | sort -u)
+          file out/cross/eeye out/cross/hellion
+          file out/cross/eeye | grep -q 'statically linked'
