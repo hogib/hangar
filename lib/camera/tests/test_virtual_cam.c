@@ -27,11 +27,17 @@ static void test_missing_device_is_checked_quietly(void) {
   CHECK(vc != NULL);
   VideoFrame *f = vf_create(64, 32, 0);
 
+  // The deadline is "now + retry interval" as of the write; bracket the
+  // clock around the call rather than allow a fixed slack, so a loaded CI
+  // runner that schedules this process out for a while cannot fail it.
+  int64_t before = now_ms();
   CHECK(!virtual_cam_write(vc, f));
+  int64_t after = now_ms();
   CHECK(vc->explained_missing);
   CHECK_EQ_INT(vc->open_attempts, 0);
   int64_t due = vc->next_attempt_ms;
-  CHECK(due >= now_ms() + retry_missing_ms - 100);
+  CHECK(due >= before + retry_missing_ms);
+  CHECK(due <= after + retry_missing_ms);
 
   // Immediately again: not due, so nothing changes.
   CHECK(!virtual_cam_write(vc, f));
