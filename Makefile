@@ -10,6 +10,9 @@
 #   make BUILD=release     -O3, no debug info
 #   make BUILD=debug       builddir/eeye-d and hellion-d, unoptimized
 #   make check             build and run every test suite (-j is fine)
+#   make check-hg          only lib/hg's suites (the hangar module library)
+#   make check-tsan        lib/hg's suites again under ThreadSanitizer
+#   make check-asan        lib/hg's suites again under AddressSanitizer + UBSan
 #   make equivalence       hash every lib/vision operator's output and
 #                          compare with electric-eye v0.3.1's (tools/equivalence/)
 #   make clean
@@ -65,7 +68,7 @@ TESTDIR := $(BUILDDIR)/tests-$(BUILD)
 # legacy/hellion/ hold the two programs' glue (config, the frame bus,
 # status, the threads), which may include lib/; lib/ never includes
 # legacy/. Each directory's tests sit in its tests/.
-LIBDIRS := lib/common lib/vision lib/camera lib/proc lib/net lib/video
+LIBDIRS := lib/common lib/vision lib/camera lib/proc lib/net lib/video lib/hg
 LEGACYDIRS := legacy/eeye legacy/hellion
 LIB_CPPFLAGS := $(addprefix -I,$(LIBDIRS))
 LEGACY_CPPFLAGS := $(LIB_CPPFLAGS) $(addprefix -I,$(LEGACYDIRS))
@@ -255,8 +258,9 @@ PROC_TESTS := child_proc
 NET_TESTS := http
 EEYE_TESTS := config ring_buffer health recorder fbus
 HELLION_TESTS := hellion
+HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd
 TESTS := $(VISION_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
-	$(EEYE_TESTS) $(HELLION_TESTS)
+	$(EEYE_TESTS) $(HELLION_TESTS) $(HG_TESTS)
 
 # Extra translation units each test needs beyond the one it includes:
 # rpicam_in.c and v4l2_in.c both reference the shared JPEG decoder and the
@@ -288,6 +292,24 @@ test_virtual_cam_SRC := lib/proc/child_proc.c lib/camera/v4l2_out.c \
 	lib/vision/video_frame.c
 test_effect_chain_SRC := lib/vision/auto_vis.c lib/vision/conv.c \
 	lib/vision/img_stats.c lib/vision/point_opps.c lib/vision/video_frame.c
+
+# lib/hg: the hangar module library (LGPL-3.0-or-later; lib/hg/PLAN.md). C11
+# with <stdatomic.h>, not gnu99, so its objects take their own flags; it
+# needs nothing but libc and the kernel, so its suites link without
+# libturbojpeg and build where a cross toolchain has none. The manager stub
+# is test-only: it goes into the suites, never into HG_SRC.
+HG_SRC := lib/hg/hg_topic.c lib/hg/hg_type.c lib/hg/hg_wiring.c
+HG_CFLAGS := -std=c11 -Wall -Wextra -pedantic -pthread
+HG_LDLIBS := -pthread -lrt
+$(OBJDIR)/lib/hg/%.o: EE_CFLAGS := $(HG_CFLAGS)
+$(foreach t,$(HG_TESTS),$(eval test_$(t)_SRC := $(HG_SRC) lib/hg/hg_manager_stub.c))
+
+define hg_test_rule
+$(TESTDIR)/test_$(1): $(OBJDIR)/lib/hg/tests/test_$(1).o $(call obj,$(test_$(1)_SRC))
+	@mkdir -p $$(dir $$@)
+	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(HG_LDLIBS) $$(LDLIBS)
+endef
+$(foreach t,$(HG_TESTS),$(eval $(call hg_test_rule,$(t))))
 
 # $(1): suite name, $(2): the directory whose tests/ holds its source.
 define test_rule
@@ -332,6 +354,31 @@ $(CHECKS): check-%: $(TESTDIR)/test_%
 	$(call run_suite,$*,60,$<)
 
 check: $(CHECKS)
+
+.PHONY: check-hg check-tsan check-asan
+check-hg: $(addprefix check-,$(HG_TESTS))
+
+# The hg suites again under a sanitizer, in their own build directory so the
+# instrumented objects never mix with the plain ones. No suppression file:
+# the seqlock copy is atomic words, so there is nothing to suppress. A
+# compiler without the runtime fails the probe and the target is skipped, not
+# failed (gcc, clang and zig cc 0.17 all have it here); the probe binary stays
+# in $(BUILDDIR), which `make clean` removes. $(1): the -fsanitize= list,
+# $(2): the directory.
+comma := ,
+define sanitized_check
+	@mkdir -p $(BUILDDIR); \
+	if echo 'int main(void){return 0;}' | $(CC) -fsanitize=$(1) -x c - -o $(BUILDDIR)/.san-probe-$(2) >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/$(2) \
+	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=$(1)" LDFLAGS="-fsanitize=$(1)" check-hg; \
+	else \
+	  echo "skip  $(2): $(CC) cannot build with -fsanitize=$(1)"; \
+	fi
+endef
+check-tsan:
+	$(call sanitized_check,thread,tsan)
+check-asan:
+	$(call sanitized_check,address$(comma)undefined,asan)
 
 # Equivalence with electric-eye v0.3.1 (tools/equivalence/README.md): equiv
 # hashes every lib/vision operator's output over a fixed input set, one
@@ -385,5 +432,63 @@ fuzz-http:
 
 clean:
 	rm -rf $(BUILDDIR)
+
+# Message types (tools/msggen/README.md). msg/<name>.msg is the source;
+# msg/<name>.h and .c are generated and checked in, so a build needs no
+# generator. `make msg` regenerates them (a *_params.msg is a parameter
+# type: --params); `make check-msggen`, part of check, runs the generator's
+# suite, msggen --check over msg/ (a stale or missing file fails), compares
+# the C and Python hashes for every .msg, and runs the Python unit tests.
+# The generator is C11 and runs during the build, so HOSTCC builds it. The
+# suite compiles the generated .c against tools/msggen/tests/hg_type.h, a
+# stand-in with the three ABI types, so it does not depend on lib/hg.
+PYTHON ?= python3
+MSGGEN := $(BUILDDIR)/msggen
+MSG_SRC := $(sort $(wildcard msg/*.msg))
+MSG_PARAMS := $(filter %_params.msg,$(MSG_SRC))
+MSG_PLAIN := $(filter-out %_params.msg,$(MSG_SRC))
+MSGGEN_CFLAGS := -std=c11 -Wall -Wextra -pedantic
+MSGGEN_OBJDIR := $(OBJDIR)/msggen
+MSGGEN_CPPFLAGS := -Itools/msggen -Itools/msggen/tests -Imsg -Ilib/common
+
+$(MSGGEN): tools/msggen/msggen.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O2 $(MSGGEN_CFLAGS) -o $@ $<
+
+.PHONY: msg
+msg: $(MSGGEN)
+	$(MSGGEN) --out msg $(MSG_PLAIN)
+	$(MSGGEN) --out msg --params $(MSG_PARAMS)
+
+$(MSGGEN_OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(MSGGEN_CPPFLAGS) $(CPPFLAGS) $(MSGGEN_CFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+$(TESTDIR)/test_msggen: $(MSGGEN_OBJDIR)/tools/msggen/tests/test_msggen.o \
+		$(patsubst %.msg,$(MSGGEN_OBJDIR)/msg/%.o,$(notdir $(MSG_SRC)))
+	@mkdir -p $(dir $@)
+	$(CC) $(MSGGEN_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+.PHONY: check-msggen
+CHECKS += check-msggen
+check: check-msggen
+check-msggen: $(TESTDIR)/test_msggen $(MSGGEN)
+	$(call run_suite,msggen,60,$<)
+	@if $(MSGGEN) --check --out msg $(MSG_PLAIN) && \
+	    $(MSGGEN) --check --out msg --params $(MSG_PARAMS); then \
+	  echo "ok    msggen --check  $(words $(MSG_SRC)) types in msg/"; \
+	else echo "FAIL  msggen --check: run make msg"; exit 1; fi
+	@mkdir -p $(TESTDIR); \
+	{ $(MSGGEN) --print-hash $(MSG_PLAIN) && $(MSGGEN) --print-hash --params $(MSG_PARAMS); } \
+	  | sort > $(TESTDIR)/msggen-hash-c.txt || exit 1; \
+	PYTHONPATH=python $(PYTHON) -m hangar.schema --print-hash $(MSG_SRC) \
+	  | sort > $(TESTDIR)/msggen-hash-py.txt || exit 1; \
+	if cmp -s $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt; then \
+	  echo "ok    msggen hashes  C and Python agree on $(words $(MSG_SRC)) types"; \
+	else echo "FAIL  msggen hashes: C and Python differ:"; \
+	  diff $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt; exit 1; fi
+	@if $(PYTHON) -m unittest discover -s python/tests > $(TESTDIR)/schema_py.log 2>&1; then \
+	  echo "ok    schema.py"; \
+	else echo "FAIL  schema.py"; cat $(TESTDIR)/schema_py.log; exit 1; fi
 
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
