@@ -1,4 +1,6 @@
 #include "auto_vis.h"
+#include "hg_pool.h"
+#include "vision_pool.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -149,6 +151,17 @@ static uint8_t clamp_u8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v)
 
 // --- The three corrections ---------------------------------------------------
 
+// The three passes below run inside one pool team (hg_pool_team, the one
+// `#pragma omp parallel` region they shared), each over its own static
+// partition of its items -- what `#pragma omp for schedule(static)` gave
+// them -- and each followed by the barrier that `omp for` implied, since
+// the next pass reads what every thread of this one wrote. One thread's
+// view of the team:
+typedef struct {
+  struct hg_pool *pool;
+  unsigned t, nt;
+} AvThread;
+
 typedef struct {
   double lo, hi, gamma, du, dv;
 } Targets;
@@ -189,11 +202,13 @@ static Targets targets_for(const ImgStats *s) {
 // Each tile's histogram of the source luma (read only). The histogram of
 // the globally corrected picture is this one pushed through the global LUT
 // (see build_tile_luts), so nothing has to be written to get it.
-static void luma_global(AutoVis *av, const uint8_t *src, size_t stride) {
+static void luma_global(const AvThread *th, AutoVis *av, const uint8_t *src,
+                        size_t stride) {
   const uint32_t tx = av->tx, ty = av->ty, w = av->w, h = av->h;
   uint32_t *const hists = av->tile_hist;
-#pragma omp for schedule(static)
-  for (uint32_t i = 0; i < tx * ty; i++) {
+  size_t ib, ie;
+  hg_pool_band((size_t)tx * ty, th->nt, th->t, &ib, &ie);
+  for (uint32_t i = (uint32_t)ib; i < (uint32_t)ie; i++) {
     uint32_t band = i / tx, t = i % tx;
     uint32_t y0 = (uint32_t)((uint64_t)h * band / ty);
     uint32_t y1 = (uint32_t)((uint64_t)h * (band + 1) / ty);
@@ -219,15 +234,18 @@ static void luma_global(AutoVis *av, const uint8_t *src, size_t stride) {
     for (int v = 0; v < 256; v++)
       hist[v] = hh[0][v] + hh[1][v] + hh[2][v] + hh[3][v];
   }
+  hg_pool_barrier(th->pool);
 }
 
 // Each tile's clipped-histogram mapping, smoothed over time, blended with
 // the identity by local_strength.
-static void build_tile_luts(AutoVis *av, double alpha, const uint8_t lut[256]) {
+static void build_tile_luts(const AvThread *th, AutoVis *av, double alpha,
+                            const uint8_t lut[256]) {
   const size_t tiles = (size_t)av->tx * av->ty;
   const bool primed = av->tiles_primed;
-#pragma omp for schedule(static)
-  for (size_t t = 0; t < tiles; t++) {
+  size_t tb, te;
+  hg_pool_band(tiles, th->nt, th->t, &tb, &te);
+  for (size_t t = tb; t < te; t++) {
     // The corrected picture's histogram: the source's through lut.
     uint32_t hist[256];
     {
@@ -273,6 +291,7 @@ static void build_tile_luts(AutoVis *av, double alpha, const uint8_t lut[256]) {
       tmp[v] = lu[lut[v]];
     memcpy(lu, tmp, sizeof tmp);
   }
+  hg_pool_barrier(th->pool);
 }
 
 // Chroma: remove the cast in proportion to brightness, then boost
@@ -325,9 +344,9 @@ static void chroma_row(const ChromaTab *ct, const uint8_t *ly, const uint8_t *su
 // pointers are per segment, not per pixel; LOCAL_PREBLEND blends the
 // row's top/bottom LUTs once per row into 16-bit tables (2 gathers/pixel
 // instead of 4).
-static void luma_local(AutoVis *av, const uint8_t *const src[3],
-                       uint8_t *const dst[3], const size_t stride3[3],
-                       const ChromaTab *ct) {
+static void luma_local(const AvThread *th, AutoVis *av,
+                       const uint8_t *const src[3], uint8_t *const dst[3],
+                       const size_t stride3[3], const ChromaTab *ct) {
   const uint8_t *src_plane = src[0];
   uint8_t *y_plane = dst[0];
   const size_t stride = stride3[0];
@@ -346,8 +365,10 @@ static void luma_local(AutoVis *av, const uint8_t *const src[3],
     }
     seg[tx] = w;
   }
-#pragma omp for schedule(static)
-  for (uint32_t y = 0; y < h; y++) {
+  // The last pass: the team's return is its closing barrier.
+  size_t yb, ye;
+  hg_pool_band(h, th->nt, th->t, &yb, &ye);
+  for (uint32_t y = (uint32_t)yb; y < (uint32_t)ye; y++) {
     const uint8_t *in = src_plane + (size_t)y * stride;
     uint8_t *row = y_plane + (size_t)y * stride;
     uint32_t t0 = row_t[y];
@@ -383,6 +404,26 @@ static void luma_local(AutoVis *av, const uint8_t *const src[3],
     chroma_row(ct, in, src[1] + (size_t)y * stride3[1], src[2] + (size_t)y * stride3[2],
                dst[1] + (size_t)y * stride3[1], dst[2] + (size_t)y * stride3[2], w);
   }
+}
+
+// What one auto_vis_apply() team works on, decided before it starts.
+typedef struct {
+  AutoVis *av;
+  const uint8_t *const *src;
+  uint8_t *const *dst;
+  const size_t *stride;
+  double alpha;
+  const uint8_t *lut;
+  const ChromaTab *ct;
+} ApplyJob;
+
+// The team body: the three passes, on every thread.
+static void apply_team(void *arg, unsigned index, unsigned count) {
+  const ApplyJob *j = arg;
+  const AvThread th = {vision_pool(), index, count};
+  luma_global(&th, j->av, j->src[0], j->stride[0]);
+  build_tile_luts(&th, j->av, j->alpha, j->lut);
+  luma_local(&th, j->av, j->src, j->dst, j->stride, j->ct);
 }
 
 bool auto_vis_apply(AutoVis *av, const ImgStats *stats,
@@ -434,14 +475,11 @@ bool auto_vis_apply(AutoVis *av, const ImgStats *stats,
 
   ChromaTab ct;
   chroma_tables(av, stats->mean_luma, &ct);
-  // One team for the three passes (each is an orphaned omp for): under
-  // OMP_WAIT_POLICY=passive every region start wakes the whole team.
-#pragma omp parallel
-  {
-    luma_global(av, src[0], stride[0]);
-    build_tile_luts(av, alpha, lut);
-    luma_local(av, src, dst, stride, &ct);
-  }
+  // One team for the three passes: every team start wakes the whole pool
+  // (as every region start did under OMP_WAIT_POLICY=passive), so the
+  // three share one.
+  ApplyJob job = {av, src, dst, stride, alpha, lut, &ct};
+  hg_pool_team(vision_pool(), apply_team, &job);
   av->tiles_primed = true;
   return true;
 }

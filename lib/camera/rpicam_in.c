@@ -297,7 +297,6 @@ static void unpack_yuv420(const RpicamIn *in, VideoFrame *frame) {
   const uint32_t y_shift = 2u * (uint32_t)__builtin_ctz(n);
   const uint32_t c_rows = n / 2;
   const uint32_t c_shift = y_shift - 1; // n * n/2 samples
-#pragma omp parallel for
   for (uint32_t oy = 0; oy < out_h; ++oy) {
     uint8_t *y_row = frame->raw_planes[0] + (size_t)oy * frame->stride[0];
     for (uint32_t ox = 0; ox < out_w; ++ox) {

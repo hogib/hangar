@@ -44,10 +44,10 @@ make ... TIMEOUT="qemu-aarch64 -0" check
 make ... TIMEOUT="qemu-aarch64 -0" equivalence
 ```
 
-OpenMP is not available in static musl builds (zig ships no OpenMP runtime), so the
-operator loops run single-threaded there; the Makefile detects this and says so.
-Natively, `zig cc` uses LLVM's libomp when it is installed (`-lomp`, detected by the
-Makefile's probe), and gcc its own libgomp.
+The operator loops run on hangar's own thread pool (`lib/common/hg_pool.c`,
+pthreads), not OpenMP, so static musl builds are multi-threaded like native ones; the
+thread count follows OpenMP's rule (`OMP_NUM_THREADS`, else the CPUs online), and
+`make equivalence` proves the output identical at 1, 3 and 4 threads.
 
 Measured 2026-11-07, stripped: `eeye` 1.09 MB, `hellion` 1.22 MB (static, with musl
 and libjpeg-turbo). The NEON path is compiled in (`GS_NEON_AARCH64`), and all 17

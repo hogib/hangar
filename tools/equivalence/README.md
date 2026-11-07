@@ -32,9 +32,16 @@ buffers are poisoned (0xA5) before every case, so an operator that stops writing
 plane changes its hash instead of passing on stale memory. The run takes ~25 s at one
 thread on a desktop (gcc -O2); the three thread counts together ~50 s.
 
-With OpenMP compiled in, the Makefile runs the program at 1, 3 and 4 threads
-(`OMP_NUM_THREADS`; `EQUIV_THREADS` overrides) and every run must match: a thread
-count that changes a hash is a bug. `TIMEOUT` is applied as for the suites, so
+The Makefile runs the program at 1, 3 and 4 threads (`OMP_NUM_THREADS`;
+`EQUIV_THREADS` overrides) and every run must match: a thread count that changes a
+hash is a bug. The operators' loops run on their own pool (`lib/common/hg_pool.h`,
+`lib/vision/vision_pool.h`) rather than OpenMP's team; `equiv` creates it with the
+count OpenMP would have used -- `OMP_NUM_THREADS` if set, else the CPUs online -- and
+the pool splits every loop into the same contiguous bands OpenMP's static schedule
+did, so the variable, and the three runs, mean what they meant when the loops were
+`#pragma omp parallel for`. This is also why the thread counts run on every target,
+the static aarch64-musl build included, which has no OpenMP runtime. `TIMEOUT` is
+applied as for the suites, so
 
 ```sh
 make ... TIMEOUT="qemu-aarch64 -0" equivalence

@@ -14,11 +14,14 @@
  *
  * Nothing here depends on the machine: the random pattern is xorshift64
  * from fixed seeds, the hash is FNV-1a 64 over the output's Y, U, V planes
- * in that order, and the thread count only comes in through OpenMP's own
- * OMP_NUM_THREADS -- which is the point: the hash must not change with it.
+ * in that order, and the thread count only comes in through
+ * OMP_NUM_THREADS -- read by the operators' own pool with OpenMP's rule
+ * (hg_pool_default_threads: the variable, else the CPUs online), so that
+ * `OMP_NUM_THREADS=3 equiv` means what it meant when the loops were
+ * OpenMP's. Which is the point: the hash must not change with it.
  *
  * Built against v0.3.1 with -DEQUIV_V031, where the chain still read its
- * stages from eeye's Config.
+ * stages from eeye's Config and the loops were OpenMP's.
  */
 #define _POSIX_C_SOURCE 200809L
 #include "auto_vis.h"
@@ -32,15 +35,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #ifdef EQUIV_V031
 // electric-eye v0.3.1: apply_effect_chain*() took the whole Config, whose
 // stages / stage_count / auto_visibility are the three fields hangar's
 // EffectChainConfig kept, under the same names.
 typedef Config EffectChainConfig;
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+#else
+#include "hg_pool.h"
+#include "vision_pool.h"
 #endif
 
 // --- The input set ---------------------------------------------------
@@ -431,10 +437,21 @@ static void run_auto_vis(VideoFrame *f, const char *sz, Pattern pat) {
 }
 
 int main(void) {
+#ifdef EQUIV_V031
 #ifdef _OPENMP
   fprintf(stderr, "equiv: OpenMP, %d thread(s)\n", omp_get_max_threads());
 #else
   fprintf(stderr, "equiv: no OpenMP, 1 thread\n");
+#endif
+#else
+  // The operators' pool, with the thread count OpenMP would have used.
+  struct hg_pool *pool = hg_pool_create(hg_pool_default_threads());
+  if (!pool) {
+    perror("equiv: hg_pool_create");
+    return 2;
+  }
+  vision_set_pool(pool);
+  fprintf(stderr, "equiv: pool, %u thread(s)\n", hg_pool_threads(pool));
 #endif
 
   // The case set, spelled out: a reference made from a different set
@@ -475,5 +492,9 @@ int main(void) {
     }
     vf_free(f);
   }
+#ifndef EQUIV_V031
+  vision_set_pool(NULL);
+  hg_pool_destroy(pool);
+#endif
   return 0;
 }

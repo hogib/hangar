@@ -3,6 +3,7 @@
 #include "camera_ctrl.h"
 #include "frame_ring_buffer.h"
 #include "health.h"
+#include "hg_pool.h"
 #include "recorder.h"
 #include "bus_in.h"
 #include "fbus.h"
@@ -10,6 +11,7 @@
 #include "v4l2_in.h"
 #include "virtual_cam.h"
 #include "video_frame.h"
+#include "vision_pool.h"
 #include <errno.h>
 #include <linux/videodev2.h>
 #include <pthread.h>
@@ -274,6 +276,17 @@ static void record_effects_time(EffectsTiming *t, const struct timespec *t0,
 
 void *effects_loop(void *arg) {
   WorkerArgs *args = (WorkerArgs *)arg;
+  // The operators' thread pool (lib/common/hg_pool.h), in place of the
+  // OpenMP team they used to open: created once, for the life of this
+  // thread, with the thread count OpenMP would have used -- OMP_NUM_THREADS
+  // when set, else the CPUs online -- so an operator's setting means what
+  // it meant. NULL (a thread could not be created) runs the loops here.
+  struct hg_pool *pool = hg_pool_create(hg_pool_default_threads());
+  if (!pool)
+    perror("Warning: no thread pool for the effects; running them "
+           "single-threaded");
+  vision_set_pool(pool);
+  printf("Effects: %u thread(s)\n", hg_pool_threads(pool));
   // Auto visibility's smoothing state lives as long as this thread. NULL
   // (out of memory) only means auto visibility cannot run.
   AutoVis *av = auto_vis_create();
@@ -336,6 +349,8 @@ void *effects_loop(void *arg) {
     ring_push_wait(args->ring_buffer_out, frame, NULL);
   }
   auto_vis_destroy(av);
+  vision_set_pool(NULL);
+  hg_pool_destroy(pool);
   return NULL;
 }
 

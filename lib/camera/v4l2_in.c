@@ -94,7 +94,6 @@ static void downscale_yuyv_frame(const uint8_t *yuyv, VideoFrame *frame,
   const uint32_t out_w = frame->width;
   const uint32_t chroma_w = out_w / 2; // exact: config.c validated evenness
 
-#pragma omp parallel for
   for (uint32_t oy = 0; oy < frame->height; ++oy) {
     const uint8_t *src_block = yuyv + (size_t)oy * n * src_stride;
     uint8_t *y_row = y_plane + (size_t)oy * y_stride;

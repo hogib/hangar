@@ -1,9 +1,72 @@
 #include "img_stats.h"
+#include "hg_pool.h"
+#include "vision_pool.h"
 #include <math.h>
 #include <string.h>
 
 // Chroma is only trusted between these luma levels (see ImgStats.cast_u).
 enum { chroma_min_luma = 24, chroma_max_luma = 235 };
+
+// One band's share of the sampling (what each thread of the old `#pragma
+// omp parallel` region counted before the critical section merged it).
+// Cache-line aligned so no two bands' counters share a line: measured at
+// 1280x720 on 4 threads, the unaligned array cost 40% on this operator.
+typedef struct {
+  uint32_t hist[256];
+  int64_t su, sv, sy;
+  uint32_t nc;
+} __attribute__((aligned(64))) StatsPartial;
+
+typedef struct {
+  const uint8_t *const *planes;
+  const size_t *stride;
+  uint32_t width;
+  StatsPartial *partial; // one per band
+} StatsCtx;
+
+// Per-band partials rather than a lock: the merge then happens in band
+// order on the calling thread, and no thread waits on another. 64 KB of
+// zero pages until a band touches its slot; img_stats_compute is called
+// from one thread (eeye's effects thread, the vision module), like the
+// rest of the operators.
+static StatsPartial band_partials[HG_POOL_MAX_THREADS];
+
+// Sampled rows r in [begin, end): luma row 2r. I422: chroma is half width,
+// full height, so luma column x pairs with chroma column x/2. Even x only,
+// so every sample has its own chroma.
+static void stats_rows(void *arg, size_t begin, size_t end, unsigned band) {
+  const StatsCtx *c = arg;
+  StatsPartial *p = &c->partial[band];
+  const uint32_t width = c->width;
+  // Counted in locals, as the OpenMP body counted them, and copied to the
+  // band's slot once at the end: a histogram the compiler knows nothing
+  // else can alias, and sums that stay in registers.
+  uint32_t hist[256];
+  int64_t su = 0, sv = 0, sy = 0;
+  uint32_t nc = 0;
+  memset(hist, 0, sizeof hist);
+  for (size_t r = begin; r < end; r++) {
+    size_t y = 2 * r;
+    const uint8_t *yr = c->planes[0] + y * c->stride[0];
+    const uint8_t *ur = c->planes[1] + y * c->stride[1];
+    const uint8_t *vr = c->planes[2] + y * c->stride[2];
+    for (uint32_t x = 0, cc = 0; x < width; x += 2, cc++) {
+      uint32_t l = yr[x];
+      hist[l]++;
+      if (l >= chroma_min_luma && l <= chroma_max_luma) {
+        su += (int)ur[cc] - 128;
+        sv += (int)vr[cc] - 128;
+        sy += l;
+        nc++;
+      }
+    }
+  }
+  memcpy(p->hist, hist, sizeof hist);
+  p->su = su;
+  p->sv = sv;
+  p->sy = sy;
+  p->nc = nc;
+}
 
 void img_stats_compute(const uint8_t *const planes[3], uint32_t width,
                        uint32_t height, const size_t stride[3],
@@ -12,42 +75,21 @@ void img_stats_compute(const uint8_t *const planes[3], uint32_t width,
   int64_t sum_u = 0, sum_v = 0, sum_y = 0;
   uint32_t n_chroma = 0;
   const uint32_t rows = (height + 1) / 2;
-  // I422: chroma is half width, full height, so luma column x pairs with
-  // chroma column x/2. Even x only, so every sample has its own chroma.
-  // Each thread counts into its own histogram and sums; merged at the end
-  // (integers, so the result does not depend on the split).
-#pragma omp parallel
-  {
-    uint32_t hist[256];
-    int64_t su = 0, sv = 0, sy = 0;
-    uint32_t nc = 0;
-    memset(hist, 0, sizeof hist);
-#pragma omp for schedule(static) nowait
-    for (uint32_t r = 0; r < rows; r++) {
-      uint32_t y = 2 * r;
-      const uint8_t *yr = planes[0] + (size_t)y * stride[0];
-      const uint8_t *ur = planes[1] + (size_t)y * stride[1];
-      const uint8_t *vr = planes[2] + (size_t)y * stride[2];
-      for (uint32_t x = 0, c = 0; x < width; x += 2, c++) {
-        uint32_t l = yr[x];
-        hist[l]++;
-        if (l >= chroma_min_luma && l <= chroma_max_luma) {
-          su += (int)ur[c] - 128;
-          sv += (int)vr[c] - 128;
-          sy += l;
-          nc++;
-        }
-      }
-    }
-#pragma omp critical(img_stats_merge)
-    {
-      for (int v = 0; v < 256; v++)
-        out->hist[v] += hist[v];
-      sum_u += su;
-      sum_v += sv;
-      sum_y += sy;
-      n_chroma += nc;
-    }
+  // Each band counts into its own histogram and sums; merged below, in
+  // band order. Integer counts and sums, so the result does not depend on
+  // the split or the order: it is the serial loop's total exactly.
+  struct hg_pool *pool = vision_pool();
+  const unsigned bands = hg_pool_threads(pool);
+  StatsCtx ctx = {planes, stride, width, band_partials};
+  hg_pool_run(pool, stats_rows, &ctx, rows);
+  for (unsigned b = 0; b < bands; b++) {
+    const StatsPartial *p = &band_partials[b];
+    for (int v = 0; v < 256; v++)
+      out->hist[v] += p->hist[v];
+    sum_u += p->su;
+    sum_v += p->sv;
+    sum_y += p->sy;
+    n_chroma += p->nc;
   }
   out->samples = ((height + 1) / 2) * ((width + 1) / 2);
   out->chroma_samples = n_chroma;

@@ -1,6 +1,8 @@
 #include "effect_chain.h"
 #include "conv.h"
+#include "hg_pool.h"
 #include "point_opps.h"
+#include "vision_pool.h"
 #include <string.h>
 
 // Which of VideoFrame's three buffers currently holds the chain's state.
@@ -71,6 +73,22 @@ static bool lut_is_constant(const uint8_t lut[256], uint8_t *out) {
 // at work, so a touched plane goes straight from src to its LUT'd result in
 // dst without a separate copy-then-overwrite step first. Safe in-place too
 // (src == dst) since dst[i] only ever depends on src[i].
+typedef struct {
+  const uint8_t *src;
+  uint8_t *dst;
+  const uint8_t *lut;
+} LutCtx;
+
+// Bytes [begin, end) of the plane through the LUT: the body of what was a
+// `#pragma omp parallel for` over every byte, run through the pool over
+// the same bands.
+static void lut_bytes(void *arg, size_t begin, size_t end, unsigned band) {
+  const LutCtx *c = arg;
+  (void)band;
+  for (size_t i = begin; i < end; ++i)
+    c->dst[i] = c->lut[c->src[i]];
+}
+
 static void apply_lut_plane(const uint8_t *src, uint8_t *dst, size_t size,
                             const uint8_t lut[256]) {
   uint8_t constant;
@@ -78,10 +96,8 @@ static void apply_lut_plane(const uint8_t *src, uint8_t *dst, size_t size,
     memset(dst, constant, size);
     return;
   }
-#pragma omp parallel for
-  for (size_t i = 0; i < size; ++i) {
-    dst[i] = lut[src[i]];
-  }
+  LutCtx ctx = {src, dst, lut};
+  hg_pool_run(vision_pool(), lut_bytes, &ctx, size);
 }
 
 // Folds one consecutive run of point-op stages (grayscale/invert/threshold/

@@ -1,4 +1,6 @@
 #include "conv.h"
+#include "hg_pool.h"
+#include "vision_pool.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,9 +25,10 @@
 #define GS_NEON 1
 #endif
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+// The loops below used to be `#pragma omp parallel for`; each is now a
+// body function run through the pool (hg_pool.h) over the same bands
+// OpenMP's static schedule gave it, with the loop's own variables in a
+// context struct. vision_pool() may be NULL, which runs the body inline.
 
 /*
  * Sobel gradient magnitude for one pixel, given its 3x3 neighborhood.
@@ -156,36 +159,37 @@ static inline uint8_t sobel_at_clamped(const uint8_t *y_plane, size_t stride,
       clamped_sample(y_plane, stride, width, height, x + 1, y + 1), threshold);
 }
 
-void sobel_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
-                 uint32_t width, uint32_t height, const size_t stride_arr[3],
-                 uint8_t threshold) {
-  if (!src_planes[0] || !dst_planes[0])
-    return;
+typedef struct {
+  const uint8_t *raw_y;
+  uint8_t *out_y;
+  size_t stride;
+  uint32_t width;
+  uint8_t threshold;
+} SobelCtx;
 
-  const uint8_t *raw_y = src_planes[0];
-  uint8_t *out_y = dst_planes[0];
-  size_t stride = stride_arr[0];
+// Interior rows y = 1 + i for i in [begin, end): every pixel here has a
+// full 3x3 neighborhood, so read directly through pointers instead of
+// through clamped_sample's bounds checks. This is the hot loop -- every
+// pixel except a 1px frame border.
+//
+// raw_y is never written by this function (or anything else once the
+// producer has filled it), so overlapping reads of the same row by
+// adjacent bands -- row y+1 is both "row_below" for band N and "row_above"
+// for band N+1 -- are safe with no synchronization. That is the property
+// the raw/work split exists to buy.
+static void sobel_rows(void *arg, size_t begin, size_t end, unsigned band) {
+  const SobelCtx *c = arg;
+  const uint8_t *raw_y = c->raw_y;
+  uint8_t *out_y = c->out_y;
+  const size_t stride = c->stride;
+  const uint32_t width = c->width;
+  const uint8_t threshold = c->threshold;
+  (void)band;
 #if defined(GS_NEON)
   uint8x16_t threshold_vec = vdupq_n_u8(threshold);
 #endif
-
-  // Interior: every pixel here has a full 3x3 neighborhood, so read directly
-  // through pointers instead of through clamped_sample's bounds checks. This
-  // is the hot loop -- every pixel except a 1px frame border.
-  //
-  // raw_y is never written by this function (or anything else once the
-  // producer has filled it), so overlapping reads of the same row by
-  // adjacent thread chunks -- row y+1 is both "row_below" for chunk N and
-  // "row_above" for chunk N+1 -- are safe with no synchronization. That is
-  // the property the raw/work split exists to buy.
-  // OpenMP requires the loop directly under #pragma omp parallel for to be
-  // in canonical form: `var < loop-invariant`. `y + 1 < height`, though
-  // equivalent, puts the loop variable inside an expression on the
-  // left-hand side and is rejected at compile time once OpenMP is actually
-  // parsing it (as opposed to silently ignoring the pragma, which is what
-  // let this slip through before OpenMP was wired into the build).
-#pragma omp parallel for
-  for (uint32_t y = 1; y < height - 1; ++y) {
+  for (size_t i = begin; i < end; ++i) {
+    const uint32_t y = (uint32_t)i + 1;
     const uint8_t *row_above = raw_y + (size_t)(y - 1) * stride;
     const uint8_t *row = raw_y + (size_t)y * stride;
     const uint8_t *row_below = raw_y + (size_t)(y + 1) * stride;
@@ -220,6 +224,21 @@ void sobel_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3
     }
 #endif
   }
+}
+
+void sobel_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
+                 uint32_t width, uint32_t height, const size_t stride_arr[3],
+                 uint8_t threshold) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+
+  const uint8_t *raw_y = src_planes[0];
+  uint8_t *out_y = dst_planes[0];
+  size_t stride = stride_arr[0];
+
+  // The interior rows 1 .. height-2 (none when height < 3), banded.
+  SobelCtx ctx = {raw_y, out_y, stride, width, threshold};
+  hg_pool_run(vision_pool(), sobel_rows, &ctx, height > 2 ? height - 2 : 0);
 
   // Border: no full neighborhood exists past the frame edge. Replicate
   // rather than zero-pad -- zero-padding a bright edge would read as a false
@@ -379,12 +398,13 @@ static void blur_row_v(const uint8_t *r_m2, const uint8_t *r_m1,
 
 // --- Team-parallel blur -------------------------------------------------
 //
-// Everything below runs *inside* one `#pragma omp parallel` region per
-// gaussian_blur()/blur_luma_into() call, called by every thread of the
-// team, rather than opening a region per pass per plane. Under
-// OMP_WAIT_POLICY=passive each region start is a futex wake of the whole
-// team, and the old structure (one region per horizontal pass and one per
-// vertical pass, for each of three planes) paid that six times per blur.
+// Everything below runs *inside* one pool team (hg_pool_team, what used to
+// be one `#pragma omp parallel` region) per gaussian_blur()/blur_luma_into()
+// call, called by every thread of the team, rather than opening a region
+// per pass per plane. Each team start is a wake of the whole team (as it
+// was under OMP_WAIT_POLICY=passive), and the old structure (one region per
+// horizontal pass and one per vertical pass, for each of three planes) paid
+// that six times per blur.
 //
 // Each thread owns a contiguous band of output rows [y0, y1) and blurs it
 // in a single sweep: horizontal results go into a 5-row rolling window, and
@@ -392,11 +412,19 @@ static void blur_row_v(const uint8_t *r_m2, const uint8_t *r_m1,
 // is a few KB and stays in L1, where the old two-pass structure wrote the
 // whole horizontal result to memory and read it back.
 
+// One thread's view of the team: its index, the team's size, the pool the
+// barriers go through, and its private scratch rows.
+typedef struct {
+  struct hg_pool *pool;
+  uint32_t t, nt;
+  uint8_t *rows;
+} BlurThread;
+
 // Rows of `row_cap` bytes each thread needs: the 5-row rolling window, plus
 // the two rows just below its band (see blur_plane_team).
 static const uint32_t blur_rows_per_thread = 7;
 
-static uint8_t *blur_rows;    // team_size * blur_rows_per_thread rows
+static uint8_t *blur_rows;    // pool threads * blur_rows_per_thread rows
 static size_t blur_rows_cap;
 static uint8_t *halfres_scratch;  // one half-resolution plane
 static size_t halfres_scratch_cap;
@@ -418,30 +446,6 @@ static bool grow(uint8_t **buf, size_t *cap, size_t needed) {
   *buf = grown;
   *cap = needed;
   return true;
-}
-
-static int team_size(void) {
-#if defined(_OPENMP)
-  return omp_get_num_threads();
-#else
-  return 1;
-#endif
-}
-
-static int team_index(void) {
-#if defined(_OPENMP)
-  return omp_get_thread_num();
-#else
-  return 0;
-#endif
-}
-
-static int max_team_size(void) {
-#if defined(_OPENMP)
-  return omp_get_max_threads();
-#else
-  return 1;
-#endif
 }
 
 static inline uint32_t clamp_row(int64_t r, uint32_t height) {
@@ -466,15 +470,15 @@ static inline uint32_t clamp_row(int64_t r, uint32_t height) {
 //    and only rows at or past the one it is writing, so nothing it reads
 //    has been overwritten yet.
 //  - After the second: the next pass, or the caller, may read any row.
-static void blur_plane_team(const uint8_t *src, uint8_t *dst, uint32_t width,
-                            uint32_t height, size_t stride, uint8_t *rows,
-                            bool in_place) {
-  const uint32_t nt = (uint32_t)team_size();
-  const uint32_t t = (uint32_t)team_index();
+static void blur_plane_team(const BlurThread *th, const uint8_t *src,
+                            uint8_t *dst, uint32_t width, uint32_t height,
+                            size_t stride, bool in_place) {
+  const uint32_t nt = th->nt;
+  const uint32_t t = th->t;
   const uint32_t y0 = (uint32_t)((uint64_t)height * t / nt);
   const uint32_t y1 = (uint32_t)((uint64_t)height * (t + 1) / nt);
-  uint8_t *window = rows;            // 5 rows, row r lives in slot r % 5
-  uint8_t *below = rows + 5 * width; // rows y1 and y1 + 1
+  uint8_t *window = th->rows;            // 5 rows, row r lives in slot r % 5
+  uint8_t *below = th->rows + 5 * width; // rows y1 and y1 + 1
 
   if (y0 < y1) {
     for (uint32_t r = y0 >= 2 ? y0 - 2 : 0; r < y0; ++r)
@@ -486,9 +490,8 @@ static void blur_plane_team(const uint8_t *src, uint8_t *dst, uint32_t width,
   }
   // Only needed in place: with src and dst apart, nobody writes what the
   // others read.
-  if (in_place) {
-#pragma omp barrier
-  }
+  if (in_place)
+    hg_pool_barrier(th->pool);
 
   uint32_t next = y0; // next own row still to blur horizontally
   for (uint32_t y = y0; y < y1; ++y) {
@@ -505,7 +508,7 @@ static void blur_plane_team(const uint8_t *src, uint8_t *dst, uint32_t width,
     }
     blur_row_v(r[0], r[1], r[2], r[3], r[4], dst + (size_t)y * stride, width);
   }
-#pragma omp barrier
+  hg_pool_barrier(th->pool);
 }
 
 // `passes` repetitions of blur_plane_team(), from src (untouched unless it
@@ -516,21 +519,21 @@ static void blur_plane_team(const uint8_t *src, uint8_t *dst, uint32_t width,
 // barriers fewer per frame. Without scratch, every pass after the first
 // blurs dst in place (see blur_plane_team for why that is safe). The
 // arithmetic is the same either way, so is every output byte.
-static void blur_plane_repeated_team(const uint8_t *src, uint8_t *dst,
-                                     uint32_t width, uint32_t height,
-                                     size_t stride, uint32_t passes,
-                                     uint8_t *rows, uint8_t *scratch) {
+static void blur_plane_repeated_team(const BlurThread *th, const uint8_t *src,
+                                     uint8_t *dst, uint32_t width,
+                                     uint32_t height, size_t stride,
+                                     uint32_t passes, uint8_t *scratch) {
   if (!scratch) {
-    blur_plane_team(src, dst, width, height, stride, rows, src == dst);
+    blur_plane_team(th, src, dst, width, height, stride, src == dst);
     for (uint32_t p = 1; p < passes; ++p)
-      blur_plane_team(dst, dst, width, height, stride, rows, true);
+      blur_plane_team(th, dst, dst, width, height, stride, true);
     return;
   }
   const uint8_t *from = src;
   for (uint32_t p = 1; p <= passes; ++p) {
     // Pass p of `passes` writes dst when passes - p is even.
     uint8_t *to = ((passes - p) % 2 == 0) ? dst : scratch;
-    blur_plane_team(from, to, width, height, stride, rows, from == to);
+    blur_plane_team(th, from, to, width, height, stride, from == to);
     from = to;
   }
 }
@@ -553,11 +556,15 @@ static void blur_plane_repeated_team(const uint8_t *src, uint8_t *dst,
 // splitting this into two 2:1 passes the way the blur itself is separable
 // -- every output sample already needs exactly its own 4 input samples, so
 // an extra buffer round-trip would only add cost, not remove any.
-static void downsample_box2x2_team(const uint8_t *src, size_t src_stride,
-                                   uint32_t half_w, uint32_t half_h,
-                                   uint8_t *dst) {
-#pragma omp for
-  for (uint32_t y = 0; y < half_h; ++y) {
+//
+// The `omp for` this was ends in an implicit barrier; so does this, since
+// the blur that follows reads rows other threads wrote.
+static void downsample_box2x2_team(const BlurThread *th, const uint8_t *src,
+                                   size_t src_stride, uint32_t half_w,
+                                   uint32_t half_h, uint8_t *dst) {
+  size_t yb, ye;
+  hg_pool_band(half_h, th->nt, th->t, &yb, &ye);
+  for (uint32_t y = (uint32_t)yb; y < (uint32_t)ye; ++y) {
     const uint8_t *row0 = src + (size_t)(2 * y) * src_stride;
     const uint8_t *row1 = src + (size_t)(2 * y + 1) * src_stride;
     uint8_t *out_row = dst + (size_t)y * half_w;
@@ -581,6 +588,7 @@ static void downsample_box2x2_team(const uint8_t *src, size_t src_stride,
           (uint8_t)((row0[x0] + row0[x1] + row1[x0] + row1[x1] + 2) >> 2);
     }
   }
+  hg_pool_barrier(th->pool);
 }
 
 // One row of the 2x horizontal bilinear upsample below -- standalone so
@@ -630,20 +638,23 @@ static void upsample2x_row(const uint8_t *in, uint32_t half_w, uint8_t *out,
 // Mirrors the blur's own horizontal-then-vertical structure: expand
 // columns first (half_w -> width, one row at a time) into
 // upsample_scratch, then expand rows (half_h -> height) out of that into
-// dst. The implicit barrier at the end of each `omp for` is what lets the
-// vertical pass read rows another thread expanded.
-static void upsample_bilinear2x_team(const uint8_t *small, uint32_t half_w,
-                                     uint32_t half_h, uint8_t *dst,
-                                     uint32_t width, uint32_t height,
-                                     size_t dst_stride) {
-#pragma omp for
-  for (uint32_t y = 0; y < half_h; ++y) {
+// dst. The barrier after each pass (the implicit one each `omp for` had)
+// is what lets the vertical pass read rows another thread expanded, and
+// the caller read the finished plane.
+static void upsample_bilinear2x_team(const BlurThread *th, const uint8_t *small,
+                                     uint32_t half_w, uint32_t half_h,
+                                     uint8_t *dst, uint32_t width,
+                                     uint32_t height, size_t dst_stride) {
+  size_t yb, ye;
+  hg_pool_band(half_h, th->nt, th->t, &yb, &ye);
+  for (uint32_t y = (uint32_t)yb; y < (uint32_t)ye; ++y) {
     upsample2x_row(small + (size_t)y * half_w, half_w,
                    upsample_scratch + (size_t)y * width, width);
   }
+  hg_pool_barrier(th->pool);
 
-#pragma omp for
-  for (uint32_t y = 0; y < height; ++y) {
+  hg_pool_band(height, th->nt, th->t, &yb, &ye);
+  for (uint32_t y = (uint32_t)yb; y < (uint32_t)ye; ++y) {
     uint32_t k = y / 2;
     bool lean_down = (y % 2) == 0; // even output row leans toward row k-1
     uint32_t other =
@@ -663,6 +674,7 @@ static void upsample_bilinear2x_team(const uint8_t *small, uint32_t half_w,
       out_row[x] = (uint8_t)((3 * r_k[x] + r_other[x] + 2) >> 2);
     }
   }
+  hg_pool_barrier(th->pool);
 }
 
 // Below this many repeat passes, the fixed downsample/upsample cost isn't
@@ -677,23 +689,22 @@ static const uint32_t halfres_blur_pass_threshold = 4;
 // Team-wide: picks the full- or half-resolution path for one plane.
 // `halfres` is decided once per call by the caller (blur_prepare), so every
 // thread takes the same branch and reaches the same barriers.
-static void blur_plane_auto_team(const uint8_t *src, uint8_t *dst,
-                                 uint32_t width, uint32_t height,
-                                 size_t stride, uint32_t passes, bool halfres,
-                                 uint8_t *rows) {
+static void blur_plane_auto_team(const BlurThread *th, const uint8_t *src,
+                                 uint8_t *dst, uint32_t width, uint32_t height,
+                                 size_t stride, uint32_t passes, bool halfres) {
   if (!halfres) {
-    blur_plane_repeated_team(src, dst, width, height, stride, passes, rows,
+    blur_plane_repeated_team(th, src, dst, width, height, stride, passes,
                              passes > 1 ? pingpong_scratch : NULL);
     return;
   }
   uint32_t half_w = width / 2, half_h = height / 2;
-  downsample_box2x2_team(src, stride, half_w, half_h, halfres_scratch);
+  downsample_box2x2_team(th, src, stride, half_w, half_h, halfres_scratch);
   // halfres_scratch is tightly packed, so its own stride is half_w, and
   // blurring it in place is the same aliasing pass 2+ always relies on.
-  blur_plane_repeated_team(halfres_scratch, halfres_scratch, half_w, half_h,
-                           half_w, passes, rows, halfres_pingpong);
-  upsample_bilinear2x_team(halfres_scratch, half_w, half_h, dst, width, height,
-                           stride);
+  blur_plane_repeated_team(th, halfres_scratch, halfres_scratch, half_w, half_h,
+                           half_w, passes, halfres_pingpong);
+  upsample_bilinear2x_team(th, halfres_scratch, half_w, half_h, dst, width,
+                           height, stride);
 }
 
 // Sizes every scratch buffer the team will touch for planes up to
@@ -701,7 +712,7 @@ static void blur_plane_auto_team(const uint8_t *src, uint8_t *dst,
 // inside it would need its own synchronization). Returns false on
 // allocation failure; callers then leave dst untouched rather than crash.
 static bool blur_prepare(uint32_t width, uint32_t height, bool halfres) {
-  size_t team = (size_t)max_team_size();
+  size_t team = hg_pool_threads(vision_pool());
   if (!grow(&blur_rows, &blur_rows_cap,
             team * blur_rows_per_thread * (size_t)width))
     return false;
@@ -728,34 +739,71 @@ static bool use_halfres(uint32_t passes, uint32_t width, uint32_t height) {
   return passes >= halfres_blur_pass_threshold && width >= 2 && height >= 2;
 }
 
+// What one blur team works on: the planes, and the decisions made once
+// before the team starts so that every thread takes the same branches and
+// reaches the same barriers.
+typedef struct {
+  const uint8_t *const *src_planes;
+  uint8_t *const *dst_planes;
+  uint32_t width, height;
+  const size_t *stride;
+  uint32_t passes;
+  int nplanes;
+  bool halfres_y;
+} BlurJob;
+
+// This thread's view of the team (see BlurThread): its private scratch is
+// the slice of blur_rows at its index, as omp_get_thread_num() used to pick it.
+static BlurThread blur_thread(unsigned index, unsigned count, uint32_t width) {
+  BlurThread th;
+  th.pool = vision_pool();
+  th.t = index;
+  th.nt = count;
+  th.rows = blur_rows + (size_t)index * blur_rows_per_thread * (size_t)width;
+  return th;
+}
+
+// The body of blur_planes' team: every thread runs this once.
+static void blur_planes_team(void *arg, unsigned index, unsigned count) {
+  const BlurJob *j = arg;
+  const BlurThread th = blur_thread(index, count, j->width);
+  const uint32_t chroma_width = (uint32_t)j->stride[1];
+  blur_plane_auto_team(&th, j->src_planes[0], j->dst_planes[0], j->width,
+                       j->height, j->stride[0], j->passes, j->halfres_y);
+  for (int p = 1; p < j->nplanes; ++p) {
+    blur_plane_auto_team(&th, j->src_planes[p], j->dst_planes[p], chroma_width,
+                         j->height, j->stride[p], j->passes,
+                         use_halfres(j->passes, chroma_width, j->height));
+  }
+}
+
 // Blurs `nplanes` planes (Y, then U and V when nplanes == 3) inside one
-// parallel region. Plane 0 is width x height; planes 1 and 2 are chroma,
-// stride[1] wide (exactly the chroma width, no padding -- see vf_create).
+// team. Plane 0 is width x height; planes 1 and 2 are chroma, stride[1]
+// wide (exactly the chroma width, no padding -- see vf_create).
 static void blur_planes(const uint8_t *const src_planes[3],
                         uint8_t *const dst_planes[3], uint32_t width,
                         uint32_t height, const size_t stride[3],
                         uint32_t passes, int nplanes) {
   // The luma plane is the widest, so scratch sized for it fits chroma too.
   // Chroma is half as wide, so it can take the half-res path only when it
-  // is still at least 2px wide; checked per plane below, but every thread
-  // evaluates it identically.
+  // is still at least 2px wide; checked per plane in the team, but every
+  // thread evaluates it identically.
   bool halfres_y = use_halfres(passes, width, height);
   if (!blur_prepare(width, height, halfres_y))
     return;
 
-  const uint32_t chroma_width = (uint32_t)stride[1];
-#pragma omp parallel
-  {
-    uint8_t *rows = blur_rows + (size_t)team_index() * blur_rows_per_thread *
-                                    (size_t)width;
-    blur_plane_auto_team(src_planes[0], dst_planes[0], width, height,
-                         stride[0], passes, halfres_y, rows);
-    for (int p = 1; p < nplanes; ++p) {
-      blur_plane_auto_team(src_planes[p], dst_planes[p], chroma_width, height,
-                           stride[p], passes,
-                           use_halfres(passes, chroma_width, height), rows);
-    }
-  }
+  BlurJob job = {src_planes, dst_planes, width, height, stride,
+                 passes,     nplanes,    halfres_y};
+  hg_pool_team(vision_pool(), blur_planes_team, &job);
+}
+
+// The body of blur_luma_into's team.
+static void blur_luma_team(void *arg, unsigned index, unsigned count) {
+  const BlurJob *j = arg;
+  const BlurThread th = blur_thread(index, count, j->width);
+  blur_plane_repeated_team(&th, j->src_planes[0], j->dst_planes[0], j->width,
+                           j->height, j->stride[0], j->passes,
+                           j->passes > 1 ? pingpong_scratch : NULL);
 }
 
 // Full-resolution blur of one plane into `dst` (stride-spaced), for the
@@ -765,13 +813,11 @@ static bool blur_luma_into(const uint8_t *src, uint8_t *dst, uint32_t width,
                            uint32_t height, size_t stride, uint32_t passes) {
   if (!blur_prepare(width, height, false))
     return false;
-#pragma omp parallel
-  {
-    uint8_t *rows = blur_rows + (size_t)team_index() * blur_rows_per_thread *
-                                    (size_t)width;
-    blur_plane_repeated_team(src, dst, width, height, stride, passes, rows,
-                             passes > 1 ? pingpong_scratch : NULL);
-  }
+  const uint8_t *src_planes[1] = {src};
+  uint8_t *dst_planes[1] = {dst};
+  BlurJob job = {src_planes, dst_planes, width, height, &stride,
+                 passes,     1,          false};
+  hg_pool_team(vision_pool(), blur_luma_team, &job);
   return true;
 }
 
@@ -889,53 +935,25 @@ static inline bool crosses_zero(int16_t a, int16_t b, int32_t threshold) {
   return jump >= threshold;
 }
 
-void log_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
-               uint32_t width, uint32_t height, const size_t stride_arr[3],
-               uint8_t strength, uint8_t threshold) {
-  if (!src_planes[0] || !dst_planes[0])
-    return;
+// What log_edges' two banded stages read besides the file-level scratch.
+typedef struct {
+  uint8_t *out_y;
+  size_t stride;
+  uint32_t width, height;
+  uint8_t threshold;
+} LogCtx;
 
-  const size_t stride = stride_arr[0];
-  const size_t pixels = (size_t)width * height;
-
-  // The blur below writes through `stride`, but log_blurred is allocated
-  // tightly packed at width*height. Those agree only when stride == width,
-  // which is how vf_create lays out the luma plane -- but relying on that
-  // silently would corrupt memory the day it stops being true, so require
-  // it explicitly, before anything is written.
-  if (stride != (size_t)width)
-    return;
-
-  if (log_blurred_cap < pixels) {
-    uint8_t *grown = realloc(log_blurred, pixels);
-    if (!grown)
-      return; // leave dst untouched rather than crash, as the blur does
-    log_blurred = grown;
-    log_blurred_cap = pixels;
-  }
-  if (log_response_cap < pixels) {
-    int16_t *grown = realloc(log_response, pixels * sizeof *log_response);
-    if (!grown)
-      return;
-    log_response = grown;
-    log_response_cap = pixels;
-  }
-
-  // Stage 1: Gaussian. 0 and 1 both mean a single pass, matching
-  // blur_strength's documented behaviour so the two knobs read the same
-  // way. The blurred plane is tightly packed (width-spaced, no stride
-  // padding) since it never leaves this function.
-  const uint32_t passes = strength == 0 ? 1 : strength;
-  if (!blur_luma_into(src_planes[0], log_blurred, width, height, stride,
-                      passes))
-    return;
-
-  // Stage 2: Laplacian over the blurred plane, into a signed buffer.
-  // Borders replicate rather than zero-pad, for the same reason Sobel's do:
-  // zero-padding manufactures a hard response along the frame edge that
-  // isn't in the scene.
-#pragma omp parallel for
-  for (uint32_t y = 0; y < height; ++y) {
+// Stage 2 (rows [begin, end)): Laplacian over the blurred plane, into a
+// signed buffer. Borders replicate rather than zero-pad, for the same
+// reason Sobel's do: zero-padding manufactures a hard response along the
+// frame edge that isn't in the scene.
+static void log_laplacian_rows(void *arg, size_t begin, size_t end,
+                               unsigned band) {
+  const LogCtx *c = arg;
+  const uint32_t width = c->width, height = c->height;
+  (void)band;
+  for (size_t i = begin; i < end; ++i) {
+    const uint32_t y = (uint32_t)i;
     const uint32_t y_up = y == 0 ? 0 : y - 1;
     const uint32_t y_dn = y + 1 >= height ? height - 1 : y + 1;
     const uint8_t *row_up = log_blurred + (size_t)y_up * width;
@@ -978,14 +996,23 @@ void log_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
       out[x] = laplacian4(row_up[x], row[x_l], row[x], row[x_r], row_dn[x]);
     }
   }
+}
 
-  // Stage 3: mark zero-crossings. Each pixel is compared against its right
-  // and lower neighbour only -- checking all four would mark both sides of
-  // every crossing, doubling every contour's width and losing the
-  // thin-line property that is the reason to use this operator at all.
-  uint8_t *out_y = dst_planes[0];
-#pragma omp parallel for
-  for (uint32_t y = 0; y < height; ++y) {
+// Stage 3 (rows [begin, end)): mark zero-crossings. Each pixel is compared
+// against its right and lower neighbour only -- checking all four would
+// mark both sides of every crossing, doubling every contour's width and
+// losing the thin-line property that is the reason to use this operator at
+// all.
+static void log_crossing_rows(void *arg, size_t begin, size_t end,
+                              unsigned band) {
+  const LogCtx *c = arg;
+  const uint32_t width = c->width, height = c->height;
+  const size_t stride = c->stride;
+  uint8_t *out_y = c->out_y;
+  const uint8_t threshold = c->threshold;
+  (void)band;
+  for (size_t i = begin; i < end; ++i) {
+    const uint32_t y = (uint32_t)i;
     const int16_t *resp = log_response + (size_t)y * width;
     const int16_t *resp_dn =
         log_response + (size_t)(y + 1 >= height ? y : y + 1) * width;
@@ -1021,6 +1048,54 @@ void log_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
       out_row[x] = edge ? 255 : 0;
     }
   }
+}
+
+void log_edges(const uint8_t *const src_planes[3], uint8_t *const dst_planes[3],
+               uint32_t width, uint32_t height, const size_t stride_arr[3],
+               uint8_t strength, uint8_t threshold) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+
+  const size_t stride = stride_arr[0];
+  const size_t pixels = (size_t)width * height;
+
+  // The blur below writes through `stride`, but log_blurred is allocated
+  // tightly packed at width*height. Those agree only when stride == width,
+  // which is how vf_create lays out the luma plane -- but relying on that
+  // silently would corrupt memory the day it stops being true, so require
+  // it explicitly, before anything is written.
+  if (stride != (size_t)width)
+    return;
+
+  if (log_blurred_cap < pixels) {
+    uint8_t *grown = realloc(log_blurred, pixels);
+    if (!grown)
+      return; // leave dst untouched rather than crash, as the blur does
+    log_blurred = grown;
+    log_blurred_cap = pixels;
+  }
+  if (log_response_cap < pixels) {
+    int16_t *grown = realloc(log_response, pixels * sizeof *log_response);
+    if (!grown)
+      return;
+    log_response = grown;
+    log_response_cap = pixels;
+  }
+
+  // Stage 1: Gaussian. 0 and 1 both mean a single pass, matching
+  // blur_strength's documented behaviour so the two knobs read the same
+  // way. The blurred plane is tightly packed (width-spaced, no stride
+  // padding) since it never leaves this function.
+  const uint32_t passes = strength == 0 ? 1 : strength;
+  if (!blur_luma_into(src_planes[0], log_blurred, width, height, stride,
+                      passes))
+    return;
+
+  // Stages 2 and 3, each banded over the rows (see the two bodies above).
+  LogCtx ctx = {dst_planes[0], stride, width, height, threshold};
+  struct hg_pool *pool = vision_pool();
+  hg_pool_run(pool, log_laplacian_rows, &ctx, height);
+  hg_pool_run(pool, log_crossing_rows, &ctx, height);
 
   // Same as sobel_edges: the result is a luma-only edge map, so neutralize
   // chroma rather than carrying through colour that no longer corresponds
@@ -1150,73 +1225,33 @@ static bool canny_grow(void **buf, size_t *cap, size_t needed) {
   return true;
 }
 
-void canny_edges(const uint8_t *const src_planes[3],
-                 uint8_t *const dst_planes[3], uint32_t width, uint32_t height,
-                 const size_t stride_arr[3], uint8_t strength, uint8_t low,
-                 uint8_t high) {
-  if (!src_planes[0] || !dst_planes[0])
-    return;
-  if (width < 3 || height < 3)
-    return; // no interior pixel has a full 3x3 neighborhood
+// What canny_edges' three banded stages read besides the file-level
+// scratch. The interior stages run over rows y = 1 + i, i in [0, height-2).
+typedef struct {
+  uint8_t *out_y;
+  uint32_t width, height;
+  uint8_t strong_at, weak_at; // low <= high, swapped by the caller
+} CannyCtx;
 
-  const size_t stride = stride_arr[0];
-  const size_t pixels = (size_t)width * height;
-
-  // The scratch planes are tightly packed at width*height, which only
-  // matches what blur_plane_repeated writes when stride == width. That is
-  // how vf_create lays out the luma plane, but relying on it silently
-  // would corrupt memory the day it stops being true. Same guard as
-  // log_edges.
-  if (stride != (size_t)width)
-    return;
-
-  if (!canny_grow((void **)&canny_blurred, &canny_blurred_cap, pixels) ||
-      !canny_grow((void **)&canny_mag, &canny_mag_cap, pixels) ||
-      !canny_grow((void **)&canny_dir, &canny_dir_cap, pixels) ||
-      !canny_grow((void **)&canny_row_seeds, &canny_row_seeds_cap,
-                  (size_t)height * sizeof *canny_row_seeds) ||
-      !canny_grow((void **)&canny_stack, &canny_stack_cap,
-                  pixels * sizeof *canny_stack))
-    return; // leave dst untouched rather than crash, as the blur does
-
-  // Callers may pass them in either order; swapping is friendlier than
-  // producing a silently empty edge map.
-  if (low > high) {
-    uint8_t t = low;
-    low = high;
-    high = t;
-  }
-
-  // --- Stage 1: Gaussian ------------------------------------------------
-  //
-  // Mandatory, and at least one pass even when strength is 0 -- this is
-  // not a quality knob, it is what bounds the cost of stage 4.
-  //
-  // Measured at 1280x720: hysteresis on unsmoothed noise takes 10.81ms,
-  // versus 0.48ms on structured content -- a 23x swing, worst exactly
-  // when conditions are worst, since backscatter in murky water IS the
-  // noise case. One blur pass costs 0.07ms and drops that 10.81ms to
-  // 0.51ms. Skipping it to save 0.07ms risks 10ms.
-  const uint32_t passes = strength == 0 ? 1 : strength;
-  if (!blur_luma_into(src_planes[0], canny_blurred, width, height, stride,
-                      passes))
-    return;
-
-  // --- Stage 2: gradient magnitude and direction ------------------------
-  //
-  // Kept as its own pass, writing mag/dir to memory, rather than fused
-  // into stage 3. Fusing keeps a 3-row window in cache but recomputes
-  // every gradient up to three times, and measurement says that costs
-  // more than the memory traffic it saves: 0.68ms for two passes versus
-  // 0.94ms fused, at byte-identical output.
-  //
-  // The loop below writes every interior magnitude, so only the 1px border
-  // needs clearing -- NMS reads it as the neighbour of an interior pixel.
-  // Direction needs no clearing at all: NMS reads it only for interior
-  // pixels, all of which this loop writes.
-  clear_border(canny_mag, width, height);
-#pragma omp parallel for
-  for (uint32_t y = 1; y < height - 1; ++y) {
+// --- Stage 2: gradient magnitude and direction ------------------------
+//
+// Kept as its own pass, writing mag/dir to memory, rather than fused
+// into stage 3. Fusing keeps a 3-row window in cache but recomputes
+// every gradient up to three times, and measurement says that costs
+// more than the memory traffic it saves: 0.68ms for two passes versus
+// 0.94ms fused, at byte-identical output.
+//
+// The loop below writes every interior magnitude, so only the 1px border
+// needs clearing (the caller does, before this runs) -- NMS reads it as
+// the neighbour of an interior pixel. Direction needs no clearing at all:
+// NMS reads it only for interior pixels, all of which this loop writes.
+static void canny_gradient_rows(void *arg, size_t begin, size_t end,
+                                unsigned band) {
+  const CannyCtx *c = arg;
+  const uint32_t width = c->width;
+  (void)band;
+  for (size_t i = begin; i < end; ++i) {
+    const uint32_t y = (uint32_t)i + 1;
     const uint8_t *above = canny_blurred + (size_t)(y - 1) * width;
     const uint8_t *row = canny_blurred + (size_t)y * width;
     const uint8_t *below = canny_blurred + (size_t)(y + 1) * width;
@@ -1259,29 +1294,32 @@ void canny_edges(const uint8_t *const src_planes[3],
       canny_dir[(size_t)y * width + x] = quantize_direction(gx, gy);
     }
   }
+}
 
-  // --- Stage 3: non-maximum suppression, labelled ------------------------
-  //
-  // Keep a pixel only if it is a local maximum along the gradient
-  // direction -- i.e. across the edge, not along it. This is what thins a
-  // Sobel-style ridge several pixels wide down to a single pixel.
-  //
-  // What is kept is written straight into the output as a label for stage
-  // 4: 255 at or above `high` (an edge outright: a seed), 1 at or above
-  // `low` (a candidate, an edge only if connected to one), 0 otherwise. A
-  // zero threshold labels nothing, as before: high == 0 seeds nothing and
-  // low == 0 extends nothing. Each row's seeds are collected as it is
-  // labelled, into that row's own region of the stack (a row has at most
-  // `width` of them), so finding them needs no serial pass over the frame.
-  //
-  // The border must read as 0: it then never seeds or extends a contour,
-  // which is what lets stage 4 skip bounds checks.
-  uint8_t *out_y = dst_planes[0];
-  const uint8_t strong_at = high, weak_at = low; // low <= high, swapped above
-  clear_border(out_y, width, height);
-  canny_row_seeds[0] = canny_row_seeds[height - 1] = 0;
-#pragma omp parallel for
-  for (uint32_t y = 1; y < height - 1; ++y) {
+// --- Stage 3: non-maximum suppression, labelled ------------------------
+//
+// Keep a pixel only if it is a local maximum along the gradient
+// direction -- i.e. across the edge, not along it. This is what thins a
+// Sobel-style ridge several pixels wide down to a single pixel.
+//
+// What is kept is written straight into the output as a label for stage
+// 4: 255 at or above `high` (an edge outright: a seed), 1 at or above
+// `low` (a candidate, an edge only if connected to one), 0 otherwise. A
+// zero threshold labels nothing, as before: high == 0 seeds nothing and
+// low == 0 extends nothing. Each row's seeds are collected as it is
+// labelled, into that row's own region of the stack (a row has at most
+// `width` of them), so finding them needs no serial pass over the frame.
+//
+// The border must read as 0 (the caller clears it): it then never seeds
+// or extends a contour, which is what lets stage 4 skip bounds checks.
+static void canny_nms_rows(void *arg, size_t begin, size_t end, unsigned band) {
+  const CannyCtx *c = arg;
+  const uint32_t width = c->width;
+  uint8_t *out_y = c->out_y;
+  const uint8_t strong_at = c->strong_at, weak_at = c->weak_at;
+  (void)band;
+  for (size_t i = begin; i < end; ++i) {
+    const uint32_t y = (uint32_t)i + 1;
     const uint8_t *above = canny_mag + (size_t)(y - 1) * width;
     const uint8_t *row = canny_mag + (size_t)y * width;
     const uint8_t *below = canny_mag + (size_t)(y + 1) * width;
@@ -1371,6 +1409,87 @@ void canny_edges(const uint8_t *const src_planes[3],
         seeds[n++] = (uint32_t)((size_t)y * width + sx);
     canny_row_seeds[y] = n;
   }
+}
+
+// After stage 4: candidates no seed reached are not edges: 1 -> 0, 255
+// stays. Rows [begin, end) of the whole plane.
+static void canny_resolve_rows(void *arg, size_t begin, size_t end,
+                               unsigned band) {
+  const CannyCtx *c = arg;
+  const uint32_t width = c->width;
+  (void)band;
+  for (size_t y = begin; y < end; ++y) {
+    uint8_t *out = c->out_y + y * width;
+    for (uint32_t x = 0; x < width; ++x)
+      out[x] = (uint8_t)(0u - (uint32_t)(out[x] >> 7));
+  }
+}
+
+void canny_edges(const uint8_t *const src_planes[3],
+                 uint8_t *const dst_planes[3], uint32_t width, uint32_t height,
+                 const size_t stride_arr[3], uint8_t strength, uint8_t low,
+                 uint8_t high) {
+  if (!src_planes[0] || !dst_planes[0])
+    return;
+  if (width < 3 || height < 3)
+    return; // no interior pixel has a full 3x3 neighborhood
+
+  const size_t stride = stride_arr[0];
+  const size_t pixels = (size_t)width * height;
+
+  // The scratch planes are tightly packed at width*height, which only
+  // matches what blur_plane_repeated writes when stride == width. That is
+  // how vf_create lays out the luma plane, but relying on it silently
+  // would corrupt memory the day it stops being true. Same guard as
+  // log_edges.
+  if (stride != (size_t)width)
+    return;
+
+  if (!canny_grow((void **)&canny_blurred, &canny_blurred_cap, pixels) ||
+      !canny_grow((void **)&canny_mag, &canny_mag_cap, pixels) ||
+      !canny_grow((void **)&canny_dir, &canny_dir_cap, pixels) ||
+      !canny_grow((void **)&canny_row_seeds, &canny_row_seeds_cap,
+                  (size_t)height * sizeof *canny_row_seeds) ||
+      !canny_grow((void **)&canny_stack, &canny_stack_cap,
+                  pixels * sizeof *canny_stack))
+    return; // leave dst untouched rather than crash, as the blur does
+
+  // Callers may pass them in either order; swapping is friendlier than
+  // producing a silently empty edge map.
+  if (low > high) {
+    uint8_t t = low;
+    low = high;
+    high = t;
+  }
+
+  // --- Stage 1: Gaussian ------------------------------------------------
+  //
+  // Mandatory, and at least one pass even when strength is 0 -- this is
+  // not a quality knob, it is what bounds the cost of stage 4.
+  //
+  // Measured at 1280x720: hysteresis on unsmoothed noise takes 10.81ms,
+  // versus 0.48ms on structured content -- a 23x swing, worst exactly
+  // when conditions are worst, since backscatter in murky water IS the
+  // noise case. One blur pass costs 0.07ms and drops that 10.81ms to
+  // 0.51ms. Skipping it to save 0.07ms risks 10ms.
+  const uint32_t passes = strength == 0 ? 1 : strength;
+  if (!blur_luma_into(src_planes[0], canny_blurred, width, height, stride,
+                      passes))
+    return;
+
+  struct hg_pool *pool = vision_pool();
+  uint8_t *out_y = dst_planes[0];
+  CannyCtx ctx = {out_y, width, height, high, low};
+  const size_t interior = height - 2; // height >= 3, checked above
+
+  // Stage 2 (see canny_gradient_rows), over the interior rows.
+  clear_border(canny_mag, width, height);
+  hg_pool_run(pool, canny_gradient_rows, &ctx, interior);
+
+  // Stage 3 (see canny_nms_rows), over the interior rows.
+  clear_border(out_y, width, height);
+  canny_row_seeds[0] = canny_row_seeds[height - 1] = 0;
+  hg_pool_run(pool, canny_nms_rows, &ctx, interior);
 
   // --- Stage 4: hysteresis ----------------------------------------------
   //
@@ -1413,13 +1532,8 @@ void canny_edges(const uint8_t *const src_planes[3],
     }
   }
 
-  // Candidates no seed reached are not edges: 1 -> 0, 255 stays.
-#pragma omp parallel for
-  for (uint32_t y = 0; y < height; ++y) {
-    uint8_t *out = out_y + (size_t)y * width;
-    for (uint32_t x = 0; x < width; ++x)
-      out[x] = (uint8_t)(0u - (uint32_t)(out[x] >> 7));
-  }
+  // Candidates no seed reached are not edges (see canny_resolve_rows).
+  hg_pool_run(pool, canny_resolve_rows, &ctx, height);
 
   // Luma-only edge map, so neutralize chroma -- same contract as
   // sobel_edges and log_edges.

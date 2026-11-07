@@ -1,4 +1,6 @@
 #include "point_opps.h"
+#include "hg_pool.h"
+#include "vision_pool.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -15,17 +17,34 @@
 #define GS_NEON_ARM32 1
 #endif
 
-void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
-                           uint32_t height, size_t stride) {
-  if (!src || !dst)
-    return;
+// The three loops below were `#pragma omp parallel for`, the first with
+// `reduction(min : r_min) reduction(max : r_max)`; each is now a body run
+// through the pool (hg_pool.h) over the same row bands. The reduction
+// becomes one min and one max per band, combined in band order afterwards:
+// min and max of bytes do not depend on the order they are taken in, so
+// the result is the serial loop's whatever the band count.
+typedef struct {
+  const uint8_t *src;
+  uint8_t *dst;
+  uint32_t width;
+  size_t stride;
+  const uint8_t *lut;
+  uint8_t band_min[HG_POOL_MAX_THREADS];
+  uint8_t band_max[HG_POOL_MAX_THREADS];
+} ContrastCtx;
 
+// The luma range of rows [begin, end), into this band's slot.
+static void contrast_scan_rows(void *arg, size_t begin, size_t end,
+                               unsigned band) {
+  ContrastCtx *c = arg;
+  const uint8_t *src = c->src;
+  const uint32_t width = c->width;
+  const size_t stride = c->stride;
   uint8_t r_min = y_plain_max_jpeg;
   uint8_t r_max = y_plain_min_jpeg;
 
 #if defined(GS_NEON_AARCH64)
-#pragma omp parallel for reduction(min : r_min) reduction(max : r_max)
-  for (uint32_t y = 0; y < height; ++y) {
+  for (size_t y = begin; y < end; ++y) {
     const uint8_t *row = src + (y * stride);
     uint8x16_t v_min = vdupq_n_u8(y_plain_max_jpeg);
     uint8x16_t v_max = vdupq_n_u8(y_plain_min_jpeg);
@@ -55,8 +74,7 @@ void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
     }
   }
 #elif defined(GS_NEON_ARM32)
-#pragma omp parallel for reduction(min : r_min) reduction(max : r_max)
-  for (uint32_t y = 0; y < height; ++y) {
+  for (size_t y = begin; y < end; ++y) {
     const uint8_t *row = src + (y * stride);
     uint8x16_t v_min = vdupq_n_u8(y_plain_max_jpeg);
     uint8x16_t v_max = vdupq_n_u8(y_plain_min_jpeg);
@@ -101,8 +119,7 @@ void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
     }
   }
 #else
-#pragma omp parallel for reduction(min : r_min) reduction(max : r_max)
-  for (uint32_t y = 0; y < height; ++y) {
+  for (size_t y = begin; y < end; ++y) {
     const uint8_t *row = src + (y * stride);
     for (uint32_t x = 0; x < width; ++x) {
       if (row[x] < r_min)
@@ -112,6 +129,62 @@ void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
     }
   }
 #endif
+  c->band_min[band] = r_min;
+  c->band_max[band] = r_max;
+}
+
+// Rows [begin, end) of src copied to dst unchanged.
+static void contrast_copy_rows(void *arg, size_t begin, size_t end,
+                               unsigned band) {
+  const ContrastCtx *c = arg;
+  (void)band;
+  for (size_t y = begin; y < end; ++y)
+    memcpy(c->dst + y * c->stride, c->src + y * c->stride, c->width);
+}
+
+// Rows [begin, end) of src through the LUT into dst.
+//
+// NOTE: Applying a 256-byte LUT across 16-byte registers is extremely complex
+// and often slower than a standard memory fetch due to L1 cache efficiency.
+static void contrast_lut_rows(void *arg, size_t begin, size_t end,
+                              unsigned band) {
+  const ContrastCtx *c = arg;
+  const uint8_t *lut = c->lut;
+  const uint32_t width = c->width;
+  (void)band;
+  for (size_t y = begin; y < end; ++y) {
+    const uint8_t *src_row = c->src + y * c->stride;
+    uint8_t *dst_row = c->dst + y * c->stride;
+    for (uint32_t x = 0; x < width; ++x) {
+      dst_row[x] = lut[src_row[x]];
+    }
+  }
+}
+
+void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
+                           uint32_t height, size_t stride) {
+  if (!src || !dst)
+    return;
+
+  struct hg_pool *pool = vision_pool();
+  const unsigned bands = hg_pool_threads(pool);
+  ContrastCtx ctx;
+  ctx.src = src;
+  ctx.dst = dst;
+  ctx.width = width;
+  ctx.stride = stride;
+  ctx.lut = NULL;
+
+  // The reduction: every band's range, then the whole frame's, in band order.
+  hg_pool_run(pool, contrast_scan_rows, &ctx, height);
+  uint8_t r_min = y_plain_max_jpeg;
+  uint8_t r_max = y_plain_min_jpeg;
+  for (unsigned b = 0; b < bands; ++b) {
+    if (ctx.band_min[b] < r_min)
+      r_min = ctx.band_min[b];
+    if (ctx.band_max[b] > r_max)
+      r_max = ctx.band_max[b];
+  }
 
   if (r_max == r_min) {
     // No dynamic range to stretch: pass src through unchanged. Needed even
@@ -120,12 +193,8 @@ void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
     // pointing at raw/spare rather than dst's own contents), skipping the
     // copy here would leave dst holding stale data from a previous frame
     // instead of this one.
-    if (src != dst) {
-#pragma omp parallel for
-      for (uint32_t y = 0; y < height; ++y) {
-        memcpy(dst + (size_t)y * stride, src + (size_t)y * stride, width);
-      }
-    }
+    if (src != dst)
+      hg_pool_run(pool, contrast_copy_rows, &ctx, height);
     return;
   }
 
@@ -134,7 +203,7 @@ void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
   uint8_t lut[256];
 
   // Serial on purpose: 256 iterations are far less work than waking the
-  // OpenMP team to share them.
+  // team to share them.
   for (int i = 0; i <= y_plain_max_jpeg; ++i) {
     float val = (i - r_min) * scale;
     if (val > (float)y_plain_max_jpeg)
@@ -144,14 +213,6 @@ void gs_contrast_normalize(const uint8_t *src, uint8_t *dst, uint32_t width,
     lut[i] = (uint8_t)(val + 0.5f);
   }
 
-// NOTE: Applying a 256-byte LUT across 16-byte registers is extremely complex
-// and often slower than a standard memory fetch due to L1 cache efficiency.
-#pragma omp parallel for
-  for (uint32_t y = 0; y < height; ++y) {
-    const uint8_t *src_row = src + (size_t)y * stride;
-    uint8_t *dst_row = dst + (size_t)y * stride;
-    for (uint32_t x = 0; x < width; ++x) {
-      dst_row[x] = lut[src_row[x]];
-    }
-  }
+  ctx.lut = lut;
+  hg_pool_run(pool, contrast_lut_rows, &ctx, height);
 }

@@ -23,7 +23,6 @@
 #
 # Everything is overridable from the command line or environment: CC,
 # HOSTCC, CFLAGS, CPPFLAGS, LDFLAGS, LDLIBS, BUILDDIR, PKG_CONFIG, and
-#   OPENMP=0|1                   default: on if $(CC) can build with it
 #   NEON=0|1                     default: on (matters on 32-bit ARM only)
 #   TURBOJPEG_CFLAGS/_LIBS       default: pkg-config, else -lturbojpeg
 #   TIMEOUT                      default: coreutils timeout, where present
@@ -70,6 +69,10 @@ TESTDIR := $(BUILDDIR)/tests-$(BUILD)
 # legacy/. Each directory's tests sit in its tests/.
 LIBDIRS := lib/common lib/vision lib/camera lib/proc lib/net lib/video lib/hg
 LEGACYDIRS := legacy/eeye legacy/hellion
+
+# lib/vision's operators run their loops on lib/common's thread pool
+# (lib/vision/vision.mk: VISION_SRC, VISION_POOL_SRC, the pool's suite).
+include lib/vision/vision.mk
 LIB_CPPFLAGS := $(addprefix -I,$(LIBDIRS))
 LEGACY_CPPFLAGS := $(LIB_CPPFLAGS) $(addprefix -I,$(LEGACYDIRS))
 
@@ -79,39 +82,9 @@ CFLAGS ?= $(OPTFLAGS)
 EE_CPPFLAGS := -D_FILE_OFFSET_BITS=64
 EE_CFLAGS := -std=gnu99 -Wall -Wextra -pedantic -pthread
 
-# OpenMP: the #pragma omp loops in conv.c/point_opps.c are written to be
-# race-free, but without -fopenmp every one of them is silently ignored and
-# runs single-threaded. Probed with omp.h included, since clang can accept
-# -fopenmp yet have no OpenMP runtime installed to go with it.
 # (HASH: make 4.3 changed how "#" inside $(shell ...) is escaped; a
 # variable holding one reads the same in every version.)
 HASH := \#
-# The probe must link into a real file: zig cc (and clang behind it) skips
-# the link when the output is /dev/null, so a compiler with no OpenMP
-# runtime passed the old probe and then failed at the real link with
-# undefined __kmpc_* symbols. Tried plain first (gcc adds -lgomp itself),
-# then with -lomp (clang/zig with LLVM's libomp installed, which neither
-# adds on its own). OPENMP_LIBS carries what the link needs.
-OMP_PROBE_SRC := $(HASH)include <omp.h>\nint main(void) { return omp_get_max_threads() < 1; }\n
-OMP_PROBE_BIN := $(BUILDDIR)/.omp-probe
-ifeq ($(origin OPENMP),undefined)
-OPENMP_LIBS := $(shell mkdir -p $(BUILDDIR); \
-  if printf '$(OMP_PROBE_SRC)' | $(CC) -fopenmp -x c - -o $(OMP_PROBE_BIN) >/dev/null 2>&1; then echo; \
-  elif printf '$(OMP_PROBE_SRC)' | $(CC) -fopenmp -x c - -o $(OMP_PROBE_BIN) -lomp >/dev/null 2>&1; then echo -lomp; \
-  else echo none; fi; rm -f $(OMP_PROBE_BIN))
-ifeq ($(OPENMP_LIBS),none)
-OPENMP := 0
-OPENMP_LIBS :=
-else
-OPENMP := 1
-endif
-endif
-ifeq ($(OPENMP),1)
-EE_CFLAGS += -fopenmp
-else
-$(warning OpenMP not available: conv.c/point_opps.c will build, but their \
-  loops will run single-threaded.)
-endif
 
 # NEON on 32-bit ARM. conv.c and point_opps.c have NEON paths, compiled in
 # only when the compiler defines __ARM_NEON -- and the compilers 32-bit Pi
@@ -148,7 +121,7 @@ endif
 
 # -lrt: clock_gettime() lived in librt until glibc 2.17; on anything newer
 # it's an empty stub, so linking it unconditionally costs nothing.
-EE_LDLIBS := $(TURBOJPEG_LIBS) $(OPENMP_LIBS) -pthread -lrt -lm
+EE_LDLIBS := $(TURBOJPEG_LIBS) -pthread -lrt -lm
 
 ALL_CPPFLAGS = $(EE_CPPFLAGS) $(TURBOJPEG_CFLAGS) $(CPPFLAGS)
 ALL_CFLAGS = $(EE_CFLAGS) $(CFLAGS)
@@ -172,12 +145,7 @@ SRC := \
 	lib/camera/v4l2_out.c \
 	lib/camera/virtual_cam.c \
 	lib/proc/child_proc.c \
-	lib/vision/auto_vis.c \
-	lib/vision/conv.c \
-	lib/vision/effect_chain.c \
-	lib/vision/img_stats.c \
-	lib/vision/point_opps.c \
-	lib/vision/video_frame.c
+	$(VISION_SRC)
 
 # hellion: its own glue, plus the modules it shares with eeye (the frame
 # bus from legacy/eeye/; child processes, the two camera inputs, the
@@ -259,7 +227,7 @@ NET_TESTS := http
 EEYE_TESTS := config ring_buffer health recorder fbus
 HELLION_TESTS := hellion
 HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd
-TESTS := $(VISION_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
+TESTS := $(VISION_TESTS) $(COMMON_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
 	$(EEYE_TESTS) $(HELLION_TESTS) $(HG_TESTS)
 
 # Extra translation units each test needs beyond the one it includes:
@@ -271,8 +239,8 @@ test_jpeg_framing_SRC := lib/camera/camera_ctrl.c lib/proc/child_proc.c \
 	lib/camera/jpeg_decode.c lib/vision/video_frame.c
 test_negotiation_SRC := lib/camera/jpeg_decode.c lib/vision/video_frame.c
 test_jpeg_decode_SRC := lib/camera/jpeg_decode.c lib/vision/video_frame.c
-test_log_edges_SRC := lib/vision/conv.c lib/vision/video_frame.c
-test_canny_SRC := lib/vision/conv.c lib/vision/video_frame.c
+test_log_edges_SRC := lib/vision/conv.c lib/vision/video_frame.c $(VISION_POOL_SRC)
+test_canny_SRC := lib/vision/conv.c lib/vision/video_frame.c $(VISION_POOL_SRC)
 test_health_SRC :=
 test_camera_ctrl_SRC :=
 test_recorder_SRC := legacy/eeye/frame_ring_buffer.c legacy/eeye/health.c \
@@ -280,7 +248,7 @@ test_recorder_SRC := legacy/eeye/frame_ring_buffer.c legacy/eeye/health.c \
 test_child_proc_SRC :=
 test_fbus_SRC :=
 test_http_SRC :=
-test_auto_vis_SRC := lib/vision/img_stats.c
+test_auto_vis_SRC := lib/vision/img_stats.c $(VISION_POOL_SRC)
 test_hellion_SRC := legacy/hellion/hconfig.c legacy/hellion/hlog.c \
 	legacy/hellion/hstatus.c legacy/hellion/pipeline.c legacy/hellion/hrecord.c \
 	legacy/hellion/sinks.c legacy/eeye/fbus.c lib/camera/camera_ctrl.c \
@@ -291,14 +259,15 @@ test_hellion_SRC := legacy/hellion/hconfig.c legacy/hellion/hlog.c \
 test_virtual_cam_SRC := lib/proc/child_proc.c lib/camera/v4l2_out.c \
 	lib/vision/video_frame.c
 test_effect_chain_SRC := lib/vision/auto_vis.c lib/vision/conv.c \
-	lib/vision/img_stats.c lib/vision/point_opps.c lib/vision/video_frame.c
+	lib/vision/img_stats.c lib/vision/point_opps.c lib/vision/video_frame.c \
+	$(VISION_POOL_SRC)
 
 # lib/hg: the hangar module library (LGPL-3.0-or-later; lib/hg/PLAN.md). C11
 # with <stdatomic.h>, not gnu99, so its objects take their own flags; it
 # needs nothing but libc and the kernel, so its suites link without
 # libturbojpeg and build where a cross toolchain has none. The manager stub
 # is test-only: it goes into the suites, never into HG_SRC.
-HG_SRC := lib/hg/hg_topic.c lib/hg/hg_type.c lib/hg/hg_wiring.c
+HG_SRC := lib/hg/hg_topic.c lib/hg/hg_type.c lib/hg/hg_wiring.c lib/hg/hg_control.c
 HG_CFLAGS := -std=c11 -Wall -Wextra -pedantic -pthread
 HG_LDLIBS := -pthread -lrt
 $(OBJDIR)/lib/hg/%.o: EE_CFLAGS := $(HG_CFLAGS)
@@ -318,6 +287,7 @@ $(TESTDIR)/test_$(1): $(OBJDIR)/$(2)/tests/test_$(1).o $(call obj,$(test_$(1)_SR
 	$$(CC) $$(ALL_CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(ALL_LDLIBS)
 endef
 $(foreach t,$(VISION_TESTS),$(eval $(call test_rule,$(t),lib/vision)))
+$(foreach t,$(COMMON_TESTS),$(eval $(call test_rule,$(t),lib/common)))
 $(foreach t,$(CAMERA_TESTS),$(eval $(call test_rule,$(t),lib/camera)))
 $(foreach t,$(PROC_TESTS),$(eval $(call test_rule,$(t),lib/proc)))
 $(foreach t,$(NET_TESTS),$(eval $(call test_rule,$(t),lib/net)))
@@ -383,23 +353,17 @@ check-asan:
 # Equivalence with electric-eye v0.3.1 (tools/equivalence/README.md): equiv
 # hashes every lib/vision operator's output over a fixed input set, one
 # line per case, and the run fails on any line that differs from the hashes
-# recorded once from v0.3.1. With OpenMP on it runs at 1, 3 and 4 threads
-# (OMP_NUM_THREADS), since a thread count that changes a hash is a bug the
+# recorded once from v0.3.1. It runs at 1, 3 and 4 threads (the pool reads
+# OMP_NUM_THREADS by OpenMP's rule), since a thread count that changes a hash is a bug the
 # paper's figures rest on not having. TIMEOUT runs it as it runs the
 # suites, so TIMEOUT="qemu-aarch64 -0" checks a cross build's NEON paths
 # against the same reference. equiv needs no libturbojpeg.
-EQUIV_SRC := tools/equivalence/equiv.c lib/vision/auto_vis.c lib/vision/conv.c \
-	lib/vision/effect_chain.c lib/vision/img_stats.c lib/vision/point_opps.c \
-	lib/vision/video_frame.c
+EQUIV_SRC := tools/equivalence/equiv.c $(VISION_SRC)
 EQUIV_REF := tools/equivalence/hashes-v0.3.1.txt
-ifeq ($(OPENMP),1)
 EQUIV_THREADS ?= 1 3 4
-else
-EQUIV_THREADS ?= 1
-endif
 $(OBJDIR)/tools/%.o: EE_CPPFLAGS += $(LIB_CPPFLAGS)
 $(BUILDDIR)/equiv: $(call obj,$(EQUIV_SRC))
-	$(CC) $(ALL_CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(OPENMP_LIBS) -pthread -lrt -lm $(LDLIBS)
+	$(CC) $(ALL_CFLAGS) $(ALL_LDFLAGS) -o $@ $^ -pthread -lrt -lm $(LDLIBS)
 
 .PHONY: equivalence
 equivalence: $(BUILDDIR)/equiv
@@ -527,5 +491,10 @@ check: check-nn
 
 # bench/hg_bench, hangar's side of the benchmark (bench/bench.mk).
 include bench/bench.mk
+
+# hangard, the manager, and the hangar command (hangard/README.md,
+# hangard/hangard.mk carries the rules): GPL-3.0-or-later, C11 over lib/hg.
+include hangard/hangard.mk
+check: check-hangard
 
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
