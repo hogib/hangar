@@ -1,0 +1,19 @@
+# hellion as a hangar legacy module: docs/11-electric-eye.md, phase A, adapted
+# from legacy/hellion/hellion.service. On the topside this same manifest is
+# the module hellion_topside, with the topside's hellion.json. @ROOT@ is
+# replaced by share/hangar/install-root.sh.
+[Module]
+Description=electric-eye: video over the tether, page, recording
+Exec=@ROOT@/bin/hellion -c @ROOT@/etc/hellion/hellion.json
+# As eeye.module: the eeye user and the video group, kept with --system only.
+User=eeye
+Group=video
+Legacy=yes
+
+[Restart]
+# hellion.service: Restart=always, RestartSec=3, StartLimitBurst=5 in 60 s,
+# TimeoutStopSec=20 (its recorder finalizes the MP4 on SIGINT first).
+Policy=always
+Backoff=0.5s..10s
+Burst=5/60s
+StopTimeout=20s

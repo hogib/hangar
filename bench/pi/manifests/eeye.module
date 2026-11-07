@@ -1,0 +1,22 @@
+# eeye as a hangar legacy module: docs/11-electric-eye.md, phase A ("supervised
+# as it is"), adapted from legacy/eeye/eeye.service. The release ships this
+# file under share/hangar/modules/; share/hangar/install-root.sh copies it to
+# $HANGAR_ROOT/etc/modules/ with @ROOT@ replaced by that directory.
+[Module]
+Description=electric-eye: camera, effects, frame bus
+Exec=@ROOT@/bin/eeye @ROOT@/var/eeye/effects.json
+# eeye.service runs as the eeye user in the video group (the camera, the
+# loopback device, and hellion sharing the frame bus). Switching users needs
+# hangard to run as root: install-root.sh comments these two lines out for a
+# plain user's $HANGAR_ROOT and keeps them with --system.
+User=eeye
+Group=video
+Legacy=yes
+
+[Restart]
+# eeye.service: Restart=always, RestartSec=5, StartLimitBurst=5 in 60 s,
+# TimeoutStopSec=15. hangar's delay doubles from the first value to the last.
+Policy=always
+Backoff=0.5s..10s
+Burst=5/60s
+StopTimeout=15s

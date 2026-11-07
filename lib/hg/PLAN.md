@@ -59,3 +59,42 @@ and `docs/03-manager.md`; calls and parameters on topics; `hangar` CLI basics.
 camera, vision, recorder, pairer, safety, mux, bridge, mavlink, policy: each a module
 over `lib/hg`, in the order `docs/11-electric-eye.md` phase B and the version-1 path of
 `docs/09-learning.md` give.
+
+## Stage 2 as built: 2a and 2b
+
+**2a, the manager and the library's side of it.** `hangard/` (GPL): manifests
+(`docs/02`: strict INI, every section and key, the graph checks), `hangard.conf`, the
+event loop (`epoll`, `signalfd`, one `pidfd` per module, one `timerfd`), start-up and
+adoption from the registry, spawning in `docs/03`'s nine-step order (`clone3` +
+`CLONE_PIDFD`, the registry pipe, cgroup when delegated, rlimits, scheduling, state
+directory, journald or fallback log, capabilities, user switch last), the module page
+(`HGPAGE01`), health tick and states, back-off and `OnGiveUp`, `Neutral` for actuators,
+stopping and shutdown order, re-exec, the control socket (`page`, `open`, `status`,
+`start`/`stop`/`restart`, `reload`, `reexec`, `clear-failsafe`), `hangar.<role>.system`
+and `.modules` topics, systemd `Type=notify` and watchdog pings without libsystemd.
+Library side: `hg_init` sets `PR_SET_DUMPABLE` 0 and fetches its page over the control
+socket; `hg_pub_open` goes through the manager's `open` when `HANGAR_CONTROL` is set;
+`hg_ready`/`hg_alive`/`hg_status` write the page. `hangar` CLI: `status`, `start`,
+`stop`, `restart`, `reload`, `restart-manager`, `show`, `topics`, `echo`, `hz`, `run`.
+Everything relocatable under `$HANGAR_ROOT` for tests (`etc/hangar`, `run/hangar`,
+`var/lib/hangar`, the topic dir), so the suites run as an ordinary user without systemd:
+user switching, scheduling and capabilities are exercised only when the test runs as
+root (skipped, and said, otherwise).
+
+**2b, calls and parameters on topics** (`docs/04`, `docs/05`): the implicit `.req`/
+`.rep`/`.params` topics and their generated types, `hg_call_start`/`poll`/`hg_call`,
+`hg_serve`, Allow tokens, admin calls through `hangar.<role>.admin.req`, `set_params`,
+saved values, `@restart`, `hangar call` and `hangar param`.
+
+## Stage 3 addition: the web console
+
+A `console` module (the first half of docs/11's `pilot_console`): the manager's state as
+a web page, as `hellion`'s page was for electric-eye. It reads `hangar.<role>.modules`
+and `hangar.<role>.system`, lists every topic in the topic directory with its header
+fields (rate declared and measured, age, writer, flags), decodes any topic's newest
+message by its schema (what `hangar echo` does), and shows a module's page status line
+and the recent log; start, stop and restart buttons go through the control socket as
+`hangar-admin`. It serves plain HTML with a small polling script over `lib/net/http.c`
+(electric-eye's fuzzed server), no framework, embedded in the binary as `hellion`'s
+page was. Later it grows the pilot's controls (arm, mode, promotion) when 2b and the
+safety module exist; the monitoring half needs only stage 2a.

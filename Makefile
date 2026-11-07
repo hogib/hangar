@@ -525,4 +525,7 @@ sim-data:
 include lib/nn/nn.mk
 check: check-nn
 
+# bench/hg_bench, hangar's side of the benchmark (bench/bench.mk).
+include bench/bench.mk
+
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
