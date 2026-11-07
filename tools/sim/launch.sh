@@ -50,10 +50,21 @@ start() {
     # (start_mavproxy(), ports = [14550 + 10 * instance]); QGroundControl listens there.
     # SITL_RITW_TERMINAL makes run_in_terminal_window.sh start the ArduSub binary
     # through "launch.sh ritw", with its output in work/ardusub.log.
+    # HANGAR_SIM=1 (set by run.sh from the host's environment): hangar is in the
+    # loop. MAVProxy then sends SITL's MAVLink to the vehicle's mavlink module on
+    # 127.0.0.1:14560 (modules/PHASE1.md "Ports") and not to 14550, where the
+    # topside's module now serves QGroundControl as the vehicle. --no-extra-ports
+    # is sim_vehicle.py's switch for the default 14550/14551 outputs (checked at
+    # Sub-4.7.2: Tools/autotest/sim_vehicle.py, "Disable setup of UDP 14550 and
+    # 14551 output"). Without HANGAR_SIM the demo is as before: QGC on SITL directly.
+    local -a hangar_out=()
+    if [ "${HANGAR_SIM:-0}" = 1 ]; then
+        hangar_out=(--no-extra-ports --out 127.0.0.1:14560)
+    fi
     tmux new-window -t sim -n sitl -c /home/sim/ardupilot \
-        "SITL_RITW_TERMINAL='$self ritw' sim_vehicle.py -v ArduSub -f $frame --model JSON -L RATBeach -N -w"
+        "SITL_RITW_TERMINAL='$self ritw' sim_vehicle.py -v ArduSub -f $frame --model JSON -L RATBeach -N -w ${hangar_out[*]}"
     tmux pipe-pane -t sim:sitl -o "cat >> $work/mavproxy.log"
-    echo "started: Gazebo ($world) and ArduSub SITL (-f $frame); logs in $work"
+    echo "started: Gazebo ($world) and ArduSub SITL (-f $frame${HANGAR_SIM:+, MAVLink to hangar on 14560}); logs in $work"
 }
 
 stop() {

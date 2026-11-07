@@ -10,7 +10,9 @@
 #   run.sh down    stop and remove the container (the image stays)
 #
 # Environment: SIM_CONFIG=heavy|base (BlueROV2 Heavy, frame vectored_6dof, the
-# default; or the base BlueROV2, frame vectored), SIM_IMAGE, SIM_NAME.
+# default; or the base BlueROV2, frame vectored), SIM_IMAGE, SIM_NAME;
+# HANGAR_SIM=1 puts hangar in the loop: SITL's MAVLink goes to the vehicle's
+# mavlink module on 14560 instead of QGC's 14550 (tools/sim/hangar-up.sh).
 set -euo pipefail
 
 here=$(command dirname -- "$(command realpath -- "${BASH_SOURCE[0]}")")
@@ -71,6 +73,7 @@ cmd_up() {
         "${wayland[@]}" \
         "${input[@]}" \
         -e SIM_CONFIG="$config" \
+        -e HANGAR_SIM="${HANGAR_SIM:-0}" \
         -v "$work:/home/sim/work" \
         -v "$here:/home/sim/hangar-sim:ro" \
         "$image" sleep infinity >/dev/null

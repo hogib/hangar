@@ -1,0 +1,7 @@
+# hangar parameters: safety_params
+# version 1, set by profiles/sim-vehicle, 2026-11-07T00:00:00Z
+# The development demo has no leak module (docs/14: the sim profile's leak module
+# reads a gpio-sim line; not built yet), so arming does not wait for vehicle.leak.
+# Every other field keeps its default (msg/safety_params.msg).
+leak_required = 0
+required = "mux mavlink"

@@ -1888,11 +1888,20 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 				continue;
 			}
 			/* Without the bridge (not in this stage) nothing routes it: the
-			 * call line says so, and the library answers HG_E_NOROUTE. */
-			c->remote = 0;
-			c->noroute = 1;
-			warn(s, "%s: [Call %s.%s]: no module enabled here serves it, and no bridge routes it: HG_E_NOROUTE",
-			     m->name, c->server, c->method);
+			 * call line says so, and the library answers HG_E_NOROUTE.
+			 * until the bridge: with the same-host shim (modules/PHASE1.md,
+			 * HANGAR_PEER_TOPIC_DIR in the manager's environment) the other
+			 * root's server reads this module's .req directly, so the call
+			 * is remote, not unrouted. */
+			if (getenv("HANGAR_PEER_TOPIC_DIR")) {
+				c->remote = 1;
+				c->noroute = 0;
+			} else {
+				c->remote = 0;
+				c->noroute = 1;
+				warn(s, "%s: [Call %s.%s]: no module enabled here serves it, and no bridge routes it: HG_E_NOROUTE",
+				     m->name, c->server, c->method);
+			}
 		}
 		if (c->req_idx >= 0 && s->types[c->req_idx].payload_bytes > largest_req)
 			largest_req = s->types[c->req_idx].payload_bytes;
@@ -1932,6 +1941,21 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 				}
 		}
 		add_sub(m, admin_req, 0);
+		/* until the bridge: a method whose Allow names the other side is
+		 * one the bridge would carry; with the same-host shim the other
+		 * root's callers' .req topics are found by the glob, as they will
+		 * be when the bridge creates them (docs/03 "Implicit subscriptions"). */
+		if (getenv("HANGAR_PEER_TOPIC_DIR")) {
+			int other = 0;
+			size_t ol = strlen(s->other_role);
+			for (int i = 0; i < m->n_serves; i++)
+				for (int k = 0; k < m->serves[i].n_allow; k++)
+					if (strncmp(m->serves[i].allow[k], s->other_role, ol) == 0 &&
+					    m->serves[i].allow[k][ol] == ':')
+						other = 1;
+			if (other)
+				add_sub(m, "*.req", 1);
+		}
 	}
 	if (m->has_params) {
 		char why[MF_ERR];
@@ -1953,7 +1977,7 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 				const struct mf_sub *sub = &m->subs[k];
 				size_t n = strlen(sub->topic);
 				if (!sub->implicit || n < 5 || strcmp(sub->topic + n - 4, ".req") != 0)
-					continue;
+					continue; /* the implicit subglob *.req is among them: a Sources glob */
 				int have = 0;
 				for (int j = 0; j < p->n_sources; j++)
 					if (strcmp(p->sources[j], sub->topic) == 0)

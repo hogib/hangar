@@ -83,6 +83,15 @@ int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, si
 	/* The module's own role: a server names a mirrored caller
 	 * <role>:<module> with the other side's (docs/04 "Callers"). */
 	put(&o, "role %s\n", s->role);
+	/* The [Actuator] section, for the library's gate (docs/07 "The actuator
+	 * gate": the Command and timeouts come from the wiring). */
+	if (m->has_actuator) {
+		put(&o, "actuator command=%s command_timeout=", m->act_command);
+		put_duration(&o, m->command_timeout_ns);
+		put(&o, " safety_timeout=");
+		put_duration(&o, m->safety_timeout_ns);
+		put(&o, "\n");
+	}
 	for (int i = 0; i < m->n_subs; i++) {
 		const struct mf_sub *sub = &m->subs[i];
 		if (sub->glob) {

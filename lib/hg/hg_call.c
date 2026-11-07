@@ -670,7 +670,7 @@ void hg_call_caller_token(const hg_sub *sub, const struct hg_call_request_envelo
 		bfmt(out, HG_CALL_CALLER, "?");
 		return;
 	}
-	int mirrored = 0;
+	int mirrored = hg_sub_is_peer(sub); /* until the bridge: the same-host shim's topics */
 	for (int i = 0; i < 16; i++)
 		if (meta.origin_boot[i])
 			mirrored = 1;

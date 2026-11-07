@@ -292,3 +292,19 @@ to decide. Nothing here changes behaviour silently.
 23. **The admin request's `caller` is `admin:<name>` from `/etc/passwd`**, the uid
     as digits when it has no line (a user namespace, a test), so that the token is
     never empty.
+
+## Phase 1 additions (modules/PHASE1.md)
+
+- The wiring carries an `actuator` line for a module with `[Actuator]` (Command and
+  the two timeouts), which `lib/hg/hg_gate.c` reads (`lib/hg/NOTES.md`, deviation 23).
+- `until the bridge`: a manager started with `HANGAR_PEER_TOPIC_DIR=<other root's topic
+  dir>` treats the other root as the other side (`lib/hg/NOTES.md`, deviation 24):
+  `remote=1` rather than `noroute=1` on a `[Call]` nothing here serves, `subglob *.req`
+  for a server whose `Allow` names the other role, and the variable passed on to its
+  modules with `HANGAR_PEER_SHIM=1`. `tools/sim/hangar-up.sh` starts two managers that
+  way. Without the variable nothing changes.
+- `clear-failsafe` from the module `safety` was already accepted; the safety module
+  (`modules/safety/`) is its caller now.
+- `hangar ardusub-setup` (the call `mavlink.setup`) and `hangar check` (the call
+  `safety.check`, docs/12's phase 1 subset) are two more subcommands of the `hangar`
+  command.

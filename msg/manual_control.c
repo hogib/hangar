@@ -9,8 +9,8 @@ static const struct hg_field manual_control_fields[8] = {
     {"r", HG_I16, 1, 6, "yaw, -1000 to 1000"},
     {"buttons", HG_U16, 1, 8, "always 0: ArduSub acts on no button"},
     {"buttons2", HG_U16, 1, 10, "always 0"},
-    {"s", HG_I16, 1, 12, "roll, -1000 to 1000, MAVLink 2 extension"},
-    {"t", HG_I16, 1, 14, "pitch, -1000 to 1000, MAVLink 2 extension"},
+    {"s", HG_I16, 1, 12, "pitch, -1000 to 1000, MAVLink 2 extension (common.xml: s is the pitch-only axis)"},
+    {"t", HG_I16, 1, 14, "roll, -1000 to 1000, MAVLink 2 extension (common.xml: t is the roll-only axis)"},
 };
 
 const struct hg_type MANUAL_CONTROL_TYPE = {
@@ -24,10 +24,10 @@ const struct hg_type MANUAL_CONTROL_TYPE = {
         "i16 r          # yaw, -1000 to 1000\n"
         "u16 buttons    # always 0: ArduSub acts on no button\n"
         "u16 buttons2   # always 0\n"
-        "i16 s          # roll, -1000 to 1000, MAVLink 2 extension\n"
-        "i16 t          # pitch, -1000 to 1000, MAVLink 2 extension\n"
+        "i16 s          # pitch, -1000 to 1000, MAVLink 2 extension (common.xml: s is the pitch-only axis)\n"
+        "i16 t          # roll, -1000 to 1000, MAVLink 2 extension (common.xml: t is the roll-only axis)\n"
         ,
-    .schema_bytes = 515,
+    .schema_bytes = 592,
     .hash = 0x962bd92240180c89ull,   // FNV-1a 64 of the canonical form
     .payload_bytes = 16,
     .n_fields = 8,

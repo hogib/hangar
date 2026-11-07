@@ -660,6 +660,13 @@ static void build_env(struct child_ctx *c, const struct module *m)
 	}
 	if (G.paths.root[0])
 		ADD("HANGAR_ROOT=%s", G.paths.root);
+	/* until the bridge: the same-host shim (modules/PHASE1.md). A manager
+	 * started with HANGAR_PEER_TOPIC_DIR passes it on, with the flag that
+	 * tells the library the manager meant it. */
+	if (getenv("HANGAR_PEER_TOPIC_DIR") && !mf->legacy) {
+		ADD("HANGAR_PEER_TOPIC_DIR=%s", getenv("HANGAR_PEER_TOPIC_DIR"));
+		ADD("HANGAR_PEER_SHIM=1");
+	}
 	for (int i = 0; i < mf->n_env; i++)
 		ADD("%s", mf->env[i]);
 #undef ADD

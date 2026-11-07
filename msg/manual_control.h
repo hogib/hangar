@@ -12,8 +12,8 @@ typedef struct manual_control {
     int16_t r;          // yaw, -1000 to 1000
     uint16_t buttons;   // always 0: ArduSub acts on no button
     uint16_t buttons2;  // always 0
-    int16_t s;          // roll, -1000 to 1000, MAVLink 2 extension
-    int16_t t;          // pitch, -1000 to 1000, MAVLink 2 extension
+    int16_t s;          // pitch, -1000 to 1000, MAVLink 2 extension (common.xml: s is the pitch-only axis)
+    int16_t t;          // roll, -1000 to 1000, MAVLink 2 extension (common.xml: t is the roll-only axis)
 } manual_control;
 extern const struct hg_type MANUAL_CONTROL_TYPE;   // defined in msg/manual_control.c, also generated
 _Static_assert(sizeof(struct manual_control) == 16, "layout");

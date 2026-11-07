@@ -1,0 +1,64 @@
+# /usr/share/hangar/modules/mavlink.module: the vehicle's MAVLink module, ArduSub's
+# only peer (docs/10-mavlink.md; modules/mavlink/README.md). Enable it by
+# symlinking into /etc/hangar/modules/. Its settings are in /etc/hangar/mavlink.conf.
+[Module]
+Description=ArduSub's MAVLink peer: manual control, arming, telemetry
+Exec=/usr/lib/hangar/hangar-mavlink /etc/hangar/mavlink.conf
+User=hg-mavlink
+SupplementaryGroups=hg-autopilot hangar-rec
+
+[Subscribe ctl.wrench]
+[Subscribe safety.state]
+# docs/10 also subscribes safety.params, bridge.vehicle.link, recorder.session and
+# hangar.vehicle.modules: the tether_timeout, the link and the session wait for the
+# bridge and the recorder (README, "until the bridge").
+
+[Publish ardusub.manual_control]
+Type=manual_control
+Rate=50
+Actuator=yes
+Inputs=ctl.wrench
+
+[Publish ardusub.state]
+Type=ardusub_state
+Rate=10
+# Each message names the safety.state it was judged against (Armed agreement).
+Inputs=safety.state
+
+[Publish ardusub.param]
+Type=ardusub_param
+
+# The telemetry topics of docs/10 "Telemetry".
+[Publish nav.attitude]
+Type=attitude
+Rate=50
+
+[Publish nav.imu]
+Type=imu
+Rate=50
+
+[Publish nav.depth]
+Type=depth
+Rate=50
+
+[Publish power.battery]
+Type=battery
+Rate=2
+
+[Publish thr.out]
+Type=thruster_out
+Rate=50
+
+[Actuator]
+Command=ctl.wrench
+Neutral=/usr/lib/hangar/hangar-mavlink --neutral /etc/hangar/mavlink.conf
+
+[Serve arm]
+Request=arm_req
+Reply=arm_rep
+Allow=safety
+
+[Serve setup]
+Request=empty
+Reply=empty
+Allow=admin topside:admin

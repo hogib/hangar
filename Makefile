@@ -226,7 +226,7 @@ PROC_TESTS := child_proc
 NET_TESTS := http
 EEYE_TESTS := config ring_buffer health recorder fbus
 HELLION_TESTS := hellion
-HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd hg_call
+HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd hg_call hg_gate
 TESTS := $(VISION_TESTS) $(COMMON_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
 	$(EEYE_TESTS) $(HELLION_TESTS) $(HG_TESTS)
 
@@ -268,7 +268,7 @@ test_effect_chain_SRC := lib/vision/auto_vis.c lib/vision/conv.c \
 # libturbojpeg and build where a cross toolchain has none. The manager stub
 # is test-only: it goes into the suites, never into HG_SRC.
 HG_SRC := lib/hg/hg_topic.c lib/hg/hg_type.c lib/hg/hg_wiring.c lib/hg/hg_control.c \
-	lib/hg/hg_call.c lib/hg/hg_params.c
+	lib/hg/hg_call.c lib/hg/hg_params.c lib/hg/hg_gate.c
 HG_CFLAGS := -std=c11 -Wall -Wextra -pedantic -pthread
 HG_LDLIBS := -pthread -lrt
 $(OBJDIR)/lib/hg/%.o: EE_CFLAGS := $(HG_CFLAGS)
@@ -502,5 +502,21 @@ check: check-hangard
 # modules/console/console.mk carries the rules): GPL-3.0-or-later, C11 over lib/hg and lib/net.
 include modules/console/console.mk
 check: check-console
+
+# The safety module (modules/safety/README.md, modules/safety/safety.mk
+# carries the rules): GPL-3.0-or-later, C11 over lib/hg.
+include modules/safety/safety.mk
+check: check-safety
+
+# The mux (modules/mux/README.md, modules/mux/mux.mk carries the rules):
+# GPL-3.0-or-later, C11 over lib/hg.
+include modules/mux/mux.mk
+check: check-mux
+
+# The MAVLink modules (modules/mavlink/README.md, modules/mavlink/mavlink.mk
+# carries the rules): GPL-3.0-or-later, C11 over lib/hg; the generated header
+# comes from tools/mavgen (Python at generation time only).
+include modules/mavlink/mavlink.mk
+check: check-mavlink
 
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)

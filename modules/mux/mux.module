@@ -1,0 +1,34 @@
+# /usr/share/hangar/modules/mux.module: the control source mux and envelope
+# (docs/07-safety.md "The mux"; modules/mux/README.md). Enable it by symlinking
+# into /etc/hangar/modules/. A copy edited for a vehicle adds its policy's two
+# topics under [Subscribe] and Sources= (policy.<name>.wrench, policy.<name>.active).
+[Module]
+Description=Control source mux and envelope
+Exec=/usr/lib/hangar/hangar-mux
+
+[Subscribe pilot.wrench]
+[Subscribe ctl.depth_hold]
+[Subscribe nav.depth]
+[Subscribe safety.state]
+
+[Publish ctl.wrench]
+Type=wrench
+Rate=50
+# Each message references the sources that drove it, at most 4.
+Sources=pilot.wrench ctl.depth_hold nav.depth
+
+[Publish mux.state]
+Type=mux_state
+Rate=10
+
+[Params]
+Type=mux_params
+Allow=topside:pilot_console admin topside:admin
+
+[Serve set_mode]
+Request=set_mode_req
+Reply=set_mode_rep
+Allow=topside:pilot_console topside:console admin topside:admin
+
+[Restart]
+OnGiveUp=failsafe

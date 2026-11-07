@@ -572,6 +572,41 @@ int hg_wiring_parse(const char *text, size_t len, struct hg_wiring *w, char *err
 				goto bad;
 			}
 			w->n_calls++;
+		} else if (tok_is(&t[0], "actuator")) {
+			/* actuator command=<topic> [command_timeout=<d>] [safety_timeout=<d>] */
+			struct hg_wiring_actuator *a = &w->actuator;
+			char buf[128];
+			a->present = 1;
+			for (int i = 1; i < n; i++) {
+				const char *val;
+				size_t k = tok_key(&t[i], &val);
+				if (!k) {
+					set_err(err, errlen, line, "bad key on actuator line");
+					goto bad;
+				}
+				tok_val(&t[i], val, buf, sizeof buf);
+				int64_t d;
+				if (key_is(&t[i], k, "command")) {
+					if (!tok_copy(&(struct tok){ buf, strlen(buf) }, a->command, sizeof a->command))
+						goto bad_act;
+				} else if (key_is(&t[i], k, "command_timeout")) {
+					if ((d = hg_parse_duration(buf)) <= 0)
+						goto bad_act;
+					a->command_timeout_ns = (uint64_t)d;
+				} else if (key_is(&t[i], k, "safety_timeout")) {
+					if ((d = hg_parse_duration(buf)) <= 0)
+						goto bad_act;
+					a->safety_timeout_ns = (uint64_t)d;
+				} else {
+				bad_act:
+					set_err(err, errlen, line, "bad key or value on actuator line");
+					goto bad;
+				}
+			}
+			if (!a->command[0]) {
+				set_err(err, errlen, line, "actuator needs command=");
+				goto bad;
+			}
 		} else if (tok_is(&t[0], "mirror")) {
 			if (w->n_mirrors == HG_WIRING_MAX_MIRRORS) {
 				set_err(err, errlen, line, "too many mirror lines");

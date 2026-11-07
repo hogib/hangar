@@ -114,8 +114,21 @@ checks, since most of the work turned out to be done already.
 
 ## Where hangar goes
 
-Today QGroundControl talks to SITL directly through MAVProxy on 14550; there is no
-hangar in the loop. When the two `mavlink` modules of [docs/10](../../docs/10-mavlink.md)
+**Now built** (`modules/PHASE1.md`): with `HANGAR_SIM=1` in the environment of
+`tools/sim/run.sh up`, `launch.sh` starts MAVProxy with `--no-extra-ports --out
+127.0.0.1:14560`, so SITL's MAVLink goes to the vehicle's `mavlink` module and not to
+QGroundControl; `tools/sim/hangar-up.sh up` then starts two managers on the host from
+`profiles/sim-vehicle` and `profiles/sim-topside` (roots `/dev/shm/hangar-vehicle` and
+`/dev/shm/hangar-topside`, joined by the same-host shim until the bridge exists), and
+QGroundControl connects to the topside's `topside_mavlink` module on 14550 as it would
+to a vehicle. Before the first arm, `HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar
+ardusub-setup` sets SITL's parameters from `profiles/sim-vehicle/ardusub.params`, and
+`... hangar check` runs the arming checklist. Dawn Patrol serves both roots on 8080 and
+8081. `make check-sitl HANGAR_SITL=1` runs the chain test against the container. The
+rest of this section is the plan this was built from; what is still open is marked.
+
+Without `HANGAR_SIM`, QGroundControl talks to SITL directly through MAVProxy on 14550;
+there is no hangar in the loop. When the two `mavlink` modules of [docs/10](../../docs/10-mavlink.md)
 exist, the topside module takes 127.0.0.1:14550 for QGroundControl and the vehicle
 module talks to SITL on its own port (docs/10 uses 14660; SITL's MAVProxy would be
 told `--out 127.0.0.1:14660`, or SITL run without MAVProxy), and QGC's

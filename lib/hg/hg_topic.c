@@ -375,6 +375,51 @@ static void bump_dir_word(void)
 	hg_futex_wake_all(&d->wait_flag);
 }
 
+/* until the bridge: the same-host shim (modules/PHASE1.md). With
+ * $HANGAR_PEER_TOPIC_DIR set, a subscription that finds no file in the
+ * module's own topic directory reads the other root's file directly, read
+ * only, the way a mirrored topic will look once the bridge writes it here;
+ * `hg_sub_open("<role>:<topic>")` reads the peer's file outright. A sub so
+ * attached is `peer`: the call library counts it as mirrored, so a request
+ * read from it bears the other side's role (`topside:topside_mavlink`).
+ * Development only: under a manager (HANGAR_CONTROL) it is honoured only when
+ * the manager also passed HANGAR_PEER_SHIM=1, and refused, saying so, otherwise. */
+static const char *peer_dir(void)
+{
+	static int checked;
+	static const char *dir;
+	if (checked)
+		return dir;
+	checked = 1;
+	const char *d = getenv("HANGAR_PEER_TOPIC_DIR");
+	if (!d || !*d)
+		return NULL;
+	if (getenv("HANGAR_CONTROL") && !getenv("HANGAR_PEER_SHIM")) {
+		fprintf(stderr, "hg: HANGAR_PEER_TOPIC_DIR refused under a manager without HANGAR_PEER_SHIM=1 "
+				"(a development shim, until the bridge)\n");
+		return NULL;
+	}
+	dir = d;
+	fprintf(stderr, "hg: until the bridge: reading %s as the other side's topics\n", d);
+	return dir;
+}
+
+static struct hg_wake *peer_dir_map;
+
+static struct hg_wake *peer_dir_word(void)
+{
+	const char *d = peer_dir();
+	if (!d)
+		return NULL;
+	if (peer_dir_map)
+		return peer_dir_map;
+	char path[HG_PATH_MAX];
+	if (snprintf(path, sizeof path, "%s/.dir", d) >= (int)sizeof path)
+		return NULL;
+	peer_dir_map = map_wake_mode(path, 0, 0);
+	return peer_dir_map;
+}
+
 static uint64_t random_u64(void)
 {
 	uint64_t v;
@@ -634,13 +679,31 @@ struct hg_sub {
 	uint64_t use_seq;
 	uint32_t use_flags;
 	int in_fd_set;              /* in the hg_wait_fd helper's set */
+	int peer;                   /* until the bridge: attached to the other root's file (peer_dir) */
+	int no_peer;                /* never look in the peer directory (a module's own output) */
 	/* Glob subscriptions. */
 	int glob;
 	hg_sub **kids;
 	int n_kids, cap_kids;
 	uint32_t scan_word;         /* the directory word at the last scan */
+	uint32_t peer_scan_word;    /* the peer directory's word at the last scan */
 	int scanned;
 };
+
+/* until the bridge: points s at the peer directory's files. */
+static int sub_use_peer(hg_sub *s)
+{
+	const char *d = peer_dir();
+	if (!d)
+		return -1;
+	if (snprintf(s->path, sizeof s->path, "%s/%s", d, s->name) >= (int)sizeof s->path ||
+	    snprintf(s->wake_path, sizeof s->wake_path, "%s/.%s.wake", d, s->name) >= (int)sizeof s->wake_path) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	s->peer = 1;
+	return 0;
+}
 
 /* ---- hg_wait_fd state (declared early: attach and reopen tell it) ------ */
 
@@ -1508,7 +1571,23 @@ static void use_mapping(hg_sub *s, const struct mapping *m)
 static int attach(hg_sub *s, int announce)
 {
 	struct mapping m;
-	if (map_topic_ro(s->path, &m) < 0) {
+	int rc = map_topic_ro(s->path, &m);
+	if (rc < 0 && errno == ENOENT && !s->peer && !s->no_peer && peer_dir()) {
+		/* until the bridge: no file of that name here; the other root's? */
+		char path[HG_PATH_MAX], wake[HG_PATH_MAX];
+		memcpy(path, s->path, sizeof path);
+		memcpy(wake, s->wake_path, sizeof wake);
+		if (sub_use_peer(s) == 0 && (rc = map_topic_ro(s->path, &m)) == 0) {
+			/* attached to the peer's file: s->path stays the peer's */
+		} else {
+			memcpy(s->path, path, sizeof path);
+			memcpy(s->wake_path, wake, sizeof wake);
+			s->peer = 0;
+			errno = ENOENT;
+			rc = -1;
+		}
+	}
+	if (rc < 0) {
 		if (errno != ENOENT && s->attach_err != errno) {
 			s->attach_err = errno;
 			s->attach_err_reported = 0;
@@ -1679,6 +1758,22 @@ static hg_sub *sub_open(const char *name, const struct hg_type *type, enum hg_st
 {
 	if (ensure_init() < 0)
 		return NULL;
+	/* until the bridge: "<role>:<topic>" names the other root's topic outright. */
+	int peer_only = 0;
+	const char *colon = strchr(name, ':');
+	if (colon) {
+		size_t rl = (size_t)(colon - name);
+		if (!((rl == 7 && strncmp(name, "vehicle", 7) == 0) || (rl == 7 && strncmp(name, "topside", 7) == 0))) {
+			errno = EINVAL;
+			return NULL;
+		}
+		if (!peer_dir()) {
+			errno = ENOTSUP;
+			return NULL;
+		}
+		name = colon + 1;
+		peer_only = 1;
+	}
 	int glob = is_glob(name);
 	if (!valid_segments(name, strlen(name), glob)) {
 		errno = EINVAL;
@@ -1710,12 +1805,22 @@ static hg_sub *sub_open(const char *name, const struct hg_type *type, enum hg_st
 	hg_sub *s = sub_new(name, type, from, glob);
 	if (!s)
 		return NULL;
+	s->no_peer = own;
+	if (peer_only && !glob && sub_use_peer(s) < 0) {
+		hg_sub_close(s);
+		return NULL;
+	}
 	if (glob) {
 		(void)hg_glob_poll(s);
 	} else {
 		(void)attach(s, 0); /* absent or failing: reported by the first read */
 	}
 	return s;
+}
+
+int hg_sub_is_peer(const hg_sub *s)
+{
+	return s && s->peer;
 }
 
 hg_sub *hg_sub_open_from(const char *name, const struct hg_type *type, enum hg_start from)
@@ -2025,40 +2130,56 @@ int hg_glob_poll(hg_sub *g)
 	 * scan; nothing to do while it stands. */
 	struct hg_wake *d = dir_word();
 	uint32_t word = d ? atomic_load_explicit(&d->wait_flag, memory_order_acquire) : 0;
-	if (g->scanned && word == g->scan_word)
+	struct hg_wake *pd = peer_dir_word();
+	uint32_t pword = pd ? atomic_load_explicit(&pd->wait_flag, memory_order_acquire) : 0;
+	if (g->scanned && word == g->scan_word && pword == g->peer_scan_word)
 		return 0;
 	const char *dir = getenv("HANGAR_TOPIC_DIR");
 	if (!dir) {
 		errno = EINVAL;
 		return -1;
 	}
-	DIR *dp = opendir(dir);
-	if (!dp)
-		return -1;
 	int added = 0;
-	struct dirent *e;
-	while ((e = readdir(dp))) {
-		if (e->d_name[0] == '.' || !hg_valid_name(e->d_name) ||
-		    !hg_glob_match(g->name, e->d_name) || glob_has(g, e->d_name))
-			continue;
-		if (g->n_kids == g->cap_kids) {
-			int nc = g->cap_kids ? g->cap_kids * 2 : 8;
-			hg_sub **nk = realloc(g->kids, (size_t)nc * sizeof *nk);
-			if (!nk)
-				break;
-			g->kids = nk;
-			g->cap_kids = nc;
-		}
-		hg_sub *k = sub_new(e->d_name, g->has_expect ? &(struct hg_type){ .hash = g->expect_hash } : NULL,
-				    g->start, 0);
-		if (!k)
+	/* The module's own directory, then (until the bridge) the peer's. */
+	for (int pass = 0; pass < 2; pass++) {
+		const char *scan = pass == 0 ? dir : peer_dir();
+		if (!scan)
 			break;
-		(void)attach(k, 1); /* a match found after the open: news */
-		g->kids[g->n_kids++] = k;
-		added++;
+		DIR *dp = opendir(scan);
+		if (!dp) {
+			if (pass == 0)
+				return -1;
+			break;
+		}
+		struct dirent *e;
+		while ((e = readdir(dp))) {
+			if (e->d_name[0] == '.' || !hg_valid_name(e->d_name) ||
+			    !hg_glob_match(g->name, e->d_name) || glob_has(g, e->d_name))
+				continue;
+			if (g->n_kids == g->cap_kids) {
+				int nc = g->cap_kids ? g->cap_kids * 2 : 8;
+				hg_sub **nk = realloc(g->kids, (size_t)nc * sizeof *nk);
+				if (!nk)
+					break;
+				g->kids = nk;
+				g->cap_kids = nc;
+			}
+			hg_sub *k = sub_new(e->d_name, g->has_expect ? &(struct hg_type){ .hash = g->expect_hash } : NULL,
+					    g->start, 0);
+			if (!k)
+				break;
+			if (pass == 1 && sub_use_peer(k) < 0) {
+				hg_sub_close(k);
+				break;
+			}
+			(void)attach(k, 1); /* a match found after the open: news */
+			g->kids[g->n_kids++] = k;
+			added++;
+		}
+		closedir(dp);
 	}
-	closedir(dp);
 	g->scan_word = word;
+	g->peer_scan_word = pword;
 	g->scanned = 1;
 	return added;
 }
@@ -2177,6 +2298,13 @@ unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char
 			wv[nw++] = (struct hg_futex_waitv){ .val = dir_val,
 							    .uaddr = (uint64_t)(uintptr_t)&d->wait_flag,
 							    .flags = HG_FUTEX_32 };
+		/* until the bridge: a topic absent here may appear in the peer's
+		 * directory, whose word its manager bumps. */
+		struct hg_wake *pd = (need_dir || have_glob) ? peer_dir_word() : NULL;
+		if (pd && nw < HG_FUTEX_WAITV_MAX)
+			wv[nw++] = (struct hg_futex_waitv){
+				.val = atomic_load_explicit(&pd->wait_flag, memory_order_acquire),
+				.uaddr = (uint64_t)(uintptr_t)&pd->wait_flag, .flags = HG_FUTEX_32 };
 		/* The flags, then the re-check (see has_news for the ordering). */
 		for (int i = 0; i < n; i++)
 			if (!subs[i]->glob && subs[i]->h)

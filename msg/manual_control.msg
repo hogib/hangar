@@ -6,5 +6,5 @@ i16 z          # heave, 0 to 1000, 500 neutral
 i16 r          # yaw, -1000 to 1000
 u16 buttons    # always 0: ArduSub acts on no button
 u16 buttons2   # always 0
-i16 s          # roll, -1000 to 1000, MAVLink 2 extension
-i16 t          # pitch, -1000 to 1000, MAVLink 2 extension
+i16 s          # pitch, -1000 to 1000, MAVLink 2 extension (common.xml: s is the pitch-only axis)
+i16 t          # roll, -1000 to 1000, MAVLink 2 extension (common.xml: t is the roll-only axis)

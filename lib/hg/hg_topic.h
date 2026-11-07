@@ -224,6 +224,10 @@ const char *hg_sub_name(const hg_sub *s);
 uint32_t hg_sub_topic_id(const hg_sub *s);
 /* Times the reader switched to a replacing file. */
 uint64_t hg_sub_reopens(const hg_sub *s);
+/* until the bridge: 1 if the subscription reads the other root's file through
+ * the same-host shim ($HANGAR_PEER_TOPIC_DIR, modules/PHASE1.md): the call
+ * library counts such a request topic as mirrored from the other side. */
+int hg_sub_is_peer(const hg_sub *s);
 
 /* ---- Shared helpers ---------------------------------------------------- */
 

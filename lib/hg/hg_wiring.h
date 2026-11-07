@@ -86,9 +86,22 @@ struct hg_wiring_mirror {
 	uint64_t stale_after_ns;
 };
 
+/* The [Actuator] section of an actuator module (docs/07 "The actuator
+ * gate"), as the manager writes it on an `actuator` line:
+ * `actuator command=ctl.wrench command_timeout=200ms safety_timeout=300ms`.
+ * docs/03's wiring table has no such line; the gate takes "the Command and
+ * timeouts from the wiring" (docs/07), and this is where they travel. */
+struct hg_wiring_actuator {
+	int present;
+	char command[HG_WIRING_NAME];
+	uint64_t command_timeout_ns;  /* 0: the default 200 ms */
+	uint64_t safety_timeout_ns;   /* 0: the default 300 ms */
+};
+
 struct hg_wiring {
 	char module[32];
 	char role[16];           /* this machine's Role (vehicle, topside); "" if the line is absent */
+	struct hg_wiring_actuator actuator;
 	int n_subs, n_globs, n_pubs, n_serves, n_calls, n_mirrors;
 	struct hg_wiring_sub subs[HG_WIRING_MAX_SUBS];
 	struct hg_wiring_glob globs[HG_WIRING_MAX_GLOBS];

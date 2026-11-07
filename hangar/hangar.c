@@ -1174,6 +1174,8 @@ static void usage(void)
 	      "  echo <topic> [--rate] [--json] [--fields a,b] [--count N]\n"
 	      "  hz <topic> [--seconds N]\n"
 	      "  run <module>                a module in the foreground, wired from its manifest\n"
+	      "  ardusub-setup               set ArduSub's parameters from /etc/hangar/ardusub.params (mavlink.setup)\n"
+	      "  check                       the arming checklist, without arming (safety.check)\n"
 	      "  call <module>.<method> [field=value ...] [--timeout MS] [--json]\n"
 	      "                              a call as admin:<user> through the manager; the reply decoded\n"
 	      "  param get <module> [field ...]           the values in force, from <module>.params\n"
@@ -1219,6 +1221,22 @@ int main(int argc, char **argv)
 		return cmd_run(argc - 2, argv + 2);
 	if (strcmp(cmd, "call") == 0)
 		return cmd_call(argc - 2, argv + 2);
+	if (strcmp(cmd, "ardusub-setup") == 0) {
+		/* docs/12: one call, mavlink.setup, as admin:<user>; the module sets
+		 * the file's parameters beside its loop and ardusub.state.params says
+		 * whether every one reads as the file says (hangar echo ardusub.state). */
+		char *args[] = { (char *)"mavlink.setup", (char *)"--timeout", (char *)"3000" };
+		int rc = cmd_call(3, args);
+		if (rc == 0)
+			puts("accepted: the module sets the file's parameters; ardusub.state.params says when they all read as the file (1), or which differs (2, the module's status line)");
+		return rc;
+	}
+	if (strcmp(cmd, "check") == 0) {
+		/* docs/12's hangar check, the phase 1 subset: the safety module's
+		 * arming checklist, run without arming (safety.check). */
+		char *args[] = { (char *)"safety.check", (char *)"--timeout", (char *)"3000" };
+		return cmd_call(3, args);
+	}
 	if (strcmp(cmd, "param") == 0)
 		return cmd_param(argc - 2, argv + 2);
 	usage();

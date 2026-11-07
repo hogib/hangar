@@ -311,3 +311,38 @@ name and renamed, with no fsync.
   nothing in the library assumes otherwise, but nothing tests it.
 - Dataset row types and the policy types (docs/06, docs/09) are untouched: a
   `Type=dataset:<name>` output is still refused by the manager.
+
+## Phase 1 additions (modules/PHASE1.md): the gate, the actuator line, the shim
+
+- `hg_gate.h/.c`: the actuator gate of docs/07 "The actuator gate". `hg_gate_open`
+  takes the Command topic and the two timeouts from the wiring's `actuator` line and
+  opens the two subscriptions itself (a topic read through two subscriptions of one
+  process would make its provenance ambiguous, so the module reads `safety.state` and
+  the command through the gate: `hg_gate_subs`, `hg_gate_safety`,
+  `hg_gate_command_info`). `hg_gate_check` returns the newest command only when
+  `safety.state` is fresh and says `outputs_enabled`, the command is within
+  `CommandTimeout`, and it is not flagged as computed from stale inputs; the reasons are
+  docs/07's, with a closed or dead writer named as such before staleness. The stale
+  input is named by topic id ("computed from stale inputs (topic 79cc07e9)"), not by
+  name: the name is in the publisher's wiring, not the actuator's (docs/07's example
+  says "nav.depth"). Suite `test_hg_gate`.
+- **Deviation 23: an `actuator` wiring line.** docs/03's wiring table has no place for
+  `[Actuator]`'s Command and timeouts, which docs/07 says the gate takes "from the
+  wiring". The manager writes `actuator command=<topic> command_timeout=<d>
+  safety_timeout=<d>` after the `role` line; `hg_wiring_parse` fills
+  `hg_wiring.actuator`; a wiring without the line parses as before.
+- **Deviation 24, `until the bridge`: the same-host shim.** With `$HANGAR_PEER_TOPIC_DIR`
+  set (and, under a manager, `HANGAR_PEER_SHIM=1`, which the manager sets when it was
+  itself started with the variable; refused with a line on stderr otherwise), a
+  subscription with no file in the module's own topic directory reads the other root's
+  file read-only, and `hg_sub_open("<role>:<topic>")` reads the peer's file outright;
+  `hg_glob_poll` scans both directories (a server's `subglob *.req` finds the other
+  root's request topics), `hg_wait` also sleeps on the peer directory's word, and
+  `hg_sub_is_peer` marks such a subscription, which `hg_call_caller_token` counts as
+  mirrored: a request read from it bears the other side's role
+  (`topside:topside_mavlink`). The manager, started with the variable, writes `remote=1`
+  instead of `noroute=1` on a `[Call]` to a method nothing here serves, adds `subglob
+  *.req` (and `*.req` among the outputs' `Sources`) to a server whose `Allow` names the
+  other role, and passes the two variables to its modules. Everything here is marked
+  `until the bridge` and goes when the bridge writes mirrored topics into the local
+  directory; nothing in the modules knows which way a topic arrived.
