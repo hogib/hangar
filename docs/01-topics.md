@@ -94,7 +94,10 @@ the type hash.
 
 No nested types, no variable lengths, no pointers. Fields take their natural alignment;
 the layout is the C layout of the struct with that field order, padding made explicit,
-and the size rounded up to 8 bytes. Comments are kept: they carry units, which the
+and the payload size rounded up to 8 bytes. A module's own struct may be shorter
+than the payload by up to 7 bytes (a 12-byte struct in a 16-byte payload): `hg_publish`
+accepts the struct's size and zero-fills the tail, and a reader's buffer may be the
+struct's size too. Comments are kept: they carry units, which the
 recorder copies into datasets.
 
 The **type hash** is the 64-bit FNV-1a hash of the schema's canonical form: one field
@@ -308,8 +311,10 @@ ring, or never in it (a seq a mirrored topic does not have), returns `HG_GONE`.
 as `hg_next` does and passing over seqs not in the ring, assuming stamps rise with
 sequence numbers, which a writer must keep.
 
-A fresh subscription starts `hg_next` at the newest message: nothing published before
-the open is returned. `hg_sub_open_from(name, type, HG_OLDEST)` starts it instead at
+A fresh subscription starts at the newest message: its first `hg_next` or `hg_latest`
+returns the message that is newest when it is called, with no gap counted for anything
+before it, and from then on only what is published later. A reader opening a 1 Hz topic
+therefore sees the current value at once rather than nothing for a second. `hg_sub_open_from(name, type, HG_OLDEST)` starts it instead at
 the oldest message still in the ring; the call library opens `.req` and `.rep` topics
 that way, so a restarted server finds the requests that waited for it and a restarted
 caller the replies it has not read ([04-calls](04-calls.md#the-two-topics)).
@@ -655,9 +660,9 @@ electric-eye is ported ([11-electric-eye](11-electric-eye.md)).
   killed asleep costs one wake call, then none.
 - Liveness of the wait: a reader of a dead or closed topic reports it once, then sleeps
   for its whole timeout; no spinning until the file is replaced.
-- Late joiners: a reader's first `hg_next` after attaching starts at the newest message,
-  not at the oldest safe slot, so a reader attaching to a topic that has published
-  thousands of messages reports no gap; `hg_sub_open_from(…, HG_OLDEST)` starts at the
+- Late joiners: a reader's first `hg_next` after attaching returns the newest message
+  once and counts no gap, so a reader attaching to a topic that has published
+  thousands of messages sees the current value and reports no gap; `hg_sub_open_from(…, HG_OLDEST)` starts at the
   oldest message still in the ring and reports none either.
 - Absent topics: `hg_sub_open` returns at once; the module attaches when the topic is
   created; the directory word wakes it; a topic created between the open attempt and
