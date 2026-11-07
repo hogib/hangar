@@ -42,8 +42,15 @@ static const struct hg_type *DH, *SP;
 static char wiring_self[600], wiring_hangar[600], wiring_pilot[600], wiring_act[600], state_dir[600];
 static char self_dir[600];
 
+/* The parent writes the wiring files once; a re-executed child runs build()
+ * only for the paths and the strings, since rewriting a file another child
+ * is reading at that moment truncates it under the reader. */
+static int child_process;
+
 static void write_text(const char *path, const char *text)
 {
+	if (child_process)
+		return;
 	FILE *f = fopen(path, "w");
 	if (!f) {
 		perror(path);
@@ -355,8 +362,10 @@ static void envelope(struct hg_call_request_envelope *env, uint64_t call_id, con
 static int child_hangar(void)
 {
 	setenv("HANGAR_WIRING_FILE", wiring_hangar, 1);
-	if (hg_init() < 0)
+	if (hg_init() < 0) {
+		fprintf(stderr, "child hangar: hg_init: %s\n", hg_init_error());
 		return 3;
+	}
 	hg_pub *adm = hg_pub_open("hangar.vehicle.admin.req", &adm_parsed.type, NULL);
 	unsigned char boot[16];
 	memset(boot, 0x5a, sizeof boot);
@@ -390,8 +399,10 @@ static int child_hangar(void)
 static int child_pilot(void)
 {
 	setenv("HANGAR_WIRING_FILE", wiring_pilot, 1);
-	if (hg_init() < 0)
+	if (hg_init() < 0) {
+		fprintf(stderr, "child pilot: hg_init: %s\n", hg_init_error());
 		return 3;
+	}
 	unsigned char boot[16];
 	memset(boot, 0x5a, sizeof boot);
 	hg_pub *pilot = hg_pub_open_mirror("pilot.req", &req_parsed.type, boot, 1, NULL);
@@ -804,6 +815,7 @@ int main(int argc, char **argv)
 			return 2;
 		DEPTH_TYPE = &depth_parsed.type;
 		WORDS_TYPE = &words_parsed.type;
+		child_process = 1;
 		build();
 		if (strcmp(argv[1], "--hangar") == 0)
 			return child_hangar();
