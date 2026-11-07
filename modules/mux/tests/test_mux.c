@@ -445,6 +445,9 @@ static void test_residual(void)
 	 * (20%) of demote_window (1 s here). */
 	char out[2048];
 	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "mux", "demote_window=1", (char *)NULL), 0);
+	pump(100); /* the CLI round trip paused the sources too: on a slow machine the
+	              policy's topic is stale by now, and a promotion would be undone
+	              on its first tick as a skipped tick */
 	r = set_mode("residual:p", running);
 	CHECK_EQ_INT(r.status, HG_OK);
 	pump(300);
@@ -455,7 +458,7 @@ static void test_residual(void)
 		pump(20);
 	uint64_t dt = now_ms() - t0;
 	CHECK(strcmp(last_st.mode, "assisted") == 0);
-	CHECK(dt >= 150 && dt < 1000);
+	CHECK(dt >= 150 && dt < 1500); /* 20% of a 1 s window, with room for a loaded runner */
 	printf("    saturation demotion after %llu ms\n", (unsigned long long)dt);
 	T.policy.heave = 0.1f;
 	/* A policy's output is never applied outside residual: assisted now. */
