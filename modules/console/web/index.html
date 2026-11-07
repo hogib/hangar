@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dawn Patrol</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Dawn Patrol: hangar's operator page (modules/console). One file, no
+     framework, nothing fetched but this server's /api/* once a second, so
+     it stays readable over a slow SSH port forward. Embedded in dawn-patrold
+     at build time. SPDX-License-Identifier: GPL-3.0-or-later -->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #121416; color: #d8dbe0; font: 13px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 8px 14px;
+           background: #1b1e22; border-bottom: 1px solid #2c3036; position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header .muted { color: #8a919c; }
+  main { padding: 10px 14px 40px; max-width: 1500px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #8a919c; margin: 18px 0 6px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid #23272c; white-space: nowrap; }
+  th { color: #8a919c; font-weight: 500; cursor: default; user-select: none; }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: #d8dbe0; }
+  th .arrow { font-size: 10px; margin-left: 3px; }
+  td.num, th.num { text-align: right; }
+  td.wrap { white-space: normal; }
+  tr.topic { cursor: pointer; }
+  tr.topic:hover, tr.topic.selected { background: #1f2c3a; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 12px; font-weight: 600;
+          color: #0e0f10; }
+  .st-ready, .sys-nominal { background: #4caf50; }
+  .st-starting, .st-backoff, .st-stopping, .sys-degraded { background: #e6a700; }
+  .st-unhealthy, .st-failed, .st-refused, .sys-failsafe { background: #e5484d; color: #fff; }
+  .st-stopped, .st-unknown, .sys-unknown { background: #6b7280; color: #fff; }
+  .flag { display: inline-block; padding: 0 5px; margin-right: 3px; border-radius: 3px; background: #3a2a2a;
+          color: #ff9e9e; font-size: 11px; }
+  .flag.ok { background: #233; color: #9cd; }
+  button { background: #2a2f36; color: #d8dbe0; border: 1px solid #3a4048; border-radius: 4px;
+           padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover { background: #343a43; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.danger:hover { background: #5a2a2a; border-color: #8a3a3a; }
+  #msg { min-height: 1.2em; color: #ffd27a; }
+  #msg.err { color: #ff9e9e; }
+  #conn { font-size: 12px; }
+  #conn.down { color: #ff9e9e; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 1100px) { .two { grid-template-columns: 1fr; } }
+  .box { background: #1b1e22; border: 1px solid #2c3036; border-radius: 6px; padding: 8px 10px; overflow: auto; }
+  pre { margin: 0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+        word-break: break-all; max-height: 420px; overflow: auto; }
+  select { background: #2a2f36; color: #d8dbe0; border: 1px solid #3a4048; border-radius: 4px; font: inherit; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b8c4d6; }
+  .hash { color: #8a919c; font: 11px ui-monospace, monospace; }
+  .empty { color: #8a919c; padding: 6px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Dawn Patrol</h1>
+  <span id="sys" class="pill sys-unknown">?</span>
+  <span id="sysinfo" class="muted"></span>
+  <span id="conn" class="muted">connecting</span>
+  <span style="flex:1"></span>
+  <button id="reload" title="hangar reload: read the manifests again">Reload manifests</button>
+</header>
+<main>
+  <div id="msg"></div>
+
+  <h2>Modules <span class="muted" id="modcount"></span></h2>
+  <table id="modules">
+    <thead><tr>
+      <th>Module</th><th>State</th><th class="num">PID</th><th class="num" title="pid changes this page's server has seen">Restarts</th>
+      <th class="num" title="failures since the last ResetAfter, as the manager counts them">Fails</th>
+      <th>Last exit</th><th class="num">In state</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Topics <span class="muted" id="topiccount"></span></h2>
+  <div class="two">
+    <div>
+      <table id="topics">
+        <thead><tr>
+          <th class="sortable" data-key="name">Topic</th>
+          <th class="sortable" data-key="type_hash">Type</th>
+          <th class="sortable num" data-key="rate_hz">Rate</th>
+          <th class="sortable num" data-key="measured_hz">Measured</th>
+          <th class="sortable num" data-key="age_ms">Age</th>
+          <th class="sortable" data-key="writer">Writer</th>
+          <th class="sortable num" data-key="slots">Slots</th>
+          <th class="sortable num" data-key="payload_bytes">Bytes</th>
+          <th class="sortable num" data-key="seq">Seq</th>
+          <th>Flags</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="box" id="detail"><div class="empty">Click a topic to see its newest message, decoded by the schema in its header.</div></div>
+  </div>
+
+  <h2>Log</h2>
+  <div class="box">
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px">
+      <select id="logsel"></select>
+      <span id="lognote" class="muted"></span>
+    </div>
+    <pre id="log"></pre>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var sortKey = 'name', sortDir = 1, selected = null, logFile = null, cycle = 0, lastTopics = [];
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function fmtDur(s) {
+    if (s == null) return '-';
+    if (s < 60) return s.toFixed(0) + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm' + ('0' + Math.floor(s % 60)).slice(-2) + 's';
+    return Math.floor(s / 3600) + 'h' + ('0' + Math.floor((s % 3600) / 60)).slice(-2) + 'm';
+  }
+  function fmtAge(ms) {
+    if (ms == null) return '-';
+    if (ms < 1000) return ms.toFixed(0) + ' ms';
+    return fmtDur(ms / 1000);
+  }
+  function fmtRate(hz) {
+    if (hz == null) return '-';
+    if (hz === 0) return 'event';
+    return (hz % 1 === 0 ? hz.toFixed(0) : hz.toFixed(2)) + ' Hz';
+  }
+  function getJSON(url) {
+    return fetch(url, { cache: 'no-store' }).then(function (r) {
+      return r.json().then(function (j) { j.__status = r.status; return j; });
+    });
+  }
+  function post(url, what) {
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var m = $('msg');
+        m.className = j.ok ? '' : 'err';
+        m.textContent = what + ': ' + (j.ok ? 'ok' + (j.reply ? ' ' + j.reply : '') : 'refused: ' + j.error);
+      }, function (e) {
+        var m = $('msg'); m.className = 'err'; m.textContent = what + ': ' + e;
+      });
+  }
+
+  function renderSystem(s) {
+    var pill = $('sys');
+    if (!s.present) {
+      pill.className = 'pill sys-unknown'; pill.textContent = 'no manager';
+      $('sysinfo').textContent = s.topic + ' has no message';
+      return;
+    }
+    pill.className = 'pill sys-' + s.state; pill.textContent = s.state;
+    $('sysinfo').textContent = 'for ' + fmtDur(s.in_state_s) + (s.reason ? ': ' + s.reason : '') +
+      '  (' + s.role + ', manager pid ' + s.manager_pid + ', ' + s.modules + ' modules' +
+      (s.age_ms > 3000 ? ', last heard ' + fmtAge(s.age_ms) + ' ago' : '') + ')';
+  }
+
+  function renderModules(d) {
+    var rows = d.modules.slice().sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+    $('modcount').textContent = rows.length ? rows.length : '';
+    var html = rows.map(function (m) {
+      var running = m.pid > 0;
+      return '<tr><td><b>' + esc(m.name) + '</b></td>' +
+        '<td><span class="pill st-' + esc(m.state) + '">' + esc(m.state) + '</span></td>' +
+        '<td class="num">' + (running ? m.pid : '-') + '</td>' +
+        '<td class="num">' + m.restarts + '</td><td class="num">' + m.failures + '</td>' +
+        '<td>' + esc(m.last_exit) + '</td><td class="num">' + fmtDur(m.in_state_s) + '</td>' +
+        '<td class="wrap">' + esc(m.status) + '</td>' +
+        '<td><button data-act="start" data-mod="' + esc(m.name) + '"' + (running ? ' disabled' : '') + '>start</button> ' +
+        '<button class="danger" data-act="stop" data-mod="' + esc(m.name) + '"' + (running ? '' : ' disabled') + '>stop</button> ' +
+        '<button class="danger" data-act="restart" data-mod="' + esc(m.name) + '">restart</button></td></tr>';
+    }).join('');
+    $('modules').tBodies[0].innerHTML = html || '<tr><td colspan="9" class="empty">no modules reported on ' + esc(d.topic) + '</td></tr>';
+  }
+
+  function cmp(a, b) {
+    var x = a[sortKey], y = b[sortKey];
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    if (typeof x === 'number') return (x - y) * sortDir;
+    return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+  }
+  function renderTopics(d) {
+    lastTopics = d.topics;
+    $('topiccount').textContent = d.topics.length + (d.error ? '  ' + d.error : '');
+    var rows = d.topics.slice().sort(cmp);
+    var html = rows.map(function (t) {
+      var flags = t.flags.map(function (f) { return '<span class="flag">' + esc(f) + '</span>'; }).join('');
+      if (!flags && t.age_ms != null) flags = '<span class="flag ok">live</span>';
+      return '<tr class="topic' + (t.name === selected ? ' selected' : '') + '" data-name="' + esc(t.name) + '">' +
+        '<td>' + esc(t.name) + '</td><td class="hash">' + esc(t.type_hash) + '</td>' +
+        '<td class="num">' + fmtRate(t.rate_hz) + '</td><td class="num">' + (t.measured_hz == null ? '-' : t.measured_hz.toFixed(1)) + '</td>' +
+        '<td class="num">' + fmtAge(t.age_ms) + '</td><td>' + esc(t.writer) + (t.writer_pid ? ' <span class="muted">' + t.writer_pid + '</span>' : '') + '</td>' +
+        '<td class="num">' + t.slots + '</td><td class="num">' + t.payload_bytes + '</td><td class="num">' + t.seq + '</td>' +
+        '<td>' + flags + '</td></tr>';
+    }).join('');
+    $('topics').tBodies[0].innerHTML = html || '<tr><td colspan="10" class="empty">no topics in ' + esc(d.dir) + '</td></tr>';
+    var ths = $('topics').tHead.querySelectorAll('th.sortable');
+    for (var i = 0; i < ths.length; i++) {
+      var k = ths[i].getAttribute('data-key');
+      var a = ths[i].querySelector('.arrow');
+      if (a) ths[i].removeChild(a);
+      if (k === sortKey) {
+        var span = document.createElement('span');
+        span.className = 'arrow'; span.textContent = sortDir > 0 ? '▲' : '▼';
+        ths[i].appendChild(span);
+      }
+    }
+  }
+
+  function renderDetail(t) {
+    var box = $('detail');
+    if (t.__status !== 200 || t.error) {
+      box.innerHTML = '<b>' + esc(t.topic || selected) + '</b><div class="empty">' + esc(t.error || 'no message') + '</div>';
+      return;
+    }
+    var head = '<b>' + esc(t.topic) + '</b> <span class="hash">' + esc(t.type_hash || '') + '</span>' +
+      ' <span class="muted">writer ' + esc(t.writer || '?') + ', ' + t.payload_bytes + ' bytes</span>';
+    if (!t.present) {
+      box.innerHTML = head + '<div class="empty">' + esc(t.result || t.schema_error || 'no message yet') + '</div>';
+      return;
+    }
+    var meta = '<div class="muted" style="margin:4px 0 6px">seq ' + t.seq + ', published ' + fmtAge(t.age_ms) + ' ago' +
+      (t.stale ? ', <span class="flag">computed from stale inputs</span>' : '') + (t.gap ? ', gap ' + t.gap : '') +
+      (t.schema_error ? ', <span class="flag">' + esc(t.schema_error) + '</span>' : '') + '</div>';
+    var rows = t.fields.map(function (f) {
+      var v = f.value;
+      var vs = Array.isArray(v) ? '[' + v.map(function (x) { return x == null ? 'null' : x; }).join(', ') + ']' :
+               v == null ? 'null' : String(v);
+      return '<tr><td><code>' + esc(f.name) + '</code></td><td class="wrap"><code>' + esc(vs) + '</code></td>' +
+        '<td class="muted">' + esc(f.type) + (f.count > 1 ? '[' + f.count + ']' : '') + '</td>' +
+        '<td class="muted wrap">' + esc(f.comment) + '</td></tr>';
+    }).join('');
+    box.innerHTML = head + meta + '<table><thead><tr><th>Field</th><th>Value</th><th>Type</th><th>Comment</th></tr></thead><tbody>' +
+      rows + '</tbody></table>';
+  }
+
+  function renderLog(d) {
+    var sel = $('logsel');
+    var names = d.files.map(function (f) { return f.name; });
+    if (names.indexOf(logFile) < 0) logFile = names.length ? names[0] : null;
+    var opts = names.map(function (n) { return '<option' + (n === logFile ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('');
+    if (sel.innerHTML !== opts) sel.innerHTML = opts;
+    $('lognote').textContent = d.journald ? d.note : (d.files.length ? d.dir : d.note);
+    var f = null;
+    for (var i = 0; i < d.files.length; i++) if (d.files[i].name === logFile) f = d.files[i];
+    var pre = $('log');
+    var atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    pre.textContent = f ? f.tail : (d.journald ? '' : 'no log files');
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  }
+
+  function setConn(ok, why) {
+    var c = $('conn');
+    c.className = ok ? 'muted' : 'down';
+    c.textContent = ok ? 'live' : 'dawn-patrold unreachable' + (why ? ': ' + why : '');
+  }
+
+  function poll() {
+    var jobs = [getJSON('/api/system').then(renderSystem), getJSON('/api/modules').then(renderModules),
+                getJSON('/api/topics').then(renderTopics)];
+    if (selected) jobs.push(getJSON('/api/topic/' + encodeURIComponent(selected)).then(renderDetail));
+    if (cycle++ % 2 === 0) jobs.push(getJSON('/api/log?lines=200').then(renderLog));
+    Promise.all(jobs).then(function () { setConn(true); }, function (e) { setConn(false, e.message); })
+      .then(function () { setTimeout(poll, 1000); });
+  }
+
+  $('topics').tHead.addEventListener('click', function (ev) {
+    var th = ev.target.closest('th.sortable');
+    if (!th) return;
+    var k = th.getAttribute('data-key');
+    if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = 1; }
+    renderTopics({ topics: lastTopics, dir: '' });
+  });
+  $('topics').tBodies[0].addEventListener('click', function (ev) {
+    var tr = ev.target.closest('tr.topic');
+    if (!tr) return;
+    selected = tr.getAttribute('data-name');
+    renderTopics({ topics: lastTopics, dir: '' });
+    getJSON('/api/topic/' + encodeURIComponent(selected)).then(renderDetail);
+  });
+  $('modules').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-act]');
+    if (!b) return;
+    var act = b.getAttribute('data-act'), mod = b.getAttribute('data-mod');
+    if (act !== 'start' && !window.confirm(act + ' ' + mod + '?')) return;
+    post('/api/module/' + encodeURIComponent(mod) + '/' + act, act + ' ' + mod);
+  });
+  $('reload').addEventListener('click', function () {
+    if (window.confirm('Read the manifests again? Changed modules are restarted.')) post('/api/reload', 'reload');
+  });
+  $('logsel').addEventListener('change', function () {
+    logFile = this.value;
+    getJSON('/api/log?lines=200').then(renderLog);
+  });
+  poll();
+})();
+</script>
+</body>
+</html>

@@ -167,6 +167,7 @@ else
 fi
 want hangard "$builddir/hangard"
 want hangar "$builddir/hangar"
+want dawn-patrold "$builddir/dawn-patrold"
 for t in "$ROOT"/lib/hg/tests/test_hg_*.c; do
 	[ -e "$t" ] || continue
 	s=$(basename "$t" .c)

@@ -497,4 +497,9 @@ include bench/bench.mk
 include hangard/hangard.mk
 check: check-hangard
 
+# Dawn Patrol, the console module (modules/console/README.md,
+# modules/console/console.mk carries the rules): GPL-3.0-or-later, C11 over lib/hg and lib/net.
+include modules/console/console.mk
+check: check-console
+
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
