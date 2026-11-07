@@ -10,7 +10,9 @@ live, and every change is checked, applied whole, saved, published and recorded.
 - **A module's parameters are one typed, fixed-size struct**, declared as a `.msg`
   type with a default and an optional range for each field.
 - **They change only through a call**, `<module>.set_params`, which the library serves
-  for the module. No file is watched.
+  for the module. A call is two messages on two topics ([04-calls](04-calls.md)): the
+  request on the caller's `<caller>.req`, the reply on `<module>.rep`. No file is
+  watched.
 - **A change is a transaction.** Ranges are checked, then the module's own validator;
   accepted, the whole struct is swapped in at once; refused, nothing changes and the
   reply says why.
@@ -36,12 +38,16 @@ Allow=topside:pilot_console admin topside:admin
 | `[Params]` key | Default | |
 |---|---|---|
 | `Type` | — (required) | The parameter type |
-| `Allow` | `* admin`: every module on this machine, and `admin`; none for the `safety` and `mux` modules and for a module with an actuator output | Callers that may set parameters, as the tokens of [04-calls](04-calls.md#callers): `depth_hold`, `topside:pilot_console`, `*`, `topside:*`, `admin`, `topside:admin` |
+| `Allow` | `* admin`: every module on this machine, and `admin`; none for the `safety` and `mux` modules and for a module with an actuator output | Callers that may set parameters, as the tokens of [04-calls](04-calls.md#allow-tokens): `depth_hold`, `topside:pilot_console`, `*`, `topside:*`, `admin`, `topside:admin` |
 
-Nothing in `Allow` is implicit. An operator (`hangar param`, as `admin:<user>`)
-passes only where the list names `admin`, and a module or operator of the other side
-only where it names that module, `topside:*` or `topside:admin`. The default list
-admits nobody from the other side.
+Nothing in `Allow` is implicit. A caller is the writer of the request topic the request
+arrived on, which the manager guarantees; nothing is asserted by the caller itself. An
+operator (`hangar param`, as `admin:<user>`) passes only where the list names `admin`:
+the `hangar` command asks the manager over the control socket, and the manager, the
+one writer of `hangar.<role>.admin.req`, publishes the request there with the operator's
+name in the envelope. A module or operator of the other side arrives on a mirrored
+`.req` topic and passes only where the list names that module, `topside:*` or
+`topside:admin`. The default list admits nobody from the other side.
 
 Declaring `[Params]` gives the module the `set_params` method and the
 `<module>.params` topic; both names are reserved and cannot be declared otherwise.
@@ -91,9 +97,9 @@ static int validate(const void *candidate, const void *current, char reason[64])
 hg_params_open(&DEPTH_HOLD_PARAMS_TYPE, &P, validate, NULL);  // after hg_init
 
 for (;;) {
-  unsigned ready = hg_wait(subs, n, 100);         // a set; 0 on timeout
-  if (ready & HG_READY_CALLS)  hg_serve();         // set_params is applied here
-  if (ready & HG_READY_TOPICS) read_topics();
+  hg_wait(subs, n, 100);        // the set includes the callers' .req topics
+  hg_serve();                   // reads them; set_params is applied here
+  read_topics();
   if (hg_params_changed()) reset_integrator();
 }
 ```
@@ -101,25 +107,33 @@ for (;;) {
 `hg_params_open` loads the saved values, checks them, publishes them on
 `<module>.params`, and fills `P`. At the module's first start, when no file exists
 yet, it takes the defaults and writes them as the saved file before it publishes
-([Saved values](#saved-values)). A change is validated and applied inside
-`hg_serve()`, on the module's own thread, between two iterations of its loop: the module never sees a half-applied struct, and needs no atomics or locks.
-A module with several threads hands its threads a copy, as it would any other data.
+([Saved values](#saved-values)). The `.req` topics of the module's callers are in its
+wiring, so `hg_wait` wakes on a request as on any message
+([04-calls](04-calls.md#the-two-topics)). A change is validated and applied inside
+`hg_serve()`, on the module's own thread, between two iterations of its loop: the
+module never sees a half-applied struct, and needs no atomics or locks. A module with
+several threads hands its threads a copy, as it would any other data.
 
 ## Setting parameters
 
-**Request** (type `set_params:<type>`):
+**Request** (type `set_params:<type>`), published on the caller's `<caller>.req` topic
+with method `set_params`:
 
 ```
 u64 base_version     # the version this change was based on
 <the parameter struct>
 ```
 
-**Reply:** `u64 version` (the version now in force, or with `restarting`, the version
-the new instance will start with) and `u8 restarting`.
+**Reply** (type `set_params_rep`), on `<module>.rep`: `u64 version` (the version now
+in force, or with `restarting`, the version the new instance will start with) and
+`u8 restarting`.
 
-The library, inside `hg_serve()`:
+The library, inside `hg_serve()`, reading the request from the caller's ring as for
+any call (a request past its deadline is dropped unexecuted,
+[04-calls](04-calls.md#the-rules)):
 
-1. refuses a caller not allowed (`HG_E_DENIED`);
+1. refuses a caller not allowed (`HG_E_DENIED`): the caller is the writer of the
+   request topic, or, on `hangar.<role>.admin.req`, the operator the manager named;
 2. refuses any change while a restart is pending (`HG_E_REFUSED`, "restart pending",
    [Restart-only fields](#restart-only-fields));
 3. refuses a stale request: `base_version` is not the current version
@@ -131,11 +145,13 @@ The library, inside `hg_serve()`:
 
 Clients do read, modify and set: they take the current values and version from the
 topic, change what they want, and send the whole struct. `hangar param set
-depth_hold kp=1.2` does exactly that, and repeats it up to three times if refused as
-stale.
+depth_hold kp=1.2` does exactly that, through the manager's `hangar.<role>.admin.req`,
+and repeats it up to three times if refused as stale.
 
-Like any call, every attempt, accepted or refused, is on `<module>.calls`, with the
-caller and the full request.
+Like any call, every attempt, accepted or refused, is in the recording: the request,
+with the full struct, on the caller's `.req` topic, and the reply, with its status and
+reason, on `<module>.rep`, referencing the request message it answers. Nothing else is
+written for it.
 
 ## The parameter topic
 
@@ -244,9 +260,13 @@ second line), not `saved`. A field marked `@restart` therefore never appears in
 
 - Ranges, the validator, and stale versions each refuse, and the values in force do not
   change.
-- `Allow`: `admin` from a shell allowed only where listed; `topside:pilot_console`
-  allowed only through the bridge and only where listed; the `safety`, `mux` and
-  actuator modules refuse every caller they do not list.
+- `Allow`: `admin` from a shell, arriving on `hangar.<role>.admin.req`, allowed only
+  where listed, and the operator's name honoured on no other topic;
+  `topside:pilot_console` allowed only from a mirrored `.req` topic and only where
+  listed; a local module named `pilot_console` never matches it; the `safety`, `mux`
+  and actuator modules refuse every caller they do not list.
+- A `set_params` request published while the module restarts is applied by the new
+  instance if its deadline has not passed, and dropped unexecuted otherwise.
 - `param-write` on a stopped module: the file is synced, its version one above the
   saved one, and the module starts with it.
 - Two clients setting at once: one wins, the other is refused as stale and its retry
@@ -264,5 +284,6 @@ second line), not `saved`. A field marked `@restart` therefore never appears in
 - A parameters file without its header line, or empty (as a power cut during a first
   write could leave it): the start refused with exit status 78, never loaded as
   defaults.
-- Every accepted and refused change appears on `<module>.calls`; every accepted one on
+- Every accepted and refused change appears as a request on the caller's `.req` topic
+  and a reply on `<module>.rep` that references it; every accepted one on
   `<module>.params`.

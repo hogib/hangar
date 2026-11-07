@@ -16,17 +16,21 @@ on the vehicle while it runs:
 
 This loop is what hangar is for. Every link in it is recorded, every step can be
 undone, and no step trusts the one before it: the weights are checked on the vehicle,
-run in shadow until an operator promotes them, drive only within an envelope, and are
-demoted automatically when they misbehave. The one exception to shadow is online
-adaptation inside the residual envelope ([Updates while active](#updates-while-active)).
+drive only within an envelope, and are demoted automatically when they misbehave.
 
-Two kinds of learning run on it, with one worked example each:
-
-- **imitation**: a policy learns to do what the pilot did
-  ([Example: imitating the pilot](#example-imitating-the-pilot));
-- **online adaptation**: a network learns, during the dive, a correction to a
-  classical controller as the vehicle's dynamics change
-  ([Example: adaptive depth hold](#example-adaptive-depth-hold)).
+**Version 1** of the loop is online adaptation in the residual mode alone: a network
+learns, during the dive, a bounded correction to a classical controller, and the mux
+adds it to the controller's output within the residual envelope
+([07-safety](07-safety.md#the-mux)). It has one worked example,
+[adaptive depth hold](#example-adaptive-depth-hold). It covers: the policy module and
+its spec; the runtime with the ops `dense`, `lstm`, `affine`, `cast`, `relu`, `tanh`
+and `sigmoid`; the weights file; the load checks (hashes, architecture, finite values,
+probes, step time) and the warm-up; a finiteness check on every tick; promotion by
+hash and automatic demotion; `revert`; reload at start; lineage across vehicle boots;
+the topics `policy.<name>.active` and `policy.<name>.load`; and the trainer with its
+Python package. A network that takes a whole axis, shadow evaluation on the vehicle,
+substitution, convolutions and the imitation of a pilot are listed under
+[Later](#later) and are not part of version 1.
 
 ## The rules
 
@@ -39,14 +43,15 @@ Two kinds of learning run on it, with one worked example each:
   over the same unbroken runs, with its state reset at the same rows, as it runs on the
   vehicle.
 - **Weights are checked before they run**: hashes, architecture, finite values, the
-  time a step takes, probe outputs computed on the topside that the vehicle must
-  reproduce, and every intermediate value bounded on those probes.
+  time a step takes, and probe outputs computed on the topside that the vehicle must
+  reproduce.
 - **Outputs are checked every tick.** A non-finite output is never published.
-- **A new model starts in shadow** and drives only when an operator promotes it, naming
-  the model; it is demoted automatically ([07-safety](07-safety.md#the-mux)). The one
-  exception: a policy with `UpdateWhileActive=yes` that an operator has promoted to
-  `residual:<name>` takes each new model after its checks and warm-up, within the
-  residual envelope ([Updates while active](#updates-while-active)).
+- **A policy drives nothing until an operator promotes it**, naming the model. Its
+  output is published and recorded from its first tick; the mux applies it only in
+  `residual:<name>`, and only within the residual envelope. In that mode each later
+  model the policy swaps in drives from its swap, after its checks and warm-up; the mux
+  demotes the policy automatically when its output misbehaves
+  ([07-safety](07-safety.md#the-mux)).
 - **The previous weights are kept**, across restarts, and `revert` restores them at
   once.
 - **Lineage is complete**: every action names the model that produced it, and every
@@ -65,56 +70,53 @@ Two kinds of learning run on it, with one worked example each:
 3. From time to time it **exports** a weights file (`.hgw`), with the lineage of the
    rows it was trained on and a set of probes.
 4. It **sends** the file down (`bridge.send`, at `bulk` priority) and calls
-   `policy_<name>.load_weights`.
+   `policy_<name>.load_weights`: a request on its own `trainer.req` topic, which the
+   bridge mirrors down; the reply comes back on `policy_<name>.rep`
+   ([04-calls](04-calls.md#the-rules)).
 5. The **policy module** checks the file, warms the new model up beside the running one,
    and swaps it in between two ticks. It reports the load's progress on
    `policy.<name>.load` and announces the swap on `policy.<name>.active`.
-6. The policy's output runs in **shadow**, compared live against whatever is driving
-   (`policy.<name>.eval`), until an operator promotes that model with `mux.set_mode`;
-   under `UpdateWhileActive=yes` in `residual:<name>`, the new model drives at the swap.
+6. The policy's output is published and recorded. With the mux in `residual:<name>`,
+   set by an operator with `mux.set_mode` naming the running model's hash, the new
+   model drives from the swap, within the residual envelope.
 7. Its **actions** are recorded and paired, and become new samples.
 
 The loop needs, in both copies of the bridge's configuration, `dataset.<name>` mirrored
-up, and `policy.<name>.active`, `policy.<name>.load` (event topics, `reliable`) and
-`policy.<name>.eval` mirrored up ([08-bridge](08-bridge.md#configuration)): the trainer
-waits on the first two, and the operator promotes on the third. `deploy` gives up after
-60 s without a `policy.<name>.load` message for its file, and says so.
+up, `policy.<name>.active` and `policy.<name>.load` (event topics, `reliable`) mirrored
+up, and `policy_*.*` in `[Calls] Remote=`, which has the bridges mirror `trainer.req`
+down and `policy_<name>.rep` up, reliably, at `call` priority
+([08-bridge](08-bridge.md#calls-across-the-tether)): the trainer waits on the first
+two, and the operator promotes on the first. `deploy` gives up after 60 s without a
+`policy.<name>.load` message for its file, and says so.
 
 ## Policy modules
 
 A policy is a module running the generic `hangar-policy` program with its own
-manifest and policy spec. Each is its own module (`policy_pilot`, `policy_depth_ff`),
-with its own process, restarts and parameters.
+manifest and policy spec. Each is its own module (`policy_depth_ff`), with its own
+process, restarts and parameters.
 
 ```ini
-# /etc/hangar/modules/policy_pilot.module
+# /etc/hangar/modules/policy_depth_ff.module
 [Module]
-Description=Pilot imitation policy
-Exec=/usr/lib/hangar/hangar-policy /etc/hangar/policies/pilot.policy
+Description=Depth hold feed-forward policy
+Exec=/usr/lib/hangar/hangar-policy /etc/hangar/policies/depth_ff.policy
 # writes the weights it swaps in into the recorder's session
 SupplementaryGroups=hangar-rec
 
 [Subscribe nav.state]
-[Subscribe cam.nn]
-[Subscribe ctl.wrench]
-[Subscribe mux.state]
-[Subscribe mux.params]
+[Subscribe ctl.depth_hold.target]
 [Subscribe recorder.session]
 
-[Publish policy.pilot.wrench]
+[Publish policy.depth_ff.wrench]
 Type=wrench
 Rate=50
-Inputs=nav.state policy.pilot.active
+Inputs=nav.state ctl.depth_hold.target policy.depth_ff.active
 
-[Publish policy.pilot.active]
+[Publish policy.depth_ff.active]
 Type=policy_active
 
-[Publish policy.pilot.load]
+[Publish policy.depth_ff.load]
 Type=policy_load
-
-[Publish policy.pilot.eval]
-Type=policy_eval
-Rate=1
 
 [Serve load_weights]
 Request=load_weights_req
@@ -140,26 +142,30 @@ Allow=topside:trainer topside:pilot_console admin topside:admin
 CPUs=2
 ```
 
+The manager adds the module's reply topic, `policy_depth_ff.rep`, and the subscriptions
+through which its callers' requests reach it: `hangar.vehicle.admin.req`, and
+`subglob *.req` for the topside's mirrored `trainer.req` and `pilot_console.req`
+([03-manager](03-manager.md#wiring)). A request is a message the policy reads in its
+loop like any other ([04-calls](04-calls.md#the-rules)).
+
 The policy spec says what the policy runs on. It is part of the installation, like the
 manifest, and cannot be changed from the topside:
 
 ```ini
-# /etc/hangar/policies/pilot.policy
+# /etc/hangar/policies/depth_ff.policy
 [Policy]
-Name=pilot
-Dataset=pilot_imitation
+Name=depth_ff
+Dataset=depth_ff
 Arch=4be1c0d2a97f3e18
 TickBudget=50%
-UpdateWhileActive=no
 ```
 
 | `[Policy]` key | Default | |
 |---|---|---|
-| `Name` | — (required) | The policy's name, `[a-z0-9_]`. The module is `policy_<name>`; it publishes `policy.<name>.wrench`, `.active`, `.load` and `.eval`; its mux modes are `policy:<name>` and `residual:<name>`. The manager refuses a module that runs `hangar-policy` under another name or without those four outputs |
-| `Dataset` | — (required) | The spec that builds the inputs, and whose `ResetAfter` resets recurrent state; it must be usable by this policy, with its substitutions ([Features at run time](#features-at-run-time)) |
+| `Name` | — (required) | The policy's name, `[a-z0-9_]`. The module is `policy_<name>`; it publishes `policy.<name>.wrench`, `.active` and `.load`; its mux mode is `residual:<name>`. The manager refuses a module that runs `hangar-policy` under another name or without those three outputs |
+| `Dataset` | — (required) | The spec that builds the inputs, and whose `ResetAfter` resets recurrent state; it must be usable by a policy ([Features at run time](#features-at-run-time)) |
 | `Arch` | — (required) | The architecture hash a weights file must have |
 | `TickBudget` | `50%` | The largest share of the tick period the model steps of one tick may take together: the running model's step, plus during a warm-up the new model's ([Loading weights](#loading-weights)) |
-| `UpdateWhileActive` | `no` | Whether a new model may replace a model in `residual` mode without demotion ([Updates while active](#updates-while-active)). Published in `policy.<name>.active`, so the mux can act on it |
 
 A policy's topics:
 
@@ -168,31 +174,31 @@ A policy's topics:
 | `policy.<name>.wrench` | the anchor's rate | The output: one message per anchor message |
 | `policy.<name>.active` | event | One message per swap or revert: the model now computing the output ([Loading weights](#loading-weights)) |
 | `policy.<name>.load` | event | Progress of a load: checking, warming, done, rejected with the reason |
-| `policy.<name>.eval` | 1 Hz | [Shadow evaluation](#shadow-evaluation) |
 
 **With no running model** (a fresh installation, or a restart whose weights are
 still being checked), the policy still publishes on every tick: a neutral wrench,
 flagged as computed from stale inputs (slot flag bit 0), which the mux treats as no
-contribution ([07-safety](07-safety.md#the-mux)), and an eval message with model
-version 0. The module is therefore ready and fresh, and is never restarted for lack
-of a model.
+contribution ([07-safety](07-safety.md#the-mux)). The module is therefore ready and
+fresh, and is never restarted for lack of a model.
 
 **At start** the policy reloads its weights from its state directory,
 `/var/lib/hangar/policy_<name>/`: `current.hgw`, the model that was running, and
-`previous.hgw`, kept for `revert`. Both go through checks 1 to 8; the current one is
+`previous.hgw`, kept for `revert`. Both go through checks 1 to 7; the current one is
 warmed up and swapped in, and announced with cause `start`. A restarted policy always
-comes back in shadow: the mux demoted it when its output went stale.
+comes back unapplied: the mux fell back to `assisted` when its output went stale, and
+an operator promotes it again.
 
 ## Features at run time
 
 The policy ticks on each message of the dataset's anchor. At each tick it builds the
 row's `input` parts with the pairer's own join code: provenance by seq, `asof` by
 stamp, windows by the preceding seqs. A spec qualifies only if no `input` join would
-have to wait, unless the policy substitutes it (below)
+have to wait: every `input`-role `asof` join has `offset + Lateness ≤ 0`
 ([06-recorder](06-recorder.md#joins)), so the inputs are complete at the moment of the
-anchor. The pairer, too, joins the `input` parts when it reads the anchor, and waits
-only for `label` and `filter` parts. `label` and `filter` parts are not built by the
-policy: it acts on every tick, whoever is driving.
+anchor. The policy checks this at start, and `hangar dataset check` names the `input`
+joins that would have to wait. The pairer, too, joins the `input` parts when it reads
+the anchor, and waits only for `label` and `filter` parts. `label` and `filter` parts
+are not built by the policy: it acts on every tick, whoever is driving.
 
 A part that is missing (gone from its ring, or its topic absent) is filled with zeros
 and its bit set in the row's `missing` field, identically in the row and in the
@@ -202,35 +208,14 @@ output itself, since the parts need not be among the output's `Inputs`
 ([01-topics](01-topics.md#stale-inputs)); the actuator gate and the mux then treat
 that output as no command.
 
-The input bytes a policy hands its model at a tick are therefore byte-identical to the
-input part of the dataset row for the same anchor message, except where one side
-missed a message the other had, the cases that
-[06-recorder](06-recorder.md#offline-the-same-rows-from-a-recording) lists; a test
-checks it. A model never meets features at run time that differ from those it was
-trained on.
-
-**One deliberate exception: substitution.** A model may be trained on something
-measured afterwards and run on what is wanted instead: trained on the motion that
-followed a thrust, run on the motion the controller wants. The policy spec names the
-substitution explicitly:
-
-```ini
-[Substitute future_state]
-Topic=ctl.depth_hold.target
-Fields=accel_z
-```
-
-The part `future_state` is the dataset's `asof:+200ms` join of `nav.state`. A spec is
-usable by a policy when every `input` join the policy does not substitute has
-`offset + Lateness ≤ 0`; the policy checks this at start, and `hangar dataset check`
-says which joins would need a substitution. The substitute topic is one of the policy's
-subscriptions, joined as the newest message published at or before the anchor's
-publish time, without waiting; its seq, stamp, count and flags fill the part's header,
-and when it is missing or stale it counts as a missing part, for the `missing` bits
-and for `ResetAfter`. The substitute must have the same fields and types as the part
-it replaces. A substituted part is excluded from the byte-identity test, and
-`policy.<name>.eval` reports the substitution, so nobody mistakes it for the general
-case.
+The input bytes a policy hands its model at a tick are therefore the same as the
+input part of the dataset row for the same anchor message, except where one of the two
+read a ring at a moment the other did not: a message gone from the ring on one side,
+or one published between the two reads. Both cases are recorded, not guessed: a
+missing part by its bit, and a message the pairer joined only after the policy's tick
+by the row's `late` flag ([06-recorder](06-recorder.md#joins)). A test checks the
+rest. A model never meets features at run time that differ from those it was trained
+on.
 
 ## The runtime
 
@@ -265,19 +250,16 @@ results do not change.
 | Op | Attributes | |
 |---|---|---|
 | `dense` | in, out, bias | |
-| `conv2d` | in channels, out channels, kernel, stride, padding, bias | CHW layout |
-| `maxpool2d`, `avgpool2d` | kernel, stride | |
-| `global_avgpool` | | |
-| `relu`, `tanh`, `sigmoid` | | |
-| `affine` | per-channel scale and shift | input normalization, folded batchnorm, output scaling |
-| `add`, `concat` | axis | skip connections; merging inputs |
-| `flatten`, `reshape` | shape | |
-| `cast` | from u8/i8/u16/i16/u32/i32/f64 to f32, scale | raw row fields to f32 |
 | `lstm` | input size, hidden size, layers | [LSTM](#lstm) |
+| `affine` | per-channel scale and shift | input normalization, folded batchnorm, output scaling |
+| `relu`, `tanh`, `sigmoid` | | |
+| `cast` | from u8/i8/u16/i16/u32/i32/f64 to f32, scale | raw row fields to f32 |
 
-A weights file using an op or version this runtime does not have is refused at load,
-naming it (`op lstm v2 not supported`). `policy_<name>.runtime_info` lists the ops and
-versions the vehicle has, and the exporter checks against it before anything is sent.
+Convolutions, pooling, `concat` and the other shape ops come later
+([Later](#later)). A weights file using an op or version this runtime does not have is
+refused at load, naming it (`op conv2d v1 not supported`). `policy_<name>.runtime_info`
+lists the ops and versions the vehicle has, and the exporter checks against it before
+anything is sent.
 
 ### LSTM
 
@@ -327,8 +309,8 @@ tolerance in the weights file, never bit for bit.
 
 Every tick, the policy checks its output and the recurrent state for finite values. A
 tick with a non-finite value publishes nothing; the state is reset, the event is
-counted in `policy.<name>.eval`, and the mux demotes the policy at once
-([07-safety](07-safety.md#the-mux)).
+counted in the module's status line (`hangar top`), and the mux demotes the policy at
+once, since its output skipped a tick ([07-safety](07-safety.md#the-mux)).
 
 ## The weights file (`.hgw`)
 
@@ -340,11 +322,8 @@ Self-describing, mapped into memory and read in place:
 
 **Header**: `magic` (`"HGWEIGHT"`), format version, the architecture hash, the model's
 name, the tick period it was trained at, `warmup` ticks, the probe tolerance (relative
-and absolute), the **activation bound** (the largest absolute value any buffer may hold
-on the probes and range samples, [Loading weights](#loading-weights)), `autopilot_mode` (the ArduSub flight mode its labels were collected in,
-[Example: imitating the pilot](#example-imitating-the-pilot)), creation time, the
-trainer's description (program, version, a hash of its settings), and the summary of
-its **lineage**:
+and absolute), creation time, the trainer's description (program, version, a hash of
+its settings), and the summary of its **lineage**:
 
 | Lineage field | |
 |---|---|
@@ -364,8 +343,10 @@ its **lineage**:
 | inputs | per model input: its buffer, and the row fields it is bound to, in order (a part's fields, its `count`, its missing bit) |
 | outputs | the output buffer, and the fields of the output topic's type it fills, in order |
 | probes | input sequences from zero state, and the expected output at every step; one of them at least 20 × the chunk length, from an unbroken recorded run |
-| ranges | optional: per input field, the smallest and largest value in the rows trained on |
 | lineage | one entry per source of rows, any number: vehicle boot id (u8[16]), recorder session id or `live`, first and last `anchor_seq` and stamp, rows used from it |
+
+A reader skips a section whose name it does not know, so sections can be added
+([Later](#later)) without a new format version.
 
 The **architecture hash** covers the ops, their attributes, the shapes, and the input
 and output bindings: everything but the tensor values and the lineage. Training changes
@@ -378,13 +359,13 @@ travel with the weights and cannot drift from them.
 ## Loading weights
 
 `policy_<name>.load_weights {name, hash}`, naming a file the bridge received
-([08-bridge](08-bridge.md#files)). The call answers at once (`accepted`, with the
+([08-bridge](08-bridge.md#files)). The reply comes at once (`accepted`, with the
 version it will get, or refused while another load is in progress); the work happens
 beside the tick path, on a worker thread of the policy module running at the lowest
 priority (`SCHED_IDLE`), so that it never delays a tick. Its progress is on
 `policy.<name>.load`:
 
-1. the file's hash matches the call's;
+1. the file's hash matches the request's;
 2. the format version, and the architecture hash equal to the policy's `Arch`;
 3. every op and version is in this runtime, and every op's `check` passes;
 4. the lineage's dataset is the policy's `Dataset`, with the same spec hash; the input
@@ -394,16 +375,10 @@ priority (`SCHED_IDLE`), so that it never delays a tick. Its progress is on
 5. every tensor value is finite;
 6. the probes, from zero state, reproduce the expected outputs at every step within the
    tolerance;
-7. activations are bounded: running the probes, and, when the file carries `ranges`,
-   samples spanning them (each input field at its smallest, largest and middle value,
-   and random points between, from zero state over the chunk length), every
-   intermediate buffer, recurrent state included, stays finite and within the
-   activation bound of the header. A model that is finite on its probes but overflows
-   on an input it may meet is refused here, not at its first bad tick;
-8. the new model's step time, measured on the probes before warm-up, while the tick
+7. the new model's step time, measured on the probes before warm-up, while the tick
    thread is waiting for its next anchor, plus the running model's, is under
    `TickBudget` of the tick period;
-9. warm-up beside the running model, then the swap, between two ticks.
+8. warm-up beside the running model, then the swap, between two ticks.
 
 A failed check stops the load: the running model is untouched, and
 `policy.<name>.load` says which check failed and why. A tick that overruns its period
@@ -416,7 +391,7 @@ computed while another file is being checked or warmed up names the running mode
 that file. The worker then keeps the files: the old `current.hgw` becomes
 `previous.hgw`, and the new file `current.hgw`. It also copies the new file into the
 current recorder session, as `weights/<hash>.hgw` (following `recorder.session`, as
-the encoder does), so that the recording holds every model that drove or ran in shadow.
+the encoder does), so that the recording holds every model that ran.
 
 The previous model is kept in memory; `revert` swaps back to it at the next tick, with
 its recurrent state reset, publishes `active` with cause `revert`, and exchanges the
@@ -426,10 +401,8 @@ two files.
 
 ```
 u32  version              # counts up per swap on this vehicle
-u32  autopilot_mode       # from the weights file: the ArduSub mode its labels were collected in
 u8   cause                # 0 start (current.hgw reloaded), 1 load, 2 revert
-u8   update_while_active  # from the policy spec
-u8   reserved[6]
+u8   reserved[3]
 u64  hash
 u64  arch
 u64  swapped_ns
@@ -445,12 +418,35 @@ u64  rows                 # rows trained on
 ```
 u32  version          # the version the load will get
 u8   state            # 1 checking, 2 warming, 3 done, 4 rejected
-u8   check            # with rejected: the check that failed, 1 to 9
+u8   check            # with rejected: the check that failed, 1 to 8
 u8   reserved[2]
 u64  hash
 u64  since_ns
 char reason[64]
 ```
+
+## Promotion
+
+The policy's output is published and recorded from its first tick, and the mux applies
+it only in `residual:<name>`, which only `mux.set_mode` sets. That call is the
+promotion: it carries the hash of the model the operator judged, and the mux refuses
+it unless that is the hash of the policy's running model, as the newest
+`policy.<name>.active` message announces it ([07-safety](07-safety.md#the-mux)).
+
+In `residual:<name>` the controller stays in the loop and the network's contribution
+is held within the residual envelope. There, the mode follows the policy's swaps: when
+a `policy.<name>.wrench` message references a new `policy.<name>.active` message (a
+load, or a revert), the mux takes that model as the promoted one, so that online
+adaptation can keep learning during the dive. Every load has passed the checks and the
+warm-up, is recorded like any other, and stays under every demotion rule: the mux
+falls back to `assisted`, and says why, when the output goes stale, skips a tick, is
+flagged as computed from stale inputs, or is held at an envelope limit for too long.
+It never promotes on its own.
+
+In version 1 the operator judges a model before promoting it from the trainer's own
+validation and from the recorded output beside the controller's
+(`hangar echo policy.<name>.wrench`); a comparison computed on the vehicle is
+[Later](#later).
 
 ## Lineage
 
@@ -458,7 +454,9 @@ char reason[64]
   computed at and the `policy.<name>.active` message of the model that computed it.
 - That `active` message names the weights' hash; the weights file, kept in the
   recording, names the dataset, and per vehicle boot and session the row ranges it was
-  trained on.
+  trained on. For a load or a revert, the `active` message also references the request
+  message that asked for it, on the caller's `.req` topic, and the policy's reply on
+  `policy_<name>.rep` references the same request ([04-calls](04-calls.md#the-rules)).
 - Each row names its vehicle boot, and by `(topic, seq)` the messages it was made from;
   each of those, its own inputs. `(boot id, topic, seq)` identifies a message on either
   side of the tether ([08-bridge](08-bridge.md#mirrored-topics)).
@@ -482,37 +480,6 @@ naming the model's `active` message minus `newest_row_stamp_ns`, and only when
 boot has no loop latency. `hangar dataset loop-latency <session>` reports it per model;
 `policy.<name>.active` gives the part up to the swap live.
 
-## Shadow evaluation
-
-While the policy runs, it compares its output with what actually drove: the
-`ctl.wrench` applied at the same tick, and from `mux.state` who produced each axis. It
-publishes, once a second, `policy.<name>.eval`:
-
-| Field | |
-|---|---|
-| `model_version`, `model_hash` | the model evaluated; version 0 while there is no running model |
-| `driver[6]` | per axis, who drove it during most of the window (pilot, a controller, this policy) |
-| `error[6]` | per axis, mean absolute difference from `ctl.wrench` over the last 10 s. On an axis the pilot drove, this is the imitation error; on an axis a controller drove, a comparison with the controller |
-| `saturated` | the share of ticks at which an axis of the output was beyond the envelope's largest command (from the mux's parameters on `mux.params`). The rate limit and the depth band depend on the mux's own state and are not counted |
-| `substituted` | whether the policy runs on a substitution ([Features at run time](#features-at-run-time)) |
-| `nonfinite` | ticks with a non-finite output or state in the window |
-
-The window starts over at every swap, so an eval message never mixes two models. The
-operator promotes on that evidence, with `mux.set_mode` naming the `model_hash` they
-evaluated; the mux refuses the call if that is not the running model's hash. The mux
-demotes on its own evidence ([07-safety](07-safety.md#the-mux)).
-
-## Updates while active
-
-In `policy:<name>` the network has the whole axis: a new model is always demoted and
-must be promoted again. In `residual:<name>` the controller stays in the loop and the
-network's contribution is held within the residual envelope; there, a policy with
-`UpdateWhileActive=yes` keeps its mode across a swap, so that online adaptation can go
-on learning during the dive. The policy publishes the setting in each
-`policy.<name>.active` message, from which the mux decides
-([07-safety](07-safety.md#the-mux)). Each load still passes every check and the
-warm-up, is recorded like any other, and stays under every other demotion rule.
-
 ## Training
 
 The trainer runs on the topside as a module named `trainer`, started by the topside's
@@ -530,17 +497,33 @@ User=hg-trainer
 [Subscribe policy.depth_ff.load]
 
 [Call bridge.send]
+
+# Methods of the other side carry the types the caller was built with.
 [Call policy_depth_ff.load_weights]
+Request=load_weights_req
+Reply=load_weights_rep
+
 [Call policy_depth_ff.revert]
+Request=empty
+Reply=policy_version
+
 [Call policy_depth_ff.runtime_info]
+Request=empty
+Reply=runtime_info
 ```
 
-`hangar.learn` takes the module's wiring and attaches to the manager as `hg_init`
-does ([03-manager](03-manager.md#starting-a-module)), and makes its calls as `trainer`.
-A script run from a shell has no module identity: it calls as `admin:<user>` if its
-user is in `hangar-admin`, and reaches the vehicle as `topside:admin:<user>`, which
-the policies' `Allow` lists name; any other user is refused
-([12-tools](12-tools.md#the-python-package)).
+The manager creates the trainer's request topic, `trainer.req`, and subscribes the
+module to `bridge.rep` and to `policy_depth_ff.rep`, the mirrored reply topic of the
+vehicle's policy ([04-calls](04-calls.md#the-rules)). `hangar.learn` reads the
+module's wiring from `HANGAR_WIRING` as `hg_init` does
+([03-manager](03-manager.md#starting-a-module)), opens `trainer.req` for writing
+through the manager, and publishes its requests there, through the package's compiled
+helper; the writer of that topic is the caller, so its calls are `trainer`'s and reach
+the vehicle as `topside:trainer`. A script run from a shell has no request topic of its
+own: the package hands its calls to the manager, as `hangar call` does, which publishes
+them as `admin:<user>` if its user is in `hangar-admin`; they reach the vehicle as
+`topside:admin:<user>`, which the policies' `Allow` lists name; any other user is
+refused ([12-tools](12-tools.md#the-python-package)).
 
 ```python
 import time
@@ -565,21 +548,21 @@ for chunk in stream:
 | `stream(topic, batch, seq_len=None, replay="10min")` | rows from the live topic, through a replay buffer. With `seq_len`, stateful chunks for recurrent models (below) |
 | `open_dataset(file, seq_len=None)` | the same over a built dataset file |
 | `carry(state, fresh)` | the recurrent state, detached from the graph, zeroed for the slots marked fresh |
-| `export(model, dataset, probes)` | the `.hgw` file: graph, tensors, bindings, probes, the input ranges and activation bound measured on the rows trained on, and lineage, checked against the vehicle's `runtime_info` |
+| `export(model, dataset, probes)` | the `.hgw` file: graph, tensors, bindings, probes and lineage, checked against the vehicle's `runtime_info` |
 | `deploy(model or file, policy)` | export, `bridge.send`, `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
 | `revert(policy)`, `watch(policy)` | |
 
 **Stateful chunks.** With `seq_len`, each of the `batch` slots follows one run of rows
-forward, chunk after chunk, and the user's code carries the recurrent state from one
+forward, chunk after chunk, and the training script carries the recurrent state from one
 chunk to the next, detached (truncated backpropagation through time). A chunk ends at a
 row with `reset` set; the slot's next chunk starts from zero state (`chunk.fresh`), and
 the rest of the short chunk is padding with no loss. This is the vehicle's own rule, so
 the state a model meets in training is the state it carries on the vehicle. A row with
 `masked` set (it failed the spec's `Where`) is stepped through like any other, and
-carries no loss. `chunk.mask` is 0 on masked rows, on padding, and on label axes that
-are not valid in the row ([06-recorder](06-recorder.md#the-spec)). A row lost on the
-tether, or skipped by a trainer slower than the rows, also ends the chunk, as a fresh
-start the vehicle did not make; `stream` counts them and reports the count.
+carries no loss. `chunk.mask` is 0 on masked rows and on padding
+([06-recorder](06-recorder.md#the-spec)). A row lost on the tether, or skipped by a
+trainer slower than the rows, also ends the chunk, as a fresh start the vehicle did not
+make; `stream` counts them and reports the count.
 
 **Replay.** The stream keeps the recent rows (by default the last 10 minutes) in a
 buffer and feeds steps from it, so a step does not wait for 32 × 50 new rows. A slot
@@ -589,127 +572,187 @@ rather than at a `reset`, runs its first chunk without loss, so that the state i
 learns from has seen `seq_len` rows. Rows from earlier dives' recordings, through
 `open_dataset`, may be mixed in; a change of vehicle boot is a `reset`.
 
-Training itself is the user's own PyTorch code; the package moves rows in and weights
+Training itself is the script's own PyTorch code; the package moves rows in and weights
 out, and records the lineage.
-
-## Example: imitating the pilot
-
-**Data.** `pilot_imitation` ([06-recorder](06-recorder.md#the-spec)): anchored on
-`nav.state` at 50 Hz; inputs the state and the `cam.nn` frame shown to the pilot
-(`asof:-120ms`); label `pilot.wrench`; filter parts `mux.state` and `ardusub.state`.
-`Where` keeps the rows in which ArduSub was in MANUAL, and `Filter=mask`, since the
-model is recurrent: other rows are stepped through without loss. Each axis of the label
-counts only where the row's `mux.state.source_<axis>` is the pilot, so an axis a
-controller held is never learned as the pilot's idle stick. The weights record
-`autopilot_mode` MANUAL. Each row carries a 19 KB frame, about 17 datagrams, so the
-mirror of `dataset.pilot_imitation` is `reliable` ([08-bridge](08-bridge.md#delivery)).
-
-**Model.** A small CNN on `cam.nn` (three `conv2d`, `relu`, `maxpool2d` blocks, then
-`global_avgpool` to 64 features), `concat` with the normalized state, a 2-layer `lstm`
-of 64, and a `dense` to the six axes of the wrench, scaled by an `affine`.
-
-**Training.** On the topside, from the live stream and from earlier dives' recordings
-built with the same spec (the recorder keeps `cam.nn` in full); chunks of 50 ticks
-(1 s), with the state carried across them.
-
-**On the vehicle.** `policy_pilot` in shadow; `policy.pilot.eval` against the pilot,
-axis by axis, dive after dive; promoted to `policy:pilot` with the evaluated model's
-hash when the operator judges it. While it drives, the `mavlink` module keeps ArduSub in
-the weights' `autopilot_mode` ([10-mavlink](10-mavlink.md#flight-modes)), with the
-pilot's override on every axis and the envelope as always.
 
 ## Example: adaptive depth hold
 
 **The idea.** The depth controller (`ctl.depth_hold`) is tuned for one buoyancy and one
-drag; both change with payload, depth and tether. A network learns the heave thrust
-needed for a wanted vertical motion, from what the thrusters were sent and how the
-vehicle moved, and adds it as a feed-forward to the controller.
+drag; both change with payload, depth and tether. And in phase 1 the heave it commands
+is not the heave the thrusters apply: ArduSub's mixer scales every axis down by the
+largest input, so a heave command sent beside a large surge or yaw arrives smaller
+([10-mavlink](10-mavlink.md#commands-to-ardusub)). A network learns, during the dive,
+the heave the controller's command was short by, at each state and for each vertical
+acceleration the controller wanted, and the mux adds it to the controller's output as a
+residual, within the residual envelope ([07-safety](07-safety.md#the-mux)). It learns
+the correction, not the whole heave: a network that learned the whole heave
+feed-forward and ran as a residual would sit at the residual envelope's cap.
 
-**Data.** Inputs the state (depth, vertical velocity, attitude) and the vertical
-acceleration 200 ms later, which needs a substitution to run; label the heave that the
-actuator gate sent to ArduSub, `ardusub.manual_control`'s `z`. In phase 1 the joystick
-gain is pinned to 1 ([10-mavlink](10-mavlink.md)), and `Where` keeps the rows in which
-outputs were enabled and ArduSub was in MANUAL, so the label is the thrust command that
-reached the thrusters. Plain supervised learning of inverse dynamics.
+**Data.** Inputs: the state (depth, vertical velocity, pitch, roll) and the vertical
+acceleration the controller wants, `ctl.depth_hold.target`'s `accel_z`, which the
+policy has at its tick as the recording has it, so nothing stands in for anything.
+Labels: the controller's own heave command at that tick, `ctl.depth_hold`'s `heave`,
+and the pulse widths the thrusters were actually sent, `thr.out` (from
+`SERVO_OUTPUT_RAW`, after ArduSub's mixing, [10-mavlink](10-mavlink.md#telemetry)),
+both joined at the anchor. The training code maps `thr.out` through the vehicle's
+thrust curve and thruster allocation to the heave thrust applied, in the wrench's units,
+and subtracts `ctl.depth_hold.heave`: the label is what had to be added to the
+controller's command, which is what residual mode adds. `Where` keeps the rows in which
+outputs were enabled and the vehicle was vertically still: on those rows what was
+applied is what held it, whoever supplied the difference. Plain supervised learning; no
+join looks ahead, so the spec is usable by a policy as it stands, and no substitution
+is needed.
 
 ```ini
 # /etc/hangar/datasets/depth_ff.dataset
 [Dataset]
 Anchor=nav.state
 AnchorRole=input
+Fields=depth vel_z pitch roll
 Lateness=0
 Filter=mask
 ResetAfter=200ms
-# outputs enabled; ArduSub custom mode 19 is MANUAL
-Where=safety.state.outputs_enabled == 1 and ardusub.state.mode == 19
+# Outputs enabled, and the vehicle vertically still (m/s): what was applied held it.
+Where=safety.state.outputs_enabled == 1 and nav.state.vel_z > -0.05 and nav.state.vel_z < 0.05
 
-# The vertical acceleration 200 ms later: substituted on the vehicle.
-[Input future_state]
-Topic=nav.state
-Join=asof:+200ms
+# The vertical acceleration the controller wants: an input the policy has at its tick.
+[Input ctl.depth_hold.target]
+Join=asof:0
 Fields=accel_z
 
-# The heave sent to ArduSub: z from 0 to 1000, 500 neutral.
-[Input ardusub.manual_control]
+# The controller's own heave command at this tick.
+[Input ctl.depth_hold]
 Join=asof:0
 Role=label
-Fields=z
+Fields=heave
+
+# The pulse widths the thrusters were sent, after ArduSub's mixing.
+[Input thr.out]
+Join=asof:0
+Role=label
 
 [Input safety.state]
 Join=asof:0
 Role=filter
-
-[Input ardusub.state]
-Join=asof:0
-Role=filter
+Fields=outputs_enabled
 ```
 
-The training code turns the label into the wrench's units, (z − 500) / 500. The spec
-has no `mux.state` part: the label is the command the gate sent, whoever drove each
-axis, so it is valid on every row `Where` keeps, and `hangar dataset check` passes it
-without a warning ([12-tools](12-tools.md#datasets-and-analysis)). Its defaults,
-`Missing=flag` and `Rate=every:1`, with `Filter=mask`, make it usable by the recurrent
-`policy_depth_ff`, its one look-ahead join substituted.
+The spec has no `mux.state` part: the labels are what the thrusters were sent and
+what the controller commanded, whoever drove each axis, so they are valid on every row
+`Where` keeps. Its defaults, `Missing=flag` and `Rate=every:1`, with `Filter=mask`,
+make it usable by the recurrent `policy_depth_ff`: rows in which the vehicle was moving
+are stepped through and carry no loss. In `assisted` the label is the pilot's trim and
+the mixer's shortfall; in `residual:depth_ff` it includes the residual that was
+applied, so a model that holds the vehicle reproduces its own correction, and one that
+does not sees what was still added by hand.
 
-**On the vehicle.** `policy_depth_ff`, with the measured future acceleration
-substituted by the depth controller's wanted acceleration (`ctl.depth_hold.target`, a
-topic the controller publishes beside `ctl.depth_hold`, which the policy subscribes to);
-mode `residual:depth_ff`, the network's thrust within the residual envelope;
-`UpdateWhileActive=yes`, so the trainer deploys a new model every 3 minutes during the
-dive and the correction follows the vehicle as it changes.
+**The residual envelope** is a parameter of the mux, by default 20 % of the envelope
+on each axis ([07-safety](07-safety.md#the-mux)), and is set from recorded data: the
+distribution of this label over a dive, the fraction of heave the controller was short
+by, says how wide the envelope must be for the correction to fit. A policy sitting at
+the cap shows in `mux.state`, which names the limits acting on each axis, and the mux
+demotes it after `demote_saturation`; a share of saturated ticks per model
+(`policy.<name>.eval`) comes later ([Later](#later)).
+
+**Model.** An `affine` that normalizes the five inputs, a 1-layer `lstm` of 16, whose
+memory carries what it saw at nearby depths across the masked ticks, a `dense` to one
+output, and an `affine` that scales it; the output is bound to the heave field of the
+wrench type, the other axes 0.
+
+**Training.** On the topside, from the live stream and from earlier dives' recordings
+built with the same spec; the label computed from the two label parts by the training
+code, with the vehicle's thrust curve and allocation from its configuration; chunks of
+50 ticks (1 s), with the state carried across them; a deploy every 3 minutes.
+
+**On the vehicle.** `policy_depth_ff`, ticking on `nav.state`, with
+`ctl.depth_hold.target` as its second input part; mode `residual:depth_ff`, set once by
+the operator with the first model's hash, the network's heave within the residual
+envelope; each model the trainer deploys after that drives from its swap, and the
+correction follows the vehicle as it changes.
+
+## Later
+
+What version 1 leaves out, each a step that changes nothing already built:
+
+- **`policy:<name>`**, the mux mode in which the network has a whole axis, with the
+  pilot's override and the envelope as always. There a swap always demotes the policy,
+  and the new model must be promoted again; an `UpdateWhileActive` key in the policy
+  spec, published in `policy.<name>.active`, would say whether a swap keeps the mode.
+  In version 1 the rule is fixed: `residual:<name>` follows every swap.
+- **Shadow evaluation on the vehicle**: a 1 Hz topic `policy.<name>.eval` comparing the
+  policy's output with the `ctl.wrench` applied at the same tick, per axis and by who
+  drove it (from `mux.state`), with the share of saturated ticks and the non-finite
+  count, the window starting over at every swap, mirrored up for the operator to
+  promote on.
+- **Substitution**: a `[Substitute <part>]` section in the policy spec, naming a topic
+  the policy subscribes to that stands in, at run time, for an `input` join that looks
+  ahead. A model is trained on something measured afterwards and run on what is wanted
+  instead: an inverse-dynamics depth feed-forward trained on the vertical acceleration
+  200 ms after the anchor (`asof:+200ms` of `nav.state`) and run on the acceleration
+  the controller wants (`ctl.depth_hold.target`). The substitute must have the same
+  fields and types as the part it replaces, is excluded from the identity test, and is
+  reported, so nobody mistakes it for the general case.
+- **Ops** `conv2d`, `maxpool2d`, `avgpool2d`, `global_avgpool`, `add`, `concat`,
+  `flatten` and `reshape`, and with them **imitation of the pilot**: a dataset anchored
+  on `nav.state` with the `cam.nn` frame the pilot was looking at (`asof:-120ms`) as an
+  input, `pilot.wrench` as the label and `mux.state` as a filter part; a small CNN,
+  `concat` with the state, an `lstm` and a `dense` to the six axes; rows carrying a
+  frame mirrored `reliable`. Training uses every recorded session and the live stream,
+  not a recent window, and the pilot's interventions, the ticks on which `mux.state`
+  says the pilot took an axis from the policy, are the label (HG-DAgger).
+- **Per-axis label masks**: `chunk.mask` 0 on the label axes `mux.state` says the pilot
+  did not drive, so an axis a controller held is never learned as the pilot's idle
+  stick; `hangar dataset check` warns of a wrench label without a `mux.state` part.
+- **An activation bound**: a header field and a `ranges` section (per input field, the
+  smallest and largest value in the rows trained on), and a load check that runs the
+  probes and samples spanning the ranges and refuses a model whose intermediate values
+  overflow on an input it may meet, rather than at its first bad tick.
 
 ## Tests
 
 - Runtime: each op's golden vectors from PyTorch, for every kernel, on x86-64 and on
   ARM under emulation; LSTM of 1 and 2 layers over sequences, state kept between steps,
   reset; the exporter refusing a bidirectional LSTM and one with projection.
-- Unknown op or version: refused with the reason, nothing loaded.
-- Loading: each check failing in turn leaves the running model untouched; a model
-  whose intermediate values exceed the header's activation bound, or turn non-finite,
-  on its probes or on samples spanning its `ranges` refused at check 7; warm-up and
+- Unknown op or version (`conv2d` among them): refused with the reason, nothing loaded;
+  an unknown section skipped.
+- Loading: each check failing in turn leaves the running model untouched; warm-up and
   swap with no tick missed, with both models at the edge of `TickBudget`; an overrun
   during warm-up stops the load; a second `load_weights` during a load refused;
   `revert`.
 - Start: a policy with no weights is ready, publishes its flagged neutral output on
   every tick, and is never restarted; a restarted policy reloads `current.hgw` and
-  `previous.hgw`, comes back in shadow, and `revert` still works.
+  `previous.hgw`, comes back unapplied, and `revert` still works.
 - Non-finite: a model producing inf or NaN on one input: nothing published at that
-  tick, state reset, counted on `eval`, the mux demotes.
+  tick, state reset, counted in the status line, the mux demotes.
 - Features: the policy's input bytes equal the dataset row's input part for the same
-  anchor, live, wherever neither side missed a message; a missing part is zeros with its
-  bit, on both sides; a missing or stale input part flags the output; a spec with a
-  waiting `input` join refused unless that part is substituted; substituted parts
-  excluded from the comparison.
+  anchor, live, wherever neither side missed a message and the row is not flagged
+  `late`; a missing part is zeros with its bit, on both sides; a missing or stale input
+  part flags the output; a spec with a waiting `input` join refused by the policy and
+  named by `hangar dataset check`.
 - Resets: on a recorded stream with gaps, stale parts, masked rows and a vehicle
   reboot, the rows' `reset` bits fall exactly at the ticks where the policy resets its
   state; `stream` ends chunks there and carries the state everywhere else.
 - Lineage: from a recorded thruster command to the model, the weights (from the
   session), the rows and the messages, by identifiers alone, across a vehicle reboot;
-  outputs computed during a load, and after a rejected one, name the running model.
+  outputs computed during a load, and after a rejected one, name the running model;
+  an `active` message with cause `load` and the reply on `policy_<name>.rep` both
+  reference the `load_weights` request message.
+- Calls: `load_weights` from the trainer arrives through the mirrored `trainer.req` as
+  `topside:trainer`, from a shell as `topside:admin:<user>`, and from a module not in
+  `Allow` is denied; a request whose deadline passed during a policy restart is dropped
+  unexecuted; `deploy` reports a reply that never comes as a timeout and gives up after
+  60 s without a `load` message.
 - Names: a module running `hangar-policy` whose name is not `policy_<Name>`, or which
-  lacks one of the four outputs, refused.
-- Promotion: `mux.set_mode` with a hash other than the running model's refused; a swap
-  in `policy:<name>` demotes; under `UpdateWhileActive=yes` in `residual:<name>`, it
-  does not.
-- The two examples end to end on recorded data, then on the bench with propellers off:
-  stream, train, deploy, shadow, promote, demote.
+  lacks one of the three outputs, refused.
+- Promotion: `mux.set_mode` with a hash other than the running model's refused; in
+  `residual:<name>`, a load and a revert are followed without demotion; a stale,
+  skipped or flagged output demotes.
+- The example's label: on recorded rows with no residual applied and no other axis
+  commanded, `thr.out` mapped through the thrust curve and allocation equals
+  `ctl.depth_hold.heave` within the curve's tolerance, so the label is zero; with a
+  surge command beside the heave, the label is the mixer's shortfall; with a residual
+  applied, the label is that residual.
+- The example end to end on recorded data, then on the bench with propellers off:
+  stream, train, deploy, promote, a second deploy applied at its swap, revert, demote;
+  the envelope set from the recorded label's distribution, and a model that would sit at
+  the cap seen in `mux.state` and demoted.

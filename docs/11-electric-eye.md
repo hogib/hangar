@@ -8,30 +8,52 @@ modules, each proven to produce the same output as the code it replaces.
 electric-eye stays a project of its own, described by its paper as of v0.3.1. Its code
 is MIT-licensed and is carried into hangar (GPL-3.0) with its copyright notices.
 
+## The source and the build
+
+electric-eye's source lives in hangar's repository, in two places:
+
+| Path | |
+|---|---|
+| `lib/<area>/` | the code hangar keeps: `vision` (the operators, the visibility correction, the effect chain), `camera` (V4L2, `rpicam`, JPEG decoding, camera controls), `proc` (child processes), `net` (discovery, relay), `video` (RTP, x264, the MP4 writer), `common` |
+| `legacy/eeye/`, `legacy/hellion/` | the glue hangar replaces: the frame bus, the services, the status file, the page. Buildable as `eeye` and `hellion`, over `lib/`, until their replacements run |
+
+Everything builds with `zig cc`, natively and as static aarch64-musl binaries with the
+NEON path; `tools/cross/` holds the toolchain file and the recipe. Stripped, static with
+musl and libjpeg-turbo, `eeye` is 1.09 MB and `hellion` 1.22 MB. The 17 test suites
+pass natively and under `qemu-aarch64`.
+
+OpenMP is not available in a static musl build, so the ported `vision` module runs the
+operator loops on a thread pool of its own. The module may have threads: the module
+*library* has none ([00-overview](00-overview.md#targets)), and that is a different
+statement. The equivalence hashes guard the result whatever the thread count
+([Proving the port](#proving-the-port)), and the paper's 4-thread figures depend on it.
+
 ## Phase A: supervised as it is
 
 ### Legacy modules
 
-`eeye` and `hellion` run unchanged, as modules of the manager instead of systemd
+`eeye` and `hellion`, built from `legacy/eeye` and `legacy/hellion`
+([The source and the build](#the-source-and-the-build)) and installed with the release
+as module programs, run as they are, as modules of the manager instead of systemd
 services of their own (their `eeye.service` and `hellion.service` are disabled, so that
-no second copy fights for the camera and the ports):
+no second copy fights for the camera and the ports); their own configuration files stay
+where electric-eye keeps them:
 
 ```ini
 # /etc/hangar/modules/eeye.module
 [Module]
 Description=electric-eye: camera, effects, frame bus
-Exec=/usr/local/bin/eeye /var/lib/eeye/effects.json
+Exec=/usr/lib/hangar/eeye /var/lib/eeye/effects.json
 User=eeye
 Group=video
 Legacy=yes
-Environment=OMP_WAIT_POLICY=passive
 ```
 
 ```ini
 # /etc/hangar/modules/hellion.module
 [Module]
 Description=electric-eye: video over the tether, page, recording
-Exec=/usr/local/bin/hellion -c /etc/hellion/hellion.json
+Exec=/usr/lib/hangar/hellion -c /etc/hellion/hellion.json
 User=eeye
 Group=video
 Legacy=yes
@@ -76,12 +98,20 @@ Both systems run side by side in phase A; their ports do not overlap:
 | TCP 8080, 8091 | `hellion` | page, control |
 | UDP 5613 | hangar's bridge | discovery ([08-bridge](08-bridge.md#discovery)) |
 | UDP 5614 | hangar's bridge | data |
-| UDP 14550 (topside) | QGroundControl | its MAVLink listener, unchanged from its default; it receives from `topside_mavlink` ([10-mavlink](10-mavlink.md#the-topsides-mavlink-module)) |
+| UDP 14550 (topside) | QGroundControl | its MAVLink listener, unchanged from its default; it receives from `topside_mavlink`, which it sees as the vehicle ([10-mavlink](10-mavlink.md#the-topsides-mavlink-module)). Nothing from ArduSub reaches it |
 | UDP 14650 (127.0.0.1, topside) | `topside_mavlink` | its own port, from which it sends to 127.0.0.1:14550 |
-| UDP 14660 (127.0.0.1, vehicle) | the vehicle's `mavlink` | ArduSub's signed MAVLink |
-| UDP 14670 (127.0.0.1, both) | hangar's bridge | the MAVLink tunnel's `Local` ([08-bridge](08-bridge.md#tunnels)) |
+| UDP 14660 (127.0.0.1, vehicle) | the vehicle's `mavlink` | ArduSub's signed MAVLink; the module is ArduSub's only peer |
+
+No MAVLink crosses the tether: QGroundControl's joystick becomes `pilot.wrench` and
+`pilot.buttons` on the topside, and its arm and disarm requests become calls
+([10-mavlink](10-mavlink.md#the-topsides-mavlink-module)).
 
 ## Phase B: ported into modules
+
+Each module below is a hangar module over `lib/`: the code it needs is already in the
+repository, and the port is the module's manifest, its topics and its parameters in
+place of the glue in `legacy/`. Once a module runs, the legacy binary it replaces is no
+longer built.
 
 | Module | Side | From | Publishes |
 |---|---|---|---|
@@ -116,7 +146,10 @@ rate, marked `@restart`, since all frame buffers are sized at start.
 `eeye`'s effects thread as a module: reads `cam.raw`, runs the visibility correction
 and the operator chain, and publishes `cam.pilot`, whose provenance names the
 `cam.raw` frame it was made from. The frame bus's neutral-chroma shortcut (copying only
-luma when a chain's output chroma is all 128) is kept in the topic writer.
+luma when a chain's output chroma is all 128) is kept in the topic writer. The operator
+loops run on the module's own thread pool, in place of OpenMP, with the thread count a
+`@restart` parameter; the pool's threads touch no topic, and the main thread alone
+reads and publishes ([The source and the build](#the-source-and-the-build)).
 
 Its parameters are `effects.json` as a parameter type: the chain as a fixed array of 8
 stages (which `eeye` already bounds it to), each stage's operator and parameters, and
@@ -130,8 +163,11 @@ New: the frame a network sees. Reads `cam.raw`, reduces the luma plane by area
 averaging to 160×120 (19 KB), and publishes `cam.nn` at the camera's rate, with
 provenance to the `cam.raw` frame. Size and rate are `@restart` parameters.
 
-It is small enough to record in full and to carry in dataset rows across the tether,
-and both are configured, not assumed:
+No version-1 policy reads it: the runtime has no convolution ops, and a policy on
+frames is the later pilot-imitation example ([09-learning](09-learning.md#later)). It
+is recorded and streamed for the trainer from the first version on. It is small enough
+to record in full and to carry in dataset rows across the tether, and both are
+configured, not assumed:
 
 - the recorder keeps its payload: `[Record cam.nn] Policy=full` comes before the
   `[Record cam.*] Policy=meta` rule for the large frame topics in
@@ -146,8 +182,17 @@ and both are configured, not assumed:
 
 Encodes `cam.pilot` (placement B) or `cam.raw` (placement A) to H.264 and sends it over
 RTP to the topside, with the settings `hellion` uses (x264 preset `ultrafast`, tune
-`zerolatency`, 4 000 kbit/s capped, a keyframe every 30 frames, parameter sets before
-each), converting full-range 4:2:2 to limited-range 4:2:0 itself, as `hellion` does.
+`zerolatency`, a keyframe every 30 frames, parameter sets before each), converting
+full-range 4:2:2 to limited-range 4:2:0 itself, as `hellion` does.
+
+**The bitrate follows the tether.** The stream does not pass through the bridge but
+shares the tether with it, and the bridge's `MaxRate` is the total for both
+([08-bridge](08-bridge.md#video-and-the-tether)). The encoder subscribes to
+`bridge.vehicle.budget` and sets x264's bitrate from its `video_bps` between two
+frames, capped by its `max_bitrate` parameter (4 000 kbit/s, `hellion`'s figure) and
+never below its `min_bitrate` floor (500 kbit/s), so that the pilot keeps a picture
+when the bridge is busy; both are live parameters. A stale or absent budget leaves the
+bitrate where it was.
 
 **Frame identity crosses the tether.** The encoder uses libx264 through its API, not an
 `ffmpeg` child, and sets each picture's timestamp to its frame's sequence number times
@@ -194,26 +239,31 @@ goes into the session of the topside's recorder (`topside_recorder`, following
 
 ### `pilot_console`
 
-`hellion`'s page, grown into the operator's console. It runs on the topside, so the
+`hellion`'s page, grown into the operator's console. Its calls are messages on its
+request topic, `pilot_console.req`, which the manager creates for it from its `[Call]`
+sections ([04-calls](04-calls.md#the-two-topics)). It runs on the topside, so the
 vehicle's modules name it `topside:pilot_console` in their `Allow` lists
-([04-calls](04-calls.md#callers)): those of the safety, mux and policy modules, and
-the `[Params] Allow` of `camera` and `vision`. It offers:
+([04-calls](04-calls.md#allow-tokens)): those of the safety, mux and policy modules, and
+the `[Params] Allow` of `camera` and `vision`. The bridge mirrors `pilot_console.req`
+down and the reply topics of the modules it calls up, as `[Calls] Remote=` in
+`bridge.conf` arranges ([08-bridge](08-bridge.md#calls-across-the-tether)); on the
+vehicle the request arrives on a mirrored topic, so the caller is
+`topside:pilot_console` by the topic it came on, asserted by nobody. It offers:
 
 - the live picture from any frame topic, as `hellion`'s shared preview encoder serves
   it;
 - the effects and camera parameters, through `set_params`: across the tether to a
-  module on the vehicle, which the topside's bridge forwards (`[Calls] Remote=`,
-  [08-bridge](08-bridge.md#calls-across-the-tether)), or locally to `vision` in
-  placement A;
+  module on the vehicle, or locally to `vision` in placement A;
 - arm, disarm, e-stop, clear ([07-safety](07-safety.md#vehicle-states)). `safety.arm`
   answers `accepted` once its checklist passes; the console shows the outcome from
   `safety.state`: `arming`, then `armed`, or `disarmed` with ArduSub's reason;
-- the mux's mode, and the promotion of a policy, with its live evaluation
-  (`policy.<name>.eval`, [09-learning](09-learning.md#shadow-evaluation)), its load
-  progress (`policy.<name>.load`) and the running model (`policy.<name>.active`).
-  `mux.set_mode` carries the hash of the model the operator evaluated, and the mux
-  refuses it if another model is running ([07-safety](07-safety.md#the-mux)); `revert`
-  is a call to the policy;
+- the mux's mode (`manual`, `assisted`, `residual:<name>`), and the promotion of a
+  policy from its load progress (`policy.<name>.load`) and the running model
+  (`policy.<name>.active`). `mux.set_mode` carries the hash of the model the operator
+  promotes, and the mux refuses it if another model is running
+  ([07-safety](07-safety.md#the-mux)); `revert` is a call to the policy. A live
+  comparison of a model against the pilot (`policy.<name>.eval`) comes later
+  ([09-learning](09-learning.md#later));
 - the recorder's start, stop and black-box dump (`recorder.start`, `recorder.stop`,
   `recorder.dump` on the vehicle);
 - the vehicle's and the link's state (`hangar.vehicle.system`,
@@ -221,8 +271,8 @@ the `[Params] Allow` of `camera` and `vision`. It offers:
   `bridge.topside.link`).
 
 The vehicle's topics it shows reach it through the bridge's up mirrors, the policy
-topics (`policy.*.active`, `policy.*.load`, `policy.*.eval`) included
-([08-bridge](08-bridge.md#configuration)).
+topics (`policy.*.active`, `policy.*.load`) and the reply topics of the modules it
+calls included ([08-bridge](08-bridge.md#configuration)).
 
 ### Placements
 
@@ -239,33 +289,46 @@ placement A is a module of another name, `topside_encoder`.
 ## Proving the port
 
 Every ported operator is checked against electric-eye v0.3.1 with the paper's method:
-the output of both hashed over fixed inputs (the three camera photographs and the
-synthetic frames of edge-case sizes), every strength and threshold in steps, 1 to 7
-threads, on x86-64 and, under full-system emulation, on ARMv7 and AArch64. Every
-comparison must be identical. The visibility correction is checked the same way over
-its synthetic sequences.
+its output hashed over fixed inputs (the three camera photographs and the synthetic
+frames of edge-case sizes), every strength and threshold in steps, 1 to 7 threads. The
+hashes were recorded once from v0.3.1 and are checked into the repository; the
+`make` target `equivalence` computes them from `lib/vision` and compares, natively on
+x86-64, under `qemu-aarch64` on AArch64, and under full-system emulation on ARMv7.
+Every comparison must be identical; a thread count or a NEON path that changed a hash
+fails the target. The visibility correction is checked the same way over its synthetic
+sequences.
 
 The video path is held to the paper's measurement: frame topic to frame topic through
 `encoder` and `video_relay` over loopback, median latency no worse than electric-eye's
-(3.8 ms at 640×480, 8.3 ms at 1280×720, 30 frames/s). That figure becomes a budget
-([00-overview](00-overview.md#budgets)).
+(3.8 ms at 640×480, 8.3 ms at 1280×720, 30 frames/s). That figure is one of the
+targets `hangar bench` reports against ([00-overview](00-overview.md#targets)).
 
 ## Tests
 
 - Phase A: `eeye`, `hellion` and `hellion_topside` supervised and restarted; a hangar
   module reading `eeye:raw` through the adapter with `frame_no` as sequence numbers;
   both discoveries side by side; QGroundControl, left at its defaults, receiving
-  MAVLink from `topside_mavlink` on 14550.
-- Phase B: the equivalence hashes above; the latency budget; every `cam.decoded`
+  MAVLink from `topside_mavlink` on 14550 and nothing from ArduSub, and video on 5600.
+- Build: `eeye`, `hellion` and every phase B module built natively and as static
+  aarch64-musl binaries; the 17 suites and the `equivalence` target passing natively and
+  under `qemu-aarch64`; the `vision` module's hashes equal at 1 and at 4 threads.
+- Phase B: the equivalence hashes above; the latency target; every `cam.decoded`
   message referencing the vehicle frame it shows, through encoding, loss and
   keyframes, and `cam.decoded` counting up by one; `video.index` matching the MP4's
-  timestamps; parameters applied live and `@restart` ones by restart.
-- `cam.nn` recorded in full, and `pilot_imitation` built offline from a session equal
-  to the live rows; a spec whose part was recorded `meta` reported by
-  `hangar dataset check`.
-- `pilot_console`: its calls allowed as `topside:pilot_console` and denied under any
-  other name; `set_params` reaching `camera` across the tether; arming reported through
-  `safety.state`; a promotion naming a model other than the running one refused.
+  timestamps; parameters applied live and `@restart` ones by restart; the encoder's
+  bitrate following `bridge.vehicle.budget` within a second, between its floor and its
+  cap, and unchanged while the budget is stale.
+- `cam.nn` recorded in full, and a dataset with a `cam.nn` part built offline from a
+  session equal to the live rows except where a row's `late` flag is set or one row
+  alone marks a part `missing`
+  ([06-recorder](06-recorder.md#offline-the-same-rows-from-a-recording)); a spec whose
+  part was recorded `meta` reported by `hangar dataset check`.
+- `pilot_console`: its requests, arriving on the vehicle on the mirrored
+  `pilot_console.req`, allowed as `topside:pilot_console`; the same request on any
+  other `.req` topic denied where only that token is listed; its replies read from the
+  mirrored `.rep` topics; `set_params` reaching `camera` across the tether; arming
+  reported through `safety.state`; a promotion naming a model other than the running
+  one refused.
 - Names: the encoder and `video_relay` writing into their sessions as members of
   `hangar-rec`; a module named `encoder` enabled on both machines reported by the
   bridges and by `hangar check`.

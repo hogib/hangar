@@ -6,8 +6,8 @@ during it. Two modules and one file format:
 - the **recorder** writes topics to disk, each topic a file of fixed-size records;
 - the **pairer** joins outputs to the inputs they were computed from and publishes
   the result live, as a dataset topic that a trainer reads while the vehicle runs;
-- a **dataset spec** says what a sample is, and produces the same rows live from
-  topics and offline from recordings.
+- a **dataset spec** says what a sample is, and one join code produces its rows live
+  from topics and offline from recordings.
 
 Training on the fly, and deploying what was trained back onto the vehicle, is the
 learning loop ([09-learning](09-learning.md)); this doc provides its data.
@@ -20,9 +20,12 @@ learning loop ([09-learning](09-learning.md)); this doc provides its data.
   the file; an input the pairer could not find is flagged missing in the row. A
   dataset never claims more than it has.
 - **A sample is defined once.** The same dataset spec drives the live pairer, the
-  offline build, and the inputs of a policy running on the vehicle: rows are
-  byte-identical live and offline, and a model sees at run time the features it was
-  trained on.
+  offline build, and the inputs of a policy running on the vehicle. Live and offline
+  rows are identical except where a row says otherwise: the offline row's `late` flag,
+  when a message it would have joined, by its stamp, was published after the live row
+  was emitted; a part `missing` in one row alone, when it had left its ring before the
+  live pairer read it, or the recorder lost it ([Joins](#joins)). A model sees at run
+  time the features it was trained on.
 - **Every file is an array.** Records and rows are fixed-size, so a file opens with
   `numpy.memmap` and nothing is parsed.
 - **A session describes itself**: the wiring graph, parameters, software versions and
@@ -73,8 +76,17 @@ Allow=topside:pilot_console admin topside:admin
 
 A glob subscription ([02-manifest](02-manifest.md#sections-and-keys)) lets the module
 open any topic whose name matches, including topics created after it started
-(mirrored topics, modules enabled by a reload). The module reads them on a timer, not
-through `hg_wait`, so the limit of 126 subscriptions does not apply to them.
+(mirrored topics, modules enabled by a reload). `hg_wait` polls them, every 10 ms at
+most, instead of waiting on them, so the limit of 127 subscriptions does not apply to
+them ([01-topics](01-topics.md#reading)).
+
+Calls and parameters are topics too: a request is a message on the caller's
+`<caller>.req`, its reply a message on the server's `<server>.rep`, whose provenance
+names the request it answers, and a module's values in force are on `<module>.params`
+([04-calls](04-calls.md#the-two-topics), [05-parameters](05-parameters.md#the-parameter-topic)).
+The glob takes them in like any other topic, so every command, every refusal and every
+parameter change sits in the recording beside the data it acted on, in the same time
+base.
 
 ```ini
 # /etc/hangar/recorder.conf
@@ -127,9 +139,11 @@ from topics recorded `full` ([Offline](#offline-the-same-rows-from-a-recording))
 
 ### Draining
 
-The recorder wakes every 50 ms, checks the directory word for new topics that match its
-glob ([01-topics](01-topics.md#reading)), drains every ring it records, and hands the
-records to its own writer thread through a bounded buffer.
+The recorder's `hg_wait` returns within 10 ms, as in every module with a glob
+subscription ([01-topics](01-topics.md#reading)); it serves its calls on each return,
+and drains every 50 ms: it checks the directory word for new topics that match its
+glob, drains every ring it records, and hands the records to its own writer thread
+through a bounded buffer.
 
 A reader in order can count on `Slots − 1` messages of a ring, since the oldest slot is
 the one the writer fills next ([01-topics](01-topics.md#reading)). A topic is therefore
@@ -152,8 +166,9 @@ that topic's recording and continues in `<topic>+<k>.hgr` (k = 1, 2, …), so th
 file never holds two numberings. A new epoch is not a gap.
 
 At the start of a session it also records the newest message of every event topic
-(the parameters in force, the system state, the module states), so the state at the
-start is known without waiting for a change.
+(the parameters in force, the system state, the module states, the last request and
+reply of each module), so the state at the start is known without waiting for a
+change.
 
 ### Sessions
 
@@ -208,8 +223,9 @@ Whether or not a session is running, the recorder keeps the recent past of every
 in the black box, in RAM, within `BlackBoxMemory`. Each topic asks for a budget:
 
 - a rated topic, `BlackBox` of messages at its declared rate;
-- an event topic, its newest `Slots` messages, however old, so that the last calls,
-  parameter changes and state changes are kept even when they happened long before.
+- an event topic, its newest `Slots` messages, however old, so that the last requests
+  and replies (`<module>.req`, `<module>.rep`), parameter changes and state changes are
+  kept even when they happened long before.
 
 The recorder grants the budgets class by class: `high`, then `normal`, then `low`. The
 first class that does not fit whole shares what is left in proportion to its budgets,
@@ -270,8 +286,8 @@ A dataset spec, `/etc/hangar/datasets/<name>.dataset`, names one **anchor** topi
 row per anchor message, and the **inputs** to join to it. Each part of a row has a
 **role**: `input` (what a model sees), `label` (what it learns to produce) or `filter`
 (used by `Where`, and kept in the row for the trainer). The same spec builds a
-policy's inputs on the vehicle, so that a model sees at run time exactly the features
-it was trained on ([09-learning](09-learning.md#features-at-run-time)).
+policy's inputs on the vehicle, so that a model sees at run time the features it was
+trained on ([09-learning](09-learning.md#features-at-run-time)).
 
 Learning what a module computes: the anchor is the module's output, a label, and its
 inputs are joined by provenance.
@@ -293,43 +309,55 @@ Window=8
 Fields=gyro accel
 ```
 
-Imitating the pilot: the anchor is the vehicle's state at each tick, an input; the
-pilot's command is joined by time, as the label. The label means thrust only while
-ArduSub is in MANUAL ([10-mavlink](10-mavlink.md#flight-modes)), so rows in any other
-ArduSub mode are masked. On a kept row the label is valid only on the axes the pilot
-drove, which the row's `mux.state` part says per axis; the trainer masks the loss on
-the other axes ([09-learning](09-learning.md#training)).
+Learning a correction to a controller: the anchor is the vehicle's state at each tick,
+an input, and so is the vertical acceleration the controller wants, joined by time; the
+labels, joined by time too, are the controller's own heave command and the pulse widths
+the thrusters were actually sent (`thr.out`, from `SERVO_OUTPUT_RAW` after ArduSub's
+mixing, [10-mavlink](10-mavlink.md#telemetry)). The training code maps the pulse widths
+through the vehicle's thrust curve and allocation to the heave thrust applied, and
+subtracts the controller's command: the label is the correction the controller lacked,
+which is what the mux adds in residual mode. `Where` keeps the rows in which outputs
+were enabled and the vehicle was vertically still, on which what was applied is what
+held it; the other rows are kept and masked, since the policy is recurrent. This spec
+feeds the adaptive depth hold of
+[09-learning](09-learning.md#example-adaptive-depth-hold), and is the same file.
 
 ```ini
-# /etc/hangar/datasets/pilot_imitation.dataset
+# /etc/hangar/datasets/depth_ff.dataset
 [Dataset]
 Anchor=nav.state
 AnchorRole=input
+Fields=depth vel_z pitch roll
 Lateness=0
-# ArduSub mode 19 is MANUAL. Other rows are kept and masked: the policy is recurrent.
-Where=ardusub.state.mode == 19
 Filter=mask
+ResetAfter=200ms
+# Outputs enabled, and the vehicle vertically still (m/s): what was applied held it.
+Where=safety.state.outputs_enabled == 1 and nav.state.vel_z > -0.05 and nav.state.vel_z < 0.05
 
-# The small frame the pilot was looking at: 120 ms of display latency.
-[Input cam.nn]
-Join=asof:-120ms
+# The vertical acceleration the controller wants: an input the policy has at its tick.
+[Input ctl.depth_hold.target]
+Join=asof:0
+Fields=accel_z
 
-[Input pilot.wrench]
+# The controller's own heave command at this tick.
+[Input ctl.depth_hold]
+Join=asof:0
+Role=label
+Fields=heave
+
+# The pulse widths the thrusters were sent, after ArduSub's mixing.
+[Input thr.out]
 Join=asof:0
 Role=label
 
-# Who drove each axis: 1 is the pilot (msg/mux_state.msg). The label is valid
-# on an axis whose source is the pilot.
-[Input mux.state]
+[Input safety.state]
 Join=asof:0
 Role=filter
-Fields=source_surge source_sway source_heave source_roll source_pitch source_yaw
-
-[Input ardusub.state]
-Join=asof:0
-Role=filter
-Fields=mode
+Fields=outputs_enabled
 ```
+
+No join of this spec looks ahead, so a policy can build the same inputs at its tick
+without waiting ([Specs a policy can run on](#joins)).
 
 | `[Dataset]` key | Default | |
 |---|---|---|
@@ -341,8 +369,7 @@ Fields=mode
 | `Filter` | `drop` | What happens to a row that fails `Where`: `drop` removes it; `mask` publishes it with the `masked` flag ([Filters](#filters)) |
 | `Missing` | `flag` | `flag`: keep the row, mark the input missing. `drop`: drop the row |
 | `ResetAfter` | `200ms` | An `input` part missing or stale this long sets the row's `reset` flag ([The row](#the-row)). A policy built on this spec resets its state by the same rule |
-| `Lateness` | `100ms` | How long an `asof` join waits for late messages ([Joins](#joins)) |
-| `MaxDelay` | `2s` | The longest a row may wait for its inputs: a spec with an `asof` join whose `offset + Lateness` exceeds it is refused |
+| `Lateness` | `100ms` | How long a live `asof` join waits, past *anchor publish time + offset*, for messages stamped in time but published later ([Joins](#joins)). The one live knob |
 
 | `[Input <part>]` key | Default | |
 |---|---|---|
@@ -364,42 +391,44 @@ both as the anchor and as an input, for a window over the anchor's own history.
 | Join | The input is | Deterministic because |
 |---|---|---|
 | `provenance` | the message the anchor names in its provenance | the seq is in the anchor |
-| `asof:<offset>` | the newest message stamped at or before *anchor stamp + offset*, among those published at least 5 ms before *anchor publish time + offset + Lateness* | both bounds are recorded times |
+| `asof:<offset>` | the newest message stamped at or before *anchor stamp + offset* | stamps are recorded times; a message published too late for the live row sets its `late` flag (below) |
 
 With `Window=K`, the input is the K messages ending at the joined one; `count` says how
 many were available (fewer at the start of a stream or after a gap).
 
 `provenance` pairs a module's inputs with its output: what the module computed. `asof`
-pairs things no module connected: the pilot's command with the frame the pilot was
-looking at; a later message with an earlier one, for prediction (positive offsets,
-which make the row wait). Stamps are `stamp_ns`, or `publish_ns` for a message without
-one.
+pairs things no module connected: the command the gate sent with the state the vehicle
+was in; a later message with an earlier one, for prediction (positive offsets, which
+make the row wait). Stamps are `stamp_ns`, or `publish_ns` for a message without one.
 
-The publish-time bound in `asof` is what makes the live and offline results equal.
-Live, the pairer joins a part once *anchor publish time + offset + Lateness* has
-passed, so every message published before the bound has been published; offline, the
-bound excludes exactly the later ones. The bound sits 5 ms before that time because a
-message becomes visible to readers a moment after its `publish_ns` is taken: the
-writer reads the clock, copies the message, then releases the slot
-([01-topics](01-topics.md#writing)). Only a writer stalled for more than 5 ms between
-those steps can make live and offline differ. The pairer notices such a message when
-it next reads that ring (published before an emitted row's bound, but not visible
-when the row was joined) and counts the row as `late` in `pairer.status`.
+**Lateness.** A message is published some time after it is stamped, and the pairer
+reads it later still. Live, the pairer joins an `asof` part once *anchor publish time +
+offset + Lateness* has passed, so that a message stamped in time but published a little
+later is still joined. `Lateness` is the only live knob. A live row therefore waits,
+after its anchor, for the largest `offset + Lateness` of its joins, at least 0, and
+that moment is the row's `emitted_ns` ([The row](#the-row)): anchor `publish_ns` plus
+that wait, computed from recorded times alone, so the offline build knows it too.
 
-A live row therefore waits, after its anchor, for the largest `offset + Lateness` of
-its joins. A spec in which that exceeds `MaxDelay` is refused, by the pairer and by
-`hangar dataset check`, so that live and offline always apply the same bound.
+**Late messages.** A message stamped in time for a join but published after the row's
+`emitted_ns` was not there when the live row was joined: the live row holds the message
+before it, or marks the part missing. The offline build, which has every recorded
+message, joins it by its stamp and sets the row's `late` flag (bit 2). The live row
+never carries the flag: at `emitted_ns` nothing is known about what is published
+later. Live and offline rows are therefore identical except where `late` is set, and
+where a part had left its ring before the live pairer read it, which the live row
+marks `missing` and the build, with every recorded message, joins
+([Live: the pairer](#live-the-pairer), [Offline](#offline-the-same-rows-from-a-recording)).
 
 **Specs a policy can run on.** A policy builds its inputs at the moment of the anchor
 and cannot wait. A spec is usable by a policy only if every `input`-role `asof` join
-has `offset + Lateness ≤ 0`, or is replaced by a substitution in the policy's spec
-([09-learning](09-learning.md#features-at-run-time)); `label` and `filter` joins may
-look ahead, since a policy does not build them. A recurrent policy (one with an `lstm`
-op) takes one step per anchor message, so its spec must also have `Rate=every:1`,
-`Missing=flag` and `Filter=mask`: a row for every tick. `hangar dataset check` says
-whether a spec qualifies and names the `input` joins that would need a substitution;
-given a policy spec, it checks the spec against that policy's substitutions and ops
-([12-tools](12-tools.md#datasets-and-analysis)).
+has `offset + Lateness ≤ 0` ([09-learning](09-learning.md#features-at-run-time));
+`label` and `filter` joins may look ahead, since a policy does not build them. A
+recurrent policy (one with an `lstm` op) takes one step per anchor message, so its
+spec must also have `Rate=every:1`, `Missing=flag` and `Filter=mask`: a row for every
+tick. `hangar dataset check` says whether a spec qualifies and names the `input` joins
+that disqualify it; given a policy spec, it also checks that the spec is the policy's
+`Dataset`, and the recurrent conditions against the policy's current weights when it
+has any ([12-tools](12-tools.md#datasets-and-analysis)).
 
 ### Filters
 
@@ -431,7 +460,11 @@ u8  boot_id[16]      # the boot that numbered the anchor: its topic's origin_boo
                      # or this machine's boot id for a local anchor
 u32 missing          # bit i: part i missing
 u32 flags            # bit 0 reset: recurrent state starts over before this row;
-                     # bit 1 masked: the row failed Where
+                     # bit 1 masked: the row failed Where;
+                     # bit 2 late: set by the offline build when it joined a message
+                     # published after emitted_ns
+u64 emitted_ns       # when the live row's joins closed: anchor publish_ns plus the
+                     # largest offset + Lateness of its asof joins, at least 0
 <the anchor, its selected fields>
 for each input, label and filter part:
   u64 seq            # of the (last) message joined; 0 if missing
@@ -451,7 +484,9 @@ missing input ([09-learning](09-learning.md#features-at-run-time)).
 `boot_id` and `anchor_seq`, with the anchor's topic id, identify the anchor message
 across reboots and across the tether ([08-bridge](08-bridge.md#mirrored-topics)). A
 part's `seq` is in its own topic's numbering, whose boot is that topic's
-`origin_boot` in the recording.
+`origin_boot` in the recording. `emitted_ns` is the same value live and offline, since
+it follows from the anchor's `publish_ns` and the spec; it is what the offline build
+compares a joined message's `publish_ns` against to set `late` ([Joins](#joins)).
 
 **The reset flag.** The pairer sets bit 0 by the rule a policy applies to its own
 state ([09-learning](09-learning.md#lstm)), from what the anchor and its parts carry:
@@ -479,7 +514,7 @@ Each is also an output of its manifest, of type `dataset:<name>`:
 ```ini
 # /etc/hangar/pairer.conf
 [Pairer]
-Datasets=pilot_imitation
+Datasets=depth_ff
 ```
 
 ```ini
@@ -489,13 +524,13 @@ Description=Dataset pairer
 Exec=/usr/lib/hangar/pairer /etc/hangar/pairer.conf
 
 [Subscribe nav.state]
-[Subscribe cam.nn]
-[Subscribe pilot.wrench]
-[Subscribe mux.state]
-[Subscribe ardusub.state]
+[Subscribe ctl.depth_hold.target]
+[Subscribe ctl.depth_hold]
+[Subscribe thr.out]
+[Subscribe safety.state]
 
-[Publish dataset.pilot_imitation]
-Type=dataset:pilot_imitation
+[Publish dataset.depth_ff]
+Type=dataset:depth_ff
 Slots=256
 
 [Publish pairer.status]
@@ -504,7 +539,8 @@ Type=pairer_status
 
 The pairer refuses to start (exit status 78) if the two lists differ.
 `Type=dataset:<name>` ([02-manifest](02-manifest.md#sections-and-keys)) is a type the
-manager generates, as it does `calls:<module>`. When the pairer opens
+manager generates, as it does the types of the call topics `<module>.req` and
+`<module>.rep` ([04-calls](04-calls.md#the-two-topics)). When the pairer opens
 `dataset.<name>`, the manager builds the row schema from
 `/etc/hangar/datasets/<name>.dataset` and the schemas of the topics it names (a frame
 part takes the size of its open topic), and refuses an open whose schema hashes to
@@ -515,18 +551,18 @@ topic header's 3584 bytes of schema text is refused.
 For each spec, the pairer reads the anchor topic in order and, for each anchor
 message, fetches the parts from their rings: `hg_read_seq(sub, seq)` for provenance,
 `hg_find_stamp(sub, t)` for `asof`, and the preceding seqs for windows
-([01-topics](01-topics.md#reading)). It joins each part as soon as its bound has
-passed: `provenance` joins, and `asof` joins with `offset + Lateness ≤ 0`, at once, as
-a policy does; the others when their wait is over. It applies `Where` and `Filter`,
-sets the row's flags, and publishes each row on `dataset.<name>`, an event topic.
+([01-topics](01-topics.md#reading)). It joins each part as soon as its wait is over:
+`provenance` joins, and `asof` joins with `offset + Lateness ≤ 0`, at once, as a
+policy does; the others at the row's `emitted_ns` ([Joins](#joins)). It applies
+`Where` and `Filter`, sets the row's flags, and publishes each row on
+`dataset.<name>`, an event topic.
 
 A part that has already left its ring cannot be joined: the row marks it missing, and
 the pairer counts it. Its status (`pairer.status`) gives, for each dataset and part,
-the rows, the misses, the rows counted `late` ([Joins](#joins)), and the part's
-measured latency: from the joined message's publication to the moment the pairer read
-it, its own wait included. From that it says how deep the part's ring must be, since
-`(Slots − 1) / rate` must exceed the latency (`cam.raw: detector latency 180 ms, ring
-holds 100 ms: needs 8 slots`).
+the rows, the misses, and the part's measured latency: from the joined message's
+publication to the moment the pairer read it, its own wait included. From that it says
+how deep the part's ring must be, since `(Slots − 1) / rate` must exceed the latency
+(`cam.raw: detector latency 180 ms, ring holds 100 ms: needs 8 slots`).
 
 A trainer reads `dataset.<name>` like any topic: on the vehicle, or on the topside
 GPU through the tether bridge, which carries the rows across
@@ -538,32 +574,34 @@ trainer treats as a break ([09-learning](09-learning.md#training)).
 ### Offline: the same rows from a recording
 
 ```sh
-hangar dataset build pilot_imitation <session> -o pilot_imitation.hgr
+hangar dataset build depth_ff <session> -o depth_ff.hgr
 hangar dataset pairs <session> depth_hold        # a spec made from the manifest:
                                                  # each output, its Inputs by provenance
-hangar dataset check pilot_imitation             # valid; usable by a policy?
-hangar dataset check pilot_imitation /etc/hangar/policies/pilot.policy
+hangar dataset check depth_ff                    # valid; usable by a policy?
+hangar dataset check depth_ff /etc/hangar/policies/depth_ff.policy
                                                  # usable by this policy?
-hangar dataset check pilot_imitation <session>   # can it be built from this session?
+hangar dataset check depth_ff <session>          # can it be built from this session?
 ```
 
-The build runs the same join, filter and flag code over the session's files, with the
-same bounds. Every part's topic must have been recorded `full` in the session: a part
-recorded `meta`, `every:N`, `rate:<Hz>` or not at all would join other messages than
-the pairer did live, so `hangar dataset check <spec> <session>` names it and `build`
-refuses. For messages that both the live pairer and the recorder had, the rows are
-byte-identical, which a test checks on every build. Rows that differ are those where
-one of the two missed a message, and both flag it; those the pairer counted `late`;
-and the build's first row, whose `reset` flag is always set.
+The build runs the same join, filter and flag code over the session's files. Every
+part's topic must have been recorded `full` in the session: a part recorded `meta`,
+`every:N`, `rate:<Hz>` or not at all would join other messages than the pairer did
+live, so `hangar dataset check <spec> <session>` names it and `build` refuses. The
+build computes each row's `emitted_ns` as the pairer did, and sets `late` on a row in
+which it joined a message published after it ([Joins](#joins)). Live and offline rows
+are then identical except where `late` is set, where one of the two missed a message,
+which that row alone marks `missing` (the pairer, one that had left its ring; the
+build, one the recorder lost), and in the build's first row, whose `reset` flag is
+always set; a test checks this on every build.
 
 ### Reading datasets
 
 The same dtype, live or recorded:
 
 ```python
-for batch in hangar.stream("dataset.pilot_imitation", batch=64):   # live topic
+for batch in hangar.stream("dataset.depth_ff", batch=64):   # live topic
     ...
-ds = hangar.open_dataset("pilot_imitation.hgr")                     # file, memmap
+ds = hangar.open_dataset("depth_ff.hgr")                     # file, memmap
 ```
 
 with a PyTorch `IterableDataset` over either, which steps a recurrent model through
@@ -601,11 +639,11 @@ is in [08-bridge](08-bridge.md).
   with more than `BlackBoxMemory` asked for, classes granted in order and each topic's
   reach reported; an event topic keeps its newest `Slots` messages; `dataset.*` left
   out.
-- Joins: each kind against hand-built message sequences, including late messages for
-  `asof`, windows at the start of a stream, and inputs gone from their ring; a writer
-  stalled between reading the clock and releasing the slot, for under 5 ms (rows
-  equal) and over it (the row counted `late`); a spec whose `offset + Lateness`
-  exceeds `MaxDelay` refused.
+- Joins: each kind against hand-built message sequences, including messages published
+  after their stamp for `asof`, windows at the start of a stream, and inputs gone from
+  their ring; a message published within `Lateness` of its stamp joined live; one
+  published after the row's `emitted_ns` absent from the live row, joined by the build
+  with `late` set; `emitted_ns` equal live and offline.
 - `Rate`: the same anchors selected live by a pairer running since boot and offline
   from a session started later.
 - Filters: `Where` live and offline on the same rows; a missing part makes it false;
@@ -618,7 +656,11 @@ is in [08-bridge](08-bridge.md).
   differ.
 - Offline: a spec with a part recorded `meta` refused by `check` and `build`, which
   name the part.
-- Live equals offline: run the pairer during a recorded session and build the same
-  spec from the recording; rows identical wherever neither flagged a miss and the
-  pairer counted none `late`, apart from the build's first `reset` flag.
+- Live and offline: run the pairer during a recorded session and build the same spec
+  from the recording; rows identical wherever the build set no `late` flag and neither
+  flagged a miss, apart from the build's first `reset` flag; every row in which the
+  two differ otherwise carries `late`.
+- Calls recorded: a `<caller>.req` and a `<server>.rep` topic taken in by the glob,
+  the reply's provenance naming its request, and the newest of each kept at the start
+  of a session.
 - Python: the dtypes of recordings and dataset topics read back what C wrote.

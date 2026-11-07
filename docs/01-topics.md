@@ -14,7 +14,13 @@ any message type, with the per-stream heartbeat thread removed and provenance ad
   reader that falls behind skips ahead and is told how many messages it missed.
 - **A message is whole or not returned.** Each slot is guarded by a sequence lock; a
   copy the writer overwrote midway is detected and retried.
-- **One writer per topic**, named in its manifest. The manager refuses a second.
+- **One writer per topic**, named in its manifest or implied by it. The manager refuses
+  a second.
+- **Calls ride on topics.** A request is a message on the caller's `<caller>.req`
+  topic and a reply one on the server's `<server>.rep`; a parameter change is such a
+  call, and the values in force are the topic `<module>.params`. Nothing else moves
+  between modules ([04-calls](04-calls.md#the-two-topics),
+  [05-parameters](05-parameters.md)).
 - **Sequence numbers count up by one per message and continue across writer
   restarts** for the life of the boot. `(boot id, topic id, seq)` identifies a message
   for good, the boot id (`/proc/sys/kernel/random/boot_id`) being that of the machine
@@ -41,11 +47,14 @@ any message type, with the per-stream heartbeat thread removed and provenance ad
 `thr.cmd`. The file is `/dev/shm/hangar/<name>` (`$HANGAR_TOPIC_DIR` overrides the
 directory; the manager sets it for every module). The prefix `hangar.` is reserved for
 the manager's own topics, which any module or recorder reads like any other, and so
-are the names `<module>.calls` and `<module>.params`
-([02-manifest](02-manifest.md#how-the-manager-uses-manifests)). The manager's topics
-carry its machine's role, set by `Role=vehicle|topside` in `hangard.conf`:
-`hangar.vehicle.system` and `hangar.vehicle.modules` on the vehicle,
-`hangar.topside.system` and `hangar.topside.modules` on the topside
+are the names `<module>.req`, `<module>.rep` and `<module>.params`: the implicit
+topics the manager creates for a module that makes calls, serves them, or has
+parameters ([02-manifest](02-manifest.md#how-the-manager-uses-manifests),
+[04-calls](04-calls.md#the-two-topics)). The manager's topics carry its machine's
+role, set by `Role=vehicle|topside` in `hangard.conf`: `hangar.vehicle.system`,
+`hangar.vehicle.modules` and `hangar.vehicle.admin.req` (the request topic of
+operators' calls, which the manager writes) on the vehicle, `hangar.topside.system`,
+`hangar.topside.modules` and `hangar.topside.admin.req` on the topside
 ([03-manager](03-manager.md#system-state-and-the-managers-topics)).
 
 Topic names, like module names, are unique across the vehicle and the topside
@@ -58,7 +67,7 @@ id collides with one on the other side; `config_match` in the link status and
 names one topic across the pair, and provenance crosses the tether unchanged.
 
 Per-machine infrastructure is the one exception, as for module names: the `bridge`
-module runs on both machines under that name, its call record `bridge.calls` is never
+module runs on both machines under that name, its reply topic `bridge.rep` is never
 mirrored, and its own topics, like the manager's, carry the role (`bridge.vehicle.link`,
 `bridge.topside.files`; [08-bridge](08-bridge.md#the-bridge-module)).
 
@@ -114,10 +123,15 @@ so a reader that expects 720p cannot attach to a 480p stream by mistake. Frame t
 default to 4 slots.
 
 **Dataset rows** are messages too. The manager generates a row type from the dataset
-spec, and a manifest names it as `Type=dataset:<name>`, as it names a call record type
-`calls:<module>` ([06-recorder](06-recorder.md#the-row)). Its field names carry dots
-(`nav.state.depth_m`, `cam.nn._seq`), which only a generated row type may have.
-Readers parse its schema from the file like any other.
+spec, and a manifest names it as `Type=dataset:<name>` ([06-recorder](06-recorder.md#the-row)).
+Its field names carry dots (`nav.state.depth_m`, `nav.state._seq`), which only a
+generated row type may have. Readers parse its schema from the file like any other.
+
+**Requests and replies** are messages too. The manager generates the type of a
+module's `<module>.req` topic from the call envelope and the largest request type the
+module declares, and the type of its `<module>.rep` topic from the reply envelope and
+the largest reply type it serves ([04-calls](04-calls.md#the-envelopes)). Neither is
+named in a manifest; both are parsed from the file like any other type.
 
 ## File layout
 
@@ -232,13 +246,37 @@ the file itself, by the same steps, in a private topic directory
 **Publishing** message *n* into slot *s*:
 
 1. store `s.seq = 2n − 1`, then a release fence;
-2. copy the slot header fields and the payload;
+2. copy the slot header fields and the payload, as relaxed atomic stores of 64-bit
+   words ([The copy](#the-copy));
 3. store-release `s.seq = 2n`, then store-release `write_seq = n`, and store
    `last_publish_ns` (atomic, relaxed);
-4. increment `futex_word` (sequentially consistent), then atomically exchange the
-   wake file's `wait_flag` with 0; only if it was set, `FUTEX_WAKE` all.
+4. atomically exchange the wake file's `wait_flag` with 0 (sequentially consistent),
+   then `fetch_add` 1 to `futex_word` (sequentially consistent); only if the exchanged
+   value was non-zero, `FUTEX_WAKE` all.
 
 No system call when nobody waits; no lock; no allocation.
+
+The order of step 4 matters. With the increment first, a reader could read the new
+`futex_word`, set the flag, re-check and find nothing new (it had already read message
+*n*), and go to sleep on that value; the writer's exchange would then take the fresh flag
+and wake nobody, since the reader was not asleep yet, and every later publish would find
+the flag clear and never wake it: a reader asleep until its timeout. With the exchange
+first, a flag set before the exchange is seen and woken; a flag set after it belongs to
+a reader whose re-check happens after the exchange, and so after message *n* and
+`write_seq`, which the sequentially consistent exchange made visible to it: that reader
+finds the message and does not sleep.
+
+### The copy
+
+Both the writer's copy into the slot (step 2) and the reader's copy out of it are done
+as relaxed atomic loads and stores of 64-bit words, never a plain `memcpy`: the slot
+stride is a multiple of 64 bytes, so a slot is whole words. A seqlock whose payload is
+plain memory is a data race under the C11 memory model, which a sanitizer reports and
+a compiler may transform; as atomic words it is a program the language's memory model
+accepts and sanitizers can check, not an idiom they must be told to ignore. On x86-64
+and AArch64 a relaxed 64-bit atomic load or store is an ordinary load or store, so this
+costs nothing measurable; on ARMv7 the payload uses the same 64-bit atomics as the
+header's 64-bit fields.
 
 **Closing** sets flag bit 0, increments `futex_word` and wakes readers. A writer that
 dies without closing is detected by the manager through its `pidfd`; the manager sets
@@ -270,17 +308,19 @@ ring, or never in it (a seq a mirrored topic does not have), returns `HG_GONE`.
 as `hg_next` does and passing over seqs not in the ring, assuming stamps rise with
 sequence numbers, which a writer must keep.
 
-`hg_wait` returns a **ready set**: every condition that holds when it returns, 0 if
-none did before the timeout.
+A fresh subscription starts `hg_next` at the newest message: nothing published before
+the open is returned. `hg_sub_open_from(name, type, HG_OLDEST)` starts it instead at
+the oldest message still in the ring; the call library opens `.req` and `.rep` topics
+that way, so a restarted server finds the requests that waited for it and a restarted
+caller the replies it has not read ([04-calls](04-calls.md#the-two-topics)).
 
-| Bit | Name | Meaning |
-|---|---|---|
-| 0 | `HG_READY_CALLS` | a request is pending for this module; `hg_serve` answers it ([04-calls](04-calls.md#using-calls)) |
-| 1 | `HG_READY_REPLIES` | a reply to a call started with `hg_call_start` has arrived; `hg_call_poll` collects it |
-| 2 | `HG_READY_TOPICS` | at least one of the topics has news: a message, a close, a replacement, or an absent topic that appeared |
-
-Since all three are reported together, a loop that serves its calls and then reads its
-topics on each pass lets neither starve the other.
+`hg_wait` returns a **ready set**: `HG_READY_TOPICS` when at least one of the topics
+has news (a message, a close, a replacement, or an absent topic that appeared; what
+counts as news is defined under [Waiting](#reading)), 0 if none did before the timeout. Requests and replies are topic news like any other: a
+server's subscriptions include its callers' `.req` topics, and a caller's the server's
+`.rep` topic, both put in its wiring by the manager
+([04-calls](04-calls.md#the-two-topics)). A loop that reads every topic with news on
+each pass, calls and data alike, lets neither starve the other.
 
 `info` carries `seq`, `stamp_ns`, `publish_ns`, the slot `flags`, the inputs, `gap`
 (messages lost), `skipped` (seqs a rate-limited mirror skipped on purpose), `epoch`
@@ -303,7 +343,7 @@ if n == the last n returned, or n <= first_seq: HG_NONE
 s  = slot (n−1) mod slot_count
 s1 = s.seq                              (acquire)
 if s1 != 2n: the writer has moved on; start over
-copy the slot header and payload
+copy the slot header and payload        (relaxed atomic loads of 64-bit words)
 acquire fence; s2 = s.seq
 if s2 != s1: overwritten while copying; start over
 ```
@@ -333,18 +373,29 @@ of its reads, that is, it reads at least once every `slot_count − 1` messages:
 at 1 kHz is 63 ms of slack, less the reader's own wake-up jitter.
 
 **Waiting** reads `futex_word` (acquire), sets the wake file's `wait_flag`
-(sequentially consistent), checks `write_seq` and `flags` again, and only then sleeps
-on the value it read; it sets the flag again before every sleep. A publish between the
-check and the sleep has changed `futex_word`, so the sleep returns at once; a publish
-after the flag was set finds it set and wakes the reader. Several topics are waited on
-with one `futex_waitv` call (Linux 5.16), whose limit is 128 futexes in all. Two are
-kept for the library: the module's wake word, which a client increments for a request
-and a server for a reply ([04-calls](04-calls.md#protocol)), and the directory word
-below, so a module subscribes to at most 126 topics by name; the manager refuses a
+(sequentially consistent), checks again whether the topic has news, and only then sleeps
+on the value it read; it sets the flag again before every sleep. A topic has **news**
+when `write_seq` is above the last seq this reader returned, or when `flags` differs
+from the value this reader last reported to the module: a close, a death or a
+replacement is news once, and then reported. "Ready" is never "a flag bit is set": a
+reader that returned whenever a bit was set would spin at 100 % CPU on a dead or closed
+topic until the file is replaced. A publish between the check and the sleep has changed
+`futex_word`, so the sleep returns at once; a publish after the flag was set finds it
+set and wakes the reader ([Publishing](#writing)). Several topics are waited on
+with one `futex_waitv` call (Linux 5.16), whose limit is 128 futexes in all. One is
+kept for the library, the directory word below, so a module subscribes to at most 127
+topics by name, its `.req` and `.rep` subscriptions included; the manager refuses a
 wiring past it. Topics matched by a glob subscription (`[Subscribe nav.*]`,
-[02-manifest](02-manifest.md#subscribe-topic-or-glob-one-per-input)) do not count: the module
-reads them on a timer, and `hg_wait` does not wait on them. Waiting on a read-only
-mapping is allowed. The futexes are shared, never `FUTEX_PRIVATE_FLAG`.
+[02-manifest](02-manifest.md#subscribe-topic-or-glob-one-per-input)) do not count:
+`hg_wait` does not wait on them. Instead, in a module whose wiring holds a `subglob`
+line, it caps its timeout at 10 ms and, on every return, timed out or not, opens any
+new match (the directory word, below, says whether a topic appeared), checks each match
+for news, and reports it in the ready set like a named topic. A request on a server's
+implicit `subglob *.req` ([04-calls](04-calls.md#the-two-topics)) is therefore read
+within 10 ms of its arrival, a tenth of the default `Deadline`, whenever the server's
+loop waits. A module waiting through `hg_wait_fd` (below) polls its glob matches
+itself, on a timer of at most 10 ms. Waiting on a read-only mapping is allowed. The
+futexes are shared, never `FUTEX_PRIVATE_FLAG`.
 
 **Absent topics.** `hg_sub_open` returns at once, whether the topic exists or not. An
 absent topic reads `HG_ABSENT`, and counts as stale for the module's outputs
@@ -370,12 +421,14 @@ can wait on futexes and descriptors together and may replace the helper later.)
 The helper's set of futexes changes on the module's thread: a topic attaches after
 being absent, a replaced file is reopened, the directory word joins or leaves the set.
 The library then writes the new set and increments a generation counter under a small
-lock, increments the module's own wake word and wakes it (that word is always in the
-helper's set, and a spurious wake costs nothing), and keeps any old mapping until the
-helper has acknowledged that generation; only then does it unmap it. The helper reads
-the set and its generation before every snapshot and acknowledges the generation it
-snapshotted. So it never sleeps on a file no one publishes to any more and never reads
-a mapping that is gone, and no futex beyond the two kept for the library is needed.
+lock, increments the **helper word**, a u32 in the module's own memory that is always
+in the helper's set, and wakes it (a spurious wake costs nothing), and keeps any old
+mapping until the helper has acknowledged that generation; only then does it unmap it.
+The helper reads the set and its generation before every snapshot and acknowledges the
+generation it snapshotted. So it never sleeps on a file no one publishes to any more
+and never reads a mapping that is gone. The helper word takes one of the 128 futexes:
+a module that waits through `hg_wait_fd` has room for 126 topics by name, and
+`hg_wait_fd` fails, saying so, in a module whose wiring holds more.
 
 **A replaced file** (a restarted writer's new file renamed into place) is announced
 in the old one: the manager sets bit 2 and wakes its readers before the rename. The
@@ -455,6 +508,15 @@ An output published with no input behind it at all (an actuator's neutral when i
 gate is closed) is published with `HG_NO_REFS`
 ([07-safety](07-safety.md#the-actuator-gate)).
 
+**Calls.** A reply on `<server>.rep` references the request message it answers, on the
+caller's `.req` topic: the manager puts every request topic the server reads among the
+implicit `Sources` of each of the server's outputs, its `.rep` first, and the library
+fills the reference in when the server replies ([04-calls](04-calls.md#the-two-topics)).
+An output that acts on a call (a mode change, a recording started) may reference the
+request too, with `hg_publish_with`, since the request topics are among that output's
+`Sources` as well. So the recording links an operator's command to the reply it got and
+to what followed from it, by identifiers alone.
+
 ## Stale inputs
 
 A message is only as fresh as what it was computed from. At each publish, the library
@@ -517,6 +579,14 @@ It differs from a local topic in five ways.
   priority mirrors, not from a manifest. A received topic going stale flags its
   readers' outputs; it never counts against the bridge's health.
 
+A call crosses the tether as mirrored topics: the caller's `.req` topic is mirrored to
+the server's side and the server's `.rep` topic back
+([08-bridge](08-bridge.md#calls-across-the-tether)). A server reading a mirrored `.req`
+topic knows its caller is a module of the other side from the file itself: `writer`
+names the module, `origin_boot` is not zero, and the mirror's direction gives the
+role, so the caller is `<role>:<module>` with nothing asserted by anyone
+([04-calls](04-calls.md#allow-tokens)).
+
 ## Reading from Python
 
 ```python
@@ -546,15 +616,15 @@ non-dumpable (`PR_SET_DUMPABLE` 0): otherwise a process of the same user could t
 another, or copy its descriptors (`pidfd_getfd`, `/proc/<pid>/fd`), and so write its
 topics. A process is dumpable again after `exec`, so a module inherits nothing worth
 taking across it but its sealed, read-only wiring `memfd`. `hg_init` first sets
-`PR_SET_DUMPABLE` 0, then fetches its writable module page and its call socket from the
-manager over the control socket (`attach`: the manager identifies it by `SO_PEERCRED`
-and passes both with `SCM_RIGHTS`,
-[03-manager](03-manager.md#starting-a-module)). The manager hands them only to a
-module that no process is tracing (`TracerPid` 0 in `/proc/<pid>/status`), since a
-tracer that attached before `hg_init` would keep its hold; once the module is
+`PR_SET_DUMPABLE` 0, then fetches its writable module page from the manager over the
+control socket (the manager identifies it by `SO_PEERCRED` and passes the page with
+`SCM_RIGHTS`, [03-manager](03-manager.md#starting-a-module)). The manager hands it
+only to a module that no process is tracing (`TracerPid` 0 in `/proc/<pid>/status`),
+since a tracer that attached before `hg_init` would keep its hold; once the module is
 non-dumpable, no process of the same user can attach. Its topic descriptors come later
-still, from `hg_pub_open`. Modules that must not trust each other at all run as
-different users; an actuator module always does
+still, from `hg_pub_open`; its `.req` and `.rep` topics among them, so a module's
+requests and replies can be written by that module alone. Modules that must not trust
+each other at all run as different users; an actuator module always does
 ([02-manifest](02-manifest.md#module-required-once)).
 
 ## Memory
@@ -576,9 +646,19 @@ electric-eye is ported ([11-electric-eye](11-electric-eye.md)).
   concurrent processes.
 - Restarts: a writer killed and restarted continues `seq`; an `hg_next` reader sees no
   gap; a reader of the old file reopens.
-- Wake-ups: no lost wake-up between check and sleep, over many iterations; no wake
-  system call with no waiter (counted with `strace -c` or seccomp); a reader killed
-  asleep costs one wake call, then none.
+- Wake-ups: no lost wake-up between check and sleep, over many iterations, with the
+  reader's flag set at every point between the writer's steps; in particular a reader
+  that sets its flag after a publish's increment and finds nothing new is woken by the
+  next publish. The same test with the writer's two steps of step 4 swapped (increment,
+  then exchange) shows a reader asleep until its timeout, so the test guards the order.
+  No wake system call with no waiter (counted with `strace -c` or seccomp); a reader
+  killed asleep costs one wake call, then none.
+- Liveness of the wait: a reader of a dead or closed topic reports it once, then sleeps
+  for its whole timeout; no spinning until the file is replaced.
+- Late joiners: a reader's first `hg_next` after attaching starts at the newest message,
+  not at the oldest safe slot, so a reader attaching to a topic that has published
+  thousands of messages reports no gap; `hg_sub_open_from(…, HG_OLDEST)` starts at the
+  oldest message still in the ring and reports none either.
 - Absent topics: `hg_sub_open` returns at once; the module attaches when the topic is
   created; the directory word wakes it; a topic created between the open attempt and
   the sleep is not missed. A manager restart and a topic replacement leave `.dir` and
@@ -587,8 +667,15 @@ electric-eye is ported ([11-electric-eye](11-electric-eye.md)).
   file replaced, and an absent topic created, with no other traffic: the next publish
   to the new file still signals the `eventfd`, and no mapping is unmapped while the
   helper uses it.
-- `hg_wait`: calls pending and topic news reported in one ready set; a client sending
-  requests back to back does not stop topic news being reported.
+- `hg_wait`: a request on a caller's `.req` topic and news on a data topic reported in
+  one pass; a caller publishing requests back to back does not stop the server's other
+  topics being read, nor a 1 kHz topic stop its requests being read.
+- Limits: 127 subscriptions by name accepted, 128 refused by the manager; `hg_wait_fd`
+  fails in a module with 127 and works with 126.
+- Glob subscriptions: `hg_wait` returns within 10 ms in a module with a `subglob` line
+  and sleeps for its whole timeout in one without; a message on a topic created after
+  the module started, matched by its glob, is in the ready set within 10 ms; a request
+  on a mirrored `.req` topic reaches a server with `subglob *.req` within 10 ms.
 - `hg_next` over a topic written by `hg_publish_seq` with jumps both shorter and longer
   than `slot_count`: no `HG_NONE` while news is pending, `gap` equal to the missing
   seqs, seqs before a message with slot flag bit 1 counted in `skipped`;
@@ -605,14 +692,20 @@ electric-eye is ported ([11-electric-eye](11-electric-eye.md)).
 - Stale inputs: an input going stale flags the output, transitively through two
   modules and across a mirror; an input recovering clears it. A `Sources` topic that is
   absent or stale and not referenced does not flag the output; `HG_STALE` sets bit 0.
-- Permissions: a module holds neither its page nor its call socket before it is
-  non-dumpable; `attach` is refused to a traced module.
-- `futex_waitv` over many topics; a dead writer flagged by a stand-in manager; a
+- Permissions: a module does not hold its page before it is non-dumpable; the page is
+  refused to a traced module; a module other than the writer cannot publish on a
+  `.req` or `.rep` topic.
+- `futex_waitv` over many topics; a dead writer flagged by a test manager; a
   replaced file announced by bit 2 and reopened.
 - A freshly replaced file before its first publish: `HG_NONE`, no spinning.
 - `hg_next` past a slot left odd by a writer that died mid-publish: counted as lost,
   no livelock.
 - All of it on AArch64 and ARMv7 under full-system emulation (`qemu-system` with a
   5.16 or later kernel) or on a Pi, since QEMU's user-mode emulation implements neither
-  `futex_waitv` nor `clone3`; and under ThreadSanitizer with the seqlock copy annotated.
-- The budgets of [00-overview](00-overview.md#budgets), measured on the release build.
+  `futex_waitv` nor `clone3`; and under ThreadSanitizer and AddressSanitizer with no
+  annotation and no suppression, since the seqlock copy is atomic words
+  ([The copy](#the-copy)).
+- Provenance of calls: a reply references the request it answers; an output published
+  with a reference to a message of a `.req` topic the module does not read is refused.
+- The targets of [00-overview](00-overview.md#targets), measured by `hangar bench` on
+  the release build, against the previous release's numbers.
