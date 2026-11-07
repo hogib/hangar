@@ -1,0 +1,38 @@
+# /usr/share/hangar/modules/recorder.module: the recorder (docs/06-recorder.md,
+# modules/recorder/README.md). Enable it by symlinking into
+# /etc/hangar/modules/. Its settings are in /etc/hangar/recorder.conf, named
+# on the Exec line; the manifest holds only what the manager checks.
+[Module]
+Description=Recorder
+Exec=/usr/lib/hangar/recorder /etc/hangar/recorder.conf
+User=hg-recorder
+# The sessions' directory is group hangar-rec, mode 2770 (docs/06, Sessions).
+SupplementaryGroups=hangar-rec
+
+# Every topic, those created later included.
+[Subscribe *]
+
+[Publish recorder.status]
+Type=recorder_status
+
+[Publish recorder.session]
+Type=recorder_session
+
+[Serve start]
+Request=recorder_start
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+[Serve stop]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+[Serve dump]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+# No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s tick.
+[Health]
+Watchdog=10s

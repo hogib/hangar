@@ -1161,6 +1161,8 @@ static int cmd_param(int argc, char **argv)
 
 /* ---- main ---------------------------------------------------------------- */
 
+int hangar_dataset_main(int argc, char **argv); /* hangar_dataset.c */
+
 static void usage(void)
 {
 	fputs("usage: hangar <command> [args]\n"
@@ -1183,6 +1185,7 @@ static void usage(void)
 	      "  param load <module> <file>               a saved file, set as one change\n"
 	      "  param reset <module> [field ...]         back to the defaults\n"
 	      "                              (a module that is not running: its saved file, through the manager)\n"
+	      "  dataset build|check|schema|pairs ...     datasets from recordings (hangar dataset)\n"
 	      "Paths follow $HANGAR_ROOT; $HANGAR_CONTROL and $HANGAR_TOPIC_DIR override.\n",
 	      stderr);
 }
@@ -1239,6 +1242,8 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(cmd, "param") == 0)
 		return cmd_param(argc - 2, argv + 2);
+	if (strcmp(cmd, "dataset") == 0)
+		return hangar_dataset_main(argc - 2, argv + 2); /* hangar_dataset.c (docs/06, docs/12) */
 	usage();
 	return 2;
 }

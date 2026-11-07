@@ -520,3 +520,8 @@ include modules/mavlink/mavlink.mk
 check: check-mavlink
 
 -include $(shell find $(BUILDDIR) -name '*.d' 2>/dev/null)
+
+# The recorder, the pairer and the dataset pieces (modules/recorder/README.md,
+# modules/recorder/recorder.mk carries the rules): GPL-3.0-or-later modules over lib/hg.
+include modules/recorder/recorder.mk
+check: check-recording
