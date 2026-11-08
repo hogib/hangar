@@ -127,6 +127,16 @@ ardusub-setup` sets SITL's parameters from `profiles/sim-vehicle/ardusub.params`
 `... hangar check` runs the arming checklist. Dawn Patrol serves both roots on 8080 and
 8081. `make check-sitl HANGAR_SITL=1` runs the chain test against the container.
 
+**Recorded.** The vehicle profile also enables the recorder and the pairer
+(`profiles/sim-vehicle/recorder.module`, `recorder.conf`, `pairer.module`,
+`pairer.conf`, `datasets/wrench_state.dataset`): every topic of the vehicle root, and
+the topside's through the shim, is recorded while the vehicle is armed into
+`/dev/shm/hangar-vehicle/var/lib/hangar/recorder/sessions/<time>-<host>/`, the black
+box is dumped there on a failsafe or a module's exit, and `dataset.wrench_state` pairs
+each `ctl.wrench` with the pilot's command and the vehicle's state live.
+`profiles/sim-vehicle/RECORDING.md` is the run, command by command, with what to
+look at.
+
 **Flown, 2026-11-07, from a terminal over ssh.** With `SIM_HEADLESS=1 HANGAR_SIM=1
 tools/sim/run.sh up` Gazebo runs its server alone (`gz sim -s`, no display needed) and
 `tools/sim/pilot` stands in for QGroundControl: it listens on 14550, learns the
