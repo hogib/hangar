@@ -1,0 +1,46 @@
+# /usr/share/hangar/modules/recorder.module: the recorder (docs/06-recorder.md;
+# modules/recorder/README.md), as the development demo enables it. Its settings
+# are in /etc/hangar/recorder.conf, named on the Exec line; the manifest holds
+# only what the manager checks. The template (modules/recorder/recorder.module)
+# runs as hg-recorder; the demo's managers run every module as one user, as
+# safety.module and mux.module do here, so this copy names no User=.
+[Module]
+Description=Recorder
+Exec=/usr/lib/hangar/recorder /etc/hangar/recorder.conf
+# The sessions' directory is group hangar-rec, mode 2770 (docs/06, Sessions).
+# Without the group on this machine the recorder checks the mode alone and
+# says so once.
+SupplementaryGroups=hangar-rec
+
+# Every topic, those created later included. Through the same-host shim
+# (hangar-up.sh's HANGAR_PEER_TOPIC_DIR) the glob also takes in the topside
+# root's topics: pilot.wrench, pilot.buttons, topside_mavlink.req, and the
+# topside manager's own.
+[Subscribe *]
+
+[Publish recorder.status]
+Type=recorder_status
+
+[Publish recorder.session]
+Type=recorder_session
+
+# start, stop and dump from the operator on either side, and from the
+# topside's Dawn Patrol.
+[Serve start]
+Request=recorder_start
+Reply=empty
+Allow=admin topside:admin topside:console
+
+[Serve stop]
+Request=empty
+Reply=empty
+Allow=admin topside:admin topside:console
+
+[Serve dump]
+Request=empty
+Reply=empty
+Allow=admin topside:admin topside:console
+
+# No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s tick.
+[Health]
+Watchdog=10s
