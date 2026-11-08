@@ -60,6 +60,27 @@ static const char *topic_dir(void)
 	const char *d = getenv("HANGAR_TOPIC_DIR");
 	if (d && *d)
 		return d;
+	/* The manager knows: its configuration may keep the topics on a tmpfs
+	 * outside $HANGAR_ROOT (the release's hangard.conf says /dev/shm/hangar
+	 * so that a root under $HOME does not put them on the SD card). Without
+	 * a manager, the relocation rule. */
+	char reply[2048];
+	ssize_t n = hg_control_call(control_path(), "paths", 5, reply, sizeof reply, NULL, 0);
+	if (n > 0) {
+		reply[n < (ssize_t)sizeof reply ? n : (ssize_t)sizeof reply - 1] = 0;
+		const char *t = strstr(reply, "\ntopics ");
+		if (t) {
+			t += 8;
+			const char *e = strchr(t, '\n');
+			size_t l = e ? (size_t)(e - t) : strlen(t);
+			if (l > 0 && l < sizeof buf) {
+				memcpy(buf, t, l);
+				buf[l] = 0;
+				setenv("HANGAR_TOPIC_DIR", buf, 1);
+				return buf;
+			}
+		}
+	}
 	snprintf(buf, sizeof buf, "%s/dev/shm/hangar", root());
 	setenv("HANGAR_TOPIC_DIR", buf, 1);
 	return buf;

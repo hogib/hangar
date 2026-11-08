@@ -189,28 +189,32 @@ bin/hangard --help                                # the flag that names the conf
 bin/hangard -c $HANGAR_ROOT/etc/hangard.conf 2>&1 | tee ~/hangar-visit/hangard.log
 ```
 
-(`-c` is a placeholder for whatever `hangard --help` says; if the manager reads only
-`/etc/hangar/hangard.conf` and `/run/hangar`, this step needs `sudo` and the
-`--system` layout; write down what it needed.)
+(`-c` is the manager's one option, `hangard [-c hangard.conf]`; with `$HANGAR_ROOT` set
+every fixed path is relocated under it, and the configuration's `TopicDir=/dev/shm/hangar`
+keeps the topics on tmpfs rather than on the SD card. Rehearsed 2026-11-08 with the same
+tarball built for x86-64, on a laptop with a webcam: `eeye` and `hellion` started as
+legacy modules and were `ready`, `eeye` acquired the camera, `hellion` served its page
+on 8091, SIGTERM stopped everything cleanly. Module logs are under `$HANGAR_ROOT/log/`.)
 
 In session 1, within the first ten seconds:
 
 ```sh
 export HANGAR_ROOT=$HOME/hangar-root
-bin/hangar top --once                             # eeye: starting -> ready; hellion likewise
-bin/hangar topics                                 # the manager's own: hangar.vehicle.system, .modules, .admin.req
+bin/hangar status                             # eeye: starting -> ready; hellion likewise
+bin/hangar statusics                                 # the manager's own: hangar.vehicle.system, .modules, .admin.req
 bin/hangar echo hangar.vehicle.modules --json | head -40
 ls -la /dev/shm/eeye.* /dev/shm/hangar/           # eeye's frame bus files appear when the camera is acquired
-cat $HANGAR_ROOT/var/eeye/effects.json.health     # eeye's own health file: camera, fps
+cat $HANGAR_ROOT/var/eeye/effects.json.health     # eeye's own health file: camera, fps (written once a camera is acquired)
+tail $HANGAR_ROOT/log/eeye.log                    # eeye's stdout/stderr: the ring statistics
 pgrep -a eeye
 ```
 
 `eeye` is a `Legacy=yes` module: it declares no hangar topics, so `hangar topics`
-lists the manager's topics and `hangar top` shows `eeye` as `ready` while its process
+lists the manager's topics and `hangar status` shows `eeye` as `ready` while its process
 runs. Its frames are on electric-eye's frame bus, `/dev/shm/eeye.raw` and
 `/dev/shm/eeye.pilot`, read by `hellion` and, once the adapter of docs/01 is built
 (`hg_sub_open("eeye:raw", …)`), by `hangar echo eeye:raw`. For this visit, "eeye
-acquires the camera and publishes" is: `eeye` is `ready` in `hangar top`, its health
+acquires the camera and publishes" is: `eeye` is `ready` in `hangar status`, its health
 file names the camera and a frame rate, and `/dev/shm/eeye.raw` grows a sequence
 (`watch -n1 'ls -la /dev/shm/eeye.*'`). If `hellion` is up, `bin/hellion top` shows
 the frame rate from the bus.
@@ -220,12 +224,12 @@ Kill `eeye` with SIGKILL and watch the restart:
 ```sh
 pgrep -x eeye                                     # pid A
 pkill -KILL -x eeye
-sleep 1; bin/hangar top --once; pgrep -x eeye     # pid B, state starting/ready, failures 1, delay 0.5 s
+sleep 1; bin/hangar status; pgrep -x eeye     # pid B, state starting/ready, failures 1, delay 0.5 s
 ```
 
 The manager logs the death by signal 9 and the restart after `Backoff`'s first value
 (0.5 s in `eeye.module`). Kill it three more times, a second apart, and the delay
-doubles: 0.5, 1, 2, 4 s (`hangar top` shows `backoff` with the delay). Then leave it
+doubles: 0.5, 1, 2, 4 s (`hangar status` shows `backoff` with the delay). Then leave it
 for `ResetAfter` (30 s) and it is healthy with the count reset. Five kills within 60 s
 (`Burst=5/60s`) would make the manager give up (`failed`, system `degraded`); if that
 happens, `bin/hangar restart eeye` brings it back. Record what the log shows for one
@@ -240,7 +244,7 @@ sleep 1; pgrep -x eeye                            # still pid C: modules outlive
 # session 2: the manager is gone; start it again exactly as before
 bin/hangard -c $HANGAR_ROOT/etc/hangard.conf 2>&1 | tee -a ~/hangar-visit/hangard.log
 # session 1
-bin/hangar top --once; pgrep -x eeye              # still pid C: adopted, not restarted
+bin/hangar status; pgrep -x eeye              # still pid C: adopted, not restarted
 ```
 
 The new manager's log should say it adopted `eeye` (and `hellion`) from the

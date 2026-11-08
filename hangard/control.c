@@ -823,6 +823,19 @@ void control_handle(int fd)
 			err_reply(fd, "permission denied: group hangar required");
 		else
 			req_status(fd);
+	} else if (strcmp(word, "paths") == 0) {
+		/* Where this manager keeps things, for a tool that was not spawned by
+		 * it and so has no HANGAR_TOPIC_DIR in its environment: the
+		 * configuration may put the topics on a tmpfs outside $HANGAR_ROOT. */
+		if (!is_reader(&p)) {
+			err_reply(fd, "permission denied: group hangar required");
+		} else {
+			static char buf[2048];
+			int n = mf_fmt(buf, sizeof buf, "ok\nroot %s\ntopics %s\nmodules %s\nmsg %s\nlog %s\n",
+					 G.paths.root[0] ? G.paths.root : "/", G.conf.topic_dir, G.conf.module_dir,
+					 G.conf.msg_dir, G.conf.log_dir);
+			reply(fd, buf, (size_t)n, -1);
+		}
 	} else if (strcmp(word, "wiring") == 0) {
 		if (!is_reader(&p))
 			err_reply(fd, "permission denied: group hangar required");

@@ -120,6 +120,11 @@ static void test_control_requests(void)
 	// open from a non-module.
 	r = ctl("open test.depth hash=0000000000000001 payload=16 schema=0\n");
 	CHECK(strstr(r, "not a module's main process") != NULL);
+	// paths: where the manager keeps things, the topic directory among them.
+	r = ctl("paths");
+	CHECK(strncmp(r, "ok\nroot ", 8) == 0);
+	CHECK(strstr(r, "\ntopics /") != NULL && strstr(r, "\nmodules /") != NULL && strstr(r, "\nmsg /") != NULL &&
+	      strstr(r, "\nlog /") != NULL);
 	// An unknown request.
 	r = ctl("bogus");
 	CHECK(strncmp(r, "err unknown request bogus", 25) == 0);
