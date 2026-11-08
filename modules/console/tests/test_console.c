@@ -8,7 +8,8 @@
  * 404, malformed requests get 400 and leave the module running, a POST
  * without the JSON content type is refused, a restart through the control
  * socket raises the console's restart count, stop and start work, the
- * fallback log is served. Under 30 s. */
+ * fallback log is served, the page has its Hellion tab and /api/links says
+ * what --hellion gave it (and its default without it). Under 30 s. */
 #include "hd_test.h"
 #include "http.h"
 
@@ -18,6 +19,8 @@ static pid_t mgr;
 static int port;
 static char hostport[64];
 static const char *T_console;
+
+#define HELLION_TEST_URL "http://127.0.0.1:9/" /* nothing listens there; the console only passes it on */
 
 /* A port nobody listens on right now (the console binds it a moment later). */
 static int free_port(void)
@@ -124,7 +127,7 @@ static void test_start(void)
 	manifest("talker", "[Module]\nDescription=toy talker\nExec=%s/talker --topic test.depth --rate 50\n"
 			   "[Publish test.depth]\nType=depth\nRate=50\n", T_toys);
 	manifest("console", "[Module]\nDescription=Dawn Patrol: the operator's page\n"
-			    "Exec=%s --listen 127.0.0.1:%d\n"
+			    "Exec=%s --listen 127.0.0.1:%d --hellion " HELLION_TEST_URL "\n"
 			    "[Subscribe hangar.vehicle.system]\n[Subscribe hangar.vehicle.modules]\n[Subscribe *]\n"
 			    "[Health]\nWatchdog=10s\n", T_console, port);
 	mgr = manager_start();
@@ -226,7 +229,18 @@ static void test_page_and_errors(void)
 	CHECK(strstr(body, "<title>Dawn Patrol</title>") != NULL);
 	CHECK(strstr(body, "/api/modules") != NULL);
 	CHECK(strstr(body, "/api/topic/") != NULL);
-	CHECK(strstr(body, "<script") != NULL && strstr(body, "src=") == NULL); /* self-contained */
+	CHECK(strstr(body, "<script") != NULL && strstr(body, " src=") == NULL); /* self-contained */
+	CHECK(strstr(body, "http://") == NULL && strstr(body, "https://") == NULL);  /* nothing external */
+	// The tabs, and the Hellion one with its frame; the page asks /api/links
+	// for the URL instead of carrying one.
+	CHECK(strstr(body, "data-tab=\"modules\"") != NULL && strstr(body, "data-tab=\"topics\"") != NULL);
+	CHECK(strstr(body, "data-tab=\"log\"") != NULL && strstr(body, "data-tab=\"hellion\"") != NULL);
+	CHECK(strstr(body, "<iframe id=\"hellion-frame\"") != NULL);
+	CHECK(strstr(body, "/api/links") != NULL);
+	CHECK(strstr(body, "localStorage") != NULL);
+	CHECK_EQ_INT(api("GET", "/api/links", body, sizeof body), 200);
+	CHECK(strstr(body, "{\"hellion\":\"" HELLION_TEST_URL "\"}") != NULL);
+	CHECK_EQ_INT(api("POST", "/api/links", body, sizeof body), 405);
 	CHECK_EQ_INT(api("GET", "/nope", body, sizeof body), 404);
 	CHECK(strstr(body, "no such page") != NULL);
 	CHECK_EQ_INT(api("GET", "/api/nope", body, sizeof body), 404);
@@ -287,6 +301,52 @@ static void test_restart_stop_start(void)
 	CHECK(json_num(body, "\"name\":\"talker\"", "\"restarts\":", &v) == 0 && v == 2);
 }
 
+/* dawn-patrold by hand (unwired), as the README's "Running it" does, with
+ * the arguments given; its pid, or the exit status (>= 0) when it ends
+ * within a second, as for a refused argument. */
+static int run_console(pid_t *pid, const char *a1, const char *a2, const char *a3, const char *a4)
+{
+	*pid = fork();
+	if (*pid == 0) {
+		int nul = open("/dev/null", O_RDWR);
+		if (nul >= 0) {
+			dup2(nul, 0);
+			dup2(nul, 2);
+		}
+		execl(T_console, T_console, a1, a2, a3, a4, (char *)NULL);
+		_exit(127);
+	}
+	return wait_pid_ms(*pid, 1000);
+}
+
+static void test_hellion_default(void)
+{
+	// Without --hellion the URL is the vehicle's hellion on this machine, its
+	// "control" port 8091 (legacy/hellion/examples/b-rov.json).
+	int port2 = free_port();
+	CHECK(port2 > 0);
+	char listen[32];
+	tfmt(listen, sizeof listen, "127.0.0.1:%d", port2);
+	pid_t pid;
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--role", "vehicle"), -1); /* still running */
+	char saved[64];
+	memcpy(saved, hostport, sizeof saved);
+	tfmt(hostport, sizeof hostport, "%s", listen);
+	CHECK(wait_api("/api/links", "{\"hellion\":\"http://127.0.0.1:8091/\"}", 5000, body, sizeof body));
+	CHECK_EQ_INT(api("GET", "/api/system", body, sizeof body), 200);
+	CHECK(strstr(body, "\"role\":\"vehicle\"") != NULL);
+	memcpy(hostport, saved, sizeof saved);
+	kill(pid, SIGTERM);
+	CHECK_EQ_INT(wait_pid_ms(pid, 3000), 0);
+	// A value that is not an http(s) URL, or none at all, is refused at start.
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--hellion", "ftp://127.0.0.1/"), 2);
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--hellion", "http://x/\"><script>"), 2);
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--hellion", NULL), 2);
+	// The module under the manager is untouched by all that.
+	CHECK_EQ_INT(api("GET", "/api/links", body, sizeof body), 200);
+	CHECK(strstr(body, HELLION_TEST_URL) != NULL);
+}
+
 static void test_log(void)
 {
 	// No journald socket under this root: the manager writes the fallback
@@ -328,6 +388,7 @@ int main(void)
 	RUN_TEST(test_topic_decode);
 	RUN_TEST(test_page_and_errors);
 	RUN_TEST(test_restart_stop_start);
+	RUN_TEST(test_hellion_default);
 	RUN_TEST(test_log);
 	RUN_TEST(test_shutdown);
 	hd_teardown();

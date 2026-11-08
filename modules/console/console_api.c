@@ -335,6 +335,14 @@ int api_system_json(struct console *c, struct cbuf *b)
 	return 200;
 }
 
+int api_links_json(struct console *c, struct cbuf *b)
+{
+	cbuf_printf(b, "{\"hellion\":");
+	cbuf_json_str(b, c->hellion_url, sizeof c->hellion_url);
+	cbuf_printf(b, "}\n");
+	return 200;
+}
+
 int api_modules_json(struct console *c, struct cbuf *b)
 {
 	uint64_t now = hg_now_ns();

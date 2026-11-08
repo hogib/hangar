@@ -17,6 +17,9 @@
 #define CON_PATH 512
 #define CON_MAX_MODULES 128   /* HD_MAX_MODULES */
 #define CON_MAX_TOPICS 1024
+/* Where hellion's page is unless --hellion says otherwise: its "control"
+ * port on this machine (legacy/hellion/examples/b-rov.json; docs/11 "Ports"). */
+#define CON_HELLION_DEFAULT "http://127.0.0.1:8091/"
 
 /* A growable text buffer: every response is built in one. */
 struct cbuf {
@@ -52,6 +55,7 @@ struct console {
 	char control_path[CON_PATH];
 	char log_dir[CON_PATH];
 	char journal_path[CON_PATH];
+	char hellion_url[CON_PATH]; /* what the Hellion tab frames: --hellion, else CON_HELLION_DEFAULT */
 	hg_sub *sub_system, *sub_modules;
 	struct hangar_system sys;
 	struct hg_info sys_info;
@@ -76,5 +80,7 @@ int api_modules_json(struct console *c, struct cbuf *b);
 int api_topics_json(struct console *c, struct cbuf *b);
 int api_topic_json(struct console *c, const char *name, struct cbuf *b);
 int api_log_json(struct console *c, int lines, struct cbuf *b);
+/* The pages the console embeds or links to: {"hellion": url}. */
+int api_links_json(struct console *c, struct cbuf *b);
 
 #endif

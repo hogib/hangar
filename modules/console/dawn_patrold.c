@@ -5,13 +5,15 @@
  * the manager keeps alive, every topic, the recent log, with start, stop and
  * restart buttons that go through the control socket.
  *
- *   dawn-patrold [--listen ADDR] [--role vehicle|topside]
+ *   dawn-patrold [--listen ADDR] [--role vehicle|topside] [--hellion URL]
  *
  * ADDR is "host:port", "[v6]:port" or "port" (default 127.0.0.1:8080; port 0
  * picks one and the log line says which). The role names the manager's
  * topics, hangar.<role>.system and .modules: taken from the wiring when the
  * manager started this module, else --role, else hangard.conf's Role under
- * $HANGAR_ROOT, else vehicle.
+ * $HANGAR_ROOT, else vehicle. URL is where hellion's page is (its "control"
+ * port; default http://127.0.0.1:8091/): the page's Hellion tab frames it,
+ * reading the URL from /api/links.
  *
  * One thread, one epoll loop: the listening socket, every client, the
  * eventfd hg_wait_fd() signals when a manager topic has news, a 1 s timer
@@ -26,6 +28,7 @@
  *   GET  /api/topics               every file of the topic directory
  *   GET  /api/topic/<name>         the newest message, decoded by its schema
  *   GET  /api/log[?lines=N]        the fallback log tails, or a journald note
+ *   GET  /api/links                {"hellion": URL}, what the Hellion tab frames
  *   POST /api/module/<name>/start|stop|restart
  *   POST /api/reload               through the control socket, as this process's user
  *
@@ -379,6 +382,10 @@ static void route(struct conn *c, const HttpRequest *req)
 		respond_json(c, api_topic_json(&G, p + 11, &b), &b);
 		return;
 	}
+	if (get && strcmp(p, "/api/links") == 0) {
+		respond_json(c, api_links_json(&G, &b), &b);
+		return;
+	}
 	if (get && strcmp(p, "/api/log") == 0) {
 		int lines = 100;
 		const char *q = strstr(req->query, "lines=");
@@ -594,20 +601,23 @@ static int listen_on(const char *spec, char *shown, size_t shown_len)
 
 static void usage(void)
 {
-	fputs("usage: dawn-patrold [--listen ADDR] [--role vehicle|topside]\n"
+	fputs("usage: dawn-patrold [--listen ADDR] [--role vehicle|topside] [--hellion URL]\n"
 	      "  ADDR: host:port, [v6]:port or port (default 127.0.0.1:8080; port 0 picks one)\n"
+	      "  URL:  hellion's page, framed by the Hellion tab (default " CON_HELLION_DEFAULT ")\n"
 	      "Paths follow $HANGAR_ROOT; $HANGAR_CONTROL and $HANGAR_TOPIC_DIR override.\n",
 	      stderr);
 }
 
 int main(int argc, char **argv)
 {
-	const char *listen_spec = "127.0.0.1:8080", *role_arg = NULL;
+	const char *listen_spec = "127.0.0.1:8080", *role_arg = NULL, *hellion = CON_HELLION_DEFAULT;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--listen") == 0 && i + 1 < argc)
 			listen_spec = argv[++i];
 		else if (strcmp(argv[i], "--role") == 0 && i + 1 < argc)
 			role_arg = argv[++i];
+		else if (strcmp(argv[i], "--hellion") == 0 && i + 1 < argc)
+			hellion = argv[++i];
 		else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
 			return usage(), 0;
 		else
@@ -627,6 +637,14 @@ int main(int argc, char **argv)
 		return 3;
 	}
 	setup_paths(role_arg);
+	/* The URL becomes a frame's src and a link's href in the page: an
+	 * http(s) URL that fits, without spaces, quotes or angle brackets. */
+	if ((strncmp(hellion, "http://", 7) != 0 && strncmp(hellion, "https://", 8) != 0) ||
+	    strlen(hellion) >= sizeof G.hellion_url || strpbrk(hellion, " \t\r\n\"'\\<>") != NULL) {
+		logf_("--hellion: not an http(s) URL: \"%s\"", hellion);
+		return 2;
+	}
+	snprintf(G.hellion_url, sizeof G.hellion_url, "%s", hellion);
 
 	char name[64];
 	snprintf(name, sizeof name, "hangar.%s.system", G.role);
@@ -675,7 +693,8 @@ int main(int argc, char **argv)
 	snprintf(status, sizeof status, "serving http://%s (role %s)", shown, G.role);
 	hg_status(status);
 	hg_ready();
-	logf_("listening on %s, role %s, topics %s, control %s", shown, G.role, G.topic_dir, G.control_path);
+	logf_("listening on %s, role %s, topics %s, control %s, hellion %s", shown, G.role, G.topic_dir,
+	      G.control_path, G.hellion_url);
 
 	int stop = 0;
 	while (!stop) {
