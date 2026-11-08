@@ -1,0 +1,37 @@
+# /etc/hangar/datasets/wrench_state.dataset: what the mux sent ArduSub, with the
+# pilot's command it passed and the state the vehicle was in at that tick
+# (docs/06-recorder.md, Datasets; modules/pairer/README.md). One row per
+# ctl.wrench at 50 Hz; the pairer publishes them live on dataset.wrench_state,
+# `hangar dataset build wrench_state <session>` builds the same rows from a
+# recording of this profile.
+[Dataset]
+Anchor=ctl.wrench
+AnchorRole=label
+# A row waits this long past its anchor for nav.* stamped in time but published
+# later (the telemetry is relayed from ArduSub).
+Lateness=50ms
+# Rows while outputs were off are kept and masked: a trainer steps through them
+# and takes no loss.
+Filter=mask
+Where=safety.state.outputs_enabled == 1
+
+# The pilot's command the mux passed: the message this ctl.wrench references
+# (mux.module, Sources=). Missing, and flagged so, when the mux named no source
+# (neutral in failsafe, or no pilot).
+[Input pilot.wrench]
+Join=provenance
+
+# The vehicle's state at the tick: the newest depth and attitude stamped at or
+# before the command.
+[Input nav.depth]
+Join=asof:0
+Fields=depth_m
+
+[Input nav.attitude]
+Join=asof:0
+Fields=roll pitch yaw rates
+
+[Input safety.state]
+Join=asof:0
+Role=filter
+Fields=state outputs_enabled

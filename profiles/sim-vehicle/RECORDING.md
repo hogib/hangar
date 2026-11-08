@@ -217,12 +217,138 @@ $ tail -1 $R/run/hangar/log/recorder.log
 recorder: stopped
 ```
 
+## The pairer beside it
+
+`pairer.module`, `pairer.conf`, `datasets/wrench_state.dataset` and
+`dataset_wrench_state.msg` (the row type as a message type of its own, since the
+manager does not generate `dataset:<name>` types yet: modules/pairer/README.md,
+deviation 1). The same throwaway root, with a scratch module publishing
+`pilot.wrench` and `nav.attitude` at 50 Hz in the place of the topside's
+`topside_mavlink` and the vehicle's `mavlink`.
+
+```
+$ hangar status
+MODULE               STATE         PID FAILS LAST EXIT   SINCE  STATUS
+depth                ready       11646     0 -              3s  publishing
+mux                  ready       11647     0 -              3s  manual: sources 111111 limits 0
+pairer               ready       11648     0 -              3s  wrench_state 147 rows
+recorder             ready       11649     0 -              3s  idle 0 bytes, 18 topics, 0 gaps
+safety               ready       11650     0 -              3s  disarmed: start
+statepub             ready       11651     0 -              3s  publishing
+
+$ grep pairer $R/hangard.log | grep opened
+hangard: pairer: opened pairer.status (pairer_status, 16 slots)
+hangard: pairer: opened dataset.wrench_state (dataset_wrench_state, 256 slots)
+$ cat $R/run/hangar/log/pairer.log
+pairer: 1 datasets from .../etc/hangar/datasets; sink .../var/lib/hangar/pairer
+pairer: wrench_state: 4 parts, 232-byte rows, wait 50 ms, hash 6f3766df3bf41d1e
+```
+
+The manager accepted the open of `dataset.wrench_state` with the hash the pairer
+bound from the live topics' schemas: the `.msg` printed by `hangar dataset schema`
+from `msg/` is the same text.
+
+```
+$ hangar echo dataset.wrench_state --count 1 --fields anchor_seq,missing,flags,ctl.wrench.surge,pilot.wrench.surge,nav.depth.depth_m,nav.attitude.yaw,safety.state.outputs_enabled
+anchor_seq           3063
+missing              0      # role=meta bit i: part i missing
+flags                2      # role=meta bit 0 reset, bit 1 masked, bit 2 late
+ctl.wrench.surge     -0.491827
+pilot.wrench.surge   -0.491827
+nav.depth.depth_m    30.53
+nav.attitude.yaw     6.108
+safety.state.outputs_enabled 0
+```
+
+Disarmed, every row is `masked` (`Where=safety.state.outputs_enabled == 1`,
+`Filter=mask`); `pilot.wrench` is joined by provenance (the mux names it,
+`sources 111111`), `nav.depth` and `nav.attitude` as of the command's stamp.
+
+```
+$ hangar call safety.arm
+HG_OK
+(6 s later)
+$ hangar echo dataset.wrench_state --count 1 --fields anchor_seq,missing,flags,...
+anchor_seq           3363
+missing              0
+flags                0
+ctl.wrench.surge     -0.43777
+pilot.wrench.surge   -0.43777
+nav.depth.depth_m    33.51
+nav.attitude.yaw     6.704
+safety.state.outputs_enabled 1
+
+$ hangar echo pairer.status --count 5 --fields dataset,part,rows,masked,misses,latency_ns,slots,needed_slots
+dataset "wrench_state"  part ""              rows 3397  masked 3065
+dataset "wrench_state"  part "pilot.wrench"  misses 0  latency_ns 20193990  slots 16  needed_slots 4
+dataset "wrench_state"  part "nav.depth"     misses 0  latency_ns 70214338  slots 16  needed_slots 8
+dataset "wrench_state"  part "nav.attitude"  misses 0  latency_ns 70187231  slots 16  needed_slots 8
+dataset "wrench_state"  part "safety.state"  misses 0  latency_ns 147398052 slots 16  needed_slots 4
+
+$ hangar status
+pairer               ready       11648     0 -           1m07s  wrench_state 3397 rows
+recorder             ready       11649     0 -           1m07s  recording 20261108-134604-mousb 406896 bytes, 18 topics, 0 gaps
+safety               ready       11650     0 -           1m07s  armed by admin:oguzb
+
+$ hangar call safety.disarm
+HG_OK
+```
+
+The session of that arm holds the dataset topic too (the glob takes it in; its
+rows can be built again from their parts, so `dataset.*` is only out of the black
+box by default):
+
+```
+$ python3 ... readback of .../sessions/20261108-134604-mousb
+ctl.wrench.hgr                       332 full   1175744282568        1182364282221        0
+dataset.wrench_state.hgr             334 full   1175664280491        1182324280692        0
+nav.attitude.hgr                     331 full
+nav.depth.hgr                        330 full
+pilot.wrench.hgr                     331 full
+pairer.status.hgr                     31 full
+safety.state.hgr                      68 full
+(and the 10 files of the first session)
+17 files, 1881 records
+```
+
+The offline build from the session, against the live rows the pairer wrote to its
+sink (`Sink=` in `pairer.conf`, deviation 2):
+
+```
+$ hangar dataset check wrench_state $SESSION
+OK   spec wrench_state: anchor ctl.wrench (label), 4 parts, wait 50 ms
+OK   manifests: every provenance join is in the anchor's Inputs or Sources
+WARN policy: not usable by a policy, these input joins would have to wait: nav.depth nav.attitude
+OK   recurrent policy: a row for every tick (Rate=every:1, Missing=flag, Filter=mask)
+OK   session .../20261108-134604-mousb: can be built, 332 anchor messages, 232-byte rows
+
+$ hangar dataset build wrench_state $SESSION -o wrench_state.offline.hgr
+wrench_state.offline.hgr: 332 rows (0 late, 0 dropped) from 332 anchor messages, 232 bytes each
+
+$ python3 ... compare $R/var/lib/hangar/pairer/dataset.wrench_state.hgr wrench_state.offline.hgr
+live rows 3450 (anchor_seq 1..3450), built rows 332 (anchor_seq 3066..3397)
+common 332: identical 332, differing with late set 0, differing otherwise 0; masked 0
+a built row: anchor_seq 3232 ctl.wrench.surge 0.4997 pilot.wrench.surge 0.4997 nav.depth.depth_m 32.21 nav.attitude.yaw 6.444 safety.state.state 1 flags 0 missing 0
+fields by role: label ['ctl.wrench.surge', 'ctl.wrench.sway', 'ctl.wrench.heave', 'ctl.wrench.roll', 'ctl.wrench.pitch', 'ctl.wrench.yaw']
+```
+
+Every row the build made from the recording is byte for byte the row the pairer
+published live, flags included (no `late`: with `Lateness=50ms` nothing arrived
+after `emitted_ns`). `WARN policy` is the spec's own statement: its `asof:0`
+inputs wait `Lateness`, so a policy could not build these rows at its tick
+(docs/06, "Specs a policy can run on"). At shutdown the pairer exits 0 like the
+rest.
+
 ## On the live demo
 
-`tools/sim/hangar-up.sh up` lays the recorder out with the rest of the profile
-(`recorder.module` through the `.module` rewrite, `recorder.conf` through the
-`.conf` rewrite, which turns `Dir=/dev/shm/hangar-vehicle/...` into the vehicle
-root's `var/lib/hangar/recorder/sessions`, as it does `mavlink.conf`'s `Tlog`).
+`tools/sim/hangar-up.sh up` lays the recorder and the pairer out with the rest of
+the profile (`recorder.module` and `pairer.module` through the `.module` rewrite;
+`recorder.conf` and `pairer.conf` through the `.conf` rewrite, which turns
+`Dir=/dev/shm/hangar-vehicle/...` and `Sink=/dev/shm/hangar-vehicle/...` into the
+vehicle root's `var/lib/hangar/recorder/sessions` and `var/lib/hangar/pairer`, as
+it does `mavlink.conf`'s `Tlog`; `datasets/*.dataset` copied to the root's
+`etc/hangar/datasets/` and `*.msg` into its `usr/share/hangar/msg/`, two loops
+added to `lay_out` for this).
 Arm in QGroundControl, or `builddir/pilot arm hold 5 disarm`, and a session
 appears under `/dev/shm/hangar-vehicle/var/lib/hangar/recorder/sessions/`;
 `HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar echo recorder.status` while

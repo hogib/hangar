@@ -5,7 +5,7 @@
 # each root reads the other's topic files directly, until the bridge exists):
 #
 #   /dev/shm/hangar-vehicle   Role=vehicle: safety, mux, mavlink (SITL on 127.0.0.1:14560),
-#                             Dawn Patrol on http://127.0.0.1:8080
+#                             recorder, pairer, Dawn Patrol on http://127.0.0.1:8080
 #   /dev/shm/hangar-topside   Role=topside: topside_mavlink (QGroundControl on 14550),
 #                             Dawn Patrol on http://127.0.0.1:8081
 #
@@ -56,6 +56,18 @@ lay_out() { # root profile-dir
                    > "$root/etc/hangar/$(command basename "$f")" ;;
         esac
     done
+    # The pairer's dataset specs, and the row types written as message types of
+    # their own (profiles/sim-vehicle/pairer.module: until the manager generates
+    # dataset:<name> types) into the root's MsgDir beside msg/*.msg.
+    for f in "$prof"/datasets/*.dataset; do
+        [ -e "$f" ] || continue
+        command mkdir -p "$root/etc/hangar/datasets"
+        command cp "$f" "$root/etc/hangar/datasets/"
+    done
+    for f in "$prof"/*.msg; do
+        [ -e "$f" ] || continue
+        command cp "$f" "$root/usr/share/hangar/msg/"
+    done
 }
 
 start_manager() { # root peer-root
@@ -70,7 +82,7 @@ start_manager() { # root peer-root
 }
 
 cmd_up() {
-    need hangard hangar hangar-safety hangar-mux hangar-mavlink
+    need hangard hangar hangar-safety hangar-mux hangar-mavlink recorder pairer
     [ -x "$builddir/dawn-patrold" ] || echo "note: $builddir/dawn-patrold is not built; Dawn Patrol will be refused by the manager" >&2
     lay_out "$root_v" "$repo/profiles/sim-vehicle"
     lay_out "$root_t" "$repo/profiles/sim-topside"
@@ -79,9 +91,10 @@ cmd_up() {
     sleep 0.5
     cat <<MSG
 hangar is up, two managers on this host (the "tether" is the same-host shim, until the bridge):
-  vehicle  root $root_v  (safety, mux, mavlink, console on http://127.0.0.1:8080)
+  vehicle  root $root_v  (safety, mux, mavlink, recorder, pairer, console on http://127.0.0.1:8080)
   topside  root $root_t  (topside_mavlink, console on http://127.0.0.1:8081)
   logs     $root_v/hangard.log, $root_t/hangard.log, <root>/run/hangar/log/<module>.log
+  sessions $root_v/var/lib/hangar/recorder/sessions/  (recorded while armed; profiles/sim-vehicle/RECORDING.md)
 
 The vehicle's mavlink module waits for SITL on 127.0.0.1:14560:
   HANGAR_SIM=1 $here/run.sh up          (MAVProxy --out 127.0.0.1:14560, no 14550)

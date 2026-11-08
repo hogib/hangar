@@ -208,7 +208,16 @@ missing spec, a bad key, an empty list and a wiring whose dataset outputs differ
    row type's (the generator refuses dotted names in `msg/`, so the file lives in the
    machine's `MsgDir` only; `hg_schema_parse` accepts them). The pairer's own check of
    the manifest against its configuration (exit 78) is by the `dataset.*` outputs'
-   names. Untested under `hangard`; the suite wires the pairer by a file.
+   names. The suite wires the pairer by a file; under `hangard` the workaround has run
+   by hand, as `profiles/sim-vehicle/pairer.module`, `pairer.conf`,
+   `datasets/wrench_state.dataset` and `dataset_wrench_state.msg` enable it for the
+   development demo (`tools/sim/hangar-up.sh` copies the spec and the `.msg` into the
+   root): the manager accepted the open of `dataset.wrench_state` with the hash the
+   pairer bound, the rows flowed live and into the sink, and `hangar dataset build`
+   over the recorder's session of the same run gave rows identical to the live ones
+   (`profiles/sim-vehicle/RECORDING.md`). Nothing in the module needed a change;
+   `hangar dataset build`'s summary line read the anchor count after the session was
+   closed and printed 0, which is fixed.
 2. **`Sink=`: the rows also go to a file**, `<Sink>/dataset.<name>.hgr`, the same bytes
    as the topic and the same header the build writes (`/* until the bridge */` in the
    code): the trainer's transport is the bridge, which does not exist, and the live

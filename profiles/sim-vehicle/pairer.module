@@ -1,0 +1,39 @@
+# /usr/share/hangar/modules/pairer.module: the live dataset pairer (docs/06-recorder.md,
+# "Live: the pairer"; modules/pairer/README.md), as the development demo enables
+# it. Its settings are in /etc/hangar/pairer.conf, named on the Exec line; it
+# subscribes to every topic its datasets name and publishes one dataset.<name>
+# per spec listed there, or exits 78 saying which differs.
+[Module]
+Description=Dataset pairer
+Exec=/usr/lib/hangar/pairer /etc/hangar/pairer.conf
+
+# The topics of datasets/wrench_state.dataset.
+[Subscribe ctl.wrench]
+[Subscribe pilot.wrench]
+[Subscribe nav.depth]
+[Subscribe nav.attitude]
+[Subscribe safety.state]
+
+# docs/06 writes Type=dataset:wrench_state, the row type the manager generates
+# from the spec; the manager does not generate dataset types yet and refuses the
+# form (hangard/README.md, deviation 10), so the row schema is a message type of
+# its own, dataset_wrench_state.msg beside this file, printed by
+#   hangar dataset schema datasets/wrench_state.dataset --msgdir msg \
+#     --type ctl.wrench=wrench --type pilot.wrench=wrench --type nav.depth=depth \
+#     --type nav.attitude=attitude --type safety.state=safety_state
+# (modules/pairer/README.md, deviation 1). hangar-up.sh copies it into the
+# root's MsgDir. Regenerate it when the spec or a type it names changes: the
+# pairer opens the topic with the row type it binds, and the manager refuses
+# a hash that differs.
+[Publish dataset.wrench_state]
+Type=dataset_wrench_state
+Slots=256
+# Each row references its anchor message (pairer README, deviation 4).
+Sources=ctl.wrench
+
+[Publish pairer.status]
+Type=pairer_status
+
+# No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s round.
+[Health]
+Watchdog=10s

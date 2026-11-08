@@ -219,10 +219,16 @@ decide. Nothing here changes behaviour silently.
     black box ring of that topic starts over, so one file never holds two numberings.
 13. **The calls are served only when wired.** Without a wiring (no manifest) the
     library has no `serve` lines; the recorder logs that and runs with `AutoStart`.
-14. **Under the manager it is untested.** The suites wire the recorder by a file and
+14. **No suite runs it under the manager.** The suites wire the recorder by a file and
     make the calls from the suite's own process; `recorder.module` is docs/06's template
-    and the manifest parser accepts it, but no suite runs it under `hangard`
-    (the console suite is the model for one).
+    and the manifest parser accepts it (the console suite is the model for a suite
+    under `hangard`). It has run under `hangard` by hand, as
+    `profiles/sim-vehicle/recorder.module` and `recorder.conf` enable it for the
+    development demo: the manager accepts the manifest, `AutoStart=armed` follows
+    `hangar call safety.arm` and `safety.disarm`, the calls work through
+    `hangar call`, the sessions and a dump read back, and the shutdown is clean;
+    `profiles/sim-vehicle/RECORDING.md` has the run, command by command. Nothing
+    in the module needed a change for it.
 
 ## Until the bridge
 

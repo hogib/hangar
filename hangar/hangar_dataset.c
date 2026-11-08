@@ -284,10 +284,11 @@ static int cmd_build(int argc, char **argv)
 			return dfail("%s: %s", out, strerror(errno));
 	}
 	hgr_close(&w);
+	uint64_t n_anchor = anchor.r.count; /* close_session() clears the reader */
 	close_session(&spec, &anchor, parts);
 	printf("%s: %llu rows (%llu late, %llu dropped) from %llu anchor messages, %u bytes each\n", out,
 	       (unsigned long long)rows, (unsigned long long)late, (unsigned long long)dropped,
-	       (unsigned long long)anchor.r.count, rt.row_bytes);
+	       (unsigned long long)n_anchor, rt.row_bytes);
 	free(row);
 	free(scratch);
 	return 0;
