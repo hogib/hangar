@@ -184,6 +184,7 @@ for m in "$ROOT"/hangard/tests/modules/*.c; do
 	if known "$builddir/$s"; then targets="$targets $builddir/$s"
 	elif known "$builddir/modules/$s"; then targets="$targets $builddir/modules/$s"
 	elif known "$testdir/$s"; then targets="$targets $testdir/$s"
+	elif known "$testdir/hangard-modules/$s"; then targets="$targets $testdir/hangard-modules/$s"
 	else skipped="$skipped module:$s"; fi
 done
 
