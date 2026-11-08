@@ -1,0 +1,28 @@
+# Dawn Patrol as a phase-A module beside eeye and hellion (docs/11-electric-eye.md,
+# phase A; modules/console/README.md): the operator's page on 127.0.0.1:8080,
+# with electric-eye's page in its Hellion tab from hellion's control port,
+# 8091 (hellion.json from legacy/hellion/examples/b-rov.json). On the topside
+# the same manifest serves hangar.topside.system and .modules, and --hellion
+# names hellion_topside's port, 8080, beside a console moved to 8081 (as
+# profiles/sim-topside/console.module). @ROOT@ is replaced by
+# share/hangar/install-root.sh.
+[Module]
+Description=Dawn Patrol: the operator's page
+Exec=@ROOT@/bin/dawn-patrold --listen 127.0.0.1:8080 --hellion http://127.0.0.1:8091/
+# The start, stop, restart and reload buttons go through the control socket
+# as this module's user: without hangar-admin the manager refuses them and the
+# page says so. Monitoring alone needs only the hangar group every module has.
+# A manager that is not root (install-root.sh without --system) skips the line.
+SupplementaryGroups=hangar-admin
+
+# The manager's own topics: the system state and one message per module.
+[Subscribe hangar.vehicle.system]
+[Subscribe hangar.vehicle.modules]
+# The topic browser opens any topic by name to decode its newest message, as
+# `hangar echo` does; the glob lets the wiring allow that (docs/02, glob
+# subscriptions). Nothing is waited on through it.
+[Subscribe *]
+
+# No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s tick.
+[Health]
+Watchdog=10s

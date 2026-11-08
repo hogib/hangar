@@ -5,7 +5,11 @@
 # binary takes the role from the wiring it is handed).
 [Module]
 Description=Dawn Patrol: the operator's page
-Exec=/usr/lib/hangar/dawn-patrold --listen 127.0.0.1:8081
+Exec=/usr/lib/hangar/dawn-patrold --listen 127.0.0.1:8081 --hellion http://127.0.0.1:8080/
+# --hellion: the page the Hellion tab frames, hellion_topside's "control" port
+# (legacy/hellion/examples/b-topside.json, "control": "8080"). The sim demo
+# runs no hellion and has the vehicle's console on that port of the same
+# host, so the tab shows that page there until hellion runs on the topside.
 # The start, stop, restart and reload buttons go through the control socket
 # as this module's user: without hangar-admin the manager refuses them and the
 # page says so. Monitoring alone needs only the hangar group every module has.
