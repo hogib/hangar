@@ -21,16 +21,18 @@ page for ready, alive and its status line.
 | `dawn_patrold.c` | the process: arguments, the role, the two subscriptions and `hg_wait_fd`, the listening socket, the epoll loop, HTTP connections over `lib/net/http.c`'s parser, routing, the control-socket POSTs |
 | `console_api.c` | what the manager's topics, the topic directory and the fallback log say, as JSON; the module table with the console's own restart count; the measured rates |
 | `console.h` | shared between the two |
-| `web/index.html` | the page: HTML, CSS and a plain script, one file, nothing external. Embedded in the binary at build time |
+| `web/index.html` | the page: HTML, CSS and a plain script, one file, nothing external; four tabs, the last framing hellion's page. Embedded in the binary at build time |
 | `console.module` | the manifest template (`/usr/share/hangar/modules/console.module`) |
 | `console.mk` | the make fragment: the embed step, the binary, `check-console`; included by the root Makefile |
 | `tests/test_console.c` | the suite |
 
 ## What the page shows
 
-A dark page, one column, three sections under a sticky header, polling the API once
-a second (the log every two) and saying `live` or `dawn-patrold unreachable` in the
-header.
+A dark page under a sticky header with four tabs, **Modules**, **Topics**, **Log** and
+**Hellion**, polling the API once a second (the log every two, while its tab is shown)
+and saying `live` or `dawn-patrold unreachable` in the header. The tab you are on is
+kept in the browser's `localStorage` (per browser and per page address), so a reload
+comes back to it.
 
 - **The header**: the system state as a coloured pill (`nominal` green, `degraded`
   amber, `failsafe` red, `no manager` grey when `hangar.<role>.system` has no
@@ -56,6 +58,30 @@ header.
   (`/run/hangar/log/<module>.log`, written when there is no journald) and the last
   200 lines of the chosen one, following the end while you leave it scrolled there.
   With journald present the pane says where the lines are (`journalctl -t <module>`).
+- **Hellion**: electric-eye's own page (`legacy/hellion/web/index.html`, served by
+  `hellion` on its `control` port) in an `<iframe>` filling the tab, under a line
+  naming its URL as a link that opens it on its own. What hellion offers there
+  (`legacy/docs/hellion.md`, "The page and its API"): the live MJPEG preview of any
+  frame bus stream, the **auto visibility** button with the histogram and notes on
+  the picture, `eeye`'s **effect chain** (stages added, reordered, tuned and applied),
+  the **camera** controls (exposure, gain, white balance, brightness, contrast,
+  saturation), **snapshot** and **record** (hellion's recorder, elapsed time and size
+  while it runs), the raw recording `eeye` keeps, and the **geometry** block; its
+  banner greys the picture and says so when the video stalls or the link drops. The
+  URL comes from `/api/links`, which carries what `--hellion` gave the process
+  (default `http://127.0.0.1:8091/`, hellion's control port on the vehicle). Before
+  the frame is opened the page fetches that URL once (`no-cors` mode, which
+  resolves on any answer and rejects when nothing listens, so hellion needs no CORS
+  header); when nothing answers the tab shows plain text instead, `hellion is not
+  answering at <url>`, with the `ssh -L` line that would forward the port, and asks
+  again every 5 s. Leaving the tab unloads the frame: hellion's preview keeps
+  streaming while its page is merely out of sight, and over the tether that is
+  bandwidth the pilot's video wants. Coming back loads it again (and hellion's page
+  starts fresh: an effect edited but not applied there is gone). If a server ever
+  refuses framing (`X-Frame-Options`, a CSP `frame-ancestors`), the browser shows
+  its own notice in the frame and the link above it is the way in; hellion sends
+  neither header (`lib/net/http.c` sends `Content-Type`, `Content-Length`,
+  `Cache-Control: no-store` and `Connection: close`, nothing else), so it frames.
 
 ## The API
 
@@ -71,6 +97,7 @@ converted to ages by the console on the same machine.
 | `GET /api/topics` | `{"dir","topics":[...]}`: per file `name`, `type_hash` (16 hex), `topic_id`, `rate_hz` (declared, 0 for an event topic), `measured_hz` (`null` until two ticks have seen it), `age_ms` (`null` before the first message), `stale_after_ms`, `writer`, `writer_pid`, `slots`, `payload_bytes`, `schema_bytes`, `seq`, `first_seq`, `flags` (an array of `closed`, `died`, `replaced`, `stale`) |
 | `GET /api/topic/<name>` | the newest message: `topic`, `type_hash`, `writer`, `payload_bytes`, `present`; with a message `seq`, `stamp_ns`, `publish_ns`, `age_ms`, `stale` (computed from stale inputs), `gap`, and `fields`, an array of `{"name","type","count","comment","value"}` in schema order. `char[N]` is a string; an array of up to 64 elements is an array; a longer one (a frame's pixels) is its size as a string, `"u8[1382400]: 1382400 bytes"`; a float that is not finite is `null`. Without a message, `result` says `no message yet`, `closed` or `absent`. 404 for a name that is not a topic or has no file |
 | `GET /api/log[?lines=N]` | `{"journald","dir","note","files":[{"name","tail","bytes"}]}`: the last N lines (default 100, at most 1000, within the last 16 KB) of each `<dir>/<module>.log`; `journald` true and no files when the journald socket is there |
+| `GET /api/links` | `{"hellion":"<url>"}`: the URL the Hellion tab frames, as `--hellion` gave it (default `http://127.0.0.1:8091/`) |
 | `POST /api/module/<name>/start`, `/stop`, `/restart` | `start <name>` etc. on the control socket. `{"ok":true,"request","reply"}` (200); `{"ok":false,"request","error"}` with the manager's reason: 403 for `permission denied: hangar-admin required for restart`, 409 for any other refusal (`no module nobody`), 502 when the manager cannot be reached |
 | `POST /api/reload` | `reload` on the control socket, the same replies |
 
@@ -111,16 +138,26 @@ HANGAR_ROOT=$R builddir/hangard &
 HANGAR_ROOT=$R builddir/dawn-patrold --listen 127.0.0.1:8080      # role from $R/etc/hangar/hangard.conf
 HANGAR_ROOT=$R builddir/dawn-patrold --listen 0.0.0.0:8080 --role topside
 HANGAR_ROOT=$R builddir/dawn-patrold --listen 127.0.0.1:0         # a free port; the log line says which
+HANGAR_ROOT=$R builddir/dawn-patrold --hellion http://192.168.2.2:8091/   # hellion elsewhere
 curl -s http://127.0.0.1:8080/api/modules
 curl -s -X POST -H 'Content-Type: application/json' http://127.0.0.1:8080/api/module/talker/restart
 ```
 
 `--listen` takes `host:port`, `[v6]:port` or `port` (every interface); the
-default is `127.0.0.1:8080`. `$HANGAR_CONTROL` and `$HANGAR_TOPIC_DIR` override the
-paths under `$HANGAR_ROOT`, as for the `hangar` command. Unwired (no manager
+default is `127.0.0.1:8080`. `--hellion URL` names hellion's page for the Hellion
+tab: an `http://` or `https://` URL without spaces, quotes or angle brackets (anything
+else is refused at start, exit status 2), default `http://127.0.0.1:8091/`, the
+vehicle's hellion on its `control` port (`legacy/hellion/examples/b-rov.json`); the
+topside's `hellion_topside` listens on 8080 (`b-topside.json`), so its manifest says
+`--hellion http://127.0.0.1:8080/`. The URL is resolved by the browser, not by this
+process: over an SSH forward the operator adds hellion's port beside the console's,
+`ssh -L 8080:127.0.0.1:8080 -L 8091:127.0.0.1:8091 vehicle`, and the fallback text
+in the tab says so when the port does not answer. `$HANGAR_CONTROL` and
+`$HANGAR_TOPIC_DIR` override the paths under `$HANGAR_ROOT`, as for the `hangar`
+command. Unwired (no manager
 started it), the role is `--role`, else `Role` from `hangard.conf`, else `vehicle`.
 `SIGTERM`, `SIGINT` and `SIGHUP` stop it. Its own output: one line at start with
-the address, role, topic directory and control socket, one at stop, and a line for
+the address, role, topic directory, control socket and hellion URL, one at stop, and a line for
 each subscription or listen failure; nothing per request.
 
 ## How it is built
@@ -180,8 +217,13 @@ talker a new pid, `failures` stays 0 and the console's `restarts` reads 1; a
 restart of a module that does not exist is 409 with the manager's reason, a bad
 name or verb 404; reload is ok; stop shows `stopped`, pid 0 and `exit:0`, start
 brings it back with `restarts` 2; `/api/log` serves the fallback files with the
-talker's goodbye line and the console's own start line; the manager's shutdown
-takes the console with it.
+talker's goodbye line and the console's own start line; the page has its four tabs,
+the Hellion frame and no external URL, `/api/links` carries the URL the manifest's
+`--hellion` gave, a second `dawn-patrold` run by hand without the option answers the
+default, a value that is not an `http(s)` URL or a missing one is refused with exit
+status 2, and the module under the manager is untouched by all that; the manager's
+shutdown takes the console with it. No hellion runs in the suite: the tab's frame is
+the browser's work, and the URL under test points at a port nobody listens on.
 
 ## Deviations from the docs, with reasons
 
@@ -222,3 +264,27 @@ takes the console with it.
    `User=`: the module needs nothing else and runs as `hangar` like any other;
    the group alone gives the buttons their standing. Installers that want the page
    read-only drop the line.
+10. **The Hellion tab frames hellion's page; nothing is rendered natively.** The
+    brief allowed the controls to be redrawn in the tab through hellion's HTTP API
+    if that were under a day. Hellion's page is 45 KB of its own: an MJPEG preview
+    read with `fetch()` and reopened on every stall, an effect-chain editor over
+    `eeye`'s config with hellion's restore-on-refusal, camera controls proxied to the
+    peer in placement A, the recorder's state machine. Redrawing that is a port of
+    the page, not a day's work, and would be thrown away in phase B
+    ([docs/11](../../docs/11-electric-eye.md#pilot_console)); the frame gives the
+    operator the whole page as hellion ships it. The console therefore calls none
+    of hellion's endpoints itself; the one request the page makes to hellion is the
+    `no-cors` fetch that probes it before opening the frame.
+11. **The frame is unloaded when the tab is left**, rather than kept behind the
+    other tabs. Hellion's page stops its preview only when its document is hidden
+    (the Page Visibility API), and a frame in a `display: none` section is not
+    hidden to it: the ~15 fps JPEG stream would keep crossing the tether and the
+    SSH forward while the operator reads the log. The cost is a reload of hellion's
+    page on return.
+12. **The hellion URL is validated, not parsed.** `--hellion` must start with
+    `http://` or `https://` and carry no space, quote, backslash or angle bracket;
+    the page puts it into the frame and the link as DOM properties, never as
+    HTML. Nothing resolves or connects to it
+    from the process: whether it answers is the browser's business, and the
+    topside's copy of the manifest names a port the sim demo gives to the vehicle's
+    console (`profiles/sim-topside/console.module` says so).

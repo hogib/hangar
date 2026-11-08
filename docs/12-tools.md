@@ -66,6 +66,16 @@ One static binary (musl), with subcommands:
 `hangar top` follows `hellion top`: plain ANSI, no curses library, four refreshes a
 second, readable over a slow SSH session.
 
+The same, in a browser, is **Dawn Patrol**, the `console` module (`dawn-patrold`,
+[names](names.md); `modules/console/README.md`): one page on `127.0.0.1:8080` with the
+modules and their start, stop and restart buttons, the topics with their newest message
+decoded, the log, and a **Hellion** tab that frames electric-eye's page from the URL
+its `--hellion` option names (hellion's control port, `http://127.0.0.1:8091/` on the
+vehicle), so the operator reaches the preview, the effect chain, the camera and the
+recorder from the same page while phase A lasts
+([11-electric-eye](11-electric-eye.md#phase-a-supervised-as-it-is)). Reached
+over an SSH port forward, with hellion's port forwarded beside the console's.
+
 ### Both machines
 
 `hangar top` and `hangar check` read the machine they run on. On the topside they
