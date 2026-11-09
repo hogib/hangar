@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use hangar in your research, please cite it as below."
+type: software
+title: "hangar: a lightweight module system for small underwater vehicles, with a provenance-recorded learning loop"
+abstract: >-
+  hangar is a module system for small remotely operated underwater vehicles,
+  native to Linux and small enough for the vehicle's own Raspberry Pi. Every
+  function of the vehicle is its own process; one manager starts, watches and
+  restarts them; they exchange fixed-size messages through shared-memory
+  topics, in which every message records, by identifier, the input messages it
+  was computed from. That record is what the learning loop builds on: training
+  rows joined from provenance, streamed to a trainer on the topside, and weights
+  checked by the vehicle before they run.
+authors:
+  - given-names: "H. Oğuz"
+    family-names: Bolat
+    affiliation: "Department of Geomatics Engineering, Yıldız Technical University"
+    orcid: "https://orcid.org/0009-0000-8522-7746"
+  - given-names: Hakan
+    family-names: Ersoy
+    affiliation: "Department of Electronics and Communications Engineering, Yıldız Technical University"
+    orcid: "https://orcid.org/0009-0006-0495-6589"
+repository-code: "https://github.com/hogib/hangar"
+license: GPL-3.0-or-later
+version: "0.1.1"
+date-released: "2026-11-09"
+keywords:
+  - underwater vehicles
+  - ROV
+  - robotics middleware
+  - shared memory
+  - provenance
+  - online learning
+  - ArduSub
+  - Raspberry Pi

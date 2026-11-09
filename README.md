@@ -62,6 +62,32 @@ Static release binaries are built with `zig cc` for `aarch64-linux-musl` and
 the suites with gcc, clang and zig cc on x86-64 and natively on arm64, the sanitizers,
 the equivalence check, and the cross builds.
 
+## Citing hangar
+
+If you use hangar in your research, please cite it. The metadata is in
+[CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" gives it as APA and
+BibTeX), and each release is archived on Zenodo with a DOI.
+
+> H. Oğuz Bolat (Department of Geomatics Engineering, Yıldız Technical University;
+> ORCID [0009-0000-8522-7746](https://orcid.org/0009-0000-8522-7746)) and Hakan Ersoy
+> (Department of Electronics and Communications Engineering, Yıldız Technical
+> University; ORCID [0009-0006-0495-6589](https://orcid.org/0009-0006-0495-6589)).
+> *hangar: a lightweight module system for small underwater vehicles, with a
+> provenance-recorded learning loop.* Software, version 0.1.1, 2026.
+> https://github.com/hogib/hangar
+
+```bibtex
+@software{bolat_ersoy_hangar_2026,
+  author  = {Bolat, H. O{\u{g}}uz and Ersoy, Hakan},
+  title   = {hangar: a lightweight module system for small underwater vehicles,
+             with a provenance-recorded learning loop},
+  version = {0.1.1},
+  year    = {2026},
+  url     = {https://github.com/hogib/hangar},
+  license = {GPL-3.0-or-later}
+}
+```
+
 ## Licence
 
 GNU GPL v3.0 or later for the system; GNU LGPL v3.0 or later for the module library
