@@ -39,7 +39,7 @@ static hg_pub *P_safety, *P_cmd;
 static hg_sub *S_ap, *S_mc, *S_att, *S_depth, *S_bat, *S_thr, *S_param;
 static struct ardusub_state last_ap;
 static struct hg_info last_ap_info;
-static long watch_mode = -1; /* test_other_component: a mode no ardusub.state may leave */
+static long watch_mode = -1; /* test_other_component: the stray component's mode, never to appear */
 static int saw_other_mode;
 static int have_ap, saw_disarming, saw_armed;
 static struct hg_info saw_armed_info;
@@ -219,8 +219,12 @@ static void read_topics(void)
 		last_ap = ap;
 		last_ap_info = info;
 		have_ap = 1;
-		if (watch_mode >= 0 && ap.mode != (uint32_t)watch_mode)
+		if (watch_mode >= 0 && ap.mode == (uint32_t)watch_mode && !saw_other_mode) {
 			saw_other_mode = 1;
+			printf("    ardusub.state seq %llu: mode %u armed %u (the stray's mode %ld), last_rx %llu ms ago\n",
+			       (unsigned long long)info.seq, ap.mode, ap.armed, watch_mode,
+			       (unsigned long long)((hg_now_ns() - ap.last_rx_ns) / 1000000));
+		}
 		if (ap.armed == 2)
 			saw_disarming = 1;
 		if (ap.armed == 1) {
@@ -663,13 +667,19 @@ static void test_other_component(void)
 	 * system 1, component 191, an onboard controller with base_mode bits that
 	 * read as armed and custom_mode 0. Signed with the link's key, so only the
 	 * component tells it from ArduSub. ardusub.state must keep ArduSub's own
-	 * armed flag and mode, and the frames are counted. */
-	pump(300);
+	 * armed flag and mode, and the frames are counted. The stray here says
+	 * mode 7, a mode nothing else in the suite uses: 0 is also what
+	 * ardusub.state says before ArduSub's first heartbeat (1 Hz), which a
+	 * loaded machine can still be waiting for when the test starts. */
+	uint64_t t0 = now_ms();
+	while ((!have_ap || last_ap.mode != 19) && now_ms() - t0 < 3000)
+		pump(50);
+	CHECK_EQ_INT(last_ap.mode, 19);
 	CHECK_EQ_INT(last_ap.armed, 0);
-	watch_mode = (long)last_ap.mode;
+	watch_mode = 7;
 	saw_other_mode = 0;
 	saw_armed = 0;
-	struct mav_heartbeat h = { .custom_mode = 0, .type = 18 /* MAV_TYPE_ONBOARD_CONTROLLER */,
+	struct mav_heartbeat h = { .custom_mode = 7, .type = 18 /* MAV_TYPE_ONBOARD_CONTROLLER */,
 				   .autopilot = MAV_AUTOPILOT_INVALID, .base_mode = MAV_MODE_FLAG_SAFETY_ARMED | 1,
 				   .system_status = 4, .mavlink_version = 3 };
 	uint8_t payload[MAV_LEN_HEARTBEAT], frame[MAV_MAX_FRAME];
@@ -697,6 +707,7 @@ static void test_other_component(void)
 	CHECK_EQ_INT(saw_armed, 0);
 	CHECK_EQ_INT(saw_other_mode, 0);
 	CHECK_EQ_INT(last_ap.armed, 0);
+	CHECK_EQ_INT(last_ap.mode, 19);
 	CHECK(strstr(module_status_line(), "other-component 10") != NULL);
 	if (!strstr(module_status_line(), "other-component 10"))
 		printf("    status: %s\n", module_status_line());
