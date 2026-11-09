@@ -150,6 +150,9 @@ parser's `struct hg_schema` is about 12 KB and lives where the caller puts it.
   board: qemu-user has no `futex_waitv`. The static aarch64 build links all eight;
   under `qemu-aarch64` the five that never sleep on a futex (layout, pubsub,
   wiring, prov, torn) run and pass, the other three fail at their first wait.
+  **AArch64 is closed:** on 2026-11-09 all ten suites of the `d0ad694` release
+  passed on a Raspberry Pi 5 (kernel 6.8), `wait`, `waitfd` and `replace` among
+  them (`bench/PI-TEST.md`, "Results, 2026-11-09"). ARMv7 is still open.
 - Sanitizers: `check-tsan` and `check-asan` rebuild the hg suites with no
   suppression; a compiler without the runtime makes the target say `skip`. gcc,
   clang and `zig cc` 0.17 all pass both.

@@ -88,16 +88,20 @@ manager with the topic library, spawning, pidfds, the registry and the control s
 about 50 KB stripped on AArch64 ([Platform](#platform)); the target leaves room for the
 full manager.
 
-| What | Target |
-|---|---|
-| Manager binary (static, stripped) | under 100 KB |
-| Manager resident memory, 20 modules | under 2 MB |
-| Manager CPU when nothing changes | no wake-ups other than its own timers (event-driven: `epoll`, `pidfd`, `signalfd`, `timerfd`) |
-| Module library | no threads (except one helper in a module that asks to wait on file descriptors too, `hg_wait_fd`), no allocation after opening a topic, no serialization |
-| Publish a message of up to 256 bytes, no reader waiting | under 1 µs on a Pi 4, no system call |
-| Read the newest message of up to 256 bytes | under 0.5 µs on a Pi 4, no system call |
-| Publish → a waiting reader wakes | measured and reported (one futex wake) |
-| Video, frame topic to frame topic through `encoder` and `video_relay` over loopback | no worse than electric-eye v0.3.1: 3.8 ms at 640×480, 8.3 ms at 1280×720 (median, 30 frames/s) |
+| What | Target | Measured: Pi 5, `performance`, 2026-11-09 |
+|---|---|---|
+| Manager binary (static, stripped) | under 100 KB | **291 KB**: over |
+| Manager resident memory, 20 modules | under 2 MB | not measured yet |
+| Manager CPU when nothing changes | no wake-ups other than its own timers (event-driven: `epoll`, `pidfd`, `signalfd`, `timerfd`) | not measured yet |
+| Module library | no threads (except one helper in a module that asks to wait on file descriptors too, `hg_wait_fd`), no allocation after opening a topic, no serialization | |
+| Publish a message of up to 256 bytes, no reader waiting | under 1 µs on a Pi 4, no system call | 95 ns |
+| Read the newest message of up to 256 bytes | under 0.5 µs on a Pi 4, no system call | 156 ns |
+| Publish → a waiting reader wakes | measured and reported (one futex wake) | 5.5 µs median, 5.6 µs p99 at 1 kHz (`ondemand`: 8.8 / 13.5 µs); a reader asleep 30 s: 0 wake-ups |
+| Video, frame topic to frame topic through `encoder` and `video_relay` over loopback | no worse than electric-eye v0.3.1: 3.8 ms at 640×480, 8.3 ms at 1280×720 (median, 30 frames/s) | not built yet |
+
+The measured column is one Pi 5, not the Pi 4 the targets name, from the release at
+`d0ad694` (`bench/PI-TEST.md`, "Results, 2026-11-09"); the ROS 2 baseline on the same
+Pi is still to be measured.
 
 **The baseline is measured, not quoted**: a ROS 2 talker/listener pair with the
 default middleware, on the same Pi, for the same message sizes and rates, reporting

@@ -55,7 +55,7 @@ Checks, each a stop if it fails:
 
 | Check | Why |
 |---|---|
-| `/proc/device-tree/model` says Raspberry Pi 4 or 5 | the build is `cortex_a72`: the Pi 4's core, which the Pi 5's A76 also runs. A Pi 3 (A53) runs it as well; a 32-bit OS does not (`uname -m` must be `aarch64`) |
+| `/proc/device-tree/model` says Raspberry Pi 4 or 5 (on Ubuntu `vcgencmd` comes with `libraspberrypi-bin`, and `rpicam-hello` is absent) | the build is `cortex_a72`: the Pi 4's core, which the Pi 5's A76 also runs. A Pi 3 (A53) runs it as well; a 32-bit OS does not (`uname -m` must be `aarch64`) |
 | `uname -r` is 5.16 or later | `futex_waitv` ([docs/00](../docs/00-overview.md#platform)). Pi OS Bookworm ships 6.1, 6.6 or 6.12. Older: `hg_wait` fails with `ENOSYS` and every futex suite fails at its first wait; nothing else to do that day but the publish/latest numbers |
 | `/dev/shm` is `tmpfs` | the topic files and electric-eye's frame bus live there |
 | `groups` lists `video` | `eeye` opens the camera as this user |
@@ -129,12 +129,16 @@ bin/hg_bench all --bin bin/hangard --bin bin/hangar --bin bin/hg_bench --bin bin
   --json ~/hangar-visit/bench-default.json 2>&1 | tee ~/hangar-visit/bench-default.txt
 vcgencmd measure_temp; vcgencmd get_throttled
 
-echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
-sleep 5; vcgencmd measure_temp; vcgencmd measure_clock arm
+# the governor as found, put back after the run; sh -c, not `echo | sudo tee`: with a
+# password prompt, sudo -S takes the password and the value from the same stdin
+gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor); echo "governor was $gov"
+sudo sh -c 'for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $f; done'
+sleep 5; cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort -u   # must say performance alone
+vcgencmd measure_temp; vcgencmd measure_clock arm
 bin/hg_bench all --bin bin/hangard --bin bin/hangar --bin bin/hg_bench --bin bin/eeye --bin bin/hellion \
   --json ~/hangar-visit/bench-performance.json 2>&1 | tee ~/hangar-visit/bench-performance.txt
 vcgencmd measure_temp; vcgencmd get_throttled
-echo ondemand | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor   # leave it as found
+sudo sh -c "for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo $gov > \$f; done"   # as found
 ```
 
 Drop a `--bin` for a binary the tarball does not have. Each `all` run takes about
@@ -201,7 +205,7 @@ In session 1, within the first ten seconds:
 ```sh
 export HANGAR_ROOT=$HOME/hangar-root
 bin/hangar status                             # eeye: starting -> ready; hellion likewise
-bin/hangar statusics                                 # the manager's own: hangar.vehicle.system, .modules, .admin.req
+bin/hangar topics                                    # the manager's own: hangar.vehicle.system, .modules, .admin.req
 bin/hangar echo hangar.vehicle.modules --json | head -40
 ls -la /dev/shm/eeye.* /dev/shm/hangar/           # eeye's frame bus files appear when the camera is acquired
 cat $HANGAR_ROOT/var/eeye/effects.json.health     # eeye's own health file: camera, fps (written once a camera is acquired)
@@ -290,7 +294,7 @@ The archive holds: `00-machine.txt`; `suites/` (every log and `summary.txt`);
 - Do not run the benchmark while `eeye` or `hellion` is running (steps 4 and 5 are in
   that order for a reason), and do not run it from a throttled Pi.
 - Do not fix a failing suite on site. Save the log.
-- Leave the governor as found (`ondemand`).
+- Leave the governor as found (`ondemand` on the lab's Pi).
 
 ## Fallback: no hangard in the tarball
 
@@ -343,3 +347,59 @@ On the Pi:
 | `suites/summary.txt` | `lib/hg/NOTES.md`'s "running the suites on AArch64" item, which stops being open |
 | `hangard.log` (restart, back-off, adoption) | docs/03's tests list, as the first manager run on the target; findings become issues |
 | `00-machine.txt`, `NOTES.txt` | the report's `machine` object is checked against them; the Pi model decides whether the next release is built `cortex_a72` or `cortex_a76` |
+
+## Results, 2026-11-09
+
+The first run on real hardware, on the lab's BlueROV2 from the laptop over the tether,
+with the `d0ad694` release. The archive (`00-machine.txt`, the suite logs, both
+benchmark reports, `hangard.log`, `NOTES.txt`) is `hangar-visit-20261109.tar.gz`, kept
+off the repository.
+
+**The machine.** Raspberry Pi 5 Model B Rev 1.0, 8 GB, Ubuntu 24.04.4 (not Pi OS),
+kernel `6.8.0-1048-raspi`, `/dev/shm` tmpfs 3.9 GB, governor `ondemand`, `get_throttled`
+`0x0` throughout (59.8 to 70.3 °C). The clock was six days slow (no RTC, no time sync
+over the tether) and was set by hand before the benchmark. electric-eye's own `eeye`
+and `hellion` ran as systemd services and were stopped for steps 4 and 5, then started
+again.
+
+**The suites.** All ten passed on the first run, in 11 s together: `test_hg_wait`,
+`test_hg_waitfd` and `test_hg_replace` among them, which had never run on an AArch64
+kernel, and `test_hg_torn`. The publish/wait protocol holds on a weakly ordered
+machine. One pass, not the three the plan asks for; the benchmark's `torn` and
+`lost_wake` ran three times more (0 torn, 0 timeouts).
+
+**The benchmark**, `hg_bench all` at `performance` (2.4 GHz) and as found (`ondemand`):
+
+| Line | Target (Pi 4) | `performance` | `ondemand` |
+|---|---|---|---|
+| `publish 256 B` | under 1000 ns | 94.6 ns | 94.6 ns |
+| `latest 256 B` | under 500 ns | 156.1 ns | 153.4 ns |
+| `publish 16 B` / `4096 B` | | 80.8 / 357.3 ns | 81.1 / 357.6 ns |
+| `wake 1000 Hz` p50 / p99 | reported | 5.5 / 5.6 µs | 8.8 / 13.5 µs |
+| `wake 10000 Hz` p50 / p99 | reported | 5.2 / 5.5 µs, kept up, 5.7 % CPU | 7.7 / 8.2 µs, 33 late |
+| `idle 30 s` | no wake-ups | 0 context switches, 0 ticks, RSS 336 kB | the same, 332 kB |
+| `torn`, `lost_wake` | 0 | 0 torn of 28 M reads; 20000 of 20000, 0 timeouts | the same |
+| `hangard` size | under 100 KB | **291 440 bytes** | |
+
+The targets are met on a Pi 5 except the manager's size, which is three times its
+target (the spike's 50 KB manager had no manifests, registry, control requests, calls
+or parameters). The targets are stated for a Pi 4; this was a Pi 5. The `rss` line
+printed `Pss -1`: its measurement is broken and gave nothing. The first
+"performance" run had run at `ondemand` (the governor command of the plan could not
+work under `sudo -S`; fixed above) and is kept as `bench-ondemand-2`.
+
+**hangard with eeye, hellion and console.** All three `ready` within ten seconds; eeye
+acquired the camera (1280×720) and its frame bus grew. `SIGKILL` of eeye: restarted,
+failures counted, back-off 1 s then 2 s. `SIGKILL` of the manager: the three modules
+kept running, and the new manager adopted all three with the same PIDs. `SIGINT`
+stopped everything. Two findings: after adoption the manager warns that nothing
+publishes `hangar.vehicle.system` and `.modules`, its own topics, which the console
+reads; adopted modules show their last exit as `unknown`.
+
+**Phase 1, attempted after the plan.** The autopilot turned out to be a Pixhawk on USB
+(ArduSub V4.5.5), not a Navigator. With MAVROS as the serial-to-UDP relay, both roles
+on the Pi and the parameters backed up, every module came up `ready` and the vehicle
+module read ArduSub; MAVROS's own heartbeat was then taken for ArduSub's (fixed in
+3a1dfeb), and the main battery was not connected (0.74 V), so `safety` held the vehicle
+in failsafe and nothing was armed or written to the Pixhawk. How to run it, and what
+was learned setting it up, is `tools/rov/README.md`.
