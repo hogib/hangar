@@ -83,6 +83,13 @@ testdir=$builddir/tests-release
 name=hangar-$version-$arch
 stage=$work/stage/$name
 mkdir -p "$out" "$work"
+# Absolute from here on: the libjpeg-turbo build runs cmake in a directory of its
+# own, where a relative --out or --work no longer names the toolchain file.
+out=$(cd "$out" && pwd)
+work=$(cd "$work" && pwd)
+builddir=$work/build
+testdir=$builddir/tests-release
+stage=$work/stage/$name
 
 echo "release.sh: $name"
 echo "  compiler  $cc"
