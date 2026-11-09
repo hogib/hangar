@@ -19,7 +19,8 @@
 #   share/hangar/hangard.conf, install-root.sh   a $HANGAR_ROOT run (bench/PI-TEST.md)
 #   share/hangar/eeye/, hellion/                 electric-eye's configuration files
 #   share/hangar/msg/                            the message types
-#   share/doc/                                   PI-TEST.md, LICENSE, LICENSING.md
+#   share/hangar/profiles/rov-*, rov.sh          the lab vehicle's profiles and script (tools/rov)
+#   share/doc/                                   PI-TEST.md, ROV.md, LICENSE, LICENSING.md
 #   MANIFEST    version, target, commit, the SHA-256 of every file (no signature yet)
 #
 # libjpeg-turbo 3.2.0 (eeye and hellion link it) is built once for the target
@@ -246,6 +247,12 @@ cp "$ROOT/LICENSE" "$ROOT/LICENSING.md" "$stage/share/doc/"
 [ -f "$ROOT/LICENSE.LGPL" ] && cp "$ROOT/LICENSE.LGPL" "$stage/share/doc/"
 [ -f "$ROOT/bench/PI-TEST.md" ] && cp "$ROOT/bench/PI-TEST.md" "$stage/share/doc/"
 [ -f "$ROOT/legacy/LICENSE" ] && cp "$ROOT/legacy/LICENSE" "$stage/share/doc/LICENSE.electric-eye"
+# The lab's BlueROV2 (tools/rov/README.md): its two profiles and the script that runs them.
+mkdir -p "$stage/share/hangar/profiles"
+cp -R "$ROOT/profiles/rov-vehicle" "$ROOT/profiles/rov-topside" "$stage/share/hangar/profiles/"
+cp "$ROOT/tools/rov/rov.sh" "$stage/share/hangar/rov.sh"
+chmod 755 "$stage/share/hangar/rov.sh"
+cp "$ROOT/tools/rov/README.md" "$stage/share/doc/ROV.md"
 
 # ---- MANIFEST ---------------------------------------------------------------
 {

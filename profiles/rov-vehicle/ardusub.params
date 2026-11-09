@@ -1,0 +1,52 @@
+# /etc/hangar/ardusub.params (profiles/rov-vehicle): what hangar ardusub-setup sets and hangar check verifies
+# (docs/10 "ArduSub's parameters", docs/12 "hangar ardusub-setup"). One NAME value per
+# line. The lab's BlueROV2 runs ArduSub V4.5.5, which still spells the ground
+# station's id SYSID_MYGCS (4.7: MAV_GCS_SYSID); BATT_FS_LOW_ACT is 4.5's name too.
+# The joystick gains are pinned to 0.25, not 1: on the bench full stick is a quarter
+# of full thrust until the envelope has been tried on this vehicle. The vehicle's
+# own values before hangar (JS_GAIN_DEFAULT 0.1, BTN15_FUNCTION 0, FS_GCS_ENABLE 2,
+# ARMING_CHECK 0) are put back with tools/rov/rov.sh params restore.
+SYSID_MYGCS 255
+JS_GAIN_DEFAULT 0.25
+JS_GAIN_MAX 0.25
+JS_GAIN_MIN 0.25
+JS_GAIN_STEPS 1
+FS_GCS_ENABLE 1
+FS_LEAK_ENABLE 1
+BATT_FS_LOW_ACT 1
+BTN0_FUNCTION 0
+BTN1_FUNCTION 0
+BTN2_FUNCTION 0
+BTN3_FUNCTION 0
+BTN4_FUNCTION 0
+BTN5_FUNCTION 0
+BTN6_FUNCTION 0
+BTN7_FUNCTION 0
+BTN8_FUNCTION 0
+BTN9_FUNCTION 0
+BTN10_FUNCTION 0
+BTN11_FUNCTION 0
+BTN12_FUNCTION 0
+BTN13_FUNCTION 0
+BTN14_FUNCTION 0
+# ArduSub refuses to arm unless some button is disarm (4) or arm_toggle (2)
+# (AP_Arming_Sub::pre_arm_checks: "Must assign a disarm or arm_toggle button").
+# Hangar sends every button as 0, so this one is never pressed; it only satisfies
+# the check.
+BTN15_FUNCTION 4
+BTN0_SFUNCTION 0
+BTN1_SFUNCTION 0
+BTN2_SFUNCTION 0
+BTN3_SFUNCTION 0
+BTN4_SFUNCTION 0
+BTN5_SFUNCTION 0
+BTN6_SFUNCTION 0
+BTN7_SFUNCTION 0
+BTN8_SFUNCTION 0
+BTN9_SFUNCTION 0
+BTN10_SFUNCTION 0
+BTN11_SFUNCTION 0
+BTN12_SFUNCTION 0
+BTN13_SFUNCTION 0
+BTN14_SFUNCTION 0
+BTN15_SFUNCTION 0

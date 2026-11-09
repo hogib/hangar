@@ -1,0 +1,8 @@
+# hangar parameters: safety_params
+# version 1, set by profiles/rov-vehicle, 2026-11-09T00:00:00Z
+# There is no leak module yet, so arming does not wait for vehicle.leak. The battery
+# check stays on: the main battery must be connected to arm (on 2026-11-09 the
+# Pixhawk read 0.74 V without it, and safety refused, as it should).
+# Every other field keeps its default (msg/safety_params.msg).
+leak_required = 0
+required = "mux mavlink"

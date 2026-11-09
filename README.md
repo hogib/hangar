@@ -37,7 +37,7 @@ has run on a vehicle yet. The tether bridge and the learning loop are next.
 | `lib/nn/` | the inference runtime and the `.hgw` weights file |
 | `hangard/`, `hangar/` | the manager and the command-line tool |
 | `modules/` | the modules: `safety`, `mux`, `mavlink` (vehicle and topside), `recorder`, `pairer`, `console` (Dawn Patrol) |
-| `profiles/` | manifest sets for the two simulation roots |
+| `profiles/` | manifest sets for the two simulation roots and for the lab's BlueROV2 (`tools/rov/`) |
 | `msg/` | message types (`.msg`) and their generated headers |
 | `tools/msggen/`, `tools/mavgen/`, `tools/equivalence/`, `tools/cross/`, `tools/release.sh`, `tools/sim/` | the message generator, the MAVLink generator, the operator-equivalence check against electric-eye v0.3.1, cross-build recipes, the release build, the simulator container |
 | `bench/` | the benchmark harness and the Pi test plan |
