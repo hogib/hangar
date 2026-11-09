@@ -39,6 +39,8 @@ static hg_pub *P_safety, *P_cmd;
 static hg_sub *S_ap, *S_mc, *S_att, *S_depth, *S_bat, *S_thr, *S_param;
 static struct ardusub_state last_ap;
 static struct hg_info last_ap_info;
+static long watch_mode = -1; /* test_other_component: a mode no ardusub.state may leave */
+static int saw_other_mode;
 static int have_ap, saw_disarming, saw_armed;
 static struct hg_info saw_armed_info;
 static struct manual_control last_mc;
@@ -217,6 +219,8 @@ static void read_topics(void)
 		last_ap = ap;
 		last_ap_info = info;
 		have_ap = 1;
+		if (watch_mode >= 0 && ap.mode != (uint32_t)watch_mode)
+			saw_other_mode = 1;
 		if (ap.armed == 2)
 			saw_disarming = 1;
 		if (ap.armed == 1) {
@@ -653,6 +657,52 @@ static void test_signing(void)
 	close(s);
 }
 
+static void test_other_component(void)
+{
+	/* The lab's Pixhawk behind MAVROS (2026-11-09): MAVROS heartbeats as
+	 * system 1, component 191, an onboard controller with base_mode bits that
+	 * read as armed and custom_mode 0. Signed with the link's key, so only the
+	 * component tells it from ArduSub. ardusub.state must keep ArduSub's own
+	 * armed flag and mode, and the frames are counted. */
+	pump(300);
+	CHECK_EQ_INT(last_ap.armed, 0);
+	watch_mode = (long)last_ap.mode;
+	saw_other_mode = 0;
+	saw_armed = 0;
+	struct mav_heartbeat h = { .custom_mode = 0, .type = 18 /* MAV_TYPE_ONBOARD_CONTROLLER */,
+				   .autopilot = MAV_AUTOPILOT_INVALID, .base_mode = MAV_MODE_FLAG_SAFETY_ARMED | 1,
+				   .system_status = 4, .mavlink_version = 3 };
+	uint8_t payload[MAV_LEN_HEARTBEAT], frame[MAV_MAX_FRAME];
+	mav_pack_heartbeat(&h, payload);
+	struct mav_signing sig;
+	memset(&sig, 0, sizeof sig);
+	sig.enabled = 1;
+	sig.link_id = 9;
+	for (int i = 0; i < 32; i++)
+		sig.key[i] = (uint8_t)i; /* the test's mavlink.key, 000102...1f */
+	int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	sa.sin_port = htons((uint16_t)port_module);
+	for (int i = 0; i < 10; i++) {
+		size_t n = mav_encode(frame, sizeof frame, (uint8_t)i, 1, 191, MAV_MSG_ID_HEARTBEAT, payload, sizeof payload,
+				      MAV_CRC_HEARTBEAT, &sig);
+		sendto(s, frame, n, 0, (struct sockaddr *)&sa, sizeof sa);
+		pump(100);
+	}
+	close(s);
+	pump(1200); /* ArduSub's own 1 Hz heartbeat has come in meanwhile */
+	CHECK_EQ_INT(saw_armed, 0);
+	CHECK_EQ_INT(saw_other_mode, 0);
+	CHECK_EQ_INT(last_ap.armed, 0);
+	CHECK(strstr(module_status_line(), "other-component 10") != NULL);
+	if (!strstr(module_status_line(), "other-component 10"))
+		printf("    status: %s\n", module_status_line());
+	watch_mode = -1;
+}
+
 static void test_neutral_command(void)
 {
 	/* The module stopped: the manager runs its Neutral command, which sends
@@ -714,6 +764,7 @@ int main(void)
 	RUN_TEST(test_refusal);
 	RUN_TEST(test_restart_time_silence);
 	RUN_TEST(test_signing);
+	RUN_TEST(test_other_component);
 	RUN_TEST(test_neutral_command);
 	RUN_TEST(test_shutdown);
 	if (fake > 0)

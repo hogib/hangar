@@ -23,6 +23,7 @@ struct mav_link {
 	struct mav_signing signing;
 	uint64_t sent, received, rejected;   /* rejected: bad CRC, bad signature, truncated */
 	uint64_t unknown;                    /* well-formed frames of a message id not generated */
+	uint64_t foreign;                    /* vehicle: frames from ArduSub's system id but another component */
 	char last_reject[64];
 	int tlog_fd;                 /* -1: none */
 };

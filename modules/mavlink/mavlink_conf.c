@@ -62,6 +62,7 @@ static void defaults(struct mavlink_conf *c, int topside)
 		c->sysid = 255;
 		c->compid = MAV_COMP_ID_MISSIONPLANNER;
 		c->target_sysid = 1;
+		c->target_compid = MAV_COMP_ID_AUTOPILOT1;
 		snprintf(c->params_file, sizeof c->params_file, "/etc/hangar/ardusub.params");
 		c->fluid_density = 1000;
 		c->surface_pressure_hpa = 1013.25;
@@ -200,6 +201,9 @@ int mavlink_conf_load(struct mavlink_conf *c, const char *path, int topside, cha
 			} else if (strcmp(k, "TargetSysId") == 0) {
 				if (parse_u8(v, &c->target_sysid) < 0)
 					FAIL("TargetSysId: 0 to 255");
+			} else if (strcmp(k, "TargetCompId") == 0) {
+				if (parse_u8(v, &c->target_compid) < 0)
+					FAIL("TargetCompId: 0 to 255");
 			} else if (strcmp(k, "Tlog") == 0) {
 				snprintf(c->tlog, sizeof c->tlog, "%s", v);
 			} else if (strcmp(k, "Autopilot") == 0) {

@@ -264,6 +264,10 @@ static void publish_state(uint64_t now)
 		size_t u = strlen(line);
 		mod_fmt(line + u, sizeof line - u, " unknown-id %llu", (unsigned long long)L.unknown);
 	}
+	if (L.foreign) {
+		size_t u = strlen(line);
+		mod_fmt(line + u, sizeof line - u, " other-component %llu", (unsigned long long)L.foreign);
+	}
 	if (strcmp(line, A.status) != 0) {
 		mod_fmt(A.status, sizeof A.status, "%s", line);
 		hg_status(line);
@@ -314,6 +318,13 @@ static void on_frame(void *ctx, const struct mav_frame *f)
 	uint64_t now = *(uint64_t *)ctx;
 	if (C.target_sysid && f->sysid != C.target_sysid)
 		return; /* not ArduSub: another system on the link */
+	if (C.target_compid && f->compid != C.target_compid) {
+		/* ArduSub's system id but not its autopilot: a companion on the same
+		 * system (MAVROS heartbeats as sysid 1 by default), a camera, a gimbal.
+		 * Its HEARTBEAT is not ArduSub's armed state or mode. */
+		L.foreign++;
+		return;
+	}
 	if (!A.seen && !C.target_sysid)
 		A.sysid = f->sysid;
 	A.seen = 1;

@@ -37,6 +37,7 @@ struct mavlink_conf {
 	char key_file[MC_PATH];
 	uint8_t sysid, compid;         /* the module's own ids */
 	uint8_t target_sysid;          /* vehicle: ArduSub's; 0 learns it from its HEARTBEAT */
+	uint8_t target_compid;         /* vehicle: ArduSub's component (1, the autopilot); 0 takes any */
 	char tlog[MC_PATH];            /* vehicle: a .tlog path, "" for none (until the recorder) */
 	int autopilot_ardupilot;       /* topside: present as ArduPilot rather than a generic autopilot */
 	uint64_t input_timeout_ns;     /* topside: pilot input older than this counts as zero */

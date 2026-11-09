@@ -140,6 +140,16 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
     and assigns one button, `BTN15_FUNCTION 4` (disarm), because ArduSub refuses to arm
     without a disarm or arm-toggle button; hangar sends every button as 0, so it is
     never pressed (docs/10 "ArduSub's parameters" says the same).
+15. **Only ArduSub's own component speaks for ArduSub** (`TargetCompId=1`, the
+    autopilot). docs/10 names ArduSub by its system id alone; on the lab's BlueROV2
+    (2026-11-09: a Pixhawk on USB, MAVROS as the serial-to-UDP relay) MAVROS's own
+    `HEARTBEAT`, system 1, component 191, an onboard controller whose base mode read as
+    armed and whose custom mode was 0, alternated with ArduSub's in `ardusub.state`:
+    "ArduSub armed while hangar was disarmed" and "mode 0 is not MANUAL", the
+    `autopilot` trigger, with ArduSub disarmed in MANUAL throughout. SITL never showed
+    it: MAVProxy is system 255. Frames from any other component of ArduSub's system
+    are now dropped and counted as `other-component` on the status line; 0 takes any
+    component, the old behaviour. `test_other_component` replays the lab's frames.
 
 ## Until the bridge, the recorder, and the vehicle
 
