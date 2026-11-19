@@ -77,12 +77,54 @@ Props off until step 6 has passed. Stop at the first step that does not do what 
    what differs, then compares again), `rov.sh down`, and check `systemctl is-active
    eeye hellion`. The sessions in `~/hangar-sessions` come home.
 
+## Results, 2026-11-19
+
+The second visit, with the v0.1.1 release; props off, the battery connected.
+
+- **Arm and disarm through hangar**, from `hangar call` and from QGroundControl
+  (`armed by topside:topside_mavlink`): ArduSub followed within about 0.5 s each way.
+- **`safety` killed with `SIGKILL` while armed:** ArduSub disarmed and the gate neutral
+  within 267 ms; the manager restarted `safety`. Killed while in failsafe, it came back
+  in its latched failsafe.
+- **ArduSub armed while hangar was in failsafe:** disarmed by hangar within about
+  0.5 s, three times.
+- **Driving from QGroundControl** with an Xbox controller, through `topside_mavlink`,
+  the mux and the gate: the stick reached `thr.out`. The joystick page is Q icon →
+  Vehicle Setup → Joystick (enable it there; QGC sends nothing until then).
+- **`rov.sh params restore`** put every parameter back; `params diff` then compared
+  clean. ArduSub's own counters (`STAT_*`) and the barometer's ground pressure differ
+  after any session and are left out of the comparison.
+- **electric-eye alone**, streaming 1280×720 to a topside hellion: 0.91 of a core
+  (`ffmpeg`'s libx264 encode 0.51, `eeye` 0.24, `hellion` 0.16), 117 MB PSS; the Pi
+  was soft-throttled at 1.6 GHz then, so these are high.
+
+Found on the vehicle:
+
+1. **ArduSub 4.5 sends no telemetry for about a second at every arm** (1015 ms on
+   both `nav.depth` and `nav.attitude`). Not its SD-card log: `LOG_DISARMED 1` left it
+   unchanged. With `nav.depth`'s `StaleAfter` at 500 ms `safety`'s input trigger fired
+   at every arm, so this profile has 1.5 s (`profiles/rov-vehicle/mavlink.module`).
+2. **The Pixhawk reads no battery voltage** (0.73 V with the battery connected;
+   `BATT_MONITOR 4`, pins 2 and 3): the power module's sense cable, most likely. So
+   ArduSub's own battery failsafe cannot work on this vehicle, and the bench session
+   ran with `battery_min=0 battery_required=0` (live only; the profile keeps 11 V).
+   For the lab to look at.
+3. **`hangar-safety`, `hangar-mux` and the recorder spin at a full core each**,
+   since phase 1, in the simulator too; nobody had measured. A glob match that a
+   module never reads keeps `hg_wait` returning at once: `hg_serve` serves a request
+   topic through its named subscription and never reads the `*.req` glob's copy of it
+   (`lib/hg/hg_call.c`, `hg_serve`'s `is_named_sub`), and the recorder skips matches
+   bigger than its read buffer or past its topic limit without reading them
+   (`modules/recorder/recorder.c`, the read loop). On the vehicle that was 1.7 cores,
+   and with the closed tube on the bench the Pi reached 91 °C and throttled to
+   1.0 GHz. **Fix before the next session**, with a test that a server with such a
+   topic sleeps (`hg_bench`'s idle line measures exactly this).
+4. **The Pi runs hot on the bench:** 84–88 °C with electric-eye alone, soft-throttled
+   at 1.6 GHz. Keep closed-tube bench sessions short, or cool the tube.
+5. Ubuntu's `unattended-upgrades` runs on the Pi and was installing in the middle of
+   the session.
+
 ## Not tried yet
 
-- `rov.sh params restore`: it loads the differing parameters into MAVROS's parameter
-  node, which sends them to the Pixhawk; the diff it runs afterwards is the proof.
-  Until it has passed once, `hangar ardusub-setup` with a file of the old values is the
-  other way back.
 - Signing against the real ArduSub (`Signing=no` here).
-- Steps 4 to 8 on this vehicle: on 2026-11-09 the battery was not connected, and
-  `safety` refused to clear the failsafe, correctly.
+- Driving with props on, in the tank.

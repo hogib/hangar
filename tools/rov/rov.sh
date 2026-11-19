@@ -132,13 +132,17 @@ ros() { set +u; source "$ROS_SETUP"; set -u; }
 
 need_relay() { running "$STATE/relay.pid" || die "the relay is not running: rov.sh relay up"; }
 
-# NAME: value, one per line, sorted; the node's own ROS parameters left out.
-flatten() { grep -E '^ {4}[A-Z][A-Z0-9_]*: ' "$1" | sed 's/^ *//' | sort; }
+# NAME: value, one per line, sorted; the node's own ROS parameters left out, and
+# the values ArduSub keeps itself (the STAT_ counters, the barometers' ground
+# pressure, calibrated at every boot), which differ after any session and which
+# MAVROS refuses to set.
+flatten() { grep -E '^ {4}[A-Z][A-Z0-9_]*: ' "$1" | sed 's/^ *//' |
+    grep -vE '^(STAT_[A-Z_]+|BARO[0-9]_GND_PRESS): ' | sort; }
 
 params_dump() { # file
     ros
     timeout 120 ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}" \
-        | grep -q 'success=True' || die "MAVROS could not pull the parameters"
+        | grep 'success=True' > /dev/null || die "MAVROS could not pull the parameters"
     timeout 60 ros2 param dump /mavros/param > "$1"
 }
 
@@ -168,7 +172,7 @@ params_restore() { # file
     need_relay
     [ -f "$1" ] || die "no file $1"
     ros
-    timeout 10 ros2 topic echo --once /mavros/state 2>/dev/null | grep -q 'armed: false' \
+    timeout 10 ros2 topic echo --once /mavros/state 2>/dev/null | grep 'armed: false' > /dev/null \
         || die "the Pixhawk is armed, or MAVROS cannot say: restore only while disarmed"
     local now set; now=$(mktemp); set=$(mktemp)
     params_dump "$now"

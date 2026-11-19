@@ -53,8 +53,12 @@ StaleAfter=500ms
 Type=depth
 Rate=50
 # Relayed from ArduSub: three periods (60 ms) would make every scheduler hiccup an
-# input fault for safety; half a second is the loss that matters.
-StaleAfter=500ms
+# input fault for safety. On this vehicle 1.5 s, not the sim's 500 ms: ArduSub 4.5
+# on the lab's Pixhawk sends no telemetry for about a second at every arm
+# (2026-11-19; not its SD log, LOG_DISARMED 1 left it unchanged), and safety's
+# input trigger then fired at every arm. A real depth outage takes 1.5 s to trip
+# the input failsafe here.
+StaleAfter=1500ms
 
 [Publish power.battery]
 Type=battery
