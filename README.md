@@ -14,46 +14,64 @@ It descends from [electric-eye](legacy/), whose camera, image operators and vide
 transport it carries forward, and it is built for one vehicle and its topside, not a
 fleet: no DDS, no runtime type system, no daemon between publisher and subscriber.
 
-**Status (November 2026):** the design is complete and reviewed
-([docs/00-overview.md](docs/00-overview.md) onward, fifteen documents); the topic
-library with calls and parameters, the manager, the message-type generator, the
-simulator's physics, the inference runtime, the benchmark harness, the web console
-and the phase-1 modules (`safety`, `mux`, `mavlink`) are implemented and tested, the
-last of them against a fake ArduSub and the Gazebo + ArduSub SITL container of
-`tools/sim/`; the recorder, its `.hgr` recording files, dataset specifications and the
-live pairer that turns provenance into training rows are implemented and tested; the
-first test on a vehicle's Pi is planned ([bench/PI-TEST.md](bench/PI-TEST.md)). Nothing
-has run on a vehicle yet. The tether bridge and the learning loop are next.
+## What is in it
+
+- **Topics** (`lib/hg`): fixed-size messages in shared memory, a wake-up without
+  polling, calls and parameters on the same mechanism, and in every message the
+  identifiers of the inputs it was computed from.
+- **A manager** (`hangard`) that starts each module from a manifest, wires it to exactly
+  the topics it declares, restarts it with back-off, runs an actuator's neutral command
+  whenever the actuator's module exits, and adopts the running modules again after its
+  own restart. `hangar` is its command-line tool.
+- **Vehicle control through ArduSub**: `safety` (arming, failsafes, the gate every
+  actuator command passes), `mux` (pilot, controller and bounded policy output per
+  axis), `mavlink` (its own MAVLink 2 over UDP or the autopilot's serial line),
+  `joystick`, `nav` and `depth_hold`.
+- **Video without a transcoder on the vehicle**: `encoder` sends the camera's own H.264
+  over RTP; `video_relay`, `vision` and `topside_encoder` decode, process and re-encode
+  on the topside.
+- **Recording and learning**: `recorder` and its `.hgr` files, dataset specifications,
+  the `pairer` that turns provenance into training rows as they happen, `policy` for
+  inference on the vehicle with checked weights, and a Python package for reading
+  recordings, training and exporting.
+- **A tether bridge** (`bridge`): topics and calls between the vehicle and the topside
+  over an authenticated UDP link, with the two clocks reconciled.
+- **Dawn Patrol** (`console`): a web console for the pilot and the operator.
+- **A simulator**: `sim_vehicle`, a 6-DOF model that runs alone or as the physics of
+  ArduSub's SITL (`tools/sim/`).
+
+It has been run on a BlueROV2 (Raspberry Pi 5, ArduSub 4.5 on a Pixhawk); the
+procedure and the measurements are in [tools/rov/README.md](tools/rov/README.md).
 
 ## Layout
 
 | Directory | |
 |---|---|
-| `docs/` | the design, one document per part; start at `00-overview.md` |
-| `lib/hg/` | the module library: topics, provenance, waiting, wiring (LGPL) |
-| `lib/vision/`, `lib/camera/`, `lib/net/`, `lib/video/`, `lib/proc/` | code carried over from electric-eye |
-| `lib/common/` | shared headers and the thread pool |
-| `lib/sim/` | the simulator's physics: a 6-DOF model, the T200 thrust data, the fit |
-| `lib/nn/` | the inference runtime and the `.hgw` weights file |
+| `docs/` | the design, one document per part; start at [`00-overview.md`](docs/00-overview.md) |
+| `lib/hg/` | the module library: topics, provenance, waiting, calls, parameters, recordings (LGPL) |
 | `hangard/`, `hangar/` | the manager and the command-line tool |
-| `modules/` | the modules: `safety`, `mux`, `mavlink` (vehicle and topside), `recorder`, `pairer`, `console` (Dawn Patrol) |
-| `profiles/` | manifest sets for the two simulation roots and for the lab's BlueROV2 (`tools/rov/`) |
+| `modules/` | the modules, one directory each, each with its README |
 | `msg/` | message types (`.msg`) and their generated headers |
-| `tools/msggen/`, `tools/mavgen/`, `tools/equivalence/`, `tools/cross/`, `tools/release.sh`, `tools/sim/` | the message generator, the MAVLink generator, the operator-equivalence check against electric-eye v0.3.1, cross-build recipes, the release build, the simulator container |
-| `bench/` | the benchmark harness and the Pi test plan |
-| `legacy/` | electric-eye's `eeye` and `hellion`, run unchanged as legacy modules until their replacements exist |
-| `python/` | the topside package: schema parsing, `.hgr` and dataset readers, the `.hgw` writer, the PyTorch exporter |
-| `spike/`, `literature/`, `proposal/` | the language spike, the literature survey (not in git), the research proposal |
+| `profiles/` | manifest sets: the simulation roots, the lab's BlueROV2 and its topside |
+| `lib/sim/`, `lib/nn/` | the simulator's physics; the inference runtime and the `.hgw` weights file |
+| `lib/vision/`, `lib/camera/`, `lib/net/`, `lib/video/`, `lib/proc/`, `lib/common/` | image operators, camera, network and video code, much of it carried over from electric-eye |
+| `python/` | the topside package: schemas, `.hgr` and dataset readers, live topics, training and export |
+| `tools/` | the message and MAVLink generators, the release and cross builds, the simulator container, and `tools/rov/` for a session on a real vehicle |
+| `bench/` | the benchmark harness and its results |
+| `legacy/` | electric-eye's `eeye` and `hellion`, kept until the native video modules have replaced them |
+| `proposal/` | the research proposal |
 
 ## Building
 
-C11, GNU make, and either gcc, clang or `zig cc`; libjpeg-turbo for the camera code.
+C11, GNU make, and gcc, clang or `zig cc`; libjpeg-turbo for the camera code. The video
+modules that decode and encode need libavcodec and libx264 and are left out where
+those are missing.
 
 ```sh
-make -j"$(nproc)"            # eeye, hellion, hangard, hangar
+make -j"$(nproc)" all        # the manager, the tool and every module
 make -j"$(nproc)" check      # every test suite
-make equivalence             # operators hashed against electric-eye v0.3.1
 make check-tsan check-asan   # the library's suites under the sanitizers
+make equivalence             # image operators hashed against electric-eye v0.3.1
 tools/release.sh             # the static aarch64 release tarball (zig cc, musl)
 ```
 
@@ -61,6 +79,15 @@ Static release binaries are built with `zig cc` for `aarch64-linux-musl` and
 `arm-linux-musleabihf`; see [tools/cross/README.md](tools/cross/README.md). CI runs
 the suites with gcc, clang and zig cc on x86-64 and natively on arm64, the sanitizers,
 the equivalence check, and the cross builds.
+
+## Running it
+
+- In simulation, with Gazebo and ArduSub's SITL in a container:
+  [tools/sim/SETUP.md](tools/sim/SETUP.md).
+- On a vehicle, from the topside laptop over the tether:
+  [tools/rov/QUICKSTART.md](tools/rov/QUICKSTART.md). A session saves the autopilot's
+  parameters before it changes any and puts them back at the end.
+- The command-line tool and the console: [docs/12-tools.md](docs/12-tools.md).
 
 ## Citing hangar
 
