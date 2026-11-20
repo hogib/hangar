@@ -54,26 +54,60 @@ int cbuf_printf(struct cbuf *b, const char *fmt, ...)
 	return n;
 }
 
-void cbuf_json_str(struct cbuf *b, const char *s, size_t maxlen)
+/* Text as a JSON string (RFC 8259), as `hangar echo --json` writes one
+ * (hangar/hangar.c json_string): a quote, a backslash and control characters
+ * escaped; a byte that is not part of a well-formed UTF-8 sequence (2 to 4
+ * bytes, not overlong, not a surrogate, not past U+10FFFF) written as U+FFFD.
+ * A char field is bytes a module wrote, and the page's response.json() must
+ * take the body whatever they are. */
+void cbuf_json_str(struct cbuf *b, const char *text, size_t maxlen)
 {
+	const unsigned char *s = (const unsigned char *)text;
 	size_t n = 0;
 	while (n < maxlen && s[n])
 		n++;
 	if (cbuf_reserve(b, 2 + n * 6) < 0)
 		return;
 	b->p[b->len++] = '"';
-	for (size_t i = 0; i < n; i++) {
-		unsigned char ch = (unsigned char)s[i];
+	for (size_t i = 0; i < n;) {
+		unsigned char ch = s[i];
 		if (ch == '"' || ch == '\\') {
 			b->p[b->len++] = '\\';
 			b->p[b->len++] = (char)ch;
-		} else if (ch == '\n') {
+			i++;
+		} else if (ch == '\n' || ch == '\t' || ch == '\r') {
 			b->p[b->len++] = '\\';
-			b->p[b->len++] = 'n';
+			b->p[b->len++] = ch == '\n' ? 'n' : ch == '\t' ? 't' : 'r';
+			i++;
 		} else if (ch < 0x20 || ch == 0x7f) {
 			b->len += (size_t)snprintf(b->p + b->len, 7, "\\u%04x", ch);
-		} else {
+			i++;
+		} else if (ch < 0x80) {
 			b->p[b->len++] = (char)ch;
+			i++;
+		} else {
+			size_t k = (ch & 0xe0) == 0xc0 ? 1 : (ch & 0xf0) == 0xe0 ? 2 : (ch & 0xf8) == 0xf0 ? 3 : 0;
+			int ok = k && i + k < n; /* its continuation bytes are all there */
+			if (ok) {
+				uint32_t cp = ch & (0x3f >> k);
+				for (size_t j = 1; j <= k; j++) {
+					if ((s[i + j] & 0xc0) != 0x80)
+						ok = 0;
+					cp = cp << 6 | (s[i + j] & 0x3f);
+				}
+				static const uint32_t least[4] = { 0, 0x80, 0x800, 0x10000 };
+				if (cp < least[k] || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))
+					ok = 0;
+			}
+			if (ok) {
+				memcpy(b->p + b->len, s + i, k + 1);
+				b->len += k + 1;
+				i += k + 1;
+			} else {
+				memcpy(b->p + b->len, "\\ufffd", 6);
+				b->len += 6;
+				i++;
+			}
 		}
 	}
 	b->p[b->len++] = '"';
@@ -317,11 +351,23 @@ void api_tick(struct console *c)
 
 /* ---- JSON ----------------------------------------------------------------- */
 
+/* {"role":"<role>","topic":"hangar.<role>.<which>": the role is whatever
+ * --role or hangard.conf said, so it is written as text, not trusted. */
+static void role_json(struct console *c, struct cbuf *b, const char *which)
+{
+	char topic[64];
+	snprintf(topic, sizeof topic, "hangar.%s.%s", c->role, which);
+	cbuf_printf(b, "{\"role\":");
+	cbuf_json_str(b, c->role, sizeof c->role);
+	cbuf_printf(b, ",\"topic\":");
+	cbuf_json_str(b, topic, sizeof topic);
+}
+
 int api_system_json(struct console *c, struct cbuf *b)
 {
 	uint64_t now = hg_now_ns();
-	cbuf_printf(b, "{\"role\":\"%s\",\"topic\":\"hangar.%s.system\",\"present\":%s", c->role, c->role,
-		    c->have_sys ? "true" : "false");
+	role_json(c, b, "system");
+	cbuf_printf(b, ",\"present\":%s", c->have_sys ? "true" : "false");
 	if (c->have_sys) {
 		const struct hangar_system *s = &c->sys;
 		cbuf_printf(b, ",\"state\":\"%s\",\"since_ns\":%llu,\"in_state_s\":%.1f,\"modules\":%u,"
@@ -348,7 +394,8 @@ int api_links_json(struct console *c, struct cbuf *b)
 int api_modules_json(struct console *c, struct cbuf *b)
 {
 	uint64_t now = hg_now_ns();
-	cbuf_printf(b, "{\"role\":\"%s\",\"topic\":\"hangar.%s.modules\",\"modules\":[", c->role, c->role);
+	role_json(c, b, "modules");
+	cbuf_printf(b, ",\"modules\":[");
 	for (int i = 0; i < c->n_mods; i++) {
 		const struct modrec *r = &c->mods[i];
 		const struct hangar_modules *m = &r->m;
@@ -536,15 +583,20 @@ int api_topic_json(struct console *c, const char *name, struct cbuf *b)
 		return 500;
 	}
 	struct hg_topic_meta meta;
-	if (hg_sub_meta(s, &meta) == 0)
-		cbuf_printf(b, ",\"type_hash\":\"%016llx\",\"writer\":\"%.32s\",\"payload_bytes\":%u",
-			    (unsigned long long)meta.type_hash, meta.writer, meta.payload_bytes);
+	if (hg_sub_meta(s, &meta) == 0) {
+		/* The writer's name is 32 bytes of a file's header: text like any other. */
+		cbuf_printf(b, ",\"type_hash\":\"%016llx\",\"writer\":", (unsigned long long)meta.type_hash);
+		cbuf_json_str(b, meta.writer, sizeof meta.writer);
+		cbuf_printf(b, ",\"payload_bytes\":%u", meta.payload_bytes);
+	}
 	uint32_t slen = 0;
 	const char *text = hg_sub_schema(s, &slen);
 	char err[128] = "";
 	int parsed = text && hg_schema_parse(text, slen, schema, err, sizeof err) == 0;
-	if (!parsed)
-		cbuf_printf(b, ",\"schema_error\":\"%s\"", err[0] ? err : "no schema");
+	if (!parsed) {
+		cbuf_printf(b, ",\"schema_error\":");
+		cbuf_json_str(b, err[0] ? err : "no schema", sizeof err);
+	}
 	struct hg_info info;
 	enum hg_result r = hg_latest(s, buf, pl, &info);
 	if (r != HG_MSG) {
@@ -561,8 +613,9 @@ int api_topic_json(struct console *c, const char *name, struct cbuf *b)
 				const struct hg_field *f = &schema->fields[i];
 				if (f->offset + f->count * hg_field_elem_size(f->kind) > pl)
 					break;
-				cbuf_printf(b, "%s{\"name\":\"%s\",\"type\":\"%s\",\"count\":%u,\"comment\":", i ? "," : "",
-					    f->name, kind_name(f->kind), f->count);
+				cbuf_printf(b, "%s{\"name\":", i ? "," : "");
+				cbuf_json_str(b, f->name, HG_FIELD_NAME_MAX + 1);
+				cbuf_printf(b, ",\"type\":\"%s\",\"count\":%u,\"comment\":", kind_name(f->kind), f->count);
 				cbuf_json_str(b, f->comment, 256);
 				cbuf_printf(b, ",\"value\":");
 				field_json(b, f, buf + f->offset);
@@ -678,7 +731,9 @@ static void fly_topic_json(struct console *c, struct cbuf *b, unsigned i, uint64
 			const struct hg_field *fd = &f->schema.fields[k];
 			if (fd->offset + fd->count * hg_field_elem_size(fd->kind) > pl)
 				break;
-			cbuf_printf(b, "%s\"%s\":", k ? "," : "", fd->name);
+			cbuf_printf(b, "%s", k ? "," : "");
+			cbuf_json_str(b, fd->name, HG_FIELD_NAME_MAX + 1);
+			cbuf_printf(b, ":");
 			field_json(b, fd, f->buf + fd->offset);
 		}
 	cbuf_printf(b, "}}");
@@ -687,7 +742,9 @@ static void fly_topic_json(struct console *c, struct cbuf *b, unsigned i, uint64
 int api_fly_json(struct console *c, struct cbuf *b)
 {
 	uint64_t now = hg_now_ns();
-	cbuf_printf(b, "{\"role\":\"%s\",\"topics\":{", c->role);
+	cbuf_printf(b, "{\"role\":");
+	cbuf_json_str(b, c->role, sizeof c->role);
+	cbuf_printf(b, ",\"topics\":{");
 	for (unsigned i = 0; i < FLY_N; i++)
 		fly_topic_json(c, b, i, now);
 	cbuf_printf(b, "}}\n");

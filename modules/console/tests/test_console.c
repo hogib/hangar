@@ -25,6 +25,7 @@
 #include "hd_test.h"
 #include "http.h"
 
+#include <math.h>
 #include <netinet/in.h>
 
 static pid_t mgr;
@@ -279,6 +280,77 @@ static void test_topic_decode(void)
 	CHECK_EQ_INT(api("GET", "/api/topic/no.such.topic", body, sizeof body), 404);
 	CHECK_EQ_INT(api("GET", "/api/topic/Not-Valid", body, sizeof body), 404);
 	CHECK_EQ_INT(api("GET", "/api/topic/", body, sizeof body), 404);
+}
+
+/* 1 if text is well-formed UTF-8 with no raw control character: what a JSON
+ * body must be before anything else about it matters. */
+static int clean_utf8(const char *text)
+{
+	const unsigned char *s = (const unsigned char *)text;
+	while (*s) {
+		if (*s < 0x20 && *s != '\n')
+			return 0;
+		int k = *s < 0x80 ? 0 : (*s & 0xe0) == 0xc0 ? 1 : (*s & 0xf0) == 0xe0 ? 2 : (*s & 0xf8) == 0xf0 ? 3 : -1;
+		if (k < 0)
+			return 0;
+		for (int j = 1; j <= k; j++)
+			if ((s[j] & 0xc0) != 0x80)
+				return 0;
+		s += k + 1;
+	}
+	return 1;
+}
+
+/* /api/topic and /api/fly write a char field as a JSON string. A quote, a
+ * backslash and a newline were escaped, but any byte over 0x7f went out as it
+ * was: one stray byte in a field (a status line cut inside a character, a
+ * module's uninitialised text) made the body something response.json()
+ * refuses, and the page lost the whole reading. Now as `hangar echo --json`
+ * (hangar/hangar.c json_string): a byte that is not UTF-8 is U+FFFD, tab and
+ * return by their names. Floats that are not finite were null already. */
+static void test_json_text(void)
+{
+	pid_t pub = fork();
+	if (pub == 0) {
+		static struct hg_schema sc;
+		const char text[] = "char name[24]\nchar raw[4]\nchar cut[4]\nf32 f[4]\nf64 d\nu8 n\n";
+		struct {
+			char name[24], raw[4], cut[4];
+			float f[4];
+			double d;
+			uint8_t n;
+		} v;
+		memset(&v, 0, sizeof v);
+		if (hg_schema_parse(text, sizeof text - 1, &sc, NULL, 0) < 0 || sc.type.payload_bytes != sizeof v)
+			_exit(3);
+		memcpy(v.name, "say \"hi\"\\ \n\ttab \x01 end", 22);
+		memcpy(v.raw, "\xff\xc3\xa9z", 4); /* a stray byte, then e-acute, no NUL */
+		memcpy(v.cut, "ab\xe2\x82", 4);    /* a euro sign cut after two of its three bytes */
+		v.f[0] = NAN;
+		v.f[1] = INFINITY;
+		v.f[2] = -INFINITY;
+		v.f[3] = 1.5f;
+		v.d = NAN;
+		v.n = 7;
+		struct hg_pub_opts o = { .slots = 4 };
+		hg_pub *p = hg_pub_open("json.t", &sc.type, &o);
+		for (int i = 0; p && i < 300; i++) {
+			hg_publish(p, &v, sizeof v, hg_now_ns());
+			sleep_ms(100);
+		}
+		_exit(p ? 0 : 4);
+	}
+	CHECK(wait_api("/api/topic/json.t", "\"present\":true", 10000, body, sizeof body));
+	kill(pub, SIGKILL);
+	waitpid(pub, NULL, 0);
+	CHECK(clean_utf8(body));
+	CHECK(strstr(body, "\"value\":\"say \\\"hi\\\"\\\\ \\n\\ttab \\u0001 end\"") != NULL);
+	CHECK(strstr(body, "\"value\":\"\\ufffd\xc3\xa9z\"") != NULL);
+	CHECK(strstr(body, "\"value\":\"ab\\ufffd\\ufffd\"") != NULL);
+	CHECK(strstr(body, "\"value\":[null,null,null,1.5]") != NULL);
+	CHECK(strstr(body, "\"name\":\"d\",\"type\":\"f64\",\"count\":1,\"comment\":\"\",\"value\":null") != NULL);
+	if (!clean_utf8(body))
+		printf("    a body that is not UTF-8 text, %zu bytes\n", strlen(body));
 }
 
 static void test_page_and_errors(void)
@@ -727,6 +799,7 @@ int main(void)
 	RUN_TEST(test_modules_and_system);
 	RUN_TEST(test_topics);
 	RUN_TEST(test_topic_decode);
+	RUN_TEST(test_json_text);
 	RUN_TEST(test_page_and_errors);
 	RUN_TEST(test_host_and_origin);
 	RUN_TEST(test_restart_stop_start);
