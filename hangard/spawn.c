@@ -214,6 +214,13 @@ void neutral_record_remove(const char *name)
 	unlink(path);
 }
 
+int neutral_record_exists(const char *name)
+{
+	char path[HD_PATH];
+	neutral_path(name, path, sizeof path);
+	return access(path, F_OK) == 0;
+}
+
 struct neutral_record {
 	uid_t uid;
 	gid_t gid;
@@ -768,6 +775,7 @@ int module_spawn(struct module *m)
 	m->pidfd = pidfd;
 	m->adopted = 0;
 	m->started_ns = instance;
+	m->stop_timeout_ns = mf->stop_timeout_ns;
 	m->starttime = proc_starttime(m->pid);
 	m->exit_known = 0;
 	registry_write();

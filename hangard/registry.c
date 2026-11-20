@@ -76,10 +76,10 @@ void registry_write(void)
 		G.sys_reason);
 	for (int i = 0; i < G.n_modules; i++) {
 		const struct module *m = &G.modules[i];
-		fprintf(f, "%s %d %llu %s %u %g %016llx %016llx\n", m->name, (int)m->pid,
+		fprintf(f, "%s %d %llu %s %u %g %016llx %016llx %g\n", m->name, (int)m->pid,
 			m->pid ? m->starttime : 0ull, state_names[m->st], m->failures,
 			(double)m->delay_ns / 1e9, (unsigned long long)m->manifest_hash,
-			(unsigned long long)m->wiring_hash);
+			(unsigned long long)m->wiring_hash, m->pid ? (double)m->stop_timeout_ns / 1e9 : 0.0);
 	}
 	if (fclose(f) != 0 || chmod(G.paths.registry_tmp, 0600) != 0 ||
 	    rename(G.paths.registry_tmp, G.paths.registry) != 0)
@@ -133,9 +133,9 @@ int registry_read(const char *path, struct reg_entry *out, int max, enum sys_sta
 		int pid = 0;
 		unsigned long long start = 0, mh = 0, wh = 0;
 		unsigned fails = 0;
-		double delay = 0;
-		int k = sscanf(line, "%31s %d %llu %31s %u %lf %llx %llx", e->name, &pid, &start, st, &fails,
-			       &delay, &mh, &wh);
+		double delay = 0, stop_timeout = 0;
+		int k = sscanf(line, "%31s %d %llu %31s %u %lf %llx %llx %lf", e->name, &pid, &start, st, &fails,
+			       &delay, &mh, &wh, &stop_timeout);
 		if (k < 6)
 			continue;
 		int si = state_from_name(st);
@@ -148,6 +148,7 @@ int registry_read(const char *path, struct reg_entry *out, int max, enum sys_sta
 		e->delay_ns = (uint64_t)(delay * 1e9);
 		e->manifest_hash = mh;
 		e->wiring_hash = wh;
+		e->stop_timeout_ns = stop_timeout > 0 ? (uint64_t)(stop_timeout * 1e9) : 0;
 		n++;
 	}
 	fclose(f);

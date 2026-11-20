@@ -231,6 +231,25 @@ void schedule_restart(struct module *m, const char *why)
 	set_state(m, ST_BACKOFF, r);
 }
 
+/* The instance was started under a manifest that may be gone or changed by
+ * now (a reload stops it for that very reason), so the timeout is the one it
+ * was started with. An instance adopted from a registry that did not record
+ * it gets its manifest's, or, with no manifest left, the default of a module
+ * with a Neutral command if it has a record, of any other module if not. */
+uint64_t module_stop_timeout(const struct module *m)
+{
+	if (m->stop_timeout_ns)
+		return m->stop_timeout_ns;
+	if (m->mf)
+		return m->mf->stop_timeout_ns;
+	return neutral_record_exists(m->name) ? 500000000ull : 5000000000ull;
+}
+
+int module_has_neutral(const struct module *m)
+{
+	return (m->mf && m->mf->has_neutral) || neutral_record_exists(m->name);
+}
+
 void module_stop(struct module *m, enum state next, int count_failure, const char *why)
 {
 	if (!m->pid) {
@@ -247,7 +266,7 @@ void module_stop(struct module *m, enum state next, int count_failure, const cha
 	/* A stop asked for again changes what the exit leads to, not when the
 	 * SIGKILL comes: StopTimeout counts from the first SIGTERM. */
 	if (!m->stopping)
-		m->stop_deadline = hg_now_ns() + (m->mf ? m->mf->stop_timeout_ns : 5000000000ull);
+		m->stop_deadline = hg_now_ns() + module_stop_timeout(m);
 	m->stopping = 1;
 	if (m->st != ST_UNHEALTHY)
 		set_state(m, ST_STOPPING, why);
@@ -267,9 +286,11 @@ void on_module_exit(struct module *m)
 			known = 1;
 		}
 	}
-	/* Before anything else: the hardware to neutral. */
-	if (m->mf && m->mf->has_neutral)
-		neutral_run(m->name);
+	/* Before anything else: the hardware to neutral, by the record written
+	 * when this instance was started. Not by the manifest: that may have
+	 * been removed, or have lost its Neutral, since (a reload stops the
+	 * module for it). A module started without a Neutral has no record. */
+	neutral_run(m->name);
 	/* Its readers learn that the writer died. */
 	topics_mark_writer_died(m->name);
 	/* Anything left in its cgroup or group; the unreaped leader keeps the
@@ -388,7 +409,7 @@ void health_tick(uint64_t now)
 		}
 		if (m->pid && m->stop_deadline && now >= m->stop_deadline) {
 			hd_log("%s: still running %g s after SIGTERM: SIGKILL to its %s", m->name,
-			       (double)(mf ? mf->stop_timeout_ns : 0) / 1e9,
+			       (double)module_stop_timeout(m) / 1e9,
 			       G.cgroup_base[0] && G.is_root ? "cgroup" : "process group");
 			module_kill_group(m);
 			m->stop_deadline = 0;

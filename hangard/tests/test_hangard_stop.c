@@ -199,6 +199,157 @@ static void test_repeated_stop_keeps_the_deadline(void)
 	end("stub");
 }
 
+static int count(const char *hay, const char *needle)
+{
+	int n = 0;
+	for (const char *p = hay; (p = strstr(p, needle)); p += strlen(needle))
+		n++;
+	return n;
+}
+
+/* An actuator's manifest: `stubborn` with a Neutral command that appends a
+ * line to ran. */
+static void actuator_manifest(const char *name, const char *flags, const char *ran, const char *restart)
+{
+	manifest(name, "[Module]\nExec=%s/stubborn%s\nUser=hg-thrusters\n"
+		       "[Subscribe ctl.cmd]\n[Subscribe safety.state]\n"
+		       "[Publish thr.cmd]\nType=depth\nRate=50\nActuator=yes\nInputs=ctl.cmd\n"
+		       "[Actuator]\nCommand=ctl.cmd\nNeutral=%s/neutral %s\n%s", T_toys, flags, T_toys, ran, restart);
+}
+
+/* docs/03 "Neutral commands": at every exit, from the record. An actuator
+ * whose manifest a reload removed is stopped, and its Neutral command runs. */
+static void test_neutral_runs_when_manifest_removed(void)
+{
+	char ran[1024];
+	tfmt(ran, sizeof ran, "%s/neutral-ran1", T_root);
+	unlink(ran);
+	actuator_manifest("act", " --polite", ran, "");
+	mgr = manager_start();
+	CHECK(wait_state("act", "ready", 5000));
+	manifest_remove("act");
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	CHECK(wait_file_contains(T_log, "act: stopped: pid", 3000));
+	CHECK_EQ_INT(count(read_file(ran), "neutral uid="), 1);
+	end("act");
+}
+
+/* The same, the module ignoring SIGTERM: the SIGKILL comes after the 500 ms
+ * of an actuator, which the instance was started with, not the 5 s of a
+ * module nothing is known about; then the Neutral command. */
+static void test_removed_actuator_keeps_its_stop_timeout(void)
+{
+	char ran[1024];
+	tfmt(ran, sizeof ran, "%s/neutral-ran2", T_root);
+	unlink(ran);
+	actuator_manifest("act", "", ran, "");
+	mgr = manager_start();
+	CHECK(wait_state("act", "ready", 5000));
+	manifest_remove("act");
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	uint64_t t0 = now_ms();
+	CHECK(wait_file_contains(T_log, "SIGKILL to its", 8000));
+	uint64_t kill_ms = now_ms() - t0;
+	CHECK(kill_ms < 1500);
+	CHECK(wait_file_contains(T_log, "act: stopped: pid", 3000));
+	CHECK_EQ_INT(count(read_file(ran), "neutral uid="), 1);
+	end("act");
+}
+
+/* A manifest edited to have no Neutral any more: the instance that was
+ * started with one is restarted by the reload, and neutralized as it exits. */
+static void test_neutral_runs_when_manifest_drops_neutral(void)
+{
+	char ran[1024];
+	tfmt(ran, sizeof ran, "%s/neutral-ran3", T_root);
+	unlink(ran);
+	actuator_manifest("act", " --polite", ran, "");
+	mgr = manager_start();
+	CHECK(wait_state("act", "ready", 5000));
+	struct mstat m;
+	module_status("act", &m);
+	manifest("act", "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	CHECK(wait_new_pid("act", m.pid, "ready", 5000));
+	CHECK_EQ_INT(count(read_file(ran), "neutral uid="), 1);
+	end("act");
+}
+
+/* The instance's StopTimeout (2 s here) crosses a re-exec: removed after
+ * it, the module is killed 2 s after the reload, not after the 500 ms an
+ * actuator with a record and no manifest would get. */
+static void test_stop_timeout_survives_reexec(void)
+{
+	char ran[1024];
+	tfmt(ran, sizeof ran, "%s/neutral-ran4", T_root);
+	unlink(ran);
+	actuator_manifest("act", "", ran, "[Restart]\nStopTimeout=2s\n");
+	mgr = manager_start();
+	CHECK(wait_state("act", "ready", 5000));
+	CHECK(strncmp(ctl("reexec"), "ok", 2) == 0);
+	CHECK(wait_file_contains(T_log, "re-executed", 3000));
+	manifest_remove("act");
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	uint64_t t0 = now_ms();
+	CHECK(wait_file_contains(T_log, "SIGKILL to its", 8000));
+	uint64_t kill_ms = now_ms() - t0;
+	CHECK(kill_ms > 1700 && kill_ms < 3200);
+	CHECK(wait_file_contains(T_log, "act: stopped: pid", 3000));
+	CHECK_EQ_INT(count(read_file(ran), "neutral uid="), 1);
+	end("act");
+}
+
+/* And a crash: the registry carries it for the manager that adopts the
+ * module and finds its manifest gone. A registry of a manager before this
+ * one has no such field: then the module's Neutral record says it takes an
+ * actuator's 500 ms. */
+static void test_stop_timeout_survives_crash(void)
+{
+	for (int old = 0; old < 2; old++) {
+		char ran[1024], reg[1024];
+		tfmt(ran, sizeof ran, "%s/neutral-ran5%d", T_root, old);
+		tfmt(reg, sizeof reg, "%s/run/hangar/registry", T_root);
+		unlink(ran);
+		actuator_manifest("act", "", ran, "[Restart]\nStopTimeout=2s\n");
+		mgr = manager_start();
+		CHECK(wait_state("act", "ready", 5000));
+		manager_kill9(mgr);
+		if (old) {
+			/* The eight fields of the registry before: name, pid, start
+			 * time, state, failures, delay, the two hashes. */
+			char text[4096], out[4096];
+			tfmt(text, sizeof text, "%s", read_file(reg));
+			size_t o = 0;
+			for (char *l = strtok(text, "\n"); l; l = strtok(NULL, "\n")) {
+				int sp = 0;
+				size_t len = strlen(l);
+				if (strncmp(l, "act ", 4) == 0)
+					for (size_t i = 0; i < len; i++)
+						if (l[i] == ' ' && ++sp == 8) {
+							len = i;
+							break;
+						}
+				o += (size_t)tfmt(out + o, sizeof out - o, "%.*s\n", (int)len, l);
+			}
+			CHECK(write_file(reg, out) == 0);
+		}
+		manifest_remove("act");
+		log_clear();
+		mgr = manager_start();
+		uint64_t t0 = now_ms();
+		CHECK(wait_file_contains(T_log, "act: no manifest any more: stopping", 3000));
+		CHECK(wait_file_contains(T_log, "SIGKILL to its", 8000));
+		uint64_t kill_ms = now_ms() - t0;
+		if (old)
+			CHECK(kill_ms < 1500);
+		else
+			CHECK(kill_ms > 1700 && kill_ms < 3500);
+		CHECK(wait_file_contains(T_log, "Neutral command ran", 3000));
+		CHECK_EQ_INT(count(read_file(ran), "neutral uid="), 1);
+		end("act");
+	}
+}
+
 int main(void)
 {
 	hd_setup("stop", NULL);
@@ -206,6 +357,11 @@ int main(void)
 	HD_RUN(test_restart_needing_sigkill_counts_no_failure);
 	HD_RUN(test_stop_survives_reexec_after_sigkill);
 	HD_RUN(test_repeated_stop_keeps_the_deadline);
+	HD_RUN(test_neutral_runs_when_manifest_removed);
+	HD_RUN(test_removed_actuator_keeps_its_stop_timeout);
+	HD_RUN(test_neutral_runs_when_manifest_drops_neutral);
+	HD_RUN(test_stop_timeout_survives_reexec);
+	HD_RUN(test_stop_timeout_survives_crash);
 	hd_teardown();
 	TEST_MAIN_END();
 }

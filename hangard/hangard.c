@@ -509,6 +509,7 @@ static void startup_from_registry(int *n_dead, char (*dead)[MF_NAME])
 			m->pid = entries[i].pid;
 			m->pidfd = pidfds[i];
 			m->starttime = entries[i].starttime;
+			m->stop_timeout_ns = entries[i].stop_timeout_ns;
 			m->adopted = 1;
 			m->started_ns = hg_now_ns();
 			m->ready_ns = m->started_ns;
@@ -750,6 +751,9 @@ int do_reexec(char *err, size_t errlen)
 		for (int k = 0; k < m->n_fail_times; k++)
 			fprintf(f, " %llu", (unsigned long long)m->fail_times[k]);
 		fprintf(f, "\n");
+		/* What came after format 1 was fixed: a line of its own per
+		 * module, key=value, which an older image passes over. */
+		fprintf(f, "also %s stop_timeout=%llu\n", m->name, (unsigned long long)m->stop_timeout_ns);
 		if (m->pidfd >= 0)
 			clear_cloexec(m->pidfd);
 	}
@@ -807,6 +811,18 @@ static int startup_from_reexec(void)
 			G.ctlfd = atoi(line + 8);
 		} else if (strncmp(line, "calls ", 6) == 0) {
 			G.next_call_id = strtoull(line + 6, NULL, 10);
+		} else if (strncmp(line, "also ", 5) == 0) {
+			char name[MF_NAME];
+			int off = 0;
+			struct module *m;
+			if (sscanf(line + 5, "%31s%n", name, &off) != 1 || !(m = module_find(name)))
+				continue;
+			char *save, *tok = strtok_r(line + 5 + off, " ", &save);
+			for (; tok; tok = strtok_r(NULL, " ", &save)) {
+				unsigned long long v;
+				if (sscanf(tok, "stop_timeout=%llu", &v) == 1)
+					m->stop_timeout_ns = v;
+			}
 		} else if (strncmp(line, "module ", 7) == 0) {
 			char name[MF_NAME], st[32], after[32];
 			int pid, pidfd, exit_known, exit_status, gave_up, adopted, count_failure, nft, off = 0;
@@ -883,7 +899,7 @@ static int any_running(int neutral_only)
 		const struct module *m = &G.modules[i];
 		if (!m->pid)
 			continue;
-		if (!neutral_only || (m->mf && m->mf->has_neutral))
+		if (!neutral_only || module_has_neutral(m))
 			return 1;
 	}
 	return 0;
@@ -893,8 +909,7 @@ static void shutdown_phase(int phase)
 {
 	for (int i = 0; i < G.n_modules; i++) {
 		struct module *m = &G.modules[i];
-		int neutral = m->mf && m->mf->has_neutral;
-		if (phase == 1 && !neutral)
+		if (phase == 1 && !module_has_neutral(m))
 			continue;
 		if (m->pid) {
 			if (!m->stopping)

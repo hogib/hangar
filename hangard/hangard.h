@@ -173,6 +173,7 @@ struct module {
 	uint64_t restart_at;     /* ST_BACKOFF */
 	uint64_t stop_deadline;  /* SIGKILL at this time; 0 once it was sent */
 	int stopping;            /* a stop was asked for and the exit has not come */
+	uint64_t stop_timeout_ns; /* the running instance's StopTimeout, as it was started; 0 if unknown */
 	enum state after_stop;   /* what the exit leads to */
 	int count_failure;       /* the pending stop counts as a failure */
 	int exit_known;
@@ -239,6 +240,7 @@ struct reg_entry {
 	unsigned failures;
 	uint64_t delay_ns;
 	uint64_t manifest_hash, wiring_hash;
+	uint64_t stop_timeout_ns; /* 0: a registry written before the field existed */
 };
 /* Reads the registry file. The number of module entries, or -1. */
 int registry_read(const char *path, struct reg_entry *out, int max, enum sys_state *sys,
@@ -294,6 +296,7 @@ int module_spawn(struct module *m);
 /* Writes/reads/removes <run>/hangar/neutral/<name>. */
 int neutral_record_write(const struct module *m);
 void neutral_record_remove(const char *name);
+int neutral_record_exists(const char *name);
 /* Runs the module's Neutral command from its record, as the module's user,
  * with a 1 s limit; 0 if it ran and exited 0, -1 otherwise (logged). A
  * module without a record returns 1. */
@@ -318,6 +321,10 @@ void module_outputs_unmap(struct module *m);
 void on_module_exit(struct module *m);
 /* Stop it (SIGTERM, StopTimeout): next is the state after the exit. */
 void module_stop(struct module *m, enum state next, int count_failure, const char *why);
+/* The StopTimeout of the instance that runs: its own, as it was started. */
+uint64_t module_stop_timeout(const struct module *m);
+/* Whether its exit runs a Neutral command: by its manifest or its record. */
+int module_has_neutral(const struct module *m);
 void schedule_restart(struct module *m, const char *why);
 void health_tick(uint64_t now);
 /* The earliest time anything in health.c needs the loop awake, or 0. */
