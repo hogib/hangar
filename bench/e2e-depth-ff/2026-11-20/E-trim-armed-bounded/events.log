@@ -1,0 +1,154 @@
+[    0.0] start label=trim quick=False bound=0.15
+[    0.0] armed
+[    0.0] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[    0.0] target depth=3.0 tag=descent
+[   40.0] phase what=train
+[   40.0] target depth=2.5 tag=train
+[   40.1] trainer.stats rows=1023 mean=[3.0, 0.0, -0.0, 0.0, -0.0] std=[0.002, 0.005, 0.009, 0.009, 0.027]
+[   41.0] trainer steps=1 loss=nan label_mean=nan rows=1070 lost=0
+[   51.0] trainer steps=1550 loss=2.69e-04 label_mean=-0.0431 rows=1571 lost=0
+[   55.0] target depth=4.0 tag=train
+[   61.0] trainer steps=3146 loss=7.63e-05 label_mean=-0.0754 rows=2071 lost=0
+[   70.0] target depth=3.0 tag=train
+[   71.0] trainer steps=4697 loss=3.19e-04 label_mean=-0.0788 rows=2571 lost=0
+[   81.0] trainer steps=6280 loss=2.13e-04 label_mean=-0.0736 rows=3071 lost=0
+[   85.0] target depth=5.0 tag=train
+[   91.0] trainer steps=8067 loss=2.46e-04 label_mean=-0.0856 rows=3571 lost=0
+[  100.0] target depth=3.5 tag=train
+[  101.0] trainer steps=9841 loss=3.59e-04 label_mean=-0.0769 rows=4072 lost=0
+[  111.0] trainer steps=11616 loss=3.12e-04 label_mean=-0.0717 rows=4572 lost=0
+[  115.0] target depth=2.0 tag=train
+[  121.0] trainer steps=13385 loss=7.98e-05 label_mean=-0.0751 rows=5072 lost=0
+[  130.0] target depth=4.5 tag=train
+[  131.0] trainer steps=15089 loss=3.53e-04 label_mean=-0.0732 rows=5572 lost=0
+[  141.0] trainer steps=16850 loss=1.78e-04 label_mean=-0.0699 rows=6073 lost=0
+[  145.0] target depth=3.0 tag=train
+[  151.0] trainer steps=18610 loss=6.89e-04 label_mean=-0.0819 rows=6573 lost=0
+[  160.0] target depth=2.5 tag=train
+[  161.0] trainer steps=20338 loss=2.51e-04 label_mean=-0.0689 rows=7073 lost=0
+[  171.0] trainer steps=22002 loss=1.96e-05 label_mean=-0.0670 rows=7573 lost=0
+[  175.0] target depth=4.0 tag=train
+[  181.0] trainer steps=23627 loss=1.11e-05 label_mean=-0.0627 rows=8073 lost=0
+[  190.0] target depth=3.0 tag=train
+[  191.0] trainer steps=25286 loss=1.29e-04 label_mean=-0.0778 rows=8573 lost=0
+[  201.0] trainer steps=26928 loss=1.14e-05 label_mean=-0.0741 rows=9073 lost=0
+[  205.0] target depth=5.0 tag=train
+[  211.0] trainer steps=28531 loss=2.21e-04 label_mean=-0.0737 rows=9573 lost=0
+[  220.0] target depth=3.0 tag=train:return
+[  221.0] trainer steps=30218 loss=1.36e-05 label_mean=-0.0813 rows=10074 lost=0
+[  231.0] trainer steps=31887 loss=9.49e-05 label_mean=-0.0793 rows=10574 lost=0
+[  240.0] deploy.begin model=M1
+[  241.0] deploy model=M1 version=1 state=done check=0 reason= hash=d8995511a2d35441 seconds=0.995810869 steps=33363 loss=7.176167400757549e-06 label_mean=-0.07311654835939407
+[  241.0] phase what=B1 assisted, nominal
+[  241.0] block.begin tag=B1 mode=assisted
+[  241.0] target depth=3.0 tag=B1:hold
+[  241.0] trainer steps=33367 loss=2.22e-04 label_mean=-0.0800 rows=11074 lost=0
+[  251.0] trainer steps=35024 loss=1.83e-04 label_mean=-0.0651 rows=11574 lost=0
+[  261.0] target depth=4.0 tag=B1:down
+[  261.0] trainer steps=36652 loss=1.79e-04 label_mean=-0.0785 rows=12074 lost=0
+[  271.0] trainer steps=38267 loss=4.86e-05 label_mean=-0.0814 rows=12574 lost=0
+[  281.0] trainer steps=39937 loss=1.73e-04 label_mean=-0.0839 rows=13074 lost=0
+[  286.0] target depth=3.0 tag=B1:up
+[  291.0] trainer steps=41491 loss=2.09e-05 label_mean=-0.0802 rows=13575 lost=0
+[  301.0] trainer steps=43080 loss=2.11e-04 label_mean=-0.0851 rows=14075 lost=0
+[  311.0] block.end tag=B1
+[  311.0] phase what=T1 assisted, 4 N heavier and back
+[  311.0] transient tag=T1 seconds=40.0
+[  311.0] buoyancy value=110.8 tag=T1
+[  311.0] trainer steps=44845 loss=1.99e-04 label_mean=-0.0754 rows=14575 lost=0
+[  321.1] trainer steps=46600 loss=3.06e-05 label_mean=-0.0648 rows=15075 lost=0
+[  331.1] trainer steps=48359 loss=2.51e-04 label_mean=-0.0559 rows=15575 lost=0
+[  341.1] trainer steps=50134 loss=2.04e-04 label_mean=-0.0359 rows=16075 lost=0
+[  351.0] transient tag=T1:back seconds=40.0
+[  351.0] buoyancy value=114.8 tag=T1:back
+[  351.1] trainer steps=51897 loss=3.93e-03 label_mean=-0.0320 rows=16576 lost=0
+[  361.1] trainer steps=53633 loss=5.58e-05 label_mean=-0.0552 rows=17076 lost=0
+[  371.1] trainer steps=55285 loss=3.34e-04 label_mean=-0.0072 rows=17576 lost=0
+[  381.1] trainer steps=56689 loss=7.05e-05 label_mean=-0.0411 rows=18076 lost=0
+[  391.0] phase what=H1 promotion: residual:depth_ff with M1
+[  391.0] transient tag=H1 seconds=20.0
+[  391.0] set_mode mode=residual:depth_ff hash=d8995511a2d35441 reply={'mode': 'residual:depth_ff'}
+[  391.1] trainer steps=58247 loss=1.02e-03 label_mean=-0.0192 rows=18576 lost=0
+[  401.1] trainer steps=59988 loss=6.84e-04 label_mean=-0.0277 rows=19077 lost=0
+[  411.0] phase what=B2 residual M1, nominal
+[  411.0] block.begin tag=B2 mode=residual:depth_ff
+[  411.0] target depth=3.0 tag=B2:hold
+[  411.1] trainer steps=61708 loss=1.69e-04 label_mean=-0.0456 rows=19577 lost=0
+[  421.1] trainer steps=63461 loss=1.04e-04 label_mean=-0.0270 rows=20077 lost=0
+[  431.0] target depth=4.0 tag=B2:down
+[  431.1] trainer steps=65224 loss=1.68e-03 label_mean=-0.0126 rows=20577 lost=0
+[  441.1] trainer steps=66977 loss=1.69e-04 label_mean=-0.0295 rows=21077 lost=0
+[  451.1] trainer steps=68723 loss=1.06e-03 label_mean=-0.0414 rows=21577 lost=0
+[  456.0] target depth=3.0 tag=B2:up
+[  461.1] trainer steps=70404 loss=1.84e-04 label_mean=-0.0378 rows=22077 lost=0
+[  471.1] trainer steps=72142 loss=4.06e-04 label_mean=-0.0363 rows=22577 lost=0
+[  481.0] block.end tag=B2
+[  481.0] phase what=T2 residual M1, 4 N heavier
+[  481.0] transient tag=T2 seconds=40.0
+[  481.0] buoyancy value=110.8 tag=T2
+[  481.1] trainer steps=73886 loss=2.86e-04 label_mean=-0.0514 rows=23078 lost=0
+[  491.1] trainer steps=75627 loss=7.91e-04 label_mean=-0.0584 rows=23578 lost=0
+[  501.1] trainer steps=77091 loss=9.14e-04 label_mean=-0.0198 rows=24078 lost=0
+[  511.1] trainer steps=78490 loss=1.23e-03 label_mean=-0.0234 rows=24578 lost=0
+[  521.0] phase what=B3 residual M1, heavier
+[  521.0] block.begin tag=B3 mode=residual:depth_ff
+[  521.0] target depth=3.0 tag=B3:hold
+[  521.1] trainer steps=80207 loss=9.54e-04 label_mean=-0.0049 rows=25078 lost=0
+[  531.1] trainer steps=81945 loss=3.24e-04 label_mean=0.0132 rows=25579 lost=0
+[  541.0] target depth=4.0 tag=B3:down
+[  541.1] trainer steps=83707 loss=8.00e-04 label_mean=0.0172 rows=26079 lost=0
+[  551.1] trainer steps=85464 loss=8.45e-04 label_mean=0.0421 rows=26579 lost=0
+[  561.1] trainer steps=87232 loss=1.02e-03 label_mean=0.0132 rows=27079 lost=0
+[  566.0] target depth=3.0 tag=B3:up
+[  571.1] trainer steps=88995 loss=2.21e-03 label_mean=0.0384 rows=27579 lost=0
+[  581.1] trainer steps=90753 loss=1.57e-03 label_mean=0.0498 rows=28079 lost=0
+[  591.0] block.end tag=B3
+[  591.1] trainer steps=92513 loss=8.11e-04 label_mean=0.0695 rows=28580 lost=0
+[  601.0] phase what=S2 deploy M2 during the hold
+[  601.0] transient tag=S2 seconds=20.0
+[  601.0] deploy.begin model=M2
+[  602.0] deploy model=M2 version=2 state=done check=0 reason= hash=2826691a3bd96fb9 seconds=0.999226283 steps=94239 loss=0.0018223394872620702 label_mean=0.06028188392519951
+[  602.0] trainer steps=94240 loss=1.47e-03 label_mean=0.0499 rows=29125 lost=0
+[  612.0] reset_state.begin
+[  612.0] reset_state model=M2
+[  612.0] trainer steps=95990 loss=1.46e-03 label_mean=0.0573 rows=29625 lost=0
+[  622.0] phase what=B4 residual M2, heavier
+[  622.0] block.begin tag=B4 mode=residual:depth_ff
+[  622.0] target depth=3.0 tag=B4:hold
+[  622.0] trainer steps=97733 loss=1.71e-03 label_mean=0.0647 rows=30125 lost=0
+[  632.1] trainer steps=99463 loss=1.23e-03 label_mean=0.0867 rows=30625 lost=0
+[  642.0] target depth=4.0 tag=B4:down
+[  642.1] trainer steps=101180 loss=8.77e-04 label_mean=0.0580 rows=31125 lost=0
+[  652.1] trainer steps=102886 loss=8.75e-04 label_mean=0.0667 rows=31625 lost=0
+[  662.1] trainer steps=104393 loss=1.35e-03 label_mean=0.0847 rows=32125 lost=0
+[  667.1] target depth=3.0 tag=B4:up
+[  672.1] trainer steps=106001 loss=9.29e-04 label_mean=0.0811 rows=32626 lost=0
+[  682.1] trainer steps=107738 loss=1.09e-03 label_mean=0.0952 rows=33126 lost=0
+[  692.1] block.end tag=B4
+[  692.1] phase what=H2 back to assisted
+[  692.1] transient tag=H2 seconds=20.0
+[  692.1] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[  692.1] trainer steps=109454 loss=7.93e-04 label_mean=0.0829 rows=33626 lost=0
+[  702.1] trainer steps=111195 loss=1.08e-03 label_mean=0.0553 rows=34126 lost=0
+[  712.1] phase what=B5 assisted, heavier
+[  712.1] block.begin tag=B5 mode=assisted
+[  712.1] target depth=3.0 tag=B5:hold
+[  712.1] trainer steps=112934 loss=1.15e-03 label_mean=0.0920 rows=34626 lost=0
+[  722.1] trainer steps=114660 loss=1.05e-03 label_mean=0.0609 rows=35126 lost=0
+[  732.1] target depth=4.0 tag=B5:down
+[  732.1] trainer steps=116394 loss=2.64e-03 label_mean=0.0643 rows=35626 lost=0
+[  742.1] trainer steps=118128 loss=1.82e-03 label_mean=0.0748 rows=36126 lost=0
+[  752.1] trainer steps=119854 loss=1.10e-03 label_mean=0.0424 rows=36627 lost=0
+[  757.1] target depth=3.0 tag=B5:up
+[  762.1] trainer steps=121586 loss=9.23e-04 label_mean=0.0633 rows=37127 lost=0
+[  772.1] trainer steps=123301 loss=1.17e-03 label_mean=0.0805 rows=37627 lost=0
+[  782.1] block.end tag=B5
+[  782.1] phase what=T3 assisted, back to nominal
+[  782.1] transient tag=T3 seconds=40.0
+[  782.1] buoyancy value=114.8 tag=T3
+[  782.1] trainer steps=124790 loss=2.64e-04 label_mean=0.0785 rows=38127 lost=0
+[  792.1] trainer steps=126523 loss=1.91e-03 label_mean=0.0669 rows=38627 lost=0
+[  802.1] trainer steps=128252 loss=2.23e-03 label_mean=0.0429 rows=39127 lost=0
+[  812.1] trainer steps=129969 loss=4.24e-03 label_mean=0.0210 rows=39627 lost=0
+[  822.1] disarmed
+[  824.1] session path=20261120-181839-mousev

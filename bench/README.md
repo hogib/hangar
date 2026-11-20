@@ -13,6 +13,7 @@ first run on real hardware is planned in [PI-TEST.md](PI-TEST.md).
 | `pi/manifests/` | `eeye.module`, `hellion.module`: electric-eye as phase-A legacy modules ([docs/11](../docs/11-electric-eye.md)) |
 | `pi/hangard.conf`, `pi/install-root.sh` | a manager run out of one directory, `$HANGAR_ROOT` |
 | `PI-TEST.md` | the Pi visit, step by step |
+| `e2e-depth-ff/` | the learning loop end to end in simulation ([README](e2e-depth-ff/README.md)): docs/09's adaptive depth hold, run and measured |
 | `ros2/` | placeholder: the ROS 2 scripts and the comparison script |
 
 ## Building

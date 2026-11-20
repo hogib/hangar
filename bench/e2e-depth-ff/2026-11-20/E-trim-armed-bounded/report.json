@@ -1,0 +1,787 @@
+{
+ "session": "session",
+ "blocks": {
+  "B1": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -1.95,
+    "ss_rms_cm": 1.95,
+    "iae_m_s": 0.395,
+    "peak_cm": 2.17,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.94,
+    "ss_rms_cm": 1.94,
+    "iae_m_s": 1.852,
+    "peak_cm": 102.01,
+    "overshoot_pct": 8.72,
+    "within_5cm_s": 6.3
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.07,
+    "ss_rms_cm": 2.07,
+    "iae_m_s": 3.019,
+    "peak_cm": 97.92,
+    "overshoot_pct": 19.78,
+    "within_5cm_s": 10.12
+   }
+  },
+  "B2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -1.78,
+    "ss_rms_cm": 4.28,
+    "iae_m_s": 0.719,
+    "peak_cm": 7.55,
+    "within_5cm_s": null
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.03,
+    "ss_rms_cm": 12.42,
+    "iae_m_s": 4.299,
+    "peak_cm": 105.64,
+    "overshoot_pct": 27.31,
+    "within_5cm_s": 24.2
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -0.5,
+    "ss_rms_cm": 3.74,
+    "iae_m_s": 3.94,
+    "peak_cm": 95.79,
+    "overshoot_pct": 40.96,
+    "within_5cm_s": null
+   }
+  },
+  "B3": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.21,
+    "ss_rms_cm": 3.0,
+    "iae_m_s": 0.489,
+    "peak_cm": 5.43,
+    "within_5cm_s": 15.71
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.7,
+    "ss_rms_cm": 14.77,
+    "iae_m_s": 4.971,
+    "peak_cm": 103.61,
+    "overshoot_pct": 37.24,
+    "within_5cm_s": null
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.73,
+    "ss_rms_cm": 2.36,
+    "iae_m_s": 3.078,
+    "peak_cm": 112.35,
+    "overshoot_pct": 34.71,
+    "within_5cm_s": 8.34
+   }
+  },
+  "B4": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -7.24,
+    "ss_rms_cm": 23.07,
+    "iae_m_s": 4.009,
+    "peak_cm": 32.66,
+    "within_5cm_s": null
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -5.76,
+    "ss_rms_cm": 18.58,
+    "iae_m_s": 6.56,
+    "peak_cm": 118.13,
+    "overshoot_pct": 57.29,
+    "within_5cm_s": null
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": 7.62,
+    "ss_rms_cm": 14.3,
+    "iae_m_s": 5.598,
+    "peak_cm": 130.12,
+    "overshoot_pct": 32.03,
+    "within_5cm_s": null
+   }
+  },
+  "B5": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.0,
+    "ss_rms_cm": 2.0,
+    "iae_m_s": 0.403,
+    "peak_cm": 2.2,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.94,
+    "ss_rms_cm": 1.95,
+    "iae_m_s": 2.726,
+    "peak_cm": 102.02,
+    "overshoot_pct": 15.91,
+    "within_5cm_s": 8.63
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.97,
+    "ss_rms_cm": 1.97,
+    "iae_m_s": 2.184,
+    "peak_cm": 98.11,
+    "overshoot_pct": 14.3,
+    "within_5cm_s": 8.08
+   }
+  }
+ },
+ "transients": {
+  "T1": {
+   "seconds": 40.0,
+   "ss_mean_cm": -2.01,
+   "ss_rms_cm": 2.01,
+   "iae_m_s": 1.969,
+   "peak_cm": 32.94,
+   "within_5cm_s": 8.23
+  },
+  "T1:back": {
+   "seconds": 40.0,
+   "ss_mean_cm": -2.05,
+   "ss_rms_cm": 2.05,
+   "iae_m_s": 2.534,
+   "peak_cm": 36.28,
+   "within_5cm_s": 10.46
+  },
+  "H1": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.87,
+   "ss_rms_cm": 6.73,
+   "iae_m_s": 0.945,
+   "peak_cm": 11.95,
+   "within_5cm_s": null
+  },
+  "T2": {
+   "seconds": 40.0,
+   "ss_mean_cm": -2.39,
+   "ss_rms_cm": 2.9,
+   "iae_m_s": 2.833,
+   "peak_cm": 24.18,
+   "within_5cm_s": 26.4
+  },
+  "S2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -11.04,
+   "ss_rms_cm": 18.35,
+   "iae_m_s": 3.775,
+   "peak_cm": 38.41,
+   "within_5cm_s": null
+  },
+  "H2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -1.15,
+   "ss_rms_cm": 1.23,
+   "iae_m_s": 1.704,
+   "peak_cm": 23.94,
+   "within_5cm_s": 10.33
+  },
+  "T3": {
+   "seconds": 40.0,
+   "ss_mean_cm": -2.03,
+   "ss_rms_cm": 2.03,
+   "iae_m_s": 2.536,
+   "peak_cm": 36.43,
+   "within_5cm_s": 10.12
+  }
+ },
+ "trim_carried_by": {
+  "B1": {
+   "integral": -0.0847,
+   "policy_heave": -0.0848,
+   "ctl_wrench_heave": -0.0846
+  },
+  "B2": {
+   "integral": -0.0313,
+   "policy_heave": -0.015,
+   "ctl_wrench_heave": -0.0442
+  },
+  "B3": {
+   "integral": 0.0961,
+   "policy_heave": -0.0359,
+   "ctl_wrench_heave": 0.0598
+  },
+  "B4": {
+   "integral": 0.0228,
+   "policy_heave": 0.0878,
+   "ctl_wrench_heave": 0.0721
+  },
+  "B5": {
+   "integral": 0.0887,
+   "policy_heave": -0.1379,
+   "ctl_wrench_heave": 0.0886
+  }
+ },
+ "residual_share_pct": {
+  "B1": 0.0,
+  "B2": 100.0,
+  "B3": 100.0,
+  "B4": 100.0,
+  "B5": 0.0
+ },
+ "control_latency": {
+  "thr.cmd records": 41103,
+  "without the whole chain": 3,
+  "nav.depth to nav.state": {
+   "n": 41100,
+   "median_ms": 16.932,
+   "p99_ms": 17.426,
+   "max_ms": 19.006
+  },
+  "nav.state to ctl.depth_hold": {
+   "n": 41100,
+   "median_ms": 19.078,
+   "p99_ms": 19.944,
+   "max_ms": 20.315
+  },
+  "ctl.depth_hold to ctl.wrench": {
+   "n": 41100,
+   "median_ms": 19.365,
+   "p99_ms": 20.017,
+   "max_ms": 20.466
+  },
+  "ctl.wrench to thr.cmd": {
+   "n": 41100,
+   "median_ms": 4.048,
+   "p99_ms": 4.905,
+   "max_ms": 8.618
+  },
+  "nav.depth to thr.cmd": {
+   "n": 41100,
+   "median_ms": 59.574,
+   "p99_ms": 60.199,
+   "max_ms": 64.542
+  },
+  "policy.wrench to ctl.wrench": {
+   "n": 15050,
+   "median_ms": 18.712,
+   "p99_ms": 19.571,
+   "max_ms": 19.842
+  },
+  "nav.state to policy.wrench": {
+   "n": 15050,
+   "median_ms": 0.026,
+   "p99_ms": 0.052,
+   "max_ms": 1.018
+  },
+  "nav.state to ctl.wrench, by the policy": {
+   "n": 15050,
+   "median_ms": 18.74,
+   "p99_ms": 19.603,
+   "max_ms": 19.873
+  }
+ },
+ "loop_latency": {
+  "unit": "ms after the stamp of the newest row trained on",
+  "models": [
+   {
+    "version": 1,
+    "hash": "d8995511a2d35441",
+    "rows": 11023,
+    "model": "M1",
+    "its row published": 0.01,
+    "deploy called": 8.43,
+    "load: checking": 17.32,
+    "load: warming": 20.33,
+    "swapped (policy.active)": 1000.15,
+    "first policy.wrench of the model": 1020.21,
+    "first ctl.wrench carrying it": 151038.33,
+    "first thr.cmd carrying it": 151042.95,
+    "ctl.wrench messages carrying it": 10551
+   },
+   {
+    "version": 2,
+    "hash": "2826691a3bd96fb9",
+    "rows": 29074,
+    "model": "M2",
+    "its row published": 0.01,
+    "deploy called": 19.31,
+    "load: checking": 28.78,
+    "load: warming": 39.79,
+    "swapped (policy.active)": 1019.51,
+    "first policy.wrench of the model": 1039.55,
+    "first ctl.wrench carrying it": 1058.37,
+    "first thr.cmd carrying it": 1062.11,
+    "ctl.wrench messages carrying it": 4499
+   }
+  ]
+ },
+ "swap_cost": {
+  "M1": {
+   "export and send (trainer, same machine)_ms": 8.9,
+   "checks_ms": 3.02,
+   "warm_up_ms": 979.84,
+   "before (10 s)": {
+    "policy.depth_ff.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.067,
+     "interval_min_ms": 19.014,
+     "interval_sd_ms": 0.1591,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0232,
+     "anchor_to_output_max_ms": 0.0645
+    },
+    "ctl.depth_hold": {
+     "messages": 500,
+     "interval_max_ms": 20.059,
+     "interval_min_ms": 19.021,
+     "interval_sd_ms": 0.1594,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.075,
+     "interval_min_ms": 19.025,
+     "interval_sd_ms": 0.1768,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 500,
+     "interval_max_ms": 20.101,
+     "interval_min_ms": 19.037,
+     "interval_sd_ms": 0.2551,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 500,
+     "interval_max_ms": 20.051,
+     "interval_min_ms": 19.02,
+     "interval_sd_ms": 0.1589,
+     "intervals_over_30ms": 0
+    }
+   },
+   "load": {
+    "policy.depth_ff.wrench": {
+     "messages": 60,
+     "interval_max_ms": 20.081,
+     "interval_min_ms": 19.014,
+     "interval_sd_ms": 0.1812,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0147,
+     "anchor_to_output_max_ms": 0.0303
+    },
+    "ctl.depth_hold": {
+     "messages": 60,
+     "interval_max_ms": 20.676,
+     "interval_min_ms": 19.028,
+     "interval_sd_ms": 0.2371,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 60,
+     "interval_max_ms": 20.042,
+     "interval_min_ms": 19.022,
+     "interval_sd_ms": 0.1298,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 59,
+     "interval_max_ms": 20.083,
+     "interval_min_ms": 19.06,
+     "interval_sd_ms": 0.2531,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 60,
+     "interval_max_ms": 20.077,
+     "interval_min_ms": 19.014,
+     "interval_sd_ms": 0.1811,
+     "intervals_over_30ms": 0
+    }
+   }
+  },
+  "M2": {
+   "export and send (trainer, same machine)_ms": 9.5,
+   "checks_ms": 11.01,
+   "warm_up_ms": 979.73,
+   "before (10 s)": {
+    "policy.depth_ff.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.279,
+     "interval_min_ms": 19.006,
+     "interval_sd_ms": 0.1536,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.034,
+     "anchor_to_output_max_ms": 0.0587
+    },
+    "ctl.depth_hold": {
+     "messages": 500,
+     "interval_max_ms": 20.348,
+     "interval_min_ms": 19.015,
+     "interval_sd_ms": 0.1667,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.552,
+     "interval_min_ms": 19.019,
+     "interval_sd_ms": 0.177,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 500,
+     "interval_max_ms": 20.103,
+     "interval_min_ms": 19.02,
+     "interval_sd_ms": 0.2561,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 500,
+     "interval_max_ms": 20.279,
+     "interval_min_ms": 19.016,
+     "interval_sd_ms": 0.1535,
+     "intervals_over_30ms": 0
+    }
+   },
+   "load": {
+    "policy.depth_ff.wrench": {
+     "messages": 60,
+     "interval_max_ms": 20.318,
+     "interval_min_ms": 19.018,
+     "interval_sd_ms": 0.2354,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0269,
+     "anchor_to_output_max_ms": 0.0752
+    },
+    "ctl.depth_hold": {
+     "messages": 60,
+     "interval_max_ms": 20.433,
+     "interval_min_ms": 19.032,
+     "interval_sd_ms": 0.2559,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 60,
+     "interval_max_ms": 20.334,
+     "interval_min_ms": 19.024,
+     "interval_sd_ms": 0.2706,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 60,
+     "interval_max_ms": 20.131,
+     "interval_min_ms": 19.062,
+     "interval_sd_ms": 0.2708,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 60,
+     "interval_max_ms": 20.315,
+     "interval_min_ms": 19.02,
+     "interval_sd_ms": 0.2317,
+     "intervals_over_30ms": 0
+    }
+   }
+  }
+ },
+ "mismatch": {
+  "inputs": {
+   "anchors with an output and a row": 41104,
+   "outputs without a row": 0,
+   "rows without an output": 1,
+   "same ctl.depth_hold.target message": 41104,
+   "another message": 0,
+   "policy read a newer one": 0,
+   "policy read an older one": 0
+  },
+  "outputs": {
+   "model": "2826691a3bd96fb9",
+   "ticks in the reset's window": 4,
+   "anchors compared": 3000,
+   "heave difference, max": 2.712893080653034e-06,
+   "heave difference, median": 1.0020322168367846e-08,
+   "over 1e-4": 0,
+   "over 1e-5": 0,
+   "largest at a wrong reset tick": 0.11602989013330436
+  }
+ },
+ "lineage": {
+  "models": [
+   {
+    "version": 1,
+    "cause": 1,
+    "hash": "d8995511a2d35441",
+    "rows": 11023,
+    "file_in_session": true,
+    "header": {
+     "rows": 11023,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "96bea8f0a6071d40",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 5609019137203,
+     "trainer": "e2e_depth_ff.py",
+     "lineage": [
+      {
+       "session": "live",
+       "rows": 9000,
+       "first_anchor_seq": 3057,
+       "last_anchor_seq": 12056
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   },
+   {
+    "version": 2,
+    "cause": 1,
+    "hash": "2826691a3bd96fb9",
+    "rows": 29074,
+    "file_in_session": true,
+    "header": {
+     "rows": 29074,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "96bea8f0a6071d40",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 5970039329670,
+     "trainer": "e2e_depth_ff.py",
+     "lineage": [
+      {
+       "session": "live",
+       "rows": 9000,
+       "first_anchor_seq": 21108,
+       "last_anchor_seq": 30107
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   }
+  ],
+  "thr.cmd carrying a residual": 15050,
+  "of them leading back to a policy.active": 15050,
+  "one command followed back": {
+   "thr.cmd": {
+    "seq": 32410,
+    "t_s": 647.06,
+    "pwm": [
+     1500,
+     1500,
+     1500,
+     1500,
+     1403,
+     1403,
+     1403,
+     1403
+    ]
+   },
+   "ctl.wrench": {
+    "seq": 32408,
+    "heave": 0.24331
+   },
+   "ctl.depth_hold": {
+    "seq": 32408,
+    "heave": 0.25489
+   },
+   "policy.depth_ff.wrench": {
+    "seq": 32407,
+    "heave": -0.01158
+   },
+   "ctl.depth_hold.target": {
+    "seq": 32408,
+    "accel_z": -2.37126
+   },
+   "nav.state (the tick's anchor)": {
+    "seq": 32408
+   },
+   "nav.depth (the tick's)": {
+    "seq": 32406
+   },
+   "nav.attitude (the tick's)": {
+    "seq": 32406
+   },
+   "nav.imu (the tick's)": {
+    "seq": 129627
+   },
+   "policy.depth_ff.active": {
+    "seq": 2,
+    "version": 2,
+    "hash": "2826691a3bd96fb9",
+    "rows": 29074
+   },
+   "weights file": {
+    "in the session": true,
+    "agrees": true
+   },
+   "rows": [
+    {
+     "session": "live",
+     "anchor_seq": [
+      21108,
+      30107
+     ],
+     "rows the buffer held": 9000,
+     "of them in the recording": 9000
+    }
+   ],
+   "newest row": {
+    "anchor_seq": 30107,
+    "ctl.depth_hold.target seq": 30107,
+    "ctl.depth_hold seq": 30107,
+    "thr.out seq": 30107
+   },
+   "nav.state (the newest row's anchor)": {
+    "seq": 30107
+   },
+   "nav.depth (the newest row's)": {
+    "seq": 30105
+   },
+   "nav.attitude (the newest row's)": {
+    "seq": 30105
+   },
+   "nav.imu (the newest row's)": {
+    "seq": 120423
+   },
+   "chain": [
+    "thr.cmd",
+    "ctl.wrench",
+    "ctl.depth_hold",
+    "policy.depth_ff.wrench",
+    "ctl.depth_hold.target",
+    "nav.state (the tick's anchor)",
+    "nav.depth (the tick's)",
+    "nav.attitude (the tick's)",
+    "nav.imu (the tick's)",
+    "policy.depth_ff.active",
+    "weights file",
+    "rows",
+    "nav.state (the newest row's anchor)",
+    "nav.depth (the newest row's)",
+    "nav.attitude (the newest row's)",
+    "nav.imu (the newest row's)"
+   ],
+   "complete": true
+  }
+ },
+ "demotions": {
+  "mode changes": [
+   {
+    "t_s": 391.04,
+    "from": "assisted",
+    "to": "residual:depth_ff",
+    "asked": true
+   },
+   {
+    "t_s": 692.06,
+    "from": "residual:depth_ff",
+    "to": "assisted",
+    "asked": true
+   }
+  ],
+  "demotions": [],
+  "mux.state with residual_active": 2950,
+  "mux.state at the residual envelope": 0,
+  "mux.state in a residual mode": 2951,
+  "the mux's log": []
+ },
+ "rows": {
+  "rows recorded": 41105,
+  "recorder gaps": 0,
+  "anchors from the first row to the last": 41105,
+  "anchors without a row": 0,
+  "masked (the vehicle moving, or outputs off)": 4,
+  "resets": 0,
+  "anchor to row published, median_ms": 0.017,
+  "the trainer's stream": {
+   "rows": 40126,
+   "lost": 0,
+   "steps": 131702,
+   "steps_per_s": 168.6,
+   "label": "trim",
+   "bound": 0.15,
+   "batch": 32,
+   "seq_len": 50,
+   "replay": "3min"
+  },
+  "labels": {
+   "train": {
+    "rows with loss": 10000,
+    "shortfall (docs/09) mean": 0.0001,
+    "shortfall sd": 0.02027,
+    "shortfall abs max": 0.40182,
+    "trim mean": -0.07324,
+    "trim sd": 0.03788
+   },
+   "B1": {
+    "rows with loss": 3500,
+    "shortfall (docs/09) mean": 3e-05,
+    "shortfall sd": 0.01501,
+    "shortfall abs max": 0.40025,
+    "trim mean": -0.08238,
+    "trim sd": 0.02451
+   },
+   "B2": {
+    "rows with loss": 3500,
+    "shortfall (docs/09) mean": -0.03467,
+    "shortfall sd": 0.06606,
+    "shortfall abs max": 0.42307,
+    "trim mean": -0.05325,
+    "trim sd": 0.07326
+   },
+   "B3": {
+    "rows with loss": 3500,
+    "shortfall (docs/09) mean": -0.05007,
+    "shortfall sd": 0.05881,
+    "shortfall abs max": 0.43905,
+    "trim mean": 0.06598,
+    "trim sd": 0.07165
+   },
+   "B4": {
+    "rows with loss": 3500,
+    "shortfall (docs/09) mean": 0.0563,
+    "shortfall sd": 0.08578,
+    "shortfall abs max": 0.44294,
+    "trim mean": 0.0566,
+    "trim sd": 0.11274
+   },
+   "B5": {
+    "rows with loss": 3501,
+    "shortfall (docs/09) mean": 3e-05,
+    "shortfall sd": 0.0151,
+    "shortfall abs max": 0.40366,
+    "trim mean": 0.08647,
+    "trim sd": 0.02423
+   }
+  }
+ },
+ "recorder_gaps": {},
+ "deploys": {
+  "M1": {
+   "version": 1,
+   "state": "done",
+   "check": 0,
+   "reason": "",
+   "hash": "d8995511a2d35441",
+   "seconds": 0.995810869,
+   "steps": 33363,
+   "loss": 7.176167400757549e-06,
+   "label_mean": -0.07311654835939407
+  },
+  "M2": {
+   "version": 2,
+   "state": "done",
+   "check": 0,
+   "reason": "",
+   "hash": "2826691a3bd96fb9",
+   "seconds": 0.999226283,
+   "steps": 94239,
+   "loss": 0.0018223394872620702,
+   "label_mean": 0.06028188392519951
+  }
+ }
+}
