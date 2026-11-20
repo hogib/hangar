@@ -243,8 +243,12 @@ class Recording(object):
             formats.append(code)
             offsets.append(off)
         names.append("_inputs" if "inputs" in payload_names else "inputs")
-        formats.append(numpy.dtype({"names": ["topic_id", "flags", "seq"], "formats": ["<u4", "<u4", "<u8"],
-                                    "offsets": [0, 4, 8], "itemsize": 16}, (4,)))
+        # Four references, a subarray: (dtype, shape) in one tuple. A shape passed as
+        # numpy.dtype's second argument is its `align` flag, not a shape; numpy 2.x
+        # made that field one reference where 1.x had made it four.
+        ref = numpy.dtype({"names": ["topic_id", "flags", "seq"], "formats": ["<u4", "<u4", "<u8"],
+                           "offsets": [0, 4, 8], "itemsize": 16})
+        formats.append(numpy.dtype((ref, (4,))))
         offsets.append(64)
         if self.layout and not self.meta:
             pd = schema.dtype_from_schema(self.header.schema, self.path, generated=True)
