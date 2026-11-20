@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* The vision module's configuration and presets: presets.h. */
+#define _POSIX_C_SOURCE 200809L /* strtok_r, under musl's strict C11 */
 #include "presets.h"
 
 #include <stdarg.h>
