@@ -21,6 +21,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -96,6 +97,21 @@ static int fail(const char *fmt, ...)
 	fputc('\n', stderr);
 	va_end(ap);
 	return 1;
+}
+
+/* An option's number: whole, decimal, within [min, max]. 0, or -1 after a
+ * message (atol read "x" as 0 and "2s" as 2, and nothing bounded it). */
+static int option_number(const char *cmd, const char *opt, const char *text, long min, long max, long *out)
+{
+	char *tail;
+	errno = 0;
+	long v = strtol(text, &tail, 10);
+	if (tail == text || *tail || errno == ERANGE || v < min || v > max) {
+		fail("%s: %s takes a whole number from %ld to %ld, not '%s'", cmd, opt, min, max, text);
+		return -1;
+	}
+	*out = v;
+	return 0;
 }
 
 /* One request; prints the reply body (after "ok\n") when print is set. */
@@ -455,9 +471,10 @@ static int cmd_echo(int argc, char **argv)
 			json = 1;
 		else if (strcmp(argv[i], "--rate") == 0)
 			show_rate = 1;
-		else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc)
-			count = atol(argv[++i]);
-		else if (strcmp(argv[i], "--fields") == 0 && i + 1 < argc)
+		else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) {
+			if (option_number("echo", "--count", argv[++i], 1, LONG_MAX, &count) < 0)
+				return 1;
+		} else if (strcmp(argv[i], "--fields") == 0 && i + 1 < argc)
 			fields = argv[++i];
 		else if (argv[i][0] != '-' && !topic)
 			topic = argv[i];
@@ -553,9 +570,10 @@ static int cmd_hz(int argc, char **argv)
 	const char *topic = NULL;
 	long seconds = -1;
 	for (int i = 0; i < argc; i++) {
-		if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
-			seconds = atol(argv[++i]);
-		else if (argv[i][0] != '-' && !topic)
+		if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
+			if (option_number("hz", "--seconds", argv[++i], 1, LONG_MAX, &seconds) < 0)
+				return 1;
+		} else if (argv[i][0] != '-' && !topic)
 			topic = argv[i];
 		else
 			return fail("hz: unknown option %s", argv[i]);
@@ -939,9 +957,12 @@ static int cmd_call(int argc, char **argv)
 	char *kv[128];
 	int nkv = 0;
 	for (int i = 0; i < argc; i++) {
-		if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc)
-			timeout_ms = atol(argv[++i]);
-		else if (strcmp(argv[i], "--json") == 0)
+		if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
+			/* A day at most: the deadline is this in nanoseconds, and
+			 * the wait for the reply takes it as an int of milliseconds. */
+			if (option_number("call", "--timeout", argv[++i], 1, 86400000, &timeout_ms) < 0)
+				return 1;
+		} else if (strcmp(argv[i], "--json") == 0)
 			json = 1;
 		else if (!target && argv[i][0] != '-')
 			target = argv[i];

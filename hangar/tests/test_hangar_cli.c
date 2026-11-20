@@ -142,6 +142,51 @@ static void test_hz_mean_interval(void)
 	CHECK(first > 0.5 && first < 2.6); /* 3 messages in the 1.1 s of a window were 2.73 */
 }
 
+/* --count, --seconds and --timeout went through atol: "--count x" was 0,
+ * and echo exited 0 at once having shown nothing; "--seconds 2s" was 2; a
+ * --timeout past 2^63 ns overflowed the deadline. Each takes a whole number
+ * in its range now and says so otherwise. */
+static void test_numeric_options(void)
+{
+	static const struct {
+		const char *argv[6];
+		const char *says;
+	} bad[] = {
+		{ { "echo", "none.t", "--count", "x" }, "--count" },
+		{ { "echo", "none.t", "--count", "0" }, "--count" },
+		{ { "echo", "none.t", "--count", "3x" }, "--count" },
+		{ { "echo", "none.t", "--count", "-1" }, "--count" },
+		{ { "echo", "none.t", "--count", "" }, "--count" },
+		{ { "hz", "none.t", "--seconds", "2s" }, "--seconds" },
+		{ { "hz", "none.t", "--seconds", "0" }, "--seconds" },
+		{ { "hz", "none.t", "--seconds", "99999999999999999999" }, "--seconds" },
+		{ { "call", "srv.arm", "--timeout", "abc" }, "--timeout" },
+		{ { "call", "srv.arm", "--timeout", "0" }, "--timeout" },
+		{ { "call", "srv.arm", "--timeout", "9223372036854775807" }, "--timeout" },
+		{ { "call", "srv.arm", "--timeout", "86400001" }, "--timeout" },
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+		char *argv[8] = { (char *)T_hangar };
+		int n = 1;
+		for (int k = 0; k < 6 && bad[i].argv[k]; k++)
+			argv[n++] = (char *)bad[i].argv[k];
+		argv[n] = NULL;
+		int rc = run_hangar(out_path(), 3000, NULL, argv);
+		const char *o = read_file(out_path());
+		char want[64];
+		tfmt(want, sizeof want, "%s takes a whole number", bad[i].says);
+		if (rc != 1 || !strstr(o, want))
+			printf("    hangar %s %s %s '%s': exit %d, says: %s%s", bad[i].argv[0], bad[i].argv[1], bad[i].argv[2],
+			       bad[i].argv[3], rc, o, *o ? "" : "\n");
+		CHECK_EQ_INT(rc, 1);
+		CHECK(strstr(o, want) != NULL);
+	}
+	/* In range: taken (a day is the longest timeout; nobody answers here). */
+	char *ok[] = { (char *)T_hangar, "call", "srv.arm", "--timeout", "86400000", NULL };
+	CHECK_EQ_INT(run_hangar(out_path(), 3000, NULL, ok), 1);
+	CHECK(file_contains(out_path(), "cannot reach the manager"));
+}
+
 /* ---- JSON, as RFC 8259 has it ---------------------------------------------------
  * A strict reader for what --json prints: 1 if [*p, end) starts with one
  * JSON value, *p then after it. Strings: no raw control character, only the
@@ -897,6 +942,7 @@ int main(void)
 	mkdir_p(T_topics);
 	RUN_TEST(test_hz_large_payload);
 	RUN_TEST(test_hz_mean_interval);
+	RUN_TEST(test_numeric_options);
 	RUN_TEST(test_echo_follows_a_replaced_schema);
 	RUN_TEST(test_json_is_json);
 	RUN_TEST(test_malformed_reply_stops_the_command);
