@@ -144,13 +144,38 @@ else
 	echo "  ljt       cmake or curl missing: libjpeg-turbo not built, eeye and hellion skipped"
 fi
 
+# ---- libavcodec for the target: FFmpeg's H.264 decoder alone (video_relay) --
+avcodec=$work/avcodec
+avcodec_ok=no
+case "$target" in
+aarch64*) av_arch=aarch64 ;;
+x86_64*) av_arch=x86_64 ;;
+*) av_arch= ;;
+esac
+if [ -n "$av_arch" ] && "$ROOT/tools/cross/avcodec.sh" --cc "$cc" --arch "$av_arch" --dir "$avcodec" --jobs "$jobs" \
+	> "$work/avcodec.out" 2>&1; then
+	avcodec_ok=yes
+	echo "  avcodec   $avcodec/prefix (FFmpeg's H.264 decoder, static)"
+else
+	echo "  avcodec   not built (see $work/avcodec.out): video_relay skipped"
+fi
+
 # ---- What the Makefile knows ------------------------------------------------
 run_make() {
-	# $@: targets. The Makefile's variables, the compiler and libjpeg-turbo.
+	# $@: targets. The Makefile's variables, the compiler, libjpeg-turbo and
+	# libavcodec (empty when it was not built: the Makefile then skips video_relay).
+	if [ "$avcodec_ok" = yes ]; then
+		av_cflags="-I$avcodec/prefix/include"
+		av_libs="$avcodec/prefix/lib/libavcodec.a $avcodec/prefix/lib/libavutil.a -lm -pthread"
+	else
+		av_cflags=
+		av_libs=
+	fi
 	make -C "$ROOT" BUILD=release BUILDDIR="$builddir" CC="$cc" HOSTCC="zig cc" \
 	     LDFLAGS="-static -s" \
 	     TURBOJPEG_CFLAGS="-I$ljt/src/src -I$ljt/build" \
-	     TURBOJPEG_LIBS="$ljt/build/libturbojpeg.a" "$@"
+	     TURBOJPEG_LIBS="$ljt/build/libturbojpeg.a" \
+	     AVCODEC_CFLAGS="$av_cflags" AVCODEC_LIBS="$av_libs" "$@"
 }
 known() { run_make -n -s "$1" >/dev/null 2>&1; }
 
@@ -183,6 +208,11 @@ want recorder "$builddir/recorder"
 want pairer "$builddir/pairer"
 want hangar-encoder "$builddir/hangar-encoder"
 want hangar-joystick "$builddir/hangar-joystick"
+if [ "$avcodec_ok" = yes ]; then
+	want hangar-video-relay "$builddir/hangar-video-relay"
+else
+	skipped="$skipped hangar-video-relay"
+fi
 for t in "$ROOT"/lib/hg/tests/test_hg_*.c; do
 	[ -e "$t" ] || continue
 	s=$(basename "$t" .c)
@@ -245,6 +275,11 @@ for b in hangard hangar; do
 done
 
 cp "$ROOT"/bench/pi/manifests/*.module "$stage/share/hangar/modules/"
+# video_relay's templates (topside; modules/video_relay/README.md), beside, not
+# enabled: the phase-A root does not run it.
+mkdir -p "$stage/share/hangar/video_relay"
+cp "$ROOT/modules/video_relay/video_relay.module" "$ROOT/modules/video_relay/video_relay.conf" \
+   "$stage/share/hangar/video_relay/"
 cp "$ROOT/bench/pi/hangard.conf" "$stage/share/hangar/hangard.conf"
 cp "$ROOT/bench/pi/install-root.sh" "$stage/share/hangar/install-root.sh"
 chmod 755 "$stage/share/hangar/install-root.sh"

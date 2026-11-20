@@ -124,7 +124,7 @@ names the vehicle's frame exactly. The order of the work, one stage at a time:
 | Stage | Module | Side | |
 |---|---|---|---|
 | B1 | `encoder`, the camera's own H.264 | vehicle | built (2026-11-20) |
-| B2 | `video_relay` | topside | RTP in; relayed unchanged where wanted; `cam.decoded` with the vehicle's frame as provenance; MP4 recording |
+| B2 | `video_relay` | topside | built (2026-11-20): RTP in; relayed unchanged where wanted; `cam.decoded` with the vehicle's frame as provenance; MP4 recording (`modules/video_relay/README.md`) |
 | B3 | `vision` | topside here, vehicle in placement B | the effects, `cam.decoded` → `cam.pilot` |
 | B4 | `topside_encoder` | topside | `cam.pilot` to QGroundControl on 5600 |
 | B5 | `camera`; the live picture in the console | vehicle; topside | cameras without H.264; `hellion`'s page in Dawn Patrol |
@@ -265,6 +265,11 @@ exists the topside is electric-eye's own `hellion` in placement A
 ([`tools/rov/README.md`](../tools/rov/README.md)).
 
 ### `video_relay`
+
+*As built (B2, `modules/video_relay/README.md`): the camera's H.264 from the encoder's
+`uvc:` source, referenced as `(vehicle:video.index, n)` rather than `cam.pilot`, with
+the frame stamped on the topside's clock until the bridge; the fragmented MP4 written in
+process; no v4l2loopback webcam yet. The README's deviations list the rest.*
 
 `hellion`'s topside half: owns the tether's video port, copies every packet unchanged to
 QGroundControl (UDP 5600) and to its own decoder, with the end-of-frame delimiter that

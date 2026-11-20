@@ -33,7 +33,7 @@ where that differs from the repository's.
 | musl | MIT | every static binary |
 | libjpeg-turbo | BSD-3 / IJG / zlib | camera, vision |
 | libx264 | GPL-2.0-or-later | encoder only |
-| FFmpeg / libavcodec | LGPL-2.1-or-later (GPL as built with x264) | video relay (topside); encoder's MP4 child process |
+| FFmpeg / libavcodec, libavutil | LGPL-2.1-or-later (no GPL or nonfree part configured) | `video_relay` (topside), statically: FFmpeg 7.1.1's H.264 decoder and parser alone, built by `tools/cross/avcodec.sh` with `--disable-everything --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc --disable-programs --disable-doc --disable-network --disable-autodetect --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample --disable-swscale --enable-static --disable-shared`; the source is the pinned release tarball named there, and hangar's own source, released with each binary, is what relinking against a modified libavcodec needs |
 | BLAKE2 reference implementation | CC0 | bridge |
 | minisign verification (monocypher) | BSD-2 / CC0 | installer, manager |
 | MAVLink generated headers | MIT | MAVLink modules |
