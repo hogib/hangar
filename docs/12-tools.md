@@ -45,7 +45,7 @@ One static binary (musl), with subcommands:
 | `hangar check` | The pre-dive check ([below](#hangar-check)) |
 | `hangar show <module>` | Its wiring as handed to it, the implicit `.req`, `.rep` and `.params` topics and subscriptions included, its state, last exit, status line, `Neutral` command, parameters |
 | `hangar topics` | Every topic: type, rate declared and measured, age, writer, slots, flags; for a mirrored topic, the sender's boot id and the messages lost and skipped |
-| `hangar echo <topic>` | Messages decoded from the schema in the topic's header; `--rate`, `--fields`, `--json`. On a `.req` or `.rep` topic, the envelope and the body decoded by the body's type hash |
+| `hangar echo <topic>` | Messages decoded from the schema in the topic's header; `--rate`, `--fields`, `--json`. On a `.req` or `.rep` topic, the envelope and the body decoded by the body's type hash. With `--json` (also on `call` and `param`), one JSON object a line: text escaped, a byte that is not UTF-8 as U+FFFD, a float that is not finite as `null` |
 | `hangar hz <topic>` | Measured rate and jitter |
 | `hangar call <module>.<method> k=v …` | A call as `admin:<user>` ([below](#hangar-call)); the request built from the type's schema |
 | `hangar param get\|set\|load\|reset` | Parameters ([05-parameters](05-parameters.md#the-hangar-param-command)) |

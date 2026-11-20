@@ -142,6 +142,217 @@ static void test_hz_mean_interval(void)
 	CHECK(first > 0.5 && first < 2.6); /* 3 messages in the 1.1 s of a window were 2.73 */
 }
 
+/* ---- JSON, as RFC 8259 has it ---------------------------------------------------
+ * A strict reader for what --json prints: 1 if [*p, end) starts with one
+ * JSON value, *p then after it. Strings: no raw control character, only the
+ * escapes of the grammar, valid UTF-8. Numbers: the grammar's, so no nan,
+ * inf or leading +. */
+static int js_value(const char **p, const char *end, int depth);
+
+static void js_ws(const char **p, const char *end)
+{
+	while (*p < end && (**p == ' ' || **p == '\t' || **p == '\r'))
+		(*p)++;
+}
+
+static int js_string(const char **p, const char *end)
+{
+	const unsigned char *s = (const unsigned char *)*p, *e = (const unsigned char *)end;
+	if (s >= e || *s != '"')
+		return 0;
+	for (s++; s < e && *s != '"';) {
+		if (*s < 0x20)
+			return 0;
+		if (*s == '\\') {
+			if (s + 1 >= e)
+				return 0;
+			if (s[1] == 'u') {
+				if (s + 6 > e)
+					return 0;
+				for (int i = 2; i < 6; i++)
+					if (!strchr("0123456789abcdefABCDEF", s[i]))
+						return 0;
+				s += 6;
+			} else if (strchr("\"\\/bfnrt", s[1])) {
+				s += 2;
+			} else {
+				return 0;
+			}
+		} else if (*s < 0x80) {
+			s++;
+		} else {
+			int n = (*s & 0xe0) == 0xc0 ? 1 : (*s & 0xf0) == 0xe0 ? 2 : (*s & 0xf8) == 0xf0 ? 3 : -1;
+			if (n < 0 || s + n >= e || *s == 0xc0 || *s == 0xc1)
+				return 0;
+			for (int i = 1; i <= n; i++)
+				if ((s[i] & 0xc0) != 0x80)
+					return 0;
+			s += n + 1;
+		}
+	}
+	if (s >= e)
+		return 0;
+	*p = (const char *)s + 1;
+	return 1;
+}
+
+static int js_number(const char **p, const char *end)
+{
+	const char *s = *p;
+	if (s < end && *s == '-')
+		s++;
+	if (s >= end || *s < '0' || *s > '9')
+		return 0;
+	if (*s == '0')
+		s++;
+	else
+		while (s < end && *s >= '0' && *s <= '9')
+			s++;
+	if (s < end && *s == '.') {
+		const char *d = ++s;
+		while (s < end && *s >= '0' && *s <= '9')
+			s++;
+		if (s == d)
+			return 0;
+	}
+	if (s < end && (*s == 'e' || *s == 'E')) {
+		s++;
+		if (s < end && (*s == '+' || *s == '-'))
+			s++;
+		const char *d = s;
+		while (s < end && *s >= '0' && *s <= '9')
+			s++;
+		if (s == d)
+			return 0;
+	}
+	*p = s;
+	return 1;
+}
+
+static int js_value(const char **p, const char *end, int depth)
+{
+	js_ws(p, end);
+	if (*p >= end || depth > 8)
+		return 0;
+	char c = **p;
+	if (c == '{' || c == '[') {
+		char close = c == '{' ? '}' : ']';
+		(*p)++;
+		js_ws(p, end);
+		if (*p < end && **p == close) {
+			(*p)++;
+			return 1;
+		}
+		for (;;) {
+			js_ws(p, end);
+			if (c == '{') {
+				if (!js_string(p, end))
+					return 0;
+				js_ws(p, end);
+				if (*p >= end || *(*p)++ != ':')
+					return 0;
+			}
+			if (!js_value(p, end, depth + 1))
+				return 0;
+			js_ws(p, end);
+			if (*p >= end)
+				return 0;
+			char sep = *(*p)++;
+			if (sep == close)
+				return 1;
+			if (sep != ',')
+				return 0;
+		}
+	}
+	if (c == '"')
+		return js_string(p, end);
+	static const char *const words[] = { "true", "false", "null" };
+	for (int i = 0; i < 3; i++) {
+		size_t n = strlen(words[i]);
+		if ((size_t)(end - *p) >= n && strncmp(*p, words[i], n) == 0) {
+			*p += n;
+			return 1;
+		}
+	}
+	return js_number(p, end);
+}
+
+/* Every line of text is one JSON value and nothing else; the number of
+ * lines, or -1 at the first line that is not. */
+static int json_lines(const char *text)
+{
+	int lines = 0;
+	for (const char *l = text; *l;) {
+		const char *e = strchr(l, '\n');
+		if (!e)
+			e = l + strlen(l);
+		const char *p = l;
+		if (!js_value(&p, e, 0) || (js_ws(&p, e), p != e))
+			return -1;
+		lines++;
+		l = *e ? e + 1 : e;
+	}
+	return lines;
+}
+
+/* --json printed a char field as it is and a float with %g: a quote, a
+ * backslash or a control character in the text, and nan or inf, made the
+ * line something no JSON reader takes. Text is escaped now (a byte that is
+ * not UTF-8 becomes U+FFFD), and a float that is not finite is null. */
+static void test_json_is_json(void)
+{
+	/* The reader itself, on what it must refuse. */
+	CHECK_EQ_INT(json_lines("{\"a\":1,\"b\":[1,2.5e-3,-0],\"c\":\"x\\n\\u00e9\",\"d\":null}\n"), 1);
+	CHECK_EQ_INT(json_lines("{\"a\":nan}\n"), -1);
+	CHECK_EQ_INT(json_lines("{\"a\":\"x\"y\"}\n"), -1);
+	CHECK_EQ_INT(json_lines("{\"a\":\"x\ty\"}\n"), -1);
+	CHECK_EQ_INT(json_lines("{\"a\":\"\xff\"}\n"), -1);
+	pid_t pub = fork();
+	if (pub == 0) {
+		static struct hg_schema sc;
+		const char text[] = "char name[24]\nchar raw[4]\nf32 f[4]\nf64 d\nu8 n\n";
+		struct {
+			char name[24], raw[4];
+			float f[4];
+			double d;
+			uint8_t n;
+		} v;
+		memset(&v, 0, sizeof v);
+		if (hg_schema_parse(text, sizeof text - 1, &sc, NULL, 0) < 0 || sc.type.payload_bytes != sizeof v)
+			_exit(3);
+		memcpy(v.name, "say \"hi\"\\ \n\ttab \x01 end", 22);
+		memcpy(v.raw, "\xff\xc3\xa9z", 4); /* a stray byte, then e-acute, no NUL */
+		v.f[0] = NAN;
+		v.f[1] = INFINITY;
+		v.f[2] = -INFINITY;
+		v.f[3] = 1.5f;
+		v.d = NAN;
+		v.n = 7;
+		struct hg_pub_opts o = { .slots = 4 };
+		hg_pub *p = hg_pub_open("json.t", &sc.type, &o);
+		for (int i = 0; p && i < 40; i++) {
+			hg_publish(p, &v, sizeof v, hg_now_ns());
+			sleep_ms(100);
+		}
+		_exit(0);
+	}
+	sleep_ms(400);
+	char *argv[] = { (char *)T_hangar, "echo", "json.t", "--json", "--rate", "--count", "2", NULL };
+	int rc = run_hangar(out_path(), 8000, NULL, argv);
+	reap(pub);
+	const char *o = read_file(out_path());
+	CHECK_EQ_INT(rc, 0);
+	CHECK_EQ_INT(json_lines(o), 2);
+	CHECK(strstr(o, "\"name\":\"say \\\"hi\\\"\\\\ \\n\\ttab \\u0001 end\"") != NULL);
+	CHECK(strstr(o, "\"raw\":\"\\ufffd\xc3\xa9z\"") != NULL);
+	CHECK(strstr(o, "\"f\":[null,null,null,1.5]") != NULL);
+	CHECK(strstr(o, "\"d\":null,\"n\":7}") != NULL);
+	/* The plain form is for reading and stays as it was. */
+	char out[4096];
+	CHECK_EQ_INT(run_cli(out, sizeof out, 3000, "echo", "json.t", "--count", "1", (char *)NULL), 0);
+	CHECK(strstr(cli_field(out, "f"), "[nan inf -inf 1.5]") != NULL);
+}
+
 /* `hangar echo` parsed the header's schema again only when its length
  * changed. A topic replaced by a writer with another type of the same
  * length (a renamed field, two fields swapped, a frame of another size with
@@ -374,6 +585,8 @@ static void test_manager_up(void)
 	CHECK_EQ_INT(write_file(msg, big), 0);
 	const char *toys = getenv("HANGAR_TOYS");
 	CHECK(toys != NULL);
+	/* never: a module with parameters that has not run and has no saved file. */
+	manifest("never", "[Module]\nExec=/nonexistent/never\n[Restart]\nPolicy=never\n[Params]\nType=depth_hold_params\n");
 	manifest("big", "[Module]\nExec=%s/bigparams\n[Params]\nType=bigparams\n[Health]\nWatchdog=2s\n", toys ? toys : "");
 	mgr = manager_start();
 	CHECK(wait_state("big", "ready", 5000));
@@ -626,6 +839,51 @@ static void test_reset_takes_the_types_defaults(void)
 	CHECK(strcmp(cli_field(out, "ki"), "0.1") == 0);
 }
 
+/* The same for call and param: a reason is text from a module, and `param
+ * get --json` on a module that is not running printed "# ..." lines and
+ * the saved file as it is. Every form is one JSON object now. */
+static void test_json_from_call_and_param(void)
+{
+	char out[4096];
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "paramer", "--json", (char *)NULL), 0);
+	CHECK_EQ_INT(json_lines(out), 1);
+	CHECK(strstr(out, "{\"running\":true,\"version\":") && strstr(out, "\"params\":{\"kp\":"));
+	/* A refusal's reason, and a reason with a quote in it. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "kp=11", "--json", (char *)NULL), 1);
+	CHECK_EQ_INT(json_lines(out), 1);
+	CHECK(strstr(out, "\"status\":\"HG_E_REFUSED\",\"reason\":\"kp 11 above 10\"") != NULL);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "frame=a\\\"b", "--json", (char *)NULL), 0);
+	CHECK_EQ_INT(json_lines(out), 1);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "paramer", "frame", "--json", (char *)NULL), 0);
+	CHECK_EQ_INT(json_lines(out), 1);
+	CHECK(strstr(out, "\"params\":{\"frame\":\"a\\\"b\"}}") != NULL);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "call", "paramer.nosuch", "--json", (char *)NULL), 1);
+	/* Not running, with a saved file. */
+	CHECK(strncmp(ctl("stop paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "stopped", 5000));
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "paramer", "--json", (char *)NULL), 0);
+	if (json_lines(out) != 1)
+		printf("    param get --json, not running: %s", out);
+	CHECK_EQ_INT(json_lines(out), 1);
+	CHECK(strstr(out, "{\"running\":false,\"saved\":true,\"version\":") != NULL);
+	CHECK(strstr(out, "\"frame\":\"a\\\"b\"") != NULL);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "paramer", "kp", "--json", (char *)NULL), 0);
+	CHECK_EQ_INT(json_lines(out), 1);
+	/* The text form is the file, as before. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "paramer", (char *)NULL), 0);
+	CHECK(strstr(out, "(not running); the saved file:\n# hangar parameters: depth_hold_params\n") != NULL);
+	/* Never run: the defaults. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "never", "--json", (char *)NULL), 0);
+	if (json_lines(out) != 1)
+		printf("    param get --json, never run: %s", out);
+	CHECK_EQ_INT(json_lines(out), 1);
+	CHECK(strstr(out, "{\"running\":false,\"saved\":false,") && strstr(out, "\"kp\":1.5,"));
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "never", (char *)NULL), 0);
+	CHECK(strstr(out, "it has not run yet; the defaults apply") && strcmp(cli_field(out, "kp"), "1.5") == 0);
+	CHECK(strncmp(ctl("start paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "ready", 5000));
+}
+
 static void test_manager_down(void)
 {
 	if (params_sub)
@@ -640,6 +898,7 @@ int main(void)
 	RUN_TEST(test_hz_large_payload);
 	RUN_TEST(test_hz_mean_interval);
 	RUN_TEST(test_echo_follows_a_replaced_schema);
+	RUN_TEST(test_json_is_json);
 	RUN_TEST(test_malformed_reply_stops_the_command);
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
@@ -647,6 +906,7 @@ int main(void)
 	RUN_TEST(test_long_parameter_file_refused);
 	RUN_TEST(test_load_refuses_base_version);
 	RUN_TEST(test_reset_takes_the_types_defaults);
+	RUN_TEST(test_json_from_call_and_param);
 	RUN_TEST(test_manager_down);
 	hd_teardown();
 	TEST_MAIN_END();

@@ -326,10 +326,73 @@ static int cmd_topics(void)
 
 /* ---- echo and hz ------------------------------------------------------------ */
 
+/* Text as a JSON string (RFC 8259): at most max bytes, up to the first
+ * NUL; a quote, a backslash and control characters escaped; a byte that is
+ * not part of a UTF-8 sequence written as U+FFFD, so that whatever a char
+ * field holds the line stays one a JSON reader takes. */
+static void json_string(const char *text, size_t max)
+{
+	const unsigned char *s = (const unsigned char *)text;
+	size_t n = strnlen(text, max);
+	putchar('"');
+	for (size_t i = 0; i < n;) {
+		unsigned char c = s[i];
+		if (c == '"' || c == '\\') {
+			printf("\\%c", c);
+			i++;
+		} else if (c == '\n' || c == '\t' || c == '\r') {
+			printf("\\%c", c == '\n' ? 'n' : c == '\t' ? 't' : 'r');
+			i++;
+		} else if (c < 0x20 || c == 0x7f) {
+			printf("\\u%04x", c);
+			i++;
+		} else if (c < 0x80) {
+			putchar(c);
+			i++;
+		} else {
+			/* 2 to 4 bytes of UTF-8, not overlong, not a surrogate, not
+			 * past U+10FFFF; anything else is one bad byte. */
+			size_t k = (c & 0xe0) == 0xc0 ? 1 : (c & 0xf0) == 0xe0 ? 2 : (c & 0xf8) == 0xf0 ? 3 : 0;
+			int ok = k && i + k < n; /* its continuation bytes are all there */
+			if (ok) {
+				uint32_t cp = c & (0x3f >> k);
+				for (size_t j = 1; j <= k; j++) {
+					if ((s[i + j] & 0xc0) != 0x80)
+						ok = 0;
+					cp = cp << 6 | (s[i + j] & 0x3f);
+				}
+				static const uint32_t least[4] = { 0, 0x80, 0x800, 0x10000 };
+				if (cp < least[k] || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))
+					ok = 0;
+			}
+			if (ok) {
+				fwrite(s + i, 1, k + 1, stdout);
+				i += k + 1;
+			} else {
+				fputs("\\ufffd", stdout);
+				i++;
+			}
+		}
+	}
+	putchar('"');
+}
+
+/* A float for --json: JSON has no nan and no inf, so those are null. */
+static void json_float(double v)
+{
+	if (v != v || v - v != 0)
+		fputs("null", stdout);
+	else
+		printf("%g", v);
+}
+
 static void print_value(const struct hg_field *f, const unsigned char *p, int json)
 {
 	if (f->kind == HG_CHAR) {
-		printf(json ? "\"%.*s\"" : "\"%.*s\"", (int)f->count, (const char *)p);
+		if (json)
+			json_string((const char *)p, f->count);
+		else
+			printf("\"%.*s\"", (int)f->count, (const char *)p);
 		return;
 	}
 	if (f->count > 1)
@@ -347,8 +410,8 @@ static void print_value(const struct hg_field *f, const unsigned char *p, int js
 		case HG_I32: { int32_t v; memcpy(&v, q, 4); printf("%d", v); break; }
 		case HG_U64: { uint64_t v; memcpy(&v, q, 8); printf("%llu", (unsigned long long)v); break; }
 		case HG_I64: { int64_t v; memcpy(&v, q, 8); printf("%lld", (long long)v); break; }
-		case HG_F32: { float v; memcpy(&v, q, 4); printf("%g", (double)v); break; }
-		case HG_F64: { double v; memcpy(&v, q, 8); printf("%g", v); break; }
+		case HG_F32: { float v; memcpy(&v, q, 4); if (json) json_float((double)v); else printf("%g", (double)v); break; }
+		case HG_F64: { double v; memcpy(&v, q, 8); if (json) json_float(v); else printf("%g", v); break; }
 		default: break;
 		}
 	}
@@ -902,8 +965,9 @@ static int cmd_call(int argc, char **argv)
 	if (st == -100)
 		return 1;
 	if (json) {
-		printf("{\"status\":\"%s\",\"call_id\":%llu,\"reason\":\"%.63s\"", hg_status_name(st),
-		       (unsigned long long)env.call_id, env.reason);
+		printf("{\"status\":\"%s\",\"call_id\":%llu,\"reason\":", hg_status_name(st),
+		       (unsigned long long)env.call_id);
+		json_string(env.reason, 63);
 		if (st == HG_OK) {
 			printf(",\"reply\":{");
 			print_fields(&mi.rep.type, rep_body, 0, 1, NULL, 0);
@@ -1031,8 +1095,9 @@ static int cmd_param_get(const char *module, int argc, char **argv, int json)
 		uint64_t version;
 		memcpy(&version, buf, 8);
 		if (json) {
-			printf("{\"version\":%llu,\"changed_by\":\"%.47s\",\"restart_pending\":%s,\"params\":{",
-			       (unsigned long long)version, (const char *)buf + 8, buf[56] ? "true" : "false");
+			printf("{\"running\":true,\"version\":%llu,\"changed_by\":", (unsigned long long)version);
+			json_string((const char *)buf + 8, 47);
+			printf(",\"restart_pending\":%s,\"params\":{", buf[56] ? "true" : "false");
 			print_fields(&schema.type, buf, 4, 1, (const char *const *)argv, argc);
 			printf("}}\n");
 		} else {
@@ -1043,16 +1108,38 @@ static int cmd_param_get(const char *module, int argc, char **argv, int json)
 		return 0;
 	}
 	/* Not running: the saved file, or the defaults when it has not run yet. */
-	if (!sp.file_len) {
-		printf("# %s has no %s.params topic and no saved file: it has not run yet; the defaults apply\n", module,
-		       module);
-		static struct hg_param_attr attrs[HG_SCHEMA_MAX_FIELDS];
-		static unsigned char vals[HG_SCHEMA_MAX * 8];
-		char err[160];
+	static struct hg_param_attr attrs[HG_SCHEMA_MAX_FIELDS];
+	static unsigned char vals[HG_SCHEMA_MAX * 8];
+	char err[160];
+	if (!sp.file_len || json) {
+		if (sp.schema.type.payload_bytes > sizeof vals)
+			return fail("%s: a parameter struct of %u bytes is more than this command holds", sp.type_name,
+				    sp.schema.type.payload_bytes);
 		if (hg_params_attrs(&sp.schema.type, attrs, err, sizeof err) < 0 ||
 		    hg_params_defaults(&sp.schema.type, attrs, vals, err, sizeof err) < 0)
 			return fail("%s", err);
-		print_fields(&sp.schema.type, vals, 0, json, (const char *const *)argv, argc);
+	}
+	if (json) {
+		/* One object, as for a running module: the saved file's values
+		 * over the defaults (the comment lines of the text form and the
+		 * file as it is are not JSON). */
+		struct hg_params_header hdr;
+		memset(&hdr, 0, sizeof hdr);
+		if (sp.file_len &&
+		    hg_params_file_parse(&sp.schema.type, sp.file, sp.file_len, vals, &hdr, NULL, 1, err, sizeof err) < 0)
+			return fail("%s's saved file: %s", module, err);
+		printf("{\"running\":false,\"saved\":%s,\"version\":%llu,\"changed_by\":", sp.file_len ? "true" : "false",
+		       (unsigned long long)hdr.version);
+		json_string(sp.file_len ? hdr.changed_by : "", sizeof hdr.changed_by);
+		printf(",\"restart_pending\":%s,\"params\":{", hdr.restart_pending ? "true" : "false");
+		print_fields(&sp.schema.type, vals, 0, 1, (const char *const *)argv, argc);
+		printf("}}\n");
+		return 0;
+	}
+	if (!sp.file_len) {
+		printf("# %s has no %s.params topic and no saved file: it has not run yet; the defaults apply\n", module,
+		       module);
+		print_fields(&sp.schema.type, vals, 0, 0, (const char *const *)argv, argc);
 		return 0;
 	}
 	printf("# %s has no %s.params topic (not running); the saved file:\n", module, module);
@@ -1149,10 +1236,12 @@ static int param_apply(const char *module, char **kv, int nkv, const char *lines
 		}
 		uint64_t version = 0;
 		memcpy(&version, rep_body, 8);
-		if (json)
-			printf("{\"status\":\"%s\",\"reason\":\"%.63s\",\"version\":%llu,\"restarting\":%s}\n",
-			       hg_status_name(st), env.reason, (unsigned long long)version, rep_body[8] ? "true" : "false");
-		else if (st == HG_OK)
+		if (json) {
+			printf("{\"status\":\"%s\",\"reason\":", hg_status_name(st));
+			json_string(env.reason, 63);
+			printf(",\"version\":%llu,\"restarting\":%s}\n", (unsigned long long)version,
+			       rep_body[8] ? "true" : "false");
+		} else if (st == HG_OK)
 			printf("%s: version %llu%s\n", module, (unsigned long long)version,
 			       rep_body[8] ? " saved; the module restarts to apply it" : "");
 		else
