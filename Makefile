@@ -541,6 +541,11 @@ check: check-joystick
 # video_relay (modules/video_relay/README.md, .mk carries the rules): the
 # topside's end of the vehicle's video, decoded in process with libavcodec.
 include modules/video_relay/video_relay.mk
+
+# The tether bridge (modules/bridge/README.md, modules/bridge/bridge.mk carries
+# the build and the suite).
+include modules/bridge/bridge.mk
+check: check-bridge
 check: check-video_relay
 
 # vision (modules/vision/README.md, .mk carries the rules): the pilot's picture,

@@ -232,6 +232,7 @@ want hangar-sim-vehicle "$builddir/hangar-sim-vehicle"
 want hangar-nav "$builddir/hangar-nav"
 want hangar-depth-hold "$builddir/hangar-depth-hold"
 want hangar-joystick "$builddir/hangar-joystick"
+want hangar-bridge "$builddir/hangar-bridge"
 if [ "$avcodec_ok" = yes ]; then
 	want hangar-video-relay "$builddir/hangar-video-relay"
 else
@@ -309,6 +310,10 @@ cp "$ROOT"/bench/pi/manifests/*.module "$stage/share/hangar/modules/"
 mkdir -p "$stage/share/hangar/video_relay"
 cp "$ROOT/modules/video_relay/video_relay.module" "$ROOT/modules/video_relay/video_relay.conf" \
    "$stage/share/hangar/video_relay/"
+# The bridge's templates (both machines; modules/bridge/README.md), beside, not
+# enabled: the phase-A root does not run it.
+mkdir -p "$stage/share/hangar/bridge"
+cp "$ROOT/modules/bridge/bridge.module" "$ROOT/modules/bridge/bridge.conf" "$stage/share/hangar/bridge/"
 cp "$ROOT/bench/pi/hangard.conf" "$stage/share/hangar/hangard.conf"
 cp "$ROOT/bench/pi/install-root.sh" "$stage/share/hangar/install-root.sh"
 chmod 755 "$stage/share/hangar/install-root.sh"

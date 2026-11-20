@@ -1,0 +1,15 @@
+# /usr/share/hangar/modules/bridge.module: the tether bridge (docs/08-bridge.md,
+# modules/bridge/README.md), on both machines. Enable it by symlinking into
+# /etc/hangar/modules/ on each side; /etc/hangar/bridge.conf (BridgeConf in
+# hangard.conf) is the same file on both, /etc/hangar/bridge.key the same
+# 32 bytes. What it sends, receives and calls comes from bridge.conf: the
+# manager derives its wiring from it.
+[Module]
+Description=The tether bridge: topics and calls between the vehicle and the topside
+Exec=/usr/lib/hangar/hangar-bridge /etc/hangar/bridge.conf
+User=hg-bridge
+
+[Bridge]
+
+[Health]
+Watchdog=2s
