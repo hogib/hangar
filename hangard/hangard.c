@@ -512,8 +512,10 @@ static void startup_from_registry(int *n_dead, char (*dead)[MF_NAME])
 			m->adopted = 1;
 			m->started_ns = hg_now_ns();
 			m->ready_ns = m->started_ns;
-			if (m->st == ST_STOPPING)
+			if (m->st == ST_STOPPING) {
+				m->stopping = 1;
 				m->stop_deadline = hg_now_ns(); /* finish the stop at once */
+			}
 			if (page_open_existing(m) < 0)
 				hd_log("%s: adopted without its page: %s", m->name, strerror(errno));
 			if (epoll_add(m->pidfd, TAG_MODULE | (uint64_t)(m - G.modules)) < 0)
@@ -849,6 +851,10 @@ static int startup_from_reexec(void)
 				m->pid = (pid_t)pid;
 				m->pidfd = pidfd;
 				m->starttime = starttime;
+				/* The stop under way travels as the state: a module is
+				 * stopping or unhealthy from the SIGTERM to its exit,
+				 * the stop deadline only until the SIGKILL. */
+				m->stopping = m->st == ST_STOPPING || m->st == ST_UNHEALTHY;
 				if (page_open_existing(m) < 0)
 					hd_log("%s: re-exec without its page: %s", m->name, strerror(errno));
 				if (epoll_add(m->pidfd, TAG_MODULE | (uint64_t)(m - G.modules)) < 0)
@@ -891,7 +897,7 @@ static void shutdown_phase(int phase)
 		if (phase == 1 && !neutral)
 			continue;
 		if (m->pid) {
-			if (!m->stop_deadline)
+			if (!m->stopping)
 				module_stop(m, ST_STOPPED, 0, "shutdown");
 		} else if (m->st == ST_BACKOFF || m->st == ST_STARTING) {
 			set_state(m, ST_STOPPED, "shutdown");

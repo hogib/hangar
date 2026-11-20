@@ -5,7 +5,7 @@
 # and the kernel, so everything here builds static for musl.
 #
 #   make hangard-all        builddir/hangard, builddir/hangar, the toy modules
-#   make check-hangard      the six suites (part of check)
+#   make check-hangard      the suites (part of check)
 #   make check-tsan-hangard / check-asan-hangard
 #                           the library-side suite (manifests, wiring) under a sanitizer
 #   make msg                also regenerates msg/hangar_{system,modules}.{h,c}
@@ -18,9 +18,10 @@ HANGARD_SRC := hangard/hangard.c hangard/conf.c hangard/registry.c hangard/topic
 HANGAR_CLI_SRC := hangar/hangar.c hangar/hangar_params.c $(HANGARD_CORE_SRC)
 HANGARD_MSG_SRC := hangard/msg/hangar_system.msg hangard/msg/hangar_modules.msg
 HANGARD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ihangard -Imsg -Ilib/common -Imodules/common -Imodules/bridge
-HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral server caller paramer
+HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral server caller paramer stubborn
 HANGARD_TOYDIR := $(TESTDIR)/hangard-modules
-HANGARD_TESTS := hangard_manifest hangard_run hangard_health hangard_adopt hangard_calls hangard_params
+HANGARD_TESTS := hangard_manifest hangard_run hangard_health hangard_adopt hangard_calls hangard_params \
+	hangard_stop
 HANGARD_LIB_TESTS := hangard_manifest
 
 # Everything under hangard/, hangar/ and msg/ takes lib/hg's flags.

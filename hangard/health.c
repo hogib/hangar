@@ -172,6 +172,7 @@ void module_start(struct module *m)
 		return;
 	m->gave_up = 0;
 	m->stop_deadline = 0;
+	m->stopping = 0;
 	module_outputs_init(m);
 	if (module_spawn(m) < 0) {
 		if (m->mf->policy == MF_RESTART_NEVER)
@@ -244,6 +245,7 @@ void module_stop(struct module *m, enum state next, int count_failure, const cha
 	m->after_stop = next;
 	m->count_failure = count_failure;
 	m->stop_deadline = hg_now_ns() + (m->mf ? m->mf->stop_timeout_ns : 5000000000ull);
+	m->stopping = 1;
 	if (m->st != ST_UNHEALTHY)
 		set_state(m, ST_STOPPING, why);
 	module_signal_group(m, SIGTERM);
@@ -294,7 +296,10 @@ void on_module_exit(struct module *m)
 	close(m->pidfd);
 	m->pidfd = -1;
 	m->pid = 0;
-	int was_stopping = m->stop_deadline != 0;
+	/* Not the deadline: that is zero again once the SIGKILL was sent, and
+	 * the exit is the stop's all the same. */
+	int was_stopping = m->stopping;
+	m->stopping = 0;
 	m->stop_deadline = 0;
 	module_outputs_unmap(m);
 
@@ -386,7 +391,7 @@ void health_tick(uint64_t now)
 			m->stop_deadline = 0;
 			continue;
 		}
-		if (!m->pid || !mf || m->stop_deadline || m->st == ST_UNHEALTHY || mf->legacy)
+		if (!m->pid || !mf || m->stopping || m->st == ST_UNHEALTHY || mf->legacy)
 			continue;
 		if (m->st == ST_STARTING) {
 			if (module_is_ready(m)) {

@@ -171,7 +171,8 @@ struct module {
 	uint64_t fail_times[HD_MAX_FAILS];
 	int n_fail_times;
 	uint64_t restart_at;     /* ST_BACKOFF */
-	uint64_t stop_deadline;  /* ST_STOPPING: SIGKILL at this time */
+	uint64_t stop_deadline;  /* SIGKILL at this time; 0 once it was sent */
+	int stopping;            /* a stop was asked for and the exit has not come */
 	enum state after_stop;   /* what the exit leads to */
 	int count_failure;       /* the pending stop counts as a failure */
 	int exit_known;
