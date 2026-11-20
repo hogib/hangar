@@ -24,7 +24,8 @@ BUILD ?= debugoptimized
 CC ?= cc
 HG_DIR ?= $(BENCH_ROOT)/lib/hg
 ifeq ($(origin HG_SRC),undefined)
-HG_SRC := $(HG_DIR)/hg_topic.c $(HG_DIR)/hg_type.c $(HG_DIR)/hg_wiring.c
+HG_SRC := $(HG_DIR)/hg_topic.c $(HG_DIR)/hg_type.c $(HG_DIR)/hg_wiring.c $(HG_DIR)/hg_control.c \
+	$(HG_DIR)/hg_call.c $(HG_DIR)/hg_params.c $(HG_DIR)/hg_gate.c
 HG_CFLAGS := -std=c11 -Wall -Wextra -pedantic -pthread
 HG_LDLIBS := -pthread -lrt
 LIB_CPPFLAGS := -I$(HG_DIR) -I$(BENCH_ROOT)/lib/common
