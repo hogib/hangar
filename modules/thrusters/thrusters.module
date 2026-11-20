@@ -1,0 +1,25 @@
+# /usr/share/hangar/modules/thrusters.module: the actuator of a vehicle without
+# ArduSub (modules/thrusters/README.md): ctl.wrench through the gate to thr.cmd,
+# which the simulator's standalone mode reads. One writer per topic: not beside
+# the mavlink module, which writes thr.out from ArduSub's servo outputs.
+[Module]
+Description=Thrusters: ctl.wrench mixed to pulse widths, through the actuator gate
+Exec=/usr/lib/hangar/hangar-thrusters
+
+[Subscribe ctl.wrench]
+[Subscribe safety.state]
+
+[Publish thr.cmd]
+Type=thruster_cmd
+Rate=50
+Actuator=yes
+Inputs=ctl.wrench
+
+[Publish thr.out]
+Type=thruster_out
+Rate=50
+Inputs=ctl.wrench
+
+[Actuator]
+Command=ctl.wrench
+Neutral=/usr/lib/hangar/hangar-thrusters --neutral

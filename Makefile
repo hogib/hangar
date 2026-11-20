@@ -571,6 +571,12 @@ check: check-topside_encoder
 include modules/sim_vehicle/sim_vehicle.mk
 check: check-sim_vehicle
 
+# thrusters (modules/thrusters/README.md, .mk carries the rules): the actuator
+# of a vehicle without ArduSub, ctl.wrench mixed to thr.cmd, which sim_vehicle's
+# standalone mode reads.
+include modules/thrusters/thrusters.mk
+check: check-thrusters
+
 # nav and depth_hold (modules/nav/README.md, modules/depth_hold/README.md; each
 # .mk carries its rules): the vehicle's state estimate, nav.state, and the
 # classical depth controller, ctl.depth_hold and ctl.depth_hold.target: the
