@@ -1,0 +1,7 @@
+# The suite's policy spec (tests/test_policy.c writes its own with the Arch
+# make_models.py prints); docs/09-learning.md "Policy modules".
+[Policy]
+Name=toy
+Dataset=toy
+Arch=10474e8e2a67fbc6
+TickBudget=50%

@@ -1,0 +1,41 @@
+# A policy module (docs/09-learning.md "Policy modules"): the binary is the
+# same for every policy, the spec names the policy and its dataset.
+[Module]
+Description=Toy policy (the suite's)
+Exec=/usr/lib/hangar/hangar-policy /etc/hangar/policies/toy.policy
+SupplementaryGroups=hangar-rec
+
+[Subscribe toy.anchor]
+[Subscribe toy.target]
+[Subscribe recorder.session]
+
+[Publish policy.toy.wrench]
+Type=wrench
+Rate=50
+Inputs=toy.anchor toy.target policy.toy.active
+
+[Publish policy.toy.active]
+Type=policy_active
+
+[Publish policy.toy.load]
+Type=policy_load
+
+[Serve load_weights]
+Request=load_weights_req
+Reply=load_weights_rep
+Allow=topside:trainer topside:pilot_console admin topside:admin
+
+[Serve revert]
+Request=empty
+Reply=policy_version
+Allow=topside:trainer topside:pilot_console admin topside:admin
+
+[Serve reset_state]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+[Serve runtime_info]
+Request=empty
+Reply=runtime_info
+Allow=topside:trainer topside:pilot_console admin topside:admin

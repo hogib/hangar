@@ -572,3 +572,8 @@ include modules/nav/nav.mk
 check: check-nav
 include modules/depth_hold/depth_hold.mk
 check: check-depth_hold
+
+# The policy program (modules/policy/README.md, .mk carries the rules): the
+# learning loop's vehicle side, version 1 (docs/09-learning.md).
+include modules/policy/policy.mk
+check: check-policy
