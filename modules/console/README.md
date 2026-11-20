@@ -145,6 +145,27 @@ another site cannot send that header to this server without a preflight it never
 grants, so a form elsewhere cannot restart a module through the operator's browser.
 The page's own `fetch` sends it.
 
+**Which browser page may talk to it.** Three more guards, all 403 or a header:
+
+- every request's `Host` must be an IP literal (`127.0.0.1`, `192.168.2.2`,
+  `[::1]`) or `localhost`, with any port or none: the port is not compared, since
+  behind an SSH forward it is the forward's. A missing `Host` is refused too. This
+  is what stops DNS rebinding: a page loaded from `evil.example:8080` whose name is
+  then pointed at 127.0.0.1 is same-origin with the console for the browser (JSON
+  content type and readable replies included), but the browser still sends
+  `Host: evil.example:8080`. **Open the console by address or as `localhost`**, not
+  by a host name (`http://rov.local:8080/` is refused);
+- a POST whose `Origin` is present and is not `http(s)://` + the request's `Host`
+  is refused: a page of another site, or of another port of the same machine,
+  cannot press a button even where it can reach the address. A client that sends no
+  `Origin` (curl, `hangar`'s own tools) passes: it is not a browser page;
+- every reply carries `X-Frame-Options: DENY` and `Content-Security-Policy:
+  frame-ancestors 'none'`, so no other page can put the console in a frame and have
+  its buttons clicked through an overlay.
+
+None of this is authentication: any local process that can reach the port has the
+buttons (below).
+
 **Who may press the buttons.** The POSTs reach the manager as this process's
 user, which the manager identifies by `SO_PEERCRED` and `SO_PEERGROUPS`
 ([docs/03-manager.md](../../docs/03-manager.md#control-socket)). Monitoring needs
@@ -249,7 +270,13 @@ and `hangar.vehicle.system` decodes too; `/` is the page, self-contained; wrong
 paths are 404, wrong methods 405; malformed or oversized requests (garbage, a
 chunked body, a bare LF, a NUL, an oversized body or head) get 400, 413 or 431, a
 client that hangs up gets nothing, and the module stays ready through them; a
-POST without the JSON content type is 403; a restart through the console gives the
+POST without the JSON content type is 403; a request whose `Host` is a name
+(`evil.example:8080`, `127.0.0.1.evil.example`, none at all) is 403 whatever it
+asks for, and the talker it tried to restart keeps its pid, while an address or
+`localhost` with any port is served; a POST with another origin's `Origin`
+(another site, another port, `null`) is 403 and one with the console's own or none
+goes through; the page, a reading and a refusal all carry the two headers that
+forbid framing (`test_host_and_origin`); a restart through the console gives the
 talker a new pid, `failures` stays 0 and the console's `restarts` reads 1; a
 restart of a module that does not exist is 409 with the manager's reason, a bad
 name or verb 404; reload is ok; stop shows `stopped`, pid 0 and `exit:0`, start
@@ -306,7 +333,11 @@ and an empty body, `Edges!` and `{"stage_count":3}` are 400.
    not used, since the brief asked for one epoll loop beside `hg_wait_fd`.
 6. **A POST needs `Content-Type: application/json`** (403 otherwise). Not in any
    doc; a cheap guard against a cross-site form pressing the buttons through an
-   operator's browser that can reach `127.0.0.1:8080`.
+   operator's browser that can reach `127.0.0.1:8080`. For the same reason, and
+   as little in any doc: a `Host` that is not an IP literal or `localhost` is
+   refused (DNS rebinding), a POST with another page's `Origin` is refused, and
+   every reply forbids framing ("Which browser page may talk to it" above). The
+   cost: the console cannot be opened by a host name.
 7. **The log is per module file, not one stream.** docs/03 "Logs" has one fallback
    file per module; `/api/log` serves them all with a tail each, and the page picks
    one. With journald there is nothing the module can read without `libsystemd`,

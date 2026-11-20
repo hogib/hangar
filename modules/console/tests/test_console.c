@@ -104,10 +104,12 @@ static int wait_api(const char *path, const char *needle, long timeout_ms, char 
 
 /* Sends raw bytes and returns the first line of whatever comes back. */
 #define RAW(lit) raw(lit, sizeof lit - 1)
+static char raw_head[1024]; /* the reply's first kilobyte, whole: its headers */
 static const char *raw(const char *bytes, size_t len)
 {
-	static char reply[256];
+	static char reply[1024];
 	reply[0] = 0;
+	raw_head[0] = 0;
 	int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	struct sockaddr_in sa;
 	memset(&sa, 0, sizeof sa);
@@ -127,6 +129,7 @@ static const char *raw(const char *bytes, size_t len)
 	ssize_t n = recv(s, reply, sizeof reply - 1, 0);
 	close(s);
 	reply[n > 0 ? n : 0] = 0;
+	memcpy(raw_head, reply, sizeof raw_head);
 	char *nl = strchr(reply, '\r');
 	if (nl)
 		*nl = 0;
@@ -314,11 +317,78 @@ static void test_page_and_errors(void)
 	CHECK(strncmp(raw(huge, sizeof huge), "HTTP/1.1 431", 12) == 0);
 	CHECK(strcmp(raw("", 0), "") == 0); /* a client that connects and hangs up */
 	// A POST without the JSON content type (a cross-site form) is refused.
-	const char *r = RAW("POST /api/module/talker/restart HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+	const char *r = RAW("POST /api/module/talker/restart HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n");
 	CHECK(strncmp(r, "HTTP/1.1 403", 12) == 0);
 	struct mstat m;
 	CHECK(module_status("console", &m) && strcmp(m.state, "ready") == 0);
 	CHECK_EQ_INT(api("GET", "/api/system", body, sizeof body), 200);
+}
+
+/* Who the browser thinks it is talking to. A page of evil.example whose name
+ * was re-pointed at 127.0.0.1 (DNS rebinding) is same-origin with the console
+ * for the browser, JSON content type and all; what gives it away is the Host
+ * it still sends. A page of another origin that knows the address gives itself
+ * away by its Origin. And no reply may be framed. */
+#define GET_AS(path, host) RAW("GET " path " HTTP/1.1\r\n" host "\r\n")
+#define JSON_POST(path, more) \
+	RAW("POST " path " HTTP/1.1\r\n" more "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+#define IS(reply, status) (strncmp(reply, "HTTP/1.1 " status, 12) == 0)
+static void test_host_and_origin(void)
+{
+	struct mstat before, m;
+	CHECK(module_status("talker", &before) && before.pid > 0);
+	// A name as Host: nothing is served, not the page, not a reading, not a button.
+	CHECK(IS(GET_AS("/", "Host: evil.example:8080\r\n"), "403"));
+	CHECK(strstr(raw_head, "Host must be an IP address or localhost") != NULL);
+	CHECK(IS(GET_AS("/api/fly", "Host: evil.example\r\n"), "403"));
+	CHECK(IS(JSON_POST("/api/module/talker/restart", "Host: evil.example:8080\r\nOrigin: http://evil.example:8080\r\n"), "403"));
+	CHECK(IS(JSON_POST("/api/call/safety.estop", "Host: evil.example:8080\r\n"), "403"));
+	// Names that only look like addresses, and no Host at all.
+	CHECK(IS(GET_AS("/api/system", "Host: 127.0.0.1.evil.example\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host: localhost.evil.example:80\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host: 127.0.0.1:80:80\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host: 127.0.0.1@evil.example\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host: 127.0.0.1:\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host: [::1\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host: [evil.example]:80\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", "Host:\r\n"), "403"));
+	CHECK(IS(GET_AS("/api/system", ""), "403"));
+	CHECK(IS(GET_AS("/api/system", "X-Host: 127.0.0.1\r\n"), "403"));
+	// An address or localhost, with any port (an SSH forward's is not the
+	// console's own) or none, in any case.
+	CHECK(IS(GET_AS("/api/system", "Host: 127.0.0.1:18080\r\n"), "200"));
+	CHECK(IS(GET_AS("/api/system", "host:   LocalHost:18080  \r\n"), "200"));
+	CHECK(IS(GET_AS("/api/system", "Host: localhost\r\n"), "200"));
+	CHECK(IS(GET_AS("/api/system", "Host: 192.168.2.2:8080\r\n"), "200"));
+	CHECK(IS(GET_AS("/api/system", "Host: [::1]:8080\r\n"), "200"));
+	// A POST from another origin: another site, another port of this machine,
+	// a sandboxed frame ("null"). The console's own page passes, and so does
+	// a client that sends no Origin (curl, the suite's other requests).
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: 127.0.0.1:8080\r\nOrigin: http://evil.example\r\n"), "403"));
+	CHECK(strstr(raw_head, "another origin") != NULL);
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: 127.0.0.1:8080\r\nOrigin: http://127.0.0.1:9000\r\n"), "403"));
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: 127.0.0.1:8080\r\nOrigin: http://127.0.0.1:8080.evil.example\r\n"), "403"));
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: 127.0.0.1:8080\r\nOrigin: 127.0.0.1:8080\r\n"), "403"));
+	CHECK(IS(JSON_POST("/api/call/safety.estop", "Host: localhost:8080\r\nOrigin: null\r\n"), "403"));
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: 127.0.0.1:8080\r\nOrigin: http://127.0.0.1:8080\r\n"),
+		 "409")); /* through to the manager: no module nobody */
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: LOCALHOST:18080\r\nOrigin: http://localhost:18080\r\n"), "409"));
+	CHECK(IS(JSON_POST("/api/module/nobody/restart", "Host: 127.0.0.1:8080\r\n"), "409"));
+	// A GET with a foreign Origin changes nothing and is answered (an <img>
+	// sends one blind anyway); no reply says another origin may read it.
+	CHECK(IS(GET_AS("/api/system", "Host: 127.0.0.1\r\nOrigin: http://evil.example\r\n"), "200"));
+	CHECK(strstr(raw_head, "Access-Control-") == NULL);
+	// No reply may be framed: the page, a reading, a refusal.
+	CHECK(IS(GET_AS("/", "Host: 127.0.0.1\r\n"), "200"));
+	CHECK(strstr(raw_head, "\r\nX-Frame-Options: DENY\r\n") != NULL);
+	CHECK(strstr(raw_head, "\r\nContent-Security-Policy: frame-ancestors 'none'\r\n") != NULL);
+	CHECK(IS(GET_AS("/api/fly", "Host: 127.0.0.1\r\n"), "200"));
+	CHECK(strstr(raw_head, "\r\nX-Frame-Options: DENY\r\n") != NULL);
+	CHECK(IS(GET_AS("/", "Host: evil.example\r\n"), "403"));
+	CHECK(strstr(raw_head, "frame-ancestors 'none'") != NULL);
+	// None of the refused requests reached the manager.
+	CHECK(module_status("talker", &m) && m.pid == before.pid);
+	CHECK(module_status("console", &m) && strcmp(m.state, "ready") == 0);
 }
 
 static void test_restart_stop_start(void)
@@ -447,7 +517,7 @@ static void test_fly(void)
 	CHECK_EQ_INT(api("POST", "/api/call/recorder.start", body, sizeof body), 409);
 	CHECK(strstr(body, "\"ok\":false,\"call\":\"recorder.start\",\"status\":\"refused by the manager\"") != NULL);
 	// A call without the JSON content type (a cross-site form) is refused.
-	const char *r = RAW("POST /api/call/safety.estop HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+	const char *r = RAW("POST /api/call/safety.estop HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n");
 	CHECK(strncmp(r, "HTTP/1.1 403", 12) == 0);
 	// Its calls done, the console idles: the call timer stopped with them.
 	struct mstat m;
@@ -527,6 +597,7 @@ int main(void)
 	RUN_TEST(test_topics);
 	RUN_TEST(test_topic_decode);
 	RUN_TEST(test_page_and_errors);
+	RUN_TEST(test_host_and_origin);
 	RUN_TEST(test_restart_stop_start);
 	RUN_TEST(test_hellion_default);
 	RUN_TEST(test_fly);

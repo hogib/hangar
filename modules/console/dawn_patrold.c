@@ -232,14 +232,18 @@ static const char *reason(int status)
 }
 
 /* Queues a complete response, in lib/net/http.c's format (Content-Length,
- * Connection: close, Cache-Control: no-store; a text type gets the charset). */
+ * Connection: close, Cache-Control: no-store; a text type gets the charset),
+ * with the two headers that tell a browser never to show it inside another
+ * site's frame: the Fly view's buttons are not to be clicked through an
+ * overlay. */
 static void respond(struct conn *c, int status, const char *ctype, const void *body, size_t len)
 {
 	char head[512];
 	int text = strncmp(ctype, "text/", 5) == 0;
 	int n = snprintf(head, sizeof head,
 			 "HTTP/1.1 %d %s\r\nContent-Type: %s%s\r\nContent-Length: %zu\r\n"
-			 "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+			 "Cache-Control: no-store\r\nX-Frame-Options: DENY\r\n"
+			 "Content-Security-Policy: frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
 			 status, reason(status), ctype, text ? "; charset=utf-8" : "", len);
 	free(c->out);
 	c->out = malloc((size_t)n + len);
@@ -304,32 +308,89 @@ static int valid_module_name(const char *s)
 	return 1;
 }
 
+/* The value of one header of the raw head (http_parse_request keeps
+ * Content-Length alone): the first line named `name`, without the blanks
+ * around it, into out. 1 if found and it fits, 0 if absent, -1 if it does
+ * not fit. */
+static int head_value(const char *head, size_t len, const char *name, char *out, size_t cap)
+{
+	size_t nl = strlen(name);
+	for (size_t i = 0; i + 2 + nl + 1 <= len; i++) {
+		if (head[i] != '\r' || head[i + 1] != '\n' || strncasecmp(head + i + 2, name, nl) != 0 ||
+		    head[i + 2 + nl] != ':')
+			continue;
+		const char *v = head + i + 2 + nl + 1, *end = head + len;
+		while (v < end && (*v == ' ' || *v == '\t'))
+			v++;
+		const char *e = v;
+		while (e < end && *e != '\r' && *e != '\n')
+			e++;
+		while (e > v && (e[-1] == ' ' || e[-1] == '\t'))
+			e--;
+		if ((size_t)(e - v) >= cap)
+			return -1;
+		memcpy(out, v, (size_t)(e - v));
+		out[e - v] = 0;
+		return 1;
+	}
+	return 0;
+}
+
 /* A POST must carry Content-Type: application/json. A cross-origin page
  * cannot send that header without a preflight this server never grants,
  * so a form on some other site cannot restart a module through the
- * operator's browser. http_parse_request keeps Content-Length alone, so
- * the raw head is scanned. */
+ * operator's browser. */
 static int head_has_json_type(const char *head, size_t len)
 {
-	static const char key[] = "\r\ncontent-type:";
-	for (size_t i = 0; i + sizeof key - 1 < len; i++) {
-		size_t k = 0;
-		while (k < sizeof key - 1 && i + k < len) {
-			char ch = head[i + k];
-			if (ch >= 'A' && ch <= 'Z')
-				ch = (char)(ch - 'A' + 'a');
-			if (ch != key[k])
-				break;
-			k++;
-		}
-		if (k != sizeof key - 1)
-			continue;
-		const char *v = head + i + k;
-		while (v < head + len && (*v == ' ' || *v == '\t'))
-			v++;
-		return (size_t)(head + len - v) >= 16 && strncasecmp(v, "application/json", 16) == 0;
+	char v[128];
+	return head_value(head, len, "content-type", v, sizeof v) == 1 && strncasecmp(v, "application/json", 16) == 0;
+}
+
+/* 1 if `Host` names this console the way a browser that was pointed at it
+ * does: an IPv4 literal, a bracketed IPv6 literal or `localhost`, with any
+ * port or none. The port is not compared: behind an SSH forward (-L
+ * 18080:127.0.0.1:8080) it is the forward's. What this refuses is DNS
+ * rebinding: a page loaded from evil.example whose name is then pointed at
+ * 127.0.0.1 is same-origin with the console as far as the browser knows, and
+ * could read every reply and press every button; but the browser still sends
+ * `Host: evil.example`, and a name is never an IP literal. */
+static int host_is_local(const char *host)
+{
+	char h[80];
+	const char *port;
+	if (host[0] == '[') {
+		const char *close_b = strchr(host, ']');
+		struct in6_addr a6;
+		if (!close_b || (size_t)(close_b - host - 1) >= sizeof h)
+			return 0;
+		snprintf(h, sizeof h, "%.*s", (int)(close_b - host - 1), host + 1);
+		if (inet_pton(AF_INET6, h, &a6) != 1)
+			return 0;
+		port = close_b + 1;
+	} else {
+		size_t n = strcspn(host, ":");
+		struct in_addr a4;
+		if (!n || n >= sizeof h)
+			return 0;
+		snprintf(h, sizeof h, "%.*s", (int)n, host);
+		if (strcasecmp(h, "localhost") != 0 && inet_pton(AF_INET, h, &a4) != 1)
+			return 0;
+		port = host + n;
 	}
-	return 0;
+	if (!*port)
+		return 1;
+	size_t digits = strlen(port + 1);
+	return *port == ':' && digits >= 1 && digits <= 5 && strspn(port + 1, "0123456789") == digits;
+}
+
+/* 1 if `Origin` (scheme://host[:port]) is the page this console served: its
+ * host and port are the request's `Host`. A browser sends Origin with every
+ * POST; a page of another site, or of another port of this machine, carries
+ * its own there and cannot change it. */
+static int origin_is_host(const char *origin, const char *host)
+{
+	size_t skip = strncasecmp(origin, "http://", 7) == 0 ? 7 : strncasecmp(origin, "https://", 8) == 0 ? 8 : 0;
+	return skip && strcasecmp(origin + skip, host) == 0;
 }
 
 /* One control request; the reply as JSON with the status it deserves. */
@@ -653,6 +714,21 @@ static void route(struct conn *c, const HttpRequest *req)
 	if (!get && !post) {
 		respond_error(c, 405, "method not allowed");
 		return;
+	}
+	/* Before anything is answered, the page included: who the browser
+	 * thinks it is talking to, and for a POST, which page sent it. */
+	char host[128], origin[160];
+	if (head_value(c->in, req->head_len, "host", host, sizeof host) != 1 || !host_is_local(host)) {
+		respond_error(c, 403, "Host must be an IP address or localhost: open the console by its address, "
+				      "http://127.0.0.1:<port>/");
+		return;
+	}
+	if (post) {
+		int o = head_value(c->in, req->head_len, "origin", origin, sizeof origin);
+		if (o < 0 || (o == 1 && !origin_is_host(origin, host))) {
+			respond_error(c, 403, "a POST from another origin than the console's own page");
+			return;
+		}
 	}
 	if (get && strcmp(p, "/") == 0) {
 		respond(c, 200, "text/html", console_page_html, console_page_html_len);
