@@ -541,6 +541,11 @@ static int serial_receive(struct mav_link *l, void (*fn)(void *ctx, const struct
 			}
 			off += take_frame(l, l->rx + off, used, &f, why, fn, ctx, &valid);
 		}
+		/* A frame's handler may send, and a send that finds the line gone
+		 * closes it and empties this buffer (serial_down) under the loop
+		 * above: what was parsed is then more than what is left. */
+		if (off > l->rx_len)
+			off = l->rx_len;
 		if (off > 0) {
 			memmove(l->rx, l->rx + off, l->rx_len - off);
 			l->rx_len -= off;

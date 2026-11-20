@@ -304,7 +304,8 @@ pseudo-terminal.
   queue holding one disarm and one manual control among evictable frames, and a
   queue of nothing but rate requests gives one up for it; an arm waiting on the blocked
   line is gone after a disarm, and after `mav_link_cancel_arm`, and is not delivered
-  when the line drains; the tlog holds
+  when the line drains; a frame handler that sends on a line that went away under it
+  (in a child process: the receive loop used to move a negative length); the tlog holds
   exactly the frames that went, each one whole and verifiable.
 - `make check-mavlink_vehicle` (20 s): the module against `fake_ardusub` (a UDP client
   like MAVProxy's `--out`, signing, a parameter table, scripted refusals, a control

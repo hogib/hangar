@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define main mavlink_prog_main
@@ -352,6 +353,73 @@ static void test_a_queued_arm_does_not_outlive_its_window(void)
 	close_line();
 }
 
+/* A frame handler that sends, on a line that went away under it. The send
+ * finds the line gone (EIO), serial_down closes it and empties the receive
+ * buffer, and the receive loop, back from the handler, moved "what is left"
+ * of a buffer that now held less than it had parsed: a length of minus one
+ * frame, as a size_t, and kept that as the buffer's length. The vehicle's
+ * handler sends nothing today; the next one might. Run in a child, since a
+ * memmove of that length may do anything: here it left a closed line with a
+ * receive buffer "holding" nearly 2^64 bytes. */
+static int frames_handled;
+
+static void handler_that_sends(void *ctx, const struct mav_frame *f)
+{
+	(void)ctx;
+	(void)f;
+	frames_handled++;
+	if (master >= 0) {
+		close(master); /* the far end is gone: an unplugged cable */
+		master = -1;
+	}
+	send_hb();
+}
+
+static void test_line_gone_inside_a_handler(void)
+{
+	fflush(stdout);
+	pid_t pid = fork();
+	if (pid == 0) {
+		open_line(0);
+		/* Two frames from the far end, signed with the link's key, in one write. */
+		struct mav_signing far;
+		memset(&far, 0, sizeof far);
+		far.enabled = 1;
+		far.link_id = 2;
+		char err[64];
+		mav_signing_load_key(&far, keyfile, err, sizeof err);
+		uint8_t buf[2 * MAV_MAX_FRAME], pl[MAV_LEN_HEARTBEAT];
+		struct mav_heartbeat h;
+		memset(&h, 0, sizeof h);
+		h.type = 12;
+		mav_pack_heartbeat(&h, pl);
+		size_t n = 0;
+		for (int i = 0; i < 2; i++)
+			n += mav_encode(buf + n, sizeof buf - n, (uint8_t)i, 1, 1, MAV_MSG_ID_HEARTBEAT, pl, sizeof pl,
+					MAV_CRC_HEARTBEAT, &far);
+		if (write(master, buf, n) != (ssize_t)n)
+			_exit(10);
+		int valid = 0;
+		for (int i = 0; i < 200 && !frames_handled; i++) {
+			valid += mav_link_receive(&L, handler_that_sends, NULL);
+			usleep(1000);
+		}
+		if (frames_handled != 1)
+			_exit(11); /* the second frame went with the buffer */
+		if (L.fd >= 0 || L.rx_len != 0 || L.drops != 1)
+			_exit(12);
+		if (strncmp(L.line_state, "down (write:", 12) != 0)
+			_exit(13);
+		_exit(valid == 1 ? 0 : 14);
+	}
+	int st = 0;
+	CHECK(pid > 0 && waitpid(pid, &st, 0) == pid);
+	CHECK(WIFEXITED(st));
+	if (WIFSIGNALED(st))
+		printf("    the child died of signal %d\n", WTERMSIG(st));
+	CHECK_EQ_INT(WIFEXITED(st) ? WEXITSTATUS(st) : -1, 0);
+}
+
 /* The tlog holds what went on the line, whole signed frames in the order
  * they went: a reader of it (pymavlink) must find every frame well formed. */
 static void test_tlog_is_what_went(void)
@@ -411,6 +479,7 @@ int main(void)
 	RUN_TEST(test_signed_in_the_order_written);
 	RUN_TEST(test_a_disarm_is_never_dropped);
 	RUN_TEST(test_a_queued_arm_does_not_outlive_its_window);
+	RUN_TEST(test_line_gone_inside_a_handler);
 	RUN_TEST(test_tlog_is_what_went);
 	unlink(keyfile);
 	unlink(tlogfile);
