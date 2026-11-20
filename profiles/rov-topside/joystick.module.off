@@ -1,0 +1,28 @@
+# joystick.module.off: the pilot's controller read natively (modules/joystick/README.md;
+# hangar#3), opt-in. It publishes pilot.wrench and pilot.buttons, as topside_mavlink
+# does for QGroundControl: enable it in place of topside_mavlink, never beside it
+# (one writer per topic). modules/joystick/README.md, "Instead of QGroundControl".
+[Module]
+Description=The pilot's controller: pilot.wrench and pilot.buttons from /dev/input/js*
+Exec=/usr/lib/hangar/hangar-joystick /etc/hangar/joystick.conf
+User=hg-joystick
+# /dev/input/js* belongs to the group input.
+SupplementaryGroups=input
+
+# 50 Hz from the start, with or without a controller: without one, a neutral
+# wrench flagged as computed from stale input, which the mux reads as no input.
+[Publish pilot.wrench]
+Type=wrench
+Rate=50
+
+[Publish pilot.buttons]
+Type=pilot_buttons
+Rate=50
+
+[Call safety.arm]
+Request=empty
+Reply=empty
+
+[Call safety.disarm]
+Request=empty
+Reply=empty
