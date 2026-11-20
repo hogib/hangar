@@ -528,6 +528,15 @@ static int cmd_echo(int argc, char **argv)
 					return 1;
 				}
 			}
+			/* The fields are read at the schema's offsets out of a buffer
+			 * of the header's payload_bytes: a schema that describes more
+			 * (a header not written by lib/hg from one type) is refused. */
+			if (schema->type.payload_bytes > pl) {
+				fail("%s: the schema describes a payload of %u bytes, the header says %u", topic,
+				     schema->type.payload_bytes, pl);
+				free(buf);
+				return 1;
+			}
 			if (json)
 				printf("{\"seq\":%llu,\"stamp_ns\":%llu,\"publish_ns\":%llu,\"stale\":%s",
 				       (unsigned long long)info.seq, (unsigned long long)info.stamp_ns,
@@ -830,6 +839,11 @@ static int method_info(const char *target, struct method_info *mi)
 	if (hg_schema_parse(rq, mi->req_schema_len, &mi->req, err, sizeof err) < 0 ||
 	    hg_schema_parse(rp, mi->rep_schema_len, &mi->rep, err, sizeof err) < 0)
 		return -fail("method: schema: %s", err);
+	/* The request is built, and the reply printed, in buffers of the
+	 * largest call payload, at these types' offsets. */
+	if (mi->req.type.payload_bytes > HG_CALL_MAX_PAYLOAD || mi->rep.type.payload_bytes > HG_CALL_MAX_PAYLOAD)
+		return -fail("method: a request of %u bytes and a reply of %u; a call carries at most %d",
+			     mi->req.type.payload_bytes, mi->rep.type.payload_bytes, HG_CALL_MAX_PAYLOAD);
 	mi->req.type.name = mi->req_name;
 	mi->rep.type.name = mi->rep_name;
 	return 0;
@@ -1058,6 +1072,9 @@ static int params_topic(const char *module, struct hg_schema *schema, unsigned c
 	}
 	*payload = hg_sub_payload_bytes(s);
 	hg_sub_close(s);
+	/* What the callers print by the schema is in buf. */
+	if (schema->type.payload_bytes > *payload || *payload > buflen)
+		return -1;
 	return 0;
 }
 

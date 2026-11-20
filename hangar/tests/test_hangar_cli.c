@@ -142,6 +142,41 @@ static void test_hz_mean_interval(void)
 	CHECK(first > 0.5 && first < 2.6); /* 3 messages in the 1.1 s of a window were 2.73 */
 }
 
+/* echo decodes a payload by the schema in the topic's header, and nothing
+ * held the two together: a header whose schema describes more than its
+ * payload_bytes (a standalone writer's, or a mirrored topic's from the
+ * other side) had echo print fields from past the end of its buffer, 4 MB
+ * of them here from 8 bytes. The same check as for a recording (D8). */
+static void test_echo_schema_larger_than_payload(void)
+{
+	pid_t pub = fork();
+	if (pub == 0) {
+		static struct hg_schema sc;
+		const char text[] = "u64 x\nu8 big[4194304]\n";
+		if (hg_schema_parse(text, sizeof text - 1, &sc, NULL, 0) < 0)
+			_exit(3);
+		sc.type.payload_bytes = 8; /* the header will say 8; its schema says 4 MB */
+		struct hg_pub_opts o = { .slots = 4 };
+		hg_pub *p = hg_pub_open("lie.t", &sc.type, &o);
+		uint64_t x = 5;
+		for (int i = 0; p && i < 40; i++) {
+			hg_publish(p, &x, sizeof x, hg_now_ns());
+			sleep_ms(100);
+		}
+		_exit(p ? 0 : 4);
+	}
+	sleep_ms(400);
+	char *argv[] = { (char *)T_hangar, "echo", "lie.t", "--count", "1", NULL };
+	int rc = run_hangar(out_path(), 8000, NULL, argv);
+	reap(pub);
+	struct stat st;
+	CHECK_EQ_INT(stat(out_path(), &st), 0);
+	printf("    echo of an 8-byte payload under a 4 MB schema: exit %d, %lld bytes printed\n", rc, (long long)st.st_size);
+	CHECK_EQ_INT(rc, 1);
+	CHECK(st.st_size < 1000);
+	CHECK(file_contains(out_path(), "the schema describes a payload of 4194312 bytes, the header says 8"));
+}
+
 /* --count, --seconds and --timeout went through atol: "--count x" was 0,
  * and echo exited 0 at once having shown nothing; "--seconds 2s" was 2; a
  * --timeout past 2^63 ns overflowed the deadline. Each takes a whole number
@@ -552,6 +587,19 @@ static void test_malformed_reply_stops_the_command(void)
 	CHECK_EQ_INT(run_hangar(out_path(), 5000, NULL, reset), 1);
 	CHECK(!requested("param-write"));
 	stand_in_stop(mgr);
+	/* A method whose types are larger than a call carries: the request is
+	 * built in a buffer of that size, at the type's offsets. */
+	static const struct answer huge[] = {
+		{ "method ", "ok\nreq=big hash=1 size=40000 rep=empty hash=2 size=8 deadline=100 running=1 reqschema=15 "
+			     "repschema=12\nu8 body[40000]\nu8 reserved\n" },
+		{ NULL, NULL }
+	};
+	mgr = stand_in_manager(huge);
+	char *big[] = { (char *)T_hangar, "call", "srv.arm", "body=1", NULL };
+	CHECK_EQ_INT(run_hangar(out_path(), 5000, NULL, big), 1);
+	CHECK(file_contains(out_path(), "a call carries at most 16384"));
+	CHECK(!requested("call "));
+	stand_in_stop(mgr);
 }
 
 /* ---- Under the manager --------------------------------------------------------
@@ -945,6 +993,7 @@ int main(void)
 	RUN_TEST(test_numeric_options);
 	RUN_TEST(test_echo_follows_a_replaced_schema);
 	RUN_TEST(test_json_is_json);
+	RUN_TEST(test_echo_schema_larger_than_payload);
 	RUN_TEST(test_malformed_reply_stops_the_command);
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
