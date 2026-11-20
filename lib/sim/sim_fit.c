@@ -113,7 +113,7 @@ static void for_each_row(const struct sim_params *base, const struct sim_thruste
   double T[6][SIM_NTHRUSTERS];
   sim_alloc_matrix(geom, T);
   double prev[SIM_NTHRUSTERS] = {0};
-  double tau_prev[6] = {0}, tau[6];
+  double tau_prev[6] = {0}, tau[6] = {0};
   for (size_t k = 0; k < n; k++) {
     double dt = k ? samples[k].t - samples[k - 1].t : 0.0;
     memcpy(tau_prev, tau, sizeof tau);

@@ -463,17 +463,17 @@ int main(void) {
   printf("\n# patterns:");
   for (int p = 0; p < PAT_COUNT; p++)
     printf(" %s", pattern_names[p]);
-  printf("\n# blur, blur_luma: strength 0..%u\n", blur_max_strength);
+  printf("\n# blur, blur_luma: strength 0..%d\n", blur_max_strength);
   printf("# sobel: threshold 0..240 step 16, and 255\n");
-  printf("# log: strength 0..%u x threshold 0..224 step 32, and 255\n", log_max_strength);
-  printf("# canny: strength 1..%u x low {0,20,40,80,120,160,200} x high {40,60,90,130,180,255}\n",
+  printf("# log: strength 0..%d x threshold 0..224 step 32, and 255\n", log_max_strength);
+  printf("# canny: strength 1..%d x low {0,20,40,80,120,160,200} x high {40,60,90,130,180,255}\n",
          canny_max_strength);
   printf("# contrast: direct; none grayscale invert chain-contrast: one-stage chains\n");
   printf("# threshold: value 0..224 step 32, and 255; light: level the same\n");
   printf("# tint: u, v in {0,64,128,192,255} x strength 0..224 step 32, and 255\n");
   printf("# chain: %u fixed chains (equiv.c), and auto-invert (auto visibility, fresh state)\n",
          (unsigned)COUNT(chains));
-  printf("# auto_vis: %u-frame sequence per size and pattern, capture_ns = (frame+1) * 33333333\n",
+  printf("# auto_vis: %d-frame sequence per size and pattern, capture_ns = (frame+1) * 33333333\n",
          auto_vis_frames);
   printf("# output buffers poisoned 0xA5 first; skip = the operator refused the size\n");
 
