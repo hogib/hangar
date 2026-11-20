@@ -355,8 +355,14 @@ static void test_graph_refusals(void)
 	add("s", MOD "[Subscribe x.y]\nType=wrench\n");
 	expect_graph("s", 3, "but p publishes it as depth");
 	fresh_set();
+	/* dataset:<name>: the writer's row type, like frame (policy_check.c);
+	 * never a call's request or reply. */
 	add("d", MOD "[Publish x.y]\nType=dataset:rows\n");
-	expect_graph("d", 3, "dataset specs");
+	mf_set_check(&set);
+	expect_accepted("d");
+	fresh_set();
+	add("dc", MOD "[Serve m]\nRequest=dataset:rows\nReply=empty\n");
+	expect_graph("dc", 3, "a request or reply cannot be a dataset row");
 	fresh_set();
 	add("t", MOD "[Publish x.y]\nType=nosuchtype\n");
 	expect_graph("t", 3, "cannot read");
