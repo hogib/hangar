@@ -370,8 +370,8 @@ for root in /dev/shm/hangar-vehicle /dev/shm/hangar-topside; do
         echo "  no manager under $root"
     fi
 done
-[ -f "$HOME/hangar-rov/relay.pid" ] && kill -0 "$(cat "$HOME/hangar-rov/relay.pid")" 2>/dev/null &&
-    echo "  MAVROS relay: running" || echo "  MAVROS relay: not running"
+# rov.sh's word for the relay: a relay.pid left from before a reboot names no relay.
+echo "  MAVROS relay: $("$R/share/hangar/rov.sh" relay status 2>/dev/null || echo "not known")"
 for s in $SERVICES; do printf '  %s: %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null)"; done
 if command -v vcgencmd > /dev/null; then
     echo "  $(vcgencmd measure_temp) $(vcgencmd get_throttled) $(vcgencmd measure_clock arm | sed 's/frequency([0-9]*)=/arm Hz=/')"

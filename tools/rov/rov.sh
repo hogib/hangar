@@ -9,7 +9,7 @@
 #   rov.sh down               both managers, then the relay
 #   rov.sh status             both managers' status, the relay's
 #   rov.sh reset              down, then remove both roots (the next up lays them out)
-#   rov.sh relay up|down      MAVROS alone
+#   rov.sh relay up|down|status  MAVROS alone
 #   rov.sh params save [FILE] every Pixhawk parameter to FILE (default under $HANGAR_ROV_STATE)
 #   rov.sh params diff FILE   the parameters that differ from FILE now
 #   rov.sh params restore FILE  set back the ones that differ, then diff again (disarmed only)
@@ -107,7 +107,32 @@ lay_out() { # root profile
     fi
 }
 
-running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+# A pid file names a running process only if that process is the one it was written
+# for. $STATE is on the Pi's card: relay.pid outlives a reboot, after which its number
+# is some other process's (and relay down signals the whole group of it). Beside each
+# pid file, <file>.id holds the boot's id and the process's start time in clock ticks
+# since boot; neither moves when the Pi's clock is set. A pid file without one (written
+# by a release before this) is taken at its word, as before.
+proc_id() { # pid
+    local stat f
+    stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    read -r -a f <<< "${stat##*) }"       # after "pid (comm) ": state is f[0], starttime f[19]
+    [ -n "${f[19]:-}" ] || return 1
+    echo "$(cat /proc/sys/kernel/random/boot_id) ${f[19]}"
+}
+write_pid() { # pid file
+    echo "$1" > "$2"
+    proc_id "$1" > "$2.id" || rm -f "$2.id"
+}
+drop_pid() { rm -f "$1" "$1.id"; }
+running() { # file
+    local pid
+    [ -f "$1" ] || return 1
+    pid=$(cat "$1")
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+    [ -f "$1.id" ] || return 0
+    [ "$(cat "$1.id")" = "$(proc_id "$pid")" ]
+}
 
 start_manager() { # root [peer-root: the same-host shim]
     local root=$1 peer=${2:-}
@@ -121,7 +146,7 @@ start_manager() { # root [peer-root: the same-host shim]
     else
         HANGAR_ROOT=$root setsid nohup "$bin/hangard" >> "$root/hangard.log" 2>&1 < /dev/null &
     fi
-    echo $! > "$root/hangard.pid"
+    write_pid $! "$root/hangard.pid"
 }
 
 # BRIDGE=1: the key both bridges share; made on the Pi if absent, copied to the
@@ -144,12 +169,12 @@ same_layout() { # root
 
 stop_manager() { # root
     local root=$1 pid
-    running "$root/hangard.pid" || { rm -f "$root/hangard.pid"; return 0; }
+    running "$root/hangard.pid" || { drop_pid "$root/hangard.pid"; return 0; }
     pid=$(cat "$root/hangard.pid")
     kill -TERM "$pid"
     for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     kill -0 "$pid" 2>/dev/null && { say "manager $pid did not stop in 10 s: SIGKILL"; kill -KILL "$pid"; }
-    rm -f "$root/hangard.pid"
+    drop_pid "$root/hangard.pid"
 }
 
 # ---- the relay ------------------------------------------------------------------
@@ -168,17 +193,17 @@ relay_up() {
         -p fcu_url:=$FCU -p gcs_url:=udp://127.0.0.1:14555@127.0.0.1:14560 \
         -p system_id:=2 -p component_id:=191 -p tgt_system:=1 -p tgt_component:=1" \
         >> "$STATE/relay.log" 2>&1 < /dev/null &
-    echo $! > "$STATE/relay.pid"
+    write_pid $! "$STATE/relay.pid"
     say "relay: MAVROS $FCU -> 127.0.0.1:14560 (pid $!, log $STATE/relay.log)"
 }
 
 relay_down() {
-    running "$STATE/relay.pid" || { rm -f "$STATE/relay.pid"; return 0; }
+    running "$STATE/relay.pid" || { drop_pid "$STATE/relay.pid"; return 0; }
     local pid; pid=$(cat "$STATE/relay.pid")
     kill -INT -- "-$pid" 2>/dev/null || true
     for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     kill -0 "$pid" 2>/dev/null && kill -KILL -- "-$pid" 2>/dev/null || true
-    rm -f "$STATE/relay.pid"
+    drop_pid "$STATE/relay.pid"
     say "relay stopped"
 }
 
@@ -425,7 +450,12 @@ case "${1:-}" in
     status) cmd_status ;;
     reset) cmd_down; rm -rf "$RV" "$RT"; say "roots removed" ;;
     relay)
-        case "${2:-}" in up) relay_up ;; down) relay_down ;; *) usage 2 ;; esac ;;
+        case "${2:-}" in
+            up) relay_up ;;
+            down) relay_down ;;
+            status) if running "$STATE/relay.pid"; then echo running; else echo "not running"; fi ;;
+            *) usage 2 ;;
+        esac ;;
     params)
         case "${2:-}" in
             save) params_save "${3:-}" ;;
