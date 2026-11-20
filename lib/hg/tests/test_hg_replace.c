@@ -55,6 +55,50 @@ static void test_bit2_without_new_file(void)
 	hg_pub_close(p);
 }
 
+static void test_bad_file_at_the_path(void)
+{
+	// Flagged as replaced, and what is at the path is no topic file: the
+	// read says HG_ERROR, and the reader does not spin on it. A real file
+	// put there later is followed.
+	char path[700], tmp[700];
+	hg_pub *p = open_words("rp.bad");
+	hg_sub *s = hg_sub_open("rp.bad", WORDS_TYPE);
+	pub_n(p, 1);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	snprintf(path, sizeof path, "%s/rp.bad", topic_dir);
+	snprintf(tmp, sizeof tmp, "%s/rp.bad.junk", topic_dir);
+	FILE *f = fopen(tmp, "w");
+	CHECK(f != NULL);
+	if (f) {
+		for (int i = 0; i < 8192; i++)
+			fputc('x', f);
+		fclose(f);
+	}
+	CHECK_EQ_INT(hg_stub_mark_replaced("rp.bad"), 0);
+	CHECK_EQ_INT(rename(tmp, path), 0);
+	CHECK_EQ_INT(hg_wait(&s, 1, 0), HG_READY_TOPICS);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_ERROR);
+	int loops = 0;
+	uint64_t t0 = hg_now_ns();
+	while (ms_since(t0) < 300 && loops < 100000) {
+		hg_wait(&s, 1, 100);
+		(void)hg_next(s, buf, sizeof buf, &info);
+		loops++;
+	}
+	printf("    a file that is no topic at the path: %d waits in 300 ms\n", loops);
+	CHECK(loops <= 6);
+	hg_pub *q = open_words("rp.bad"); // a writer again: a real file at the path
+	pub_n(q, 2); // its seqs start over (it found no file to continue): 2 is new to the reader
+	CHECK_EQ_INT(hg_wait(&s, 1, 1000), HG_READY_TOPICS);
+	enum hg_result r = hg_next(s, buf, sizeof buf, &info);
+	if (r == HG_NONE)
+		r = hg_next(s, buf, sizeof buf, &info);
+	CHECK_EQ_INT(r, HG_MSG);
+	hg_sub_close(s);
+	hg_pub_close(p);
+	hg_pub_close(q);
+}
+
 static void test_restart_continues_seq_without_gap(void)
 {
 	ino_t wake0, dir0, topic0, wake1, dir1, topic1;
@@ -240,6 +284,7 @@ int main(void)
 {
 	hg_test_setup("replace");
 	RUN_TEST(test_bit2_without_new_file);
+	RUN_TEST(test_bad_file_at_the_path);
 	RUN_TEST(test_restart_continues_seq_without_gap);
 	RUN_TEST(test_lost_messages_across_restart_are_a_gap);
 	RUN_TEST(test_mirror_new_boot_is_new_epoch);

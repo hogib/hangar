@@ -1642,6 +1642,7 @@ static int attach(hg_sub *s, int announce)
 static int reopen(hg_sub *s, uint32_t flags)
 {
 	struct mapping m;
+	int err = 0;
 	if (map_topic_ro(s->path, &m) == 0) {
 		if (m.dev != s->dev || m.ino != s->ino) {
 			use_mapping(s, &m);
@@ -1650,7 +1651,11 @@ static int reopen(hg_sub *s, uint32_t flags)
 		}
 		munmap(m.h, m.len);
 	} else if (errno != ENOENT) {
-		return -1;
+		/* Something at the path that is no topic file. The flags count as
+		 * seen all the same, and the next look waits for the directory
+		 * word, as for a file not there yet: an error the reader has been
+		 * told is not news again on every wait. */
+		err = errno;
 	}
 	if (!s->reopen_since) {
 		s->reopen_since = hg_now_ns();
@@ -1666,6 +1671,10 @@ static int reopen(hg_sub *s, uint32_t flags)
 		}
 	}
 	s->seen_flags = flags;
+	if (err) {
+		errno = err;
+		return -1;
+	}
 	return 0;
 }
 
@@ -2369,7 +2378,7 @@ unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char
 				s->reopen_since = 0; /* the replacing writer backed out */
 				continue;
 			}
-			if (reopen(s, f) == 0)
+			if (reopen(s, f) <= 0)
 				need_dir = 1; /* the rename bumps the word */
 		}
 		/* The futexes: every attached topic's word. With n <= 127 there
