@@ -189,6 +189,11 @@ static void test_reload(void)
 	for (int i = 0; i < 100 && module_status("t1", &m); i++)
 		sleep_ms(20);
 	CHECK(!module_status("t1", &m));
+	/* t1 was adopted: it is not the manager's child, which sees its exit on
+	 * the pidfd and drops the entry, while the pid stays until whoever
+	 * inherited the process (init, a subreaper) has reaped it. */
+	for (int i = 0; i < 100 && kill(m1.pid, 0) == 0; i++)
+		sleep_ms(20);
 	CHECK(kill(m1.pid, 0) < 0);
 	// SIGHUP reloads too.
 	write_manifests();
