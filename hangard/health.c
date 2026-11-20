@@ -338,6 +338,12 @@ void on_module_exit(struct module *m)
 		G.need_prune = 1;
 		return;
 	}
+	if (m->mf->refused) {
+		/* Stopped because its manifest is refused: nothing restarts it,
+		 * and status says why. */
+		set_state(m, ST_REFUSED, m->mf->reason);
+		return;
+	}
 	if (was_stopping) {
 		switch (m->after_stop) {
 		case ST_BACKOFF:
