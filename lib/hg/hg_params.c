@@ -309,24 +309,16 @@ int hg_param_parse(const struct hg_field *f, const char *text, size_t len, unsig
 		return 0;
 	}
 	uint32_t es = hg_field_elem_size(f->kind);
-	/* The list: one value for every element, or exactly count values. */
-	const char *parts[HG_SCHEMA_MAX / 2];
-	size_t plen[HG_SCHEMA_MAX / 2];
-	uint32_t k = 0;
-	const char *p = s;
-	while (p <= e && k < sizeof parts / sizeof parts[0]) {
-		const char *c = memchr(p, ',', (size_t)(e - p));
-		const char *pe = c ? c : e;
-		const char *vs = skip_blank(p, pe), *ve = trim_end(vs, pe);
-		parts[k] = vs;
-		plen[k] = (size_t)(ve - vs);
-		k++;
-		if (!c)
-			break;
-		p = c + 1;
-	}
+	/* The list: one value for every element, or exactly count values.
+	 * Counted first, then read in a second pass: a table of the parts on
+	 * the stack held 1792 of them, fewer than an array the size check below
+	 * lets through, so the list the formatter writes for a longer array
+	 * was refused on its way back ("1792 values for 2115 elements"). */
+	uint64_t k = 1;
+	for (const char *c = s; c < e; c++)
+		k += *c == ',';
 	if (k != 1 && k != f->count) {
-		set_err(err, errlen, "%s: %u values for %u elements", f->name, k, f->count);
+		set_err(err, errlen, "%s: %llu values for %u elements", f->name, (unsigned long long)k, f->count);
 		errno = EINVAL;
 		return -1;
 	}
@@ -336,17 +328,23 @@ int hg_param_parse(const struct hg_field *f, const char *text, size_t len, unsig
 		errno = EINVAL;
 		return -1;
 	}
+	const char *p = s;
 	for (uint32_t i = 0; i < f->count; i++) {
-		uint32_t j = k == 1 ? 0 : i;
+		/* One value for all: the same text again for every element. */
+		const char *c = k == 1 ? NULL : memchr(p, ',', (size_t)(e - p));
+		const char *pe = c ? c : e;
+		const char *vs = skip_blank(p, pe), *ve = trim_end(vs, pe);
 		char nm[80];
 		if (f->count > 1)
 			bfmt(nm, sizeof nm, "%s[%u]", f->name, i);
 		else
 			bfmt(nm, sizeof nm, "%s", f->name);
-		if (parse_number(f->kind, parts[j], parts[j] + plen[j], tmp + (size_t)i * es, err, errlen, nm) < 0) {
+		if (parse_number(f->kind, vs, ve, tmp + (size_t)i * es, err, errlen, nm) < 0) {
 			errno = EINVAL;
 			return -1;
 		}
+		if (c)
+			p = c + 1;
 	}
 	memcpy(field, tmp, (size_t)es * f->count);
 	return 0;

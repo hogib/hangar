@@ -219,6 +219,38 @@ static void test_floats_are_finite(void)
 	CHECK(strstr(err, "line 2") != NULL);
 }
 
+/* An array longer than 1792 elements, as the formatter writes it: every value
+ * comes back. The parser kept the parts of a list in a table of 1792 and
+ * refused its own formatter's file for anything longer (found by
+ * fuzz/fuzz_params.c). The one-value-for-all form, and the counts that are
+ * neither, are as before. */
+static void test_long_list(void)
+{
+	const struct hg_type *t = type_of("u16 lut[2500]\n", "lut_params");
+	static uint16_t v[2504], back[2504];
+	static char text[1 << 16], err[200];
+	for (int i = 0; i < 2500; i++)
+		v[i] = (uint16_t)(i * 7);
+	int n = hg_param_format(&t->fields[0], (const unsigned char *)v, text, sizeof text);
+	CHECK(n > 2500 && n < (int)sizeof text);
+	memset(back, 0xff, sizeof back);
+	err[0] = 0;
+	int rc = hg_param_parse(&t->fields[0], text, (size_t)n, (unsigned char *)back, err, sizeof err);
+	if (rc < 0)
+		printf("    %s\n", err);
+	CHECK_EQ_INT(rc, 0);
+	CHECK(memcmp(v, back, 2500 * sizeof v[0]) == 0);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], " 9 ", 3, (unsigned char *)back, err, sizeof err), 0);
+	CHECK(back[0] == 9 && back[1791] == 9 && back[1792] == 9 && back[2499] == 9);
+	err[0] = 0;
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], "1, 2, 3", 7, (unsigned char *)back, err, sizeof err), -1);
+	CHECK(strstr(err, "3 values for 2500 elements") != NULL);
+	CHECK(back[0] == 9);
+	text[n] = ',';
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, (size_t)n + 1, (unsigned char *)back, err, sizeof err), -1);
+	CHECK(strstr(err, "2501 values for 2500 elements") != NULL);
+}
+
 /* close() for this suite's own process, lib/hg's objects included: when
  * told to, it fails the close of a parameter file's temporary (as a quota
  * or a network file system does at close: the descriptor is released all
@@ -529,6 +561,7 @@ static void test_canonical_from_two_threads(void)
 int main(void)
 {
 	RUN_TEST(test_long_quoted_text);
+	RUN_TEST(test_long_list);
 	RUN_TEST(test_canonical_from_two_threads);
 	RUN_TEST(test_save_closes_once);
 	RUN_TEST(test_defaults_meet_the_validator);
