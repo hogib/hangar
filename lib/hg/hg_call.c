@@ -494,8 +494,10 @@ static struct {
 	int n_answered;
 	int rr;                 /* the topic the next pass starts with */
 	int no_ref_logged;
-	unsigned char req[HG_CALL_REQ_ENVELOPE + HG_CALL_MAX_PAYLOAD];
-	unsigned char rep[HG_CALL_REP_ENVELOPE + HG_CALL_MAX_PAYLOAD];
+	/* 8-aligned: a handler's request and reply are message structs with
+	 * u64 fields, at the envelopes' ends (112 and 96, multiples of 8). */
+	_Alignas(8) unsigned char req[HG_CALL_REQ_ENVELOPE + HG_CALL_MAX_PAYLOAD];
+	_Alignas(8) unsigned char rep[HG_CALL_REP_ENVELOPE + HG_CALL_MAX_PAYLOAD];
 } S;
 
 static int ends_with(const char *s, const char *suffix)
