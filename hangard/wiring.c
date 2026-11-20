@@ -66,7 +66,7 @@ static void put_duration(struct out *o, uint64_t ns)
 static void put_type(struct out *o, const struct mf_type *t)
 {
 	put(o, " type=%s", t->name);
-	if (!t->frame)
+	if (!t->frame && !t->dataset)
 		put(o, " hash=%016llx", (unsigned long long)t->hash);
 }
 

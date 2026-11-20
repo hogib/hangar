@@ -516,7 +516,7 @@ def state_dir(policy):
     return os.path.join(root + "/var/lib/hangar" if root else "/var/lib/hangar", "policy_" + policy)
 
 
-def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeout=10.0, directory=None,
+def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeout=60.0, directory=None,
            incoming=None):
     """Export (unless given a file), send, load_weights, and wait for the
     load's end: {"version", "state" ("done" | "rejected"), "check", "reason",

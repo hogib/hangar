@@ -1359,8 +1359,22 @@ static int resolve_type(struct mf_set *s, const char *name, char *why, size_t wh
 		return s->n_types++;
 	}
 	if (strncmp(name, "dataset:", 8) == 0) {
-		mf_fmt(why, whylen, "type %s: dataset specs (docs/06) are not implemented yet", name);
-		return -1;
+		/* Like frame: the writer's own row type (the pairer builds it from
+		 * the spec and its parts' types), checked when it opens the topic. */
+		if (s->n_types == s->cap_types) {
+			int cap = s->cap_types ? s->cap_types * 2 : 64;
+			struct mf_type *nt = realloc(s->types, (size_t)cap * sizeof *nt);
+			if (!nt)
+				return -1;
+			s->types = nt;
+			s->cap_types = cap;
+		}
+		struct mf_type *t = &s->types[s->n_types];
+		memset(t, 0, sizeof *t);
+		mf_fmt(t->name, sizeof t->name, "%s", name);
+		t->dataset = 1;
+		t->schema = strdup("");
+		return s->n_types++;
 	}
 	char path[MF_PATH];
 	mf_fmt(path, sizeof path, "%s/%s.msg", s->msg_dir, name);
@@ -1743,6 +1757,8 @@ static void check_module(struct mf_set *s, struct mf_module *m)
 			refuse(m, sv->line, "%s", why);
 		else if (s->types[sv->req_idx].frame || s->types[sv->rep_idx].frame)
 			refuse(m, sv->line, "a request or reply cannot be a frame");
+		else if (s->types[sv->req_idx].dataset || s->types[sv->rep_idx].dataset)
+			refuse(m, sv->line, "a request or reply cannot be a dataset row");
 		else if (s->types[sv->req_idx].payload_bytes > 16384 || s->types[sv->rep_idx].payload_bytes > 16384)
 			refuse(m, sv->line, "requests and replies are at most 16 KB");
 	}

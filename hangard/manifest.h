@@ -52,6 +52,7 @@ struct mf_type {
 	uint32_t schema_bytes;
 	char *schema;            /* the .msg text, as the header carries it */
 	int frame;
+	int dataset;             /* "dataset:<name>": the writer's row type, its header checked (policy_check.c) */
 };
 
 struct mf_pub {
@@ -258,6 +259,10 @@ int mf_parse_exec(const char *s, struct mf_exec *out);
 /* A module running hangar-policy: policy_<Name> with its three outputs
  * (docs/09 "Policy modules"; hangard/policy_check.c). 0, or -1 with why. */
 int mf_policy_check(const struct mf_module *m, char *why, size_t len);
+/* A schema a dataset:<name> topic may carry: a dataset row, its six header
+ * fields first (docs/06 "The row"). 1 or 0. */
+struct hg_schema;
+int mf_dataset_schema_ok(const struct hg_schema *s);
 /* A single-token test of the module/method name rule: [a-z0-9_], 1..31. */
 int mf_valid_module_name(const char *s);
 /* 1 if token is a valid Allow token for a machine of role `role`. */

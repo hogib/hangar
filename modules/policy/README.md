@@ -51,7 +51,31 @@ lib/nn only.
 A 2-to-2 dense model at 50 Hz: checks 1 to 7 about 20 ms, warm-up 40 ms (3 ticks),
 request to swap 65 to 75 ms; no output missed across the load; the largest delay from
 the anchor's stamp to the output read by the tester 31 us across the load and swap,
-143 us in 500 ms at rest; step 2.3 us; under 1 % of a core.
+143 us in 500 ms at rest; step 2.3 us; under 1 % of a core (below /proc's 10 ms
+tick over 1 s). The features against the pairer's rows on the same spec, live: about 55
+anchors per run, half with the input part stopped, bit for bit equal.
+
+## The suite
+
+A manager with the policy, the real mux and the real pairer (`Type=dataset:toy`, which
+hangard now accepts, see below); the tester drives `toy.anchor` and `toy.target` at
+50 Hz. Neutral and flagged with no model; runtime_info; a load with no output missed and
+its active message referencing the request; checks 1, 2, 4, 5 and 6 failing in turn
+with the running model untouched and named by the outputs; a second load refused; a
+warm-up overrun (check 8); the features and the stale flag, then against the pairer's
+rows; revert; a restart's reload of both files and revert after it; a non-finite output
+unpublished and counted; Allow, and the manager's refusals of a misnamed policy and of
+one lacking `.load`; `learn_live.py` (hangar.topic on the C writer's topic, deploy,
+watch, revert, a deploy rejected by check 6); the mux's residual after set_mode names
+the model, following a load and a revert, demoting on a stale input; idle CPU. 8 s.
+
+## hangard: `Type=dataset:<name>`
+
+Accepted like `frame`: no hash in the wiring, and when the writer opens the topic the
+manager checks its schema is a dataset row (the six header fields first,
+`hangard/policy_check.c`). The manager does not build the row type from the spec
+itself: the pairer does, from the parts' types, and the policy's check 4 compares the
+hash a model was trained on with the one it builds the same way.
 
 ## Until the bridge, L2 and sim_vehicle
 
@@ -74,5 +98,9 @@ the anchor's stamp to the output read by the tester 31 us across the load and sw
   is the one that delayed the running model's output.
 - `revert` takes effect when the call is served, between two ticks, rather than "at the
   next tick boundary" with a wait: the loop serves calls between ticks.
+- Not tested here: both models at the edge of `TickBudget` (the suite's overrun is
+  forced), a request whose deadline passed during a restart, and the reset bits against
+  a recorded stream with a reboot (the policy calls the pairer's `hg_ds_row_finish`, so
+  the rule is the same code, but no recorded stream is replayed through both).
 - `test-warm-delay-us` in the state directory, read at the start of each load,
   delays each warm-up step: the suite's overrun on demand. Nothing writes it in use.

@@ -34,11 +34,11 @@ $(POLICY_TEST): $(OBJDIR)/modules/policy/tests/test_policy.o $(call obj,$(HG_SRC
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) -lm $(LDLIBS)
 
 .PHONY: check-policy
-check-policy: $(POLICY_TEST) $(POLICY_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(BUILDDIR)/hangar-mux
+check-policy: $(POLICY_TEST) $(POLICY_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(BUILDDIR)/hangar-mux $(PAIRER_BIN)
 	@if HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(abspath $(BUILDDIR)/hangar) \
 	    HANGARD_TOYS=$(abspath $(HANGARD_TOYDIR)) HANGAR_MSG_SRC=$(abspath msg) \
 	    POLICY_BIN=$(abspath $(POLICY_BIN)) MUX_BIN=$(abspath $(BUILDDIR)/hangar-mux) \
-	    POLICY_PYTHON=$(abspath python) \
+	    POLICY_PYTHON=$(abspath python) PAIRER_BIN=$(abspath $(PAIRER_BIN)) \
 	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/policy.log 2>&1; then \
 	  echo "ok    policy"; \
 	else \

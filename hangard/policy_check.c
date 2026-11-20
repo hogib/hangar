@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "hg_type.h"
+
 /* The spec's Name= in its [Policy] section, by a plain line scan: the
  * policy itself parses the spec strictly at start. */
 static int spec_name(const char *path, char *out, size_t len)
@@ -86,4 +88,15 @@ int mf_policy_check(const struct mf_module *m, char *why, size_t len)
 		}
 	}
 	return 0;
+}
+
+int mf_dataset_schema_ok(const struct hg_schema *s)
+{
+	static const char *hdr[] = { "anchor_seq", "anchor_stamp_ns", "boot_id", "missing", "flags", "emitted_ns" };
+	if (s->type.n_fields < 6)
+		return 0;
+	for (int i = 0; i < 6; i++)
+		if (strcmp(s->fields[i].name, hdr[i]) != 0)
+			return 0;
+	return 1;
 }

@@ -32,14 +32,15 @@
 #include "wrench.h"
 
 static pid_t mgr;
-static const char *T_policy, *T_mux, *T_python;
+static const char *T_policy, *T_mux, *T_python, *T_pairer;
 static char models[600], incoming[600], state[600];
 static hg_pub *P_anchor, *P_target, *P_pilot, *P_ctl, *P_depth, *P_safety;
-static hg_sub *S_out, *S_active, *S_load, *S_cmd, *S_mux;
+static hg_sub *S_out, *S_active, *S_load, *S_cmd, *S_mux, *S_rows;
 
 static struct {
 	float a, t, ctl_heave;
 	int publish_target;
+	int vary; /* a and t change at every tick */
 	uint64_t next_ns, anchors;
 } T = { .a = 1.0f, .t = 2.0f, .publish_target = 1 };
 
@@ -64,7 +65,7 @@ static void copy_types(void)
 	const char *src = getenv("HANGAR_MSG_SRC");
 	const char *types[] = { "policy_active", "policy_load", "load_weights_req", "load_weights_rep", "policy_version",
 				"runtime_info", "mux_state", "mux_params", "set_mode_req", "set_mode_rep", "recorder_session",
-				NULL };
+				"pairer_status", NULL };
 	for (int i = 0; types[i]; i++) {
 		char from[1024], to[1024];
 		tfmt(from, sizeof from, "%s/%s.msg", src ? src : "msg", types[i]);
@@ -103,6 +104,9 @@ static void write_files(void)
 	tfmt(state, sizeof state, "%s/var/lib/hangar/policy_toy", T_root);
 	tfmt(incoming, sizeof incoming, "%s/incoming", state);
 	tfmt(models, sizeof models, "%s/models", T_root);
+	tfmt(path, sizeof path, "%s/etc/hangar/pairer.conf", T_root);
+	tfmt(text, sizeof text, "[Pairer]\nDatasets=toy\nDatasetDir=%s/etc/hangar/datasets\n", T_root);
+	write_file(path, text);
 }
 
 static void write_manifests(void)
@@ -127,8 +131,15 @@ static void write_manifests(void)
 			"[Serve set_mode]\nRequest=set_mode_req\nReply=set_mode_rep\nAllow=tester admin\n"
 			"[Restart]\nBackoff=0.1s..0.2s\n",
 		 T_mux);
+	/* The pairer, on the same spec: its rows are what the policy's features
+	 * must equal (docs/09 "Features at run time"). */
+	manifest("pairer", "[Module]\nExec=%s %s/etc/hangar/pairer.conf\n"
+			   "[Subscribe toy.anchor]\n[Subscribe toy.target]\n"
+			   "[Publish dataset.toy]\nType=dataset:toy\nSlots=256\n"
+			   "[Publish pairer.status]\nType=pairer_status\n",
+		 T_pairer, T_root);
 	manifest("tester", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
-			   "[Subscribe policy.toy.wrench]\n[Subscribe policy.toy.active]\n[Subscribe policy.toy.load]\n"
+			   "[Subscribe dataset.toy]\n[Subscribe policy.toy.wrench]\n[Subscribe policy.toy.active]\n[Subscribe policy.toy.load]\n"
 			   "[Subscribe ctl.wrench]\n[Subscribe mux.state]\n"
 			   "[Publish toy.anchor]\nType=depth\nRate=50\n"
 			   "[Publish toy.target]\nType=depth\nRate=50\n"
@@ -226,6 +237,10 @@ static void pump(long ms)
 		uint64_t now = hg_now_ns();
 		if (now >= T.next_ns) {
 			T.next_ns = now + 20000000u;
+			if (T.vary) {
+				T.a = 0.37f * (float)(T.anchors % 97);
+				T.t = -0.21f * (float)(T.anchors % 89) + 1.0f;
+			}
 			struct depth d = { .temp_c = 10, .pressure_mbar = 1013 };
 			if (T.publish_target) {
 				d.depth_m = T.t;
@@ -442,6 +457,11 @@ static void test_load_swap(void)
 		refs_target |= O.out_info.inputs[i].topic_id == hg_topic_id("toy.target");
 	}
 	CHECK(refs_active && refs_anchor && refs_target);
+	/* The active message of a load references the load_weights request. */
+	int refs_req = 0;
+	for (uint32_t i = 0; i < O.active_info.n_inputs; i++)
+		refs_req |= O.active_info.inputs[i].topic_id == hg_topic_id("tester.req");
+	CHECK(refs_req);
 	/* No tick missed across the load and the swap. */
 	uint64_t anchors = T.anchors - a0, outs = O.outs - o0;
 	CHECK(outs + 2 >= anchors);
@@ -477,8 +497,13 @@ static void test_checks_fail(void)
 		if (O.load.check != cases[i].check)
 			printf("    %s: check %u: %s\n", cases[i].model, O.load.check, O.load.reason);
 		pump(60);
-		/* The running model untouched. */
+		/* The running model untouched, and the outputs name it. */
 		CHECK(O.active.hash == hash_a);
+		int names_running = 0;
+		for (uint32_t k = 0; k < O.out_info.n_inputs; k++)
+			names_running |= O.out_info.inputs[k].topic_id == hg_topic_id("policy.toy.active") &&
+					 O.out_info.inputs[k].seq == O.active_info.seq;
+		CHECK(names_running);
 		CHECK(near(O.out.heave, 0.5f * T.a + 0.25f * T.t + 0.1f));
 	}
 	/* A second load while one is under way is refused. */
@@ -529,6 +554,82 @@ static void test_features(void)
 	CHECK(!(O.out_info.flags & 1));
 	T.a = 1.0f;
 	T.t = 2.0f;
+}
+
+/* The policy's features against the pairer's rows, live: with ident
+ * running (heave = the anchor's depth_m, surge = the target's, as the model
+ * sees them), each output equals its row's two input fields, bit for bit,
+ * for the same anchor seq; with the input part stopped, both sides the same
+ * (zeros with the missing bit, or the stale value). */
+static void test_features_vs_pairer(void)
+{
+	S_rows = hg_sub_open("dataset.toy", NULL);
+	CHECK(S_rows != NULL);
+	if (!S_rows)
+		return;
+	CHECK(wait_state("pairer", "ready", 5000));
+	pump(200);
+	uint32_t slen;
+	const char *text = hg_sub_schema(S_rows, &slen);
+	static struct hg_schema sch;
+	CHECK(text && hg_schema_parse(text, slen, &sch, NULL, 0) == 0);
+	const struct hg_field *fa = hg_type_field(&sch.type, "toy.anchor.depth_m");
+	const struct hg_field *ft = hg_type_field(&sch.type, "toy.target.depth_m");
+	CHECK(fa && ft);
+	if (!fa || !ft)
+		return;
+	static struct {
+		uint64_t seq;
+		float heave, surge;
+	} outs[512];
+	int n_out = 0, matched = 0, differ = 0, phase_missing = 0;
+	static unsigned char rowbuf[4096];
+	for (int phase = 0; phase < 2; phase++) {
+		T.vary = 1;
+		T.publish_target = phase == 0;
+		uint64_t end = now_ms() + 600;
+		while (now_ms() < end) {
+			uint64_t o0 = O.outs;
+			pump(20);
+			if (O.outs != o0 && n_out < 512) {
+				for (uint32_t i = 0; i < O.out_info.n_inputs; i++)
+					if (O.out_info.inputs[i].topic_id == hg_topic_id("toy.anchor"))
+						{
+						outs[n_out].seq = O.out_info.inputs[i].seq;
+						outs[n_out].heave = O.out.heave;
+						outs[n_out++].surge = O.out.surge;
+					}
+			}
+			struct hg_info info;
+			while (hg_next(S_rows, rowbuf, sizeof rowbuf, &info) == HG_MSG) {
+				uint64_t aseq;
+				float a, t;
+				memcpy(&aseq, rowbuf, 8);
+				memcpy(&a, rowbuf + fa->offset, 4);
+				memcpy(&t, rowbuf + ft->offset, 4);
+				for (int k = 0; k < n_out; k++)
+					if (outs[k].seq == aseq) {
+						matched++;
+						phase_missing += phase;
+						if (memcmp(&outs[k].heave, &a, 4) != 0 || memcmp(&outs[k].surge, &t, 4) != 0) {
+							if (differ++ < 3)
+								printf("    anchor %llu: policy %g %g, row %g %g\n", (unsigned long long)aseq,
+								       outs[k].heave, outs[k].surge, a, t);
+						}
+					}
+			}
+		}
+	}
+	T.vary = 0;
+	T.publish_target = 1;
+	T.a = 1.0f;
+	T.t = 2.0f;
+	printf("    features vs the pairer's rows: %d anchors compared (%d with the input part stopped), %d differ\n",
+	       matched, phase_missing, differ);
+	/* The pairer emits only the rows the outputs read here had time to meet: at least half. */
+	CHECK(matched >= 20 && phase_missing >= 10);
+	CHECK_EQ_INT(differ, 0);
+	pump(100);
 }
 
 static void test_revert(void)
@@ -683,6 +784,18 @@ static void test_mux_residual(void)
 	/* The controller's heave plus the policy's. */
 	CHECK(fabsf(O.cmd.heave - 0.3f) < 0.02f);
 	printf("    residual: ctl.wrench heave %.3f (controller 0.2, policy 0.1)\n", O.cmd.heave);
+	/* A load and a revert are followed, not demoted: good_b's heave is
+	 * -a + 0.1, the same 0.1 at a = 0. */
+	uint32_t v = 0;
+	CHECK_EQ_INT(load("good_b", NULL, &v, NULL), HG_OK);
+	CHECK_EQ_INT(wait_load(v, 5000), 3);
+	pump(200);
+	CHECK(strcmp(O.mux.mode, "residual:toy") == 0 && fabsf(O.cmd.heave - 0.3f) < 0.02f);
+	policy_version pv;
+	empty e = { 0 };
+	CHECK_EQ_INT(call("policy_toy.revert", &EMPTY_TYPE, &e, &POLICY_VERSION_TYPE, &pv).status, HG_OK);
+	pump(200);
+	CHECK(strcmp(O.mux.mode, "residual:toy") == 0 && O.active.hash == hash_a);
 	/* The policy's input part stops: its output is flagged, the mux demotes. */
 	T.publish_target = 0;
 	pump(400);
@@ -715,8 +828,9 @@ int main(void)
 	T_policy = getenv("POLICY_BIN");
 	T_mux = getenv("MUX_BIN");
 	T_python = getenv("POLICY_PYTHON");
-	if (!T_policy || !T_mux || !T_python) {
-		fprintf(stderr, "POLICY_BIN, MUX_BIN and POLICY_PYTHON must be set\n");
+	T_pairer = getenv("PAIRER_BIN");
+	if (!T_policy || !T_mux || !T_python || !T_pairer) {
+		fprintf(stderr, "POLICY_BIN, MUX_BIN, PAIRER_BIN and POLICY_PYTHON must be set\n");
 		return 2;
 	}
 	hd_setup("policy", NULL);
@@ -727,6 +841,7 @@ int main(void)
 	RUN_TEST(test_checks_fail);
 	RUN_TEST(test_warmup_overrun);
 	RUN_TEST(test_features);
+	RUN_TEST(test_features_vs_pairer);
 	RUN_TEST(test_revert);
 	RUN_TEST(test_restart_reloads);
 	RUN_TEST(test_nonfinite);

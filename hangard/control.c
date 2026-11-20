@@ -389,6 +389,12 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 			err_reply(fd, "%s is declared type=frame; the schema is not a frame type", topic);
 			return;
 		}
+	} else if (t->dataset) {
+		if (!mf_dataset_schema_ok(parsed)) {
+			free(parsed);
+			err_reply(fd, "%s is declared type=%s; the schema is not a dataset row", topic, t->name);
+			return;
+		}
 	} else if (t->hash != hash) {
 		free(parsed);
 		err_reply(fd, "type mismatch: %s is declared %s (hash %016llx), the module opened it with hash %016llx",
