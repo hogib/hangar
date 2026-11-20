@@ -226,6 +226,22 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 		err_reply(fd, "%s: the writer hangar only on %s*", topic, other_h);
 		return;
 	}
+	/* docs/03 "Opening topics" also refuses the .req, .rep or .params topic
+	 * of a module enabled here, whether or not that module declares the
+	 * topic: names are unique across the two machines. Not refused yet,
+	 * only said (README, deviations): the shipped profiles enable `console`
+	 * on both, and the topside's calls safety.* on a console.req that is
+	 * mirrored to a vehicle with a console of its own. Refusing it would
+	 * take arm, disarm and estop from the topside's page. A topic the
+	 * local module does declare is refused below, as any local topic. */
+	const char *dot = strrchr(topic, '.');
+	const char *shared = NULL;
+	if (dot && dot > topic && (strcmp(dot, ".req") == 0 || strcmp(dot, ".rep") == 0 || strcmp(dot, ".params") == 0))
+		for (int k = 0; k < G.set.n_modules && !shared; k++) {
+			const char *name = G.set.modules[k]->name;
+			if (strlen(name) == (size_t)(dot - topic) && strncmp(name, topic, (size_t)(dot - topic)) == 0)
+				shared = name;
+		}
 	const struct mf_mirror *mm = NULL;
 	for (int i = 0; i < m->mf->n_mirrors && !mm; i++)
 		if (hg_glob_match(m->mf->mirrors[i].pattern, topic))
@@ -234,17 +250,37 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 		err_reply(fd, "%s: no mirror line of bridge.conf lets it in", topic);
 		return;
 	}
+	/* No local module declares it, and its id is no local topic's: messages
+	 * name their inputs by topic id, and two topics here with one id could
+	 * not be told apart (the graph check refuses the same among local ones). */
+	uint32_t id = hg_topic_id(topic);
+	const char *mine[] = { "system", "modules", "admin.req" };
+	for (int i = 0; i < 3; i++) {
+		char own[MF_TOPIC];
+		mf_fmt(own, sizeof own, "hangar.%s.%s", G.set.role, mine[i]);
+		if (hg_topic_id(own) == id) {
+			err_reply(fd, "%s has the same topic id (%08x) as %s: not mirrored", topic, id, own);
+			return;
+		}
+	}
 	for (int k = 0; k < G.set.n_modules; k++) {
 		const struct mf_module *o = G.set.modules[k];
 		if (o->refused)
 			continue;
-		for (int i = 0; i < o->n_pubs; i++)
+		for (int i = 0; i < o->n_pubs; i++) {
 			if (strcmp(o->pubs[i].topic, topic) == 0) {
 				err_reply(fd, "%s is published here by %s: not mirrored", topic, o->name);
 				return;
 			}
+			if (hg_topic_id(o->pubs[i].topic) == id) {
+				err_reply(fd, "%s has the same topic id (%08x) as %s of %s: not mirrored", topic, id,
+					  o->pubs[i].topic, o->name);
+				return;
+			}
+		}
 	}
 	unsigned char boot[16];
+	int nonzero = 0;
 	if (strlen(boot_hex) != 32) {
 		err_reply(fd, "open: boot= needs 32 hex digits");
 		return;
@@ -256,6 +292,15 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 			return;
 		}
 		boot[i] = (unsigned char)(hi << 4 | lo);
+		nonzero |= boot[i];
+	}
+	if (!nonzero) {
+		/* An all-zero origin_boot is what marks a file as local (docs/03,
+		 * step 3): a server would take the writer named beside it for a
+		 * module of this machine. The library refuses it before asking;
+		 * the manager does not rely on that. */
+		err_reply(fd, "open: boot= is all zero: a mirrored topic carries its sender's boot id");
+		return;
 	}
 	if (writer[0] && !mf_valid_module_name(writer)) {
 		err_reply(fd, "open: writer=%s is not a module name", writer);
@@ -301,6 +346,9 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 	close(tfd);
 	hd_log("%s: opened %s, mirrored from %s (writer %s)", m->name, topic, G.set.other_role,
 	       writer[0] ? writer : m->name);
+	if (shared)
+		hd_log("warning: %s is mirrored from the %s while a module %s is enabled here: module names are to be unique across the two machines (docs/08)",
+		       topic, G.set.other_role, shared);
 }
 
 static void req_open(int fd, const struct peer *p, char *req, size_t len)
