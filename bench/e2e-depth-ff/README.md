@@ -1,5 +1,15 @@
 # e2e-depth-ff: the learning loop end to end, in simulation
 
+Two designs of docs/09's adaptive depth hold were run here. **The first** (this half of
+the page) proved the loop's machinery and gave a negative result for the example: its
+label was zero or the trim, and the residual improved nothing. **The second**
+([Second design](#second-design), below) learns a model of the heave axis around the
+trim and inverts it: on 1 m steps the integral of absolute error falls by a third to a
+half and a 4 N buoyancy change moves the vehicle 2.7 cm instead of 33, in each of
+five runs, as much as an oracle gains; that a later model follows a vehicle that changes
+was not shown. docs/09 describes the second; what the first half quotes from docs/09
+is its text at the time.
+
 [docs/09](../../docs/09-learning.md#example-adaptive-depth-hold)'s adaptive depth hold,
 run for the first time as a whole: `sim_vehicle` standalone, `thrusters`, `safety`, `mux`,
 `nav`, `depth_hold`, `pairer`, `recorder` and `policy_depth_ff` under one manager
@@ -242,7 +252,7 @@ A first full run reported 1032 lost. That was the experiment: it opened the stre
 
 ## What this says about docs/09's claim
 
-docs/09 says a network learns "the heave the controller's command was short by", the
+docs/09 said, when this was run, that a network learns "the heave the controller's command was short by", the
 mux adds it, and "the correction follows the vehicle as it changes". This run does not
 support that, for four reasons it shows, each of which would hold on the vehicle too.
 
@@ -513,3 +523,309 @@ metrics; B3 is the model from before the change on the weaker thrusters, B4 the 
 trained since (its 3 min buffer holds 2 min of rows from after the change and 1 min
 from before), B5 `assisted`; the oracle variant keeps reading the table at 16.8 V and
 so is stale by construction. Five learned runs, two oracle runs.
+
+## The runs of the second design
+
+2026-11-20, the same machine and build as the first (Ryzen 5 5600H, `performance`,
+3.8 to 4.1 GHz at each start: not throttled; PyTorch 2.15.0 on one thread), every
+process of a run pinned to the same four cores. **The machine was not idle**: other
+agents were building and testing on it (load average 7 to 12 of 12 threads throughout),
+and the runs were made four at a time (learned 1 to 4; learned 5 with oracle 1 to 3),
+then in smaller batches. What that did to the timing is under
+[Timing](#timing-of-the-second-designs-runs); two runs were repeated for it.
+Reports: [2026-11-20-second/](2026-11-20-second/), one directory a run, and the tables
+below are `e2e_depth_ff2.py --summarise` over them.
+
+### In short
+
+The learned feed-forward helps, on every step and on the buoyancy change, by far more
+than the runs' spread, and it is as good as the oracle: no difference between the two
+is outside the spread. It does nothing for the hold, which the controller already
+holds to the depth sensor's bias. It was never demoted and never at the mux's envelope
+in ten runs, and promoting it, swapping it and taking it away moved the vehicle by
+2 to 4 cm. **That a later model follows a vehicle that changes is not shown.** A second
+model was not needed after the buoyancy change, since the trim is an input; after a
+change of the thrusters' supply, which is not, the model trained since did no better
+than the one from before, and by a few-line model of the loop could not have: the
+policy's bound, not what it knows, is the limit there.
+
+### Depth error
+
+Median of five runs (smallest to largest). "Assisted" is B1, B5 and T1 of the learned
+runs; the oracle runs' own baselines are the same to the last digit or the one before.
+
+| | Assisted, the same runs | Learned | Oracle |
+|---|---|---|---|
+| **Nominal buoyancy** (B1; B2 with M1) | | | |
+| hold at 3 m, rms (cm) | 2.00 (1.98 to 2.05) | 1.98 (1.96 to 2.03) | 2.03 (2.02 to 2.06) |
+| step 3 to 4 m: IAE (m s) | 1.85 (1.81 to 1.88) | **1.24** (1.22 to 1.25) | 1.23 (1.22 to 1.23) |
+| overshoot (%) | 9.2 (8.8 to 9.5) | **1.0** (0.8 to 1.4) | 0.9 (0.8 to 1.2) |
+| step 4 to 3 m: IAE (m s) | 3.02 (3.00 to 3.04) | **1.86** (1.82 to 1.90) | 1.90 (1.89 to 1.92) |
+| overshoot (%) | 19.8 (19.5 to 19.9) | **3.5** (3.3 to 3.6) | 3.6 (3.5 to 3.7) |
+| **4 N heavier, the model from before the change** (B5; B3 with M1) | | | |
+| hold, rms (cm) | 1.98 (1.96 to 2.08) | 0.86 (0.54 to 1.02), not a gain: below | 1.04 (1.01 to 1.13), likewise |
+| step 3 to 4 m: IAE (m s) | 2.73 (2.70 to 2.76) | **1.34** (1.32 to 1.35) | 1.34 (1.32 to 1.35) |
+| overshoot (%) | 16.2 (16.0 to 16.3) | **0.0** | 0.0 |
+| step 4 to 3 m: IAE (m s) | 2.19 (2.18 to 2.20) | **1.40** (1.34 to 1.43) | 1.34 (1.32 to 1.36) |
+| overshoot (%) | 14.2 (13.8 to 14.3) | **1.7** (1.5 to 1.8) | 1.3 (1.3 to 1.6) |
+| **4 N heavier, the model trained since** (B5; B4 with M2) | | | |
+| hold, rms (cm) | 1.98 (1.96 to 2.08) | 1.93 (1.81 to 1.97) | 1.91 (1.89 to 1.97) |
+| step 3 to 4 m: IAE (m s) | 2.73 (2.70 to 2.76) | **1.49** (1.43 to 1.55) | 1.48 (1.45 to 1.51) |
+| overshoot (%) | 16.2 (16.0 to 16.3) | **0.0** | 0.0 |
+| step 4 to 3 m: IAE (m s) | 2.19 (2.18 to 2.20) | **1.61** (1.55 to 1.63) | 1.60 (1.58 to 1.61) |
+| overshoot (%) | 14.2 (13.8 to 14.3) | **3.2** (2.8 to 3.7) | 3.3 (3.2 to 3.6) |
+
+Against the spread: on every step the residual's range and the assisted range do not
+overlap (bold), and the gap between them is 7 to 22 times the wider of the two for the
+IAE; it holds in each of the five runs
+(the run's own difference, residual less assisted: −0.60 m s (−0.63 to −0.59) and
+−1.16 (−1.22 to −1.11) nominal; −1.38 and −0.79 with M1 heavier; −1.26 and −0.57
+with M2). The IAE falls by 33 % and 38 % nominal and by 51 % and 36 % heavier (M1).
+The hold with the residual is inside the spread (nominal and B4). Learned against
+oracle: the ranges overlap on every row of this table and the next; the medians differ
+by 0.06 m s at most.
+
+B3's hold reads 0.9 cm because the vehicle sat about 1 cm from where the biased sensor
+would have it, not because it was held better: see [the trim](#who-carried-the-trim).
+
+### Transients at the 3 m hold
+
+Peak error (cm), IAE (m s) over the window, when the error was last outside 5 cm. An
+undisturbed 20 s hold reads 2.2 cm and 0.40 m s.
+
+| | Assisted | Learned | Oracle |
+|---|---|---|---|
+| **Buoyancy −4 N**, 40 s (T1; T2 with M1) | 32.7 (32.6 to 32.9), 1.97, 8.2 s | **2.7** (2.5 to 2.9), **0.23** (0.20 to 0.25), never outside | 2.8 (2.7 to 2.9), 0.26 (0.24 to 0.28), never outside |
+| Promotion (H1), 20 s | | 2.4 (2.3 to 2.5), 0.41 | 2.5 (2.4 to 2.6), 0.42 |
+| Swap M1 to M2 while promoted (S2), 20 s | | 2.1 (1.8 to 2.4), 0.31 | 2.0 (1.9 to 2.1), 0.32 |
+| Back to `assisted` (H2), 20 s | | 3.0 (2.4 to 4.0), 0.45 | 3.4 (3.3 to 3.5), 0.46 |
+| Buoyancy +4 N, assisted (T1:back, T3), 40 s | 36.4 (36.3 to 36.7), 2.53, 10.2 s | | |
+
+The 33 cm of the first experiment, "the integrator crossing the deadband, the same
+with every residual tried", is 2.7 cm here: the policy takes the command across the
+deadband at once, for whatever the feedback asks. The first design's promotions, swaps
+and returns cost 12 to 56 cm; these cost nothing that can be told from an undisturbed
+hold but the return (3.0 cm against 2.2).
+
+### Who carried the trim
+
+At the end of each block's hold (heave; median and range of the learned runs):
+
+| | B1 assisted | B2, M1 | B3, M1, heavier | B4, M2, heavier | B5 assisted, heavier |
+|---|---|---|---|---|---|
+| the integrator | −0.085 | −0.086 (−0.089 to −0.085) | **+0.013** (0.010 to 0.016) | +0.086 (0.080 to 0.090) | +0.089 |
+| the policy's output | (not applied) | +0.002 (0.000 to 0.003) | **+0.064** (0.060 to 0.069) | 0.000 (−0.004 to 0.004) | (not applied) |
+
+Settled, the integrator has the trim and the policy adds nothing (B2, B4): what the
+first design could not do. After the buoyancy change it is otherwise for a while. The
+policy holds the vehicle so close (2.7 cm at worst) that the integrator, which learns
+from depth error at 0.1 per m s, moves slowly: 55 s after the change (the end of B3's
+hold) it has come from −0.085 to +0.013, inside the deadband, and the 0.064 that is
+missing comes from the policy answering a feedback that still asks for a little: the
+vehicle sits 1.1 cm deep of where the sensor's bias would put it. By the end of B4's
+hold, 155 s after the change, the integrator has it all. The oracle does the same (+0.009 and +0.063 in B3),
+so this is the scheme, not the learning: a residual that is zero when nothing is asked
+still lets the feedback ask for less, and the integrator learns from what the
+feedback is left with. Nothing unwinds through depth error on the way.
+
+### What it costs the thrusters
+
+| | Assisted | Learned | Oracle |
+|---|---|---|---|
+| heave command crossing zero, per second: B2 | 0.03 | 0.20 (0.09 to 0.29) | 0.09 (0.06 to 0.17) |
+| B3 (the integrator inside the deadband) | 0.06 | 1.63 (1.23 to 2.46) | 1.80 (1.47 to 2.37) |
+| B4 | 0.06 | 0.31 (0.29 to 0.97) | 0.17 (0.14 to 0.20) |
+| policy at its own bound, ±0.18 (% of ticks): B2, B3, B4 | | 2.9, 2.6, 2.9 | 2.1, 2.4, 2.7 |
+
+With the residual the verticals reverse three to seven times as often as without, and
+30 to 50 times as often while the integrator is inside the deadband. The simulator's
+thrusters do not mind; an ESC and a propeller would have to be asked. The learned
+policy reverses them more than the oracle in B4 and is at its bound more often in B2
+(both outside the spread); neither shows in the depth. It was at its bound on 3 % of
+the ticks (a second of each 1 m step) and the mux saw no tick at its envelope.
+
+### Demotions
+
+None in ten runs, and no `mux.state` message at the residual envelope. The policy's
+bound is why: the offline check has the unbounded oracle beyond the envelope for 40
+ticks of each 1 m step, where 51 in 5 s demote.
+
+### Does a second model adapt
+
+**After the buoyancy change: there was nothing to adapt to.** M1, trained before the
+change, is as good on the heavier vehicle as M2, trained since (B3 against B4: 1.34
+and 1.40 m s against 1.49 and 1.61). M2 is not worse because it learned worse: the
+oracle, one function in both blocks, shows the same difference (1.34 and 1.34 against 1.48 and 1.60), which is
+the integrator's place (inside the deadband in B3, at the trim in B4). The trim is an
+input of the policy, and the offline check had said so: the plant fitted on rows from
+before the change explained 0.82 of the rows after it.
+
+**After a change of the thrusters' supply** (the supplementary runs, `--change
+supply`: 16.8 to 12.6 V wherever the buoyancy went down; five learned runs, and two
+with the oracle left at 16.8 V; [2026-11-20-second/supply/](2026-11-20-second/supply/),
+whose tables still say "buoyancy" and "heavier"). On the weaker thrusters:
+
+| | Assisted (B5) | M1, from before (B3) | M2, trained since (B4) | Oracle left at 16.8 V (B3; B4), 2 runs |
+|---|---|---|---|---|
+| step 3 to 4 m: IAE (m s) | 1.98 (1.98 to 2.01) | 1.44 (1.43 to 1.48) | 1.41 (1.37 to 1.46) | 1.46; 1.44 |
+| overshoot (%) | 10.5 (10.3 to 10.6) | 5.9 (5.1 to 6.1) | 5.8 (5.3 to 6.2) | 6.2; 6.4 |
+| step 4 to 3 m: IAE (m s) | 3.47 (3.46 to 3.49) | 2.20 (2.15 to 2.23) | 2.22 (2.17 to 2.26) | 2.21; 2.20 |
+| overshoot (%) | 22.5 (22.4 to 22.7) | 4.8 (4.3 to 5.3) | 5.2 (4.5 to 5.8) | 5.3; 5.5 |
+| hold, rms (cm) | 1.99 (1.97 to 2.06) | 2.03 (2.01 to 2.13) | 2.04 (1.98 to 2.06) | 1.98; 2.06 |
+| policy at its bound (% of ticks) | | 5.8 (5.4 to 6.5) | 6.6 (6.0 to 7.2) | 4.7; 4.9 |
+
+The residual still helps on the weaker vehicle (IAE down 27 % and 37 %, far outside
+the spread), less than on the nominal one (overshoot 6 % and 5 % where it was 1 % and
+3.5 %). **The second model adds nothing to the first**: inside the spread on every
+row, and the same as an oracle that was never told of the change. The few-line loop of
+the offline check says there was little to add: at 12.6 V the oracle left at 16.8 V
+gives 1.44 and 2.26 m s and the oracle for 12.6 V 1.41 and 2.22, which is the spread
+here; the correction is at its bound twice as often as at 16.8 V, and it is the bound
+that limits the weaker vehicle. Whether the second model had learned the weaker
+thrusters at all was looked at in one run (seed 1): at the new trim its output is
+0.025 rms from the oracle for 12.6 V and 0.028 from the one for 16.8 V, where the first
+model's is 0.029 and 0.020; the two oracles are 0.040 apart. It moved towards the new
+curve, part of the way: its buffer still held 50 s of rows from before.
+
+The supply change itself, at the hold (the trim goes from −0.085 to −0.104): 6.4 cm
+(6.4 to 6.6) and 0.98 m s `assisted`; 4.2 cm (3.8 to 4.2) and **1.13 m s** (1.12 to
+1.17) with M1 promoted. The peak is smaller and the IAE larger, in all five runs: as
+after the buoyancy change, the integrator takes longer to find the new trim when the
+policy leaves it little error to learn from.
+
+So docs/09's "the correction follows the vehicle as it changes" has two answers here.
+The deploy, the load and the swap of a second model work during the dive and cost
+nothing in depth (S2). That the second model is *better* than the first on the changed
+vehicle was not seen with either change, and with these two could not be: one is
+carried by an input, and the other is beyond the residual's bound. A change that
+would show it (a thrust curve or a drag that moves by more than the first model's
+error and within the envelope) was not run.
+
+### The first experiment's checks, again
+
+- **Lineage**: one thruster command carrying M2's residual followed back in each run,
+  complete in all ten, by the same chain as before (`thr.cmd` → `ctl.wrench` →
+  `ctl.depth_hold` and `policy.depth_ff.wrench` → `ctl.depth_hold.target`, the anchor
+  `nav.state` → `nav.depth`, `nav.attitude`, `nav.imu`; `policy.depth_ff.active` →
+  `weights/<hash>.hgw`, whose header agrees with the announcement → the rows → the
+  newest row's messages). Every `thr.cmd` that carried a residual leads back to a
+  `policy.depth_ff.active`: 15 013 to 15 059 a run. Not in the lineage: the plant
+  network. The file names the rows; the policy was fitted to a plant fitted to those
+  rows, and the plant is not kept. For the oracle the header's rows are the stream's,
+  which trained nothing. `steps` and `parent_hash` are still 0.
+- **Train/serve mismatch, inputs**: 375 721 anchors with an output and a row in the ten
+  runs; the policy read another `ctl.depth_hold.target` message than the pairer joined
+  at **49** (17, 2, 10, 19, 0 learned; 1, 0, 0, 0, 0 oracle), `accel_z` differing by
+  at most 0.027 m/s². The first experiment had 8 in 208 512; the runs with the most are
+  the four made at once, each with a trainer on the same four cores.
+- **Train/serve mismatch, outputs**: M2's file run by `python/hangar`'s reference on
+  the pairer's rows against what the policy published, 3000 anchors a run: largest
+  difference 5.3e-8 to 1.8e-7 in eight runs; **4.9e-3 and 1.1e-2** in learned 3 and 4,
+  on one and two anchors. This policy is steep where the first was flat: across the
+  deadband it moves 0.15 for 0.1 m/s² of `accel_z`, so an anchor read with the
+  neighbouring message shows. The analysis now
+  compares apart the anchors read with the same message and with another
+  (`mismatch`, "outputs, by the message read"): in learned 1, 6000 anchors with the
+  same message agree to 1.3e-7 and the 8 of M2's with another differ by up to 6.8e-4;
+  in the three runs made after it, 6000 anchors each agree to 1.9e-7. Learned 3 and 4
+  kept no session, so that their three anchors were of that kind is likely and not
+  checked.
+- **Loop latency**, newest row trained on to the first `thr.cmd` carrying the model
+  (M2): **1.12 s** (0.96 to 1.14) learned, of which 0.72 to 0.94 s the policy's last 300
+  steps on the plant and the export, 0.18 s the warm-up (10 ticks: the model has no
+  state, `export` warms it up all the same) and 0.04 s from the swap to the thrusters;
+  0.27 s for the oracle, which has nothing to bring up. Checks 1 to 7: 1 to 19 ms.
+- **Swap cost**: over the 20 loads no interval of the five 50 Hz topics during a load
+  exceeded 26.4 ms, against up to 29.4 ms in the 10 s before one: a load cannot be
+  told from the machine's other work, which the first experiment's runs did not have
+  (20.8 ms at most there).
+- **Rows lost**: none on the way to the trainer in nine runs; **one** in learned 3,
+  counted at the stream's opening (the ring's oldest row lapped while it was being
+  opened: the item "a stream counts rows lapped before its first read as lost" above).
+  The pairer wrote a row for every anchor in all ten. The trainer ran 57 steps/s
+  (its pace is set to 60), 41 372 to 42 186 a run.
+- **The control loop**, `nav.depth` to `thr.cmd`: median 34 to 60 ms from run to run
+  (the modules' timers fall differently at each start), p99 39 to 72.
+
+### Timing of the second design's runs
+
+The first experiment's runs had no interval of a 50 Hz topic over 20.8 ms. These had,
+over the five topics of a run (188 000 intervals):
+
+| Runs, made at the same time | Largest interval (ms) | Over 25 ms | Over 30 ms |
+|---|---|---|---|
+| learned 1 to 4 (a trainer each) | 28.2 to 29.6 | 271 to 314 | 0 |
+| learned 5, oracle 1 to 3 | 24.6 to 25.3 | 0 to 2 | 0 |
+| oracle 4 and 5, the first time | 41.7, 57.2 | 27, 35 | **5, 4**; the recorder lost 3 messages in run 4 |
+| their repeats, and learned 1 again | 27.8, 36.3; 35.2 | 10, 9; 11 | 0, **2**; **2** |
+| supply: learned 1 to 4 | 29.7 to 34.4 | 367 to 417 | 2, 2, 0, 0 |
+| supply: learned 5, oracle 1 and 2 | 32.0; 27.6, 28.9 | 16; 15, 11 | 1; 0, 0 |
+
+Oracle 4 and 5 were repeated (the tables above hold the repeats; the first attempts are
+in `oracle-s4-disturbed` and `oracle-s5-disturbed`), and the repeat of 5 was disturbed
+again, as was the repeat of learned 1 that was meant as the check (`learned-s1-repeat`;
+the tables hold the first). The machine was never quiet, and a tick or two late by 10 to
+37 ms in 13 minutes is what it gave; where in a run they fell was not looked at. The
+last three runs ended after midnight, on 2026-11-21.
+
+The depth numbers do not follow it. The two disturbed runs and learned 1's repeat fall
+outside the five runs' smallest-to-largest on several rows, by 0.05 m s of IAE at most
+(learned 1 again: B3 3 to 4 m 1.29 where the five gave 1.32 to 1.35) and 0.4 points of
+overshoot, against effects of 0.55 to 1.4 m s. So the same seeds differ from one run to
+the next by as much as different seeds do: the spread in the tables is where the
+modules' timers happened to fall (the loop's latency above) as much as the simulator's
+noise, and "smallest to largest of five" is a little narrower than what a sixth run can
+give. The supplementary runs were not repeated.
+
+### What this says about docs/09's claim, second design
+
+docs/09 now describes this design, and what it says of it was measured: a network that
+learns during the dive, from rows the pairer joins, a bounded correction that makes the
+vehicle do what the controller asks, deployed, promoted and swapped without a
+transient, never demoted, as good as the simulator's own model inverted, and leaving
+the trim to the integrator. That holds in simulation, over five seeds, by a margin
+many times the spread.
+
+It says less than the first version claimed, on purpose. The network does not learn
+"what the command was short by" from the thrusters' outputs; it learns the heave axis
+from the acceleration and inverts it, and without an acceleration worth the name there
+is no label. And "the correction follows the vehicle as it changes" is shown for the
+loop's mechanics and for a change the policy reads from an input, not for a change it
+has to learn.
+
+## What is placeholder in the second design
+
+- **Everything the simulator gives for free** (the list under [The problem](#the-problem)):
+  the accelerometer, thrust that depends on the command alone, still water, `thr.out`
+  equal to what was commanded. On a vehicle `thr.out` is ArduSub's servo output after
+  its mixer, and "still" has a tether and a current in it.
+- **The lag of 2 ticks** and the other constants of `depth_ff2.py` (what counts as
+  still, 50 rows for the heave at rest, the weight of moving rows, the bound at 90 %)
+  were set from the offline check on this simulator and not varied.
+- **The plant network is not recorded.** The weights file holds the policy and names the
+  rows; the plant the policy was fitted to lives in the trainer and is gone with it.
+- **The oracle's weights file** names rows that trained nothing, and its supply is a
+  constant 16.8 V where the battery went from 16.8 to 16.7 V.
+- **The controller's parameters** are the profile's (`accel_max = 4`, `i_band = 0.6`),
+  for the baseline and the residual alike: the defaults do not hold this vehicle
+  through the buoyancy change (above). What the residual does under the defaults was
+  not run.
+- **One step size and one depth.** Steps of 1 m between 3 and 4 m, a hold at 3 m, one
+  buoyancy change of 4 N; the training phase's steps are 0.1 to 1.5 m.
+- **The deploy, the trainer and the operator** are as in the first experiment: a copy
+  into `incoming/`, a thread of the experiment's script, two deploys at fixed times.
+- **Timing**: a laptop under other load (above); nothing ran on the Pi or the vehicle.
+- **The direct inverse** was ruled out by the offline check's few-line loop and never
+  run live.
+
+## Files of the second design
+
+| | |
+|---|---|
+| `tools/sim/e2e-depth-ff2.sh` | the root, the manager, the run; `E2E_SEED`, `E2E_ARGS` |
+| `tools/sim/e2e_depth_ff2.py` | the operator and the trainer's thread; `--variant learned`, `oracle`, `collect`; `--change supply`; `--analyse`; `--summarise` |
+| `tools/sim/depth_ff2_offline.py` | the offline check |
+| `profiles/sim-depth-ff2/` | the dataset and policy specs; the rest is `sim-depth-ff`'s |
+| `python/examples/depth_ff2.py` | the plant, the heave at rest, the inversion, the policy, the oracle |
+| `python/tests/test_depth_ff2.py` | their tests |
+| `2026-11-20-second/<run>/` | `report.md`, `report.json`, `events.log`; `offline/` the offline check's result and the two collect runs; `supply/` the supplementary runs |
