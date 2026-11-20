@@ -117,8 +117,10 @@ Found on the vehicle:
    bigger than its read buffer or past its topic limit without reading them
    (`modules/recorder/recorder.c`, the read loop). On the vehicle that was 1.7 cores,
    and with the closed tube on the bench the Pi reached 91 °C and throttled to
-   1.0 GHz. **Fix before the next session**, with a test that a server with such a
-   topic sleeps (`hg_bench`'s idle line measures exactly this).
+   1.0 GHz. **Fixed on 2026-11-20** (4787cae, 39d4679; hangar#1): four places, not
+   two (the mux and the pairer as well, and `safety` also on another caller's
+   replies), each with a test that fails on the old code. To confirm on the vehicle
+   with `bench/procbench.py`: every hangar module under 1 % of a core at rest.
 4. **The Pi runs hot on the bench:** 84–88 °C with electric-eye alone, soft-throttled
    at 1.6 GHz. Keep closed-tube bench sessions short, or cool the tube.
 5. Ubuntu's `unattended-upgrades` runs on the Pi and was installing in the middle of

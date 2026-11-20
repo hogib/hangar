@@ -101,6 +101,13 @@ jq '.wake[] | {rate_hz, p50_us, p99_us, max_us, gaps, writer_late, kept_up}' rep
 jq '{idle: .idle.ok, torn: .torn.ok, lost_wake: .lost_wake.ok}' report.json
 ```
 
+## On a running vehicle: `procbench.py`
+
+`sudo python3 -I bench/procbench.py [seconds]` measures what hangar, electric-eye and the
+MAVLink relay cost while they run: CPU per process (percent of one core) and PSS, once a
+second, with the machine's load and temperature, from `/proc` and `/sys` alone. It is how
+the busy loops of hangar#1 were found on the lab's BlueROV2.
+
 ## The ROS 2 side (placeholder)
 
 `bench/ros2/` will hold a talker and a listener (rclcpp, default middleware) for the
