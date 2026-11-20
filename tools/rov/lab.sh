@@ -265,8 +265,10 @@ cmd_up() {
     # The lab's electric-eye holds the camera and would send to the laptop's 5610 too.
     if [ "$video" = 1 ]; then
         say "stopping the lab's $LAB_SERVICES on the Pi (started again by down)"
-        remote_sudo systemctl stop $LAB_SERVICES || up_failed
+        # Written down before the stop: one that fails half-way has stopped some of them,
+        # and down starts them all (starting one that runs changes nothing).
         sess_set services_stopped "$LAB_SERVICES"
+        remote_sudo systemctl stop $LAB_SERVICES || up_failed
     fi
 
     # hangar, laid out afresh so that the encoder is in it or not as asked.
