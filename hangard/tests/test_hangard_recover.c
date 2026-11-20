@@ -105,12 +105,60 @@ static void test_refused_then_corrected_starts(void)
 	unlink(T_log);
 }
 
+/* A reload that drops an entry and a module's exit in one epoll batch,
+ * staged by stopping the manager while both queue up. Modules in name
+ * order: a (exited, Policy=never: stopped), b, c, d. The reload drops a; the
+ * exit of c must then not be taken for d's, which is alive: the manager
+ * answers, restarts c and leaves d alone. */
+static void test_reload_and_exit_in_one_batch(void)
+{
+	manifest("a", "[Module]\nExec=%s/stubborn --exit 0\n[Restart]\nPolicy=never\n", T_toys);
+	manifest("b", "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	manifest("c", "[Module]\nExec=%s/stubborn --polite\n[Restart]\nBackoff=0.1s..1s\n", T_toys);
+	manifest("d", "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("a", "stopped", 5000));
+	CHECK(wait_state("b", "ready", 5000) && wait_state("c", "ready", 5000) && wait_state("d", "ready", 5000));
+	struct mstat c, d, m;
+	module_status("c", &c);
+	module_status("d", &d);
+	manifest_remove("a");
+	kill(mgr, SIGSTOP);
+	sleep_ms(100);
+	kill(mgr, SIGHUP);    /* first in the batch: the reload, a is dropped */
+	sleep_ms(50);
+	kill(c.pid, SIGKILL); /* second: c's pidfd, tagged with c's old index */
+	sleep_ms(200);
+	kill(mgr, SIGCONT);
+	char out[4096];
+	int rc = run_cli(out, sizeof out, 3000, "status", (char *)NULL);
+	CHECK_EQ_INT(rc, 0);
+	if (rc != 0) {
+		/* It took c's exit for d's and waits for d: let it have it, so
+		 * that the requests below are answered at all. */
+		kill(d.pid, SIGKILL);
+		sleep_ms(300);
+	}
+	CHECK(wait_new_pid("c", c.pid, "ready", 3000));
+	CHECK(!module_status("a", &m));
+	CHECK(module_status("d", &m));
+	CHECK_EQ_INT(m.pid, d.pid);
+	CHECK(strcmp(m.state, "ready") == 0);
+	CHECK(kill(d.pid, 0) == 0);
+	manager_stop(mgr);
+	manifest_remove("b");
+	manifest_remove("c");
+	manifest_remove("d");
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("recover", NULL);
 	HD_RUN(test_adopted_under_a_refused_manifest);
 	HD_RUN(test_shutdown_with_a_module_in_backoff);
 	HD_RUN(test_refused_then_corrected_starts);
+	HD_RUN(test_reload_and_exit_in_one_batch);
 	hd_teardown();
 	TEST_MAIN_END();
 }

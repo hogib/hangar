@@ -668,11 +668,13 @@ int do_reload(char *err, size_t errlen)
 		}
 	for (int i = 0; i < set->n_warnings; i++)
 		hd_log("warning: %s", set->warnings[i]);
-	/* Removed modules lose their manifest; the rest are re-pointed. An
-	 * entry that lost its manifest earlier and has stopped is dropped
-	 * first, so that a manifest coming back starts afresh. */
-	prune_modules();
+	/* Removed modules lose their manifest; the rest are re-pointed. No
+	 * entry is dropped here: a reload runs inside the event loop's batch
+	 * (SIGHUP, or the reload request), and the events still waiting in the
+	 * batch name modules by their index. The loop drops what has no
+	 * manifest and no process once the batch is done. */
 	static int had_mf[HD_MAX_MODULES];
+	int n_before = G.n_modules;
 	for (int i = 0; i < G.n_modules; i++) {
 		had_mf[i] = G.modules[i].mf != NULL;
 		G.modules[i].mf = NULL;
@@ -687,9 +689,20 @@ int do_reload(char *err, size_t errlen)
 		uint64_t mh = m->manifest_hash, wh = m->wiring_hash;
 		int changed = module_set_manifest(m, set, mf);
 		if (is_new) {
+			/* An entry that lost its manifest earlier and is not dropped
+			 * yet starts afresh, as a new one does. */
 			hd_log("reload: %s added", m->name);
+			m->failures = 0;
+			m->delay_ns = 0;
+			m->n_fail_times = 0;
+			m->gave_up = 0;
+			m->exit_known = 0;
+			m->from_registry = 0;
 			module_outputs_init(m);
-			module_start(m);
+			if (m->pid) /* the removed instance has not gone yet */
+				module_stop(m, ST_STARTING, 0, "manifest back");
+			else
+				module_start(m);
 		} else if (changed && (mh || wh)) {
 			hd_log("reload: %s changed", m->name);
 			module_outputs_init(m);
@@ -709,8 +722,8 @@ int do_reload(char *err, size_t errlen)
 	}
 	for (int i = 0; i < G.n_modules; i++) {
 		struct module *m = &G.modules[i];
-		if (m->mf)
-			continue;
+		if (m->mf || (i < n_before && !had_mf[i] && !m->pid))
+			continue; /* kept, or removed before and waiting to be dropped */
 		hd_log("reload: %s removed", m->name);
 		if (m->pid)
 			module_stop(m, ST_STOPPED, 0, "manifest removed");
@@ -720,7 +733,7 @@ int do_reload(char *err, size_t errlen)
 	mf_set_free(&G.set);
 	G.set = *set;
 	free(set);
-	prune_modules();
+	G.need_prune = 1;
 	registry_write();
 	request_publish();
 	recompute_sys_state();

@@ -4,6 +4,7 @@
 #include "hangard.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -277,13 +278,25 @@ void module_stop(struct module *m, enum state next, int count_failure, const cha
 
 void on_module_exit(struct module *m)
 {
+	/* Called for an event on a pidfd; make sure it is this module that
+	 * exited before anything is done to it. An event carries an index
+	 * into the table, and whatever moves the table between the event's
+	 * arrival and its turn must not make a live module pay for it: its
+	 * Neutral run, its group killed, and for a child a waitid that would
+	 * block the manager until it does exit. A pidfd is readable once its
+	 * process has exited, whether or not it is our child. */
+	struct pollfd pf = { .fd = m->pidfd, .events = POLLIN };
+	if (poll(&pf, 1, 0) <= 0 || !(pf.revents & POLLIN))
+		return;
 	siginfo_t si;
 	memset(&si, 0, sizeof si);
 	int known = 0;
 	if (!m->adopted) {
-		if (syscall(SYS_waitid, HD_P_PIDFD, m->pidfd, &si, WEXITED | WNOWAIT, NULL) < 0) {
+		if (syscall(SYS_waitid, HD_P_PIDFD, m->pidfd, &si, WEXITED | WNOWAIT | WNOHANG, NULL) < 0) {
 			if (errno == EAGAIN || errno == EINTR)
 				return;
+		} else if (si.si_pid == 0) {
+			return; /* nothing to wait for yet */
 		} else {
 			known = 1;
 		}
