@@ -265,10 +265,10 @@ static int parse_num(enum msg_kind k, const char *tok, size_t n, struct num *out
       snprintf(why, whysz, "'%s' is not an integer", tmp);
       return -1;
     }
-    long long lo = -(1ll << (ki->size * 8 - 1)), hi = (1ll << (ki->size * 8 - 1)) - 1;
-    if (ki->size == 8) {
-      lo = INT64_MIN;
-      hi = INT64_MAX;
+    long long lo = INT64_MIN, hi = INT64_MAX;
+    if (ki->size < 8) { /* 1ll << 63 is not a value: i64 takes the type's own limits */
+      lo = -(1ll << (ki->size * 8 - 1));
+      hi = (1ll << (ki->size * 8 - 1)) - 1;
     }
     if (v < lo || v > hi) {
       snprintf(why, whysz, "%s does not fit %s", tmp, ki->name);
