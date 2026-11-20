@@ -7,7 +7,8 @@
 # Produces out/release/hangar-<git describe>-aarch64.tar.zst: every binary a
 # static musl build made with `zig cc -target aarch64-linux-musl -mcpu=cortex_a72`
 # (the Pi 4's core; a Pi 5 runs it too; --cpu cortex_a76 is the Pi 5 build),
-# stripped at link (-s). --host builds the same for this machine
+# stripped at link (-s); -O3, but hangard and hangar -Os with unused sections
+# dropped (bench/HANGARD-SIZE.md). --host builds the same for this machine
 # (x86_64-linux-musl here) as hangar-<version>-x86_64.tar.zst.
 #
 # What goes in (docs/13-deployment.md "A release", as far as the tree has it):
@@ -273,6 +274,26 @@ if known "$builddir/hg_bench"; then
 else
 	make -f "$ROOT/bench/bench.mk" BUILD=release BUILDDIR="$builddir" CC="$cc" CFLAGS=-O3 \
 	     LDFLAGS="-static -s" "$builddir/hg_bench" >> "$work/make.log" 2>&1 || true
+fi
+
+# hangard and hangar built again for size (docs/00's target under 200 KB;
+# bench/HANGARD-SIZE.md): -Os, no unwind tables, every function and datum in a
+# section of its own and the unused ones dropped at link. A build directory of
+# their own, so that lib/hg's objects in the modules keep -O3: the manager
+# sleeps in epoll, the modules' hot paths do not. The two replace the -O3
+# ones when both build; if not, the -O3 ones ship and the log says why.
+small=$work/build-small
+small_cflags="-Os -fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections -fdata-sections"
+full_builddir=$builddir
+builddir=$small
+run_make -k -j "$jobs" CFLAGS="$small_cflags" LDFLAGS="-static -s -Wl,--gc-sections" \
+	"$small/hangard" "$small/hangar" >> "$work/make.log" 2>&1 || true
+builddir=$full_builddir
+if [ -x "$small/hangard" ] && [ -x "$small/hangar" ]; then
+	cp -p "$small/hangard" "$small/hangar" "$builddir/"
+	echo "  hangard   $(wc -c < "$small/hangard") bytes, hangar $(wc -c < "$small/hangar") (-Os, sections collected)"
+else
+	echo "  hangard   the size build failed (see $work/make.log): the -O3 build ships"
 fi
 
 # ---- Stage ------------------------------------------------------------------
