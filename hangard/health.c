@@ -347,6 +347,8 @@ void on_module_exit(struct module *m)
 		return;
 	}
 	if (!m->mf) {
+		/* Removed by a reload: its record has done its work above. */
+		neutral_record_remove(m->name);
 		set_state(m, ST_STOPPED, why);
 		G.need_prune = 1;
 		return;

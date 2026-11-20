@@ -182,8 +182,12 @@ static void neutral_path(const char *name, char *out, size_t len)
 int neutral_record_write(const struct module *m)
 {
 	const struct mf_module *mf = m->mf;
-	if (!mf || !mf->has_neutral)
+	if (!mf || !mf->has_neutral) {
+		/* The record of an instance started when the manifest had one:
+		 * it ran at that instance's exit, and is not this one's. */
+		neutral_record_remove(m->name);
 		return 0;
+	}
 	const struct mf_exec *x = mf->has_actuator ? &mf->act_neutral : &mf->module_neutral;
 	struct child_ctx ids;
 	memset(&ids, 0, sizeof ids);

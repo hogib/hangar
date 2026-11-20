@@ -115,11 +115,50 @@ static void test_no_module_without_its_neutral_record(void)
 	unlink(T_log);
 }
 
+/* The record belongs to the instance: one started from a manifest without
+ * a Neutral has none, though its predecessor had; a module removed by a
+ * reload leaves none behind. */
+static void test_no_record_outlives_its_instance(void)
+{
+	char ran[1024], rec[1024];
+	tfmt(ran, sizeof ran, "%s/neutral-ran2", T_root);
+	tfmt(rec, sizeof rec, "%s/run/hangar/neutral/act", T_root);
+	const char *with = "[Module]\nExec=%s/actuator --rate 50\nUser=hg-thrusters\n"
+			   "[Subscribe ctl.cmd]\n[Subscribe safety.state]\n"
+			   "[Publish thr.cmd]\nType=depth\nRate=50\nActuator=yes\nInputs=ctl.cmd\n"
+			   "[Actuator]\nCommand=ctl.cmd\nNeutral=%s/neutral %s\n";
+	manifest("act", with, T_toys, T_toys, ran);
+	mgr = manager_start();
+	CHECK(wait_state("act", "ready", 5000));
+	CHECK(access(rec, F_OK) == 0);
+	struct mstat m;
+	module_status("act", &m);
+	manifest("act", "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	CHECK(wait_new_pid("act", m.pid, "ready", 5000));
+	CHECK(access(rec, F_OK) < 0);
+	/* Back to an actuator, then removed. */
+	module_status("act", &m);
+	manifest("act", with, T_toys, T_toys, ran);
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	CHECK(wait_new_pid("act", m.pid, "ready", 5000));
+	CHECK(access(rec, F_OK) == 0);
+	manifest_remove("act");
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	for (int i = 0; i < 150 && module_status("act", &m); i++)
+		sleep_ms(20);
+	CHECK(!module_status("act", &m));
+	CHECK(access(rec, F_OK) < 0);
+	manager_stop(mgr);
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("spawn", NULL);
 	HD_RUN(test_manager_killed_before_the_release);
 	HD_RUN(test_no_module_without_its_neutral_record);
+	HD_RUN(test_no_record_outlives_its_instance);
 	hd_teardown();
 	TEST_MAIN_END();
 }
