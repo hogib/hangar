@@ -125,7 +125,7 @@ names the vehicle's frame exactly. The order of the work, one stage at a time:
 |---|---|---|---|
 | B1 | `encoder`, the camera's own H.264 | vehicle | built (2026-11-20) |
 | B2 | `video_relay` | topside | built (2026-11-20): RTP in; relayed unchanged where wanted; `cam.decoded` with the vehicle's frame as provenance; MP4 recording (`modules/video_relay/README.md`) |
-| B3 | `vision` | topside here, vehicle in placement B | the effects, `cam.decoded` → `cam.pilot` |
+| B3 | `vision` | topside here, vehicle in placement B | built (2026-11-20): the effects, `cam.decoded` → `cam.pilot` on its own thread pool, each frame referencing its input; the chain a parameter, with presets for issue #2 that the Fly view's buttons and keys 1–5 set (`modules/vision/README.md`) |
 | B4 | `topside_encoder` | topside | `cam.pilot` to QGroundControl on 5600 |
 | B5 | `camera`; the live picture in the console | vehicle; topside | cameras without H.264; `hellion`'s page in Dawn Patrol |
 | B6 | `legacy/` removed | | `legacy/hellion/embed.c` into `tools/`; the phase-A test of `bench/PI-TEST.md` around `camera`; the release without `eeye` and `hellion` |
