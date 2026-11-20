@@ -139,6 +139,7 @@ static struct {
 	/* The reliable stream, out and in. */
 	unsigned char *sbuf;
 	uint64_t s_base, s_end, s_next, s_progress_ns;
+	int s_stall;             /* resends in a row with nothing acknowledged: each doubles the wait */
 	struct prec { uint64_t end; int tx; uint64_t seq; } *precs;
 	int nprec, cap_prec;
 	uint64_t r_expect;
@@ -641,9 +642,15 @@ static void s_resend_check(void)
 	uint64_t rto = B.rtt_min ? 4 * B.rtt_min : 50000000ull;
 	if (rto < 20000000ull)
 		rto = 20000000ull;
+	/* A peer that takes nothing more (its stream waits for its clock's
+	 * estimate with its buffer full, docs/08 "Clocks") is not sent the
+	 * same window fifty times a second. */
+	rto <<= B.s_stall;
 	if (rto > 1000000000ull)
 		rto = 1000000000ull;
 	if (now_ns() - B.s_progress_ns > rto) {
+		if (B.s_stall < 6)
+			B.s_stall++;
 		B.st.retransmits += (B.s_next - B.s_base + BODY_MAX - 9) / (BODY_MAX - 8);
 		B.s_next = B.s_base; /* go back: everything not acknowledged goes again */
 		B.s_progress_ns = now_ns();
@@ -667,6 +674,7 @@ static void on_ack(const unsigned char *b, size_t n)
 	if (B.s_next < B.s_base)
 		B.s_next = B.s_base;
 	B.s_progress_ns = now_ns();
+	B.s_stall = 0;
 	int k = 0;
 	for (int i = 0; i < B.nprec; i++) {
 		if (B.precs[i].end <= off) {
@@ -687,7 +695,9 @@ static void handle_record(int type, const unsigned char *b, size_t n);
 /* The whole records received so far, in order. A message record stops here
  * while the clock has no estimate: its stamp, and a request's deadline,
  * cannot be put into this clock yet. It waits, and what follows it on the
- * stream waits behind it, unacknowledged in the sender's backlog. */
+ * stream waits behind it: in this buffer while there is room (so that a
+ * wait of one round trip costs the sender no resend), then unacknowledged
+ * in the sender's backlog. */
 static void drain_records(void)
 {
 	size_t at = 0;
@@ -730,7 +740,7 @@ static void on_data(const unsigned char *b, size_t n)
 		return;
 	uint64_t off = get64(b);
 	size_t len = n - 8;
-	if (off == B.r_expect && !B.r_held && B.rlen + len <= sizeof recbuf) {
+	if (off == B.r_expect && B.rlen + len <= sizeof recbuf) {
 		const unsigned char *p = b + 8;
 		B.r_expect += len;
 		if (B.r_skip) {
@@ -1262,6 +1272,7 @@ static void handle_record(int type, const unsigned char *b, size_t n)
 static void reset_generation(void)
 {
 	B.s_base = B.s_end = B.s_next = 0;
+	B.s_stall = 0;
 	B.nprec = 0;
 	B.r_expect = 0;
 	B.rlen = 0;

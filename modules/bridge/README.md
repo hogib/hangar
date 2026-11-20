@@ -63,7 +63,7 @@ and calls to the other side).
   `Rate=` skipping some (the next one sent marked `HG_SLOT_DECIMATED`). `reliable`
   (`Delivery=reliable`, and every request and reply topic): records on one ordered byte
   stream, acknowledged cumulatively and resent go-back-N after 4 × the smallest round
-  trip (20 ms to 1 s); a record may span datagrams (an admin request is 16.5 KB). A
+  trip (20 ms to 1 s), the pause doubling while nothing is acknowledged; a record may span datagrams (an admin request is 16.5 KB). A
   topic's schema and writer go on the stream before its first message. Payloads go
   without their trailing zeros.
 - **Mirrored topics.** Opened by the manager on the first message: the sender's
@@ -87,9 +87,10 @@ and calls to the other side).
   `received_ns`, whatever the body after it. The estimate is of one link: it starts
   over at every handshake and ends when its last sample leaves the window. With no
   estimate nothing is translated: a `latest` message is dropped (`dropped_late`; a
-  command is then not published here, the safe side), a `reliable` one waits on the
-  stream behind the first message record, unacknowledged, and is delivered when the
-  first pong has come (one round trip after the handshake: a ping goes with it).
+  command is then not published here, the safe side), a `reliable` one waits behind
+  the stream's first message record, in the receiver's buffer (1 MB) and past that
+  unacknowledged at the sender, and is delivered when the first pong has come (one
+  round trip after the handshake: a ping goes with it).
   `detail` says `no clock estimate: nothing mirrored in` meanwhile.
 - **Calls across.** A server reads the mirrored `<caller>.req` as any request topic;
   `origin_boot` makes its caller `<other role>:<caller>`, and the mirrored

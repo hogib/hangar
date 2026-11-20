@@ -445,10 +445,12 @@ estimate has ended:
 - a `latest` message is dropped and counted in `dropped_late`. For a command this is
   the safe side: `pilot.wrench` is not published on the vehicle, and goes stale or
   stays absent there, as when the tether is cut;
-- a `reliable` message waits. The receiver stops taking the stream at the first
-  message record (the version and schema records before it are handled), the sender
-  keeps what is unacknowledged and resends it, and everything is delivered in order
-  once the estimate exists. A request made meanwhile is answered late, or is past its
+- a `reliable` message waits. The receiver stops handling the stream at the first
+  message record (the version and schema records before it are handled). What
+  follows is kept in its buffer, 1 MB, so the usual wait of one round trip costs no
+  resend; past that the sender keeps what is unacknowledged and resends it, each
+  time after twice the pause, up to a second, while nothing is acknowledged.
+  Everything is delivered in order once the estimate exists. A request made meanwhile is answered late, or is past its
   deadline by then and dropped by the server as expired; none is lost and none is
   executed on a deadline nobody could read.
 
