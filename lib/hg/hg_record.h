@@ -170,6 +170,13 @@ struct hgr_reader {
  * (EPROTO: not a recording). */
 int hgr_open(struct hgr_reader *r, const char *path);
 void hgr_reader_close(struct hgr_reader *r);
+/* The type of the file's messages, parsed from the header's schema into
+ * *out and checked against the header: the schema must describe a payload
+ * of payload_bytes and hash to type_hash. Whoever reads the payloads by
+ * the schema's offsets calls this first; a header that fails it is a
+ * damaged or hand-made file. 0, or -1 with errno EPROTO and one line in
+ * err. The descriptor's name is "". */
+int hgr_schema(const struct hgr_reader *r, struct hg_schema *out, char *err, size_t errlen);
 const struct hgr_record *hgr_at(const struct hgr_reader *r, uint64_t i);
 /* NULL under `meta`. */
 const void *hgr_payload_at(const struct hgr_reader *r, uint64_t i);

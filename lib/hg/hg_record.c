@@ -271,6 +271,28 @@ void hgr_reader_close(struct hgr_reader *r)
 	r->count = 0;
 }
 
+int hgr_schema(const struct hgr_reader *r, struct hg_schema *out, char *err, size_t errlen)
+{
+	const struct hgr_header *h = r->h;
+	char why[128] = "";
+	if (hg_schema_parse(h->schema, h->schema_bytes, out, why, sizeof why) < 0) {
+		if (err && errlen)
+			snprintf(err, errlen, "%s", why);
+	} else if (out->type.payload_bytes != h->payload_bytes) {
+		if (err && errlen)
+			snprintf(err, errlen, "the schema describes a payload of %u bytes, the header says %u",
+				 out->type.payload_bytes, h->payload_bytes);
+	} else if (out->type.hash != h->type_hash) {
+		if (err && errlen)
+			snprintf(err, errlen, "the schema's type hash is %016llx, the header says %016llx",
+				 (unsigned long long)out->type.hash, (unsigned long long)h->type_hash);
+	} else {
+		return 0;
+	}
+	errno = EPROTO;
+	return -1;
+}
+
 const struct hgr_record *hgr_at(const struct hgr_reader *r, uint64_t i)
 {
 	if (i >= r->count)

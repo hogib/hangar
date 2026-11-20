@@ -115,6 +115,10 @@ struct part_file {
 	struct hg_schema schema;
 	int open;
 	char path[700];
+	/* The header's text fields, copied bounded: in a damaged file they
+	 * need not hold a NUL, and they are printed and copied on. */
+	char policy_text[sizeof(((struct hgr_header *)0)->policy_text) + 1];
+	char session[sizeof(((struct hgr_header *)0)->session)];
 };
 
 static int open_topic_file(const char *session, const char *topic, struct part_file *pf, char *why, size_t whylen)
@@ -125,6 +129,8 @@ static int open_topic_file(const char *session, const char *topic, struct part_f
 		bfmt(why, whylen, "%s: %s", pf->path, errno == EPROTO ? "not a recording" : strerror(errno));
 		return -1;
 	}
+	bfmt(pf->policy_text, sizeof pf->policy_text, "%.*s", (int)sizeof pf->r.h->policy_text, pf->r.h->policy_text);
+	bfmt(pf->session, sizeof pf->session, "%.*s", (int)sizeof pf->r.h->session - 1, pf->r.h->session);
 	char plus[700];
 	bfmt(plus, sizeof plus, "%s/%s+1.hgr", session, topic);
 	if (access(plus, F_OK) == 0) {
@@ -133,8 +139,10 @@ static int open_topic_file(const char *session, const char *topic, struct part_f
 		hgr_reader_close(&pf->r);
 		return -1;
 	}
+	/* The join copies fields at the schema's offsets out of records sized
+	 * by the header: the two must describe the same type. */
 	char err[200];
-	if (hg_schema_parse(pf->r.h->schema, pf->r.h->schema_bytes, &pf->schema, err, sizeof err) < 0) {
+	if (hgr_schema(&pf->r, &pf->schema, err, sizeof err) < 0) {
 		bfmt(why, whylen, "%s: schema: %s", pf->path, err);
 		hgr_reader_close(&pf->r);
 		return -1;
@@ -159,7 +167,7 @@ static int open_session(const struct hg_ds_spec *spec, const char *session, stru
 		return quiet ? 2 : dfail("anchor %s: %s", spec->anchor, why);
 	if (anchor->r.h->policy != HGR_FULL || anchor->r.h->policy_n != 1 || anchor->r.meta)
 		return quiet ? 2 : dfail("anchor %s was recorded %s in this session, not full", spec->anchor,
-					 anchor->r.h->policy_text);
+					 anchor->policy_text);
 	struct hg_ds_topic_info pi[HG_DS_MAX_PARTS];
 	for (int i = 0; i < spec->n_parts; i++) {
 		const struct hg_ds_part_spec *p = &spec->parts[i];
@@ -167,7 +175,7 @@ static int open_session(const struct hg_ds_spec *spec, const char *session, stru
 			return quiet ? 2 : dfail("part %s: %s", p->name, why);
 		if (parts[i].r.h->policy != HGR_FULL || parts[i].r.h->policy_n != 1 || parts[i].r.meta)
 			return quiet ? 2 : dfail("part %s: %s was recorded %s in this session, not full: the build would join "
-						 "other messages than the pairer did", p->name, p->topic, parts[i].r.h->policy_text);
+						 "other messages than the pairer did", p->name, p->topic, parts[i].policy_text);
 		pi[i] = file_info(&parts[i]);
 	}
 	struct hg_ds_topic_info ai = file_info(anchor);
@@ -221,7 +229,7 @@ static int cmd_build(int argc, char **argv)
 	m.payload_bytes = rt.row_bytes;
 	struct hgr_header h;
 	hgr_header_init(&h, &m, rt.schema.type.schema, rt.schema.type.schema_bytes, HGR_FULL, 1, "full",
-			anchor.r.h->session, 0);
+			anchor.session, 0);
 	unlink(out);
 	struct hgr_writer w;
 	if (hgr_create(&w, out, &h) < 0)
@@ -394,7 +402,7 @@ static int cmd_check(int argc, char **argv)
 			line(2, "session: anchor %s: %s", spec.anchor, why);
 			ok = 0;
 		} else if (anchor.r.h->policy != HGR_FULL || anchor.r.h->policy_n != 1) {
-			line(2, "session: anchor %s recorded %s, not full", spec.anchor, anchor.r.h->policy_text);
+			line(2, "session: anchor %s recorded %s, not full", spec.anchor, anchor.policy_text);
 			ok = 0;
 		}
 		for (int i = 0; i < spec.n_parts; i++) {
@@ -403,7 +411,7 @@ static int cmd_check(int argc, char **argv)
 				ok = 0;
 			} else if (parts[i].r.h->policy != HGR_FULL || parts[i].r.h->policy_n != 1) {
 				line(2, "session: part %s: %s recorded %s, not full", spec.parts[i].name, spec.parts[i].topic,
-				     parts[i].r.h->policy_text);
+				     parts[i].policy_text);
 				ok = 0;
 			}
 		}

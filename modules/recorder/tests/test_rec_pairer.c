@@ -379,6 +379,107 @@ static void test_refusals(void)
 	CHECK(file_contains(log_path("pairer-mismatch"), "dataset.other, which pairer.conf does not list"));
 }
 
+/* A one-topic session in <root>/<name>: t.a.hgr with three records of an
+ * 8-byte payload, the header's schema, hash, policy and policy text as
+ * given (a damaged or hand-made file). */
+static void bad_session(char *dir, size_t len, const char *name, const char *schema, uint64_t hash,
+			enum hgr_policy policy, const char *policy_text_fill)
+{
+	rfmt(dir, len, "%s/%s", R_root, name);
+	mkdir_p(dir, 0755);
+	char path[800];
+	rfmt(path, sizeof path, "%s/t.a.hgr", dir);
+	unlink(path);
+	struct hg_topic_meta m;
+	memset(&m, 0, sizeof m);
+	rfmt(m.name, sizeof m.name, "t.a");
+	m.payload_bytes = 8;
+	m.type_hash = hash;
+	m.topic_id = hg_topic_id("t.a");
+	m.rate_mhz = 10000;
+	struct hgr_header h;
+	hgr_header_init(&h, &m, schema, (uint32_t)strlen(schema), policy, policy == HGR_EVERY ? 2 : 1, "full", "s", 0);
+	if (policy_text_fill) {
+		memset(h.policy_text, policy_text_fill[0], sizeof h.policy_text); /* no NUL in the field */
+		memset(h.session, policy_text_fill[0], sizeof h.session);
+	}
+	struct hgr_writer w;
+	CHECK_EQ_INT(hgr_create(&w, path, &h), 0);
+	for (uint64_t seq = 1; seq <= 3; seq++) {
+		struct hg_info info = { .seq = seq, .stamp_ns = seq * 100000000ull, .publish_ns = seq * 100000000ull };
+		struct hgr_record r;
+		hgr_record_init(&r, &info, 0, 0);
+		CHECK_EQ_INT(hgr_append(&w, &r, &seq), 0);
+	}
+	hgr_close(&w);
+	if (policy_text_fill) {
+		/* ... and none in the reserved bytes between it and the schema. */
+		char fill[512 - 280];
+		memset(fill, policy_text_fill[0], sizeof fill);
+		int fd = open(path, O_WRONLY);
+		CHECK(pwrite(fd, fill, sizeof fill, 280) == (ssize_t)sizeof fill);
+		close(fd);
+	}
+}
+
+/* `hangar dataset` copies fields at the schema's offsets out of records
+ * sized by the header's payload_bytes, so a header whose schema describes
+ * another type than its payload_bytes and type_hash say must be refused
+ * when the file is opened: with an 8-byte payload and a 4 MB field in the
+ * schema, the build was killed by SIGSEGV. The header's text fields are
+ * printed bounded: a damaged one need not hold a NUL. */
+static void test_damaged_recordings(void)
+{
+	char spec[700], dir[700], cmd[2400];
+	static char out[8192];
+	rfmt(spec, sizeof spec, "%s/bad.dataset", R_root);
+	write_file(spec, "[Dataset]\nAnchor=t.a\nAnchorRole=input\n");
+	struct hg_schema sc;
+	const char big[] = "u64 x\nu8 big[4194304]\n", good[] = "u64 x\n";
+	CHECK_EQ_INT(hg_schema_parse(big, sizeof big - 1, &sc, NULL, 0), 0);
+	/* The schema says 4 MB, the header 8 bytes. */
+	bad_session(dir, sizeof dir, "bad-size", big, sc.type.hash, HGR_FULL, NULL);
+	rfmt(cmd, sizeof cmd, "%s dataset build %s %s -o %s/bad.hgr 2>&1", R_hangar, spec, dir, R_root);
+	int rc = run(out, sizeof out, cmd);
+	printf("    a 4 MB schema over an 8-byte payload: exit %d: %.160s", rc, out[0] ? out : "\n");
+	CHECK_EQ_INT(rc, 2);
+	CHECK(strstr(out, "t.a.hgr") && strstr(out, "payload"));
+	rfmt(cmd, sizeof cmd, "%s dataset check %s %s 2>&1", R_hangar, spec, dir);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 2);
+	CHECK(strstr(out, "FAIL session: anchor t.a") != NULL);
+	/* The right size, another type's hash. */
+	CHECK_EQ_INT(hg_schema_parse(good, sizeof good - 1, &sc, NULL, 0), 0);
+	bad_session(dir, sizeof dir, "bad-hash", good, sc.type.hash ^ 1, HGR_FULL, NULL);
+	rfmt(cmd, sizeof cmd, "%s dataset build %s %s -o %s/bad.hgr 2>&1", R_hangar, spec, dir, R_root);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 2);
+	CHECK(strstr(out, "type hash") != NULL);
+	/* A sound file builds. */
+	bad_session(dir, sizeof dir, "sound", good, sc.type.hash, HGR_FULL, NULL);
+	rfmt(cmd, sizeof cmd, "%s dataset build %s %s -o %s/bad.hgr 2>&1", R_hangar, spec, dir, R_root);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 0);
+	CHECK(strstr(out, "3 rows") != NULL);
+	/* Text fields without a NUL: the refusal prints policy_text, 32 bytes,
+	 * and not what follows it in the header up to the schema's end. */
+	bad_session(dir, sizeof dir, "bad-text", good, sc.type.hash, HGR_EVERY, "P");
+	rfmt(cmd, sizeof cmd, "%s dataset build %s %s -o %s/bad.hgr 2>&1", R_hangar, spec, dir, R_root);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 2);
+	CHECK(strstr(out, "PPPP") != NULL && strstr(out, "not full") != NULL);
+	CHECK(strstr(out, "u64 x") == NULL);
+	rfmt(cmd, sizeof cmd, "%s dataset check %s %s 2>&1", R_hangar, spec, dir);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 2);
+	CHECK(strstr(out, "PPPP") != NULL && strstr(out, "u64 x") == NULL);
+	/* ... and a session name without one, copied into the built file's header. */
+	bad_session(dir, sizeof dir, "bad-name", good, sc.type.hash, HGR_FULL, "S");
+	rfmt(cmd, sizeof cmd, "%s dataset build %s %s -o %s/bad.hgr 2>&1", R_hangar, spec, dir, R_root);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 0);
+	char built[800];
+	rfmt(built, sizeof built, "%s/bad.hgr", R_root);
+	struct hgr_reader r;
+	CHECK_EQ_INT(hgr_open(&r, built), 0);
+	CHECK_EQ_INT(strlen(r.h->session), 63);
+	hgr_reader_close(&r);
+}
+
 int main(void)
 {
 	rec_setup("pairer");
@@ -387,6 +488,7 @@ int main(void)
 	RUN_TEST(test_stop_and_build);
 	RUN_TEST(test_live_equals_offline);
 	RUN_TEST(test_refusals);
+	RUN_TEST(test_damaged_recordings);
 	if (rows_sub)
 		hg_sub_close(rows_sub);
 	if (status_sub)
