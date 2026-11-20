@@ -936,6 +936,17 @@ static int on_revert(const hg_call_ctx *c, const void *req, void *rep_, char *re
 		mod_fmt(reason, HG_CALL_REASON, "a load is in progress (version %u)", L.version);
 		return HG_E_REFUSED;
 	}
+	/* The worker has one job at a time. The last load's files may still be
+	 * on their way (a copy into the recorder's session on a slow card): a
+	 * revert posted now would take that job's place, and when it ended the
+	 * slot was cleared with the files never exchanged. Memory said
+	 * reverted, the disk kept the model reverted from as current.hgw, and
+	 * the next restart brought it back. Refused instead, as load_weights
+	 * is: the caller asks again a moment later. */
+	if (worker_busy()) {
+		mod_fmt(reason, HG_CALL_REASON, "the last load's files are still being written: ask again");
+		return HG_E_REFUSED;
+	}
 	struct model t = run;
 	run = prev;
 	prev = t;

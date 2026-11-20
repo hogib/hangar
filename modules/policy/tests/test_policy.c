@@ -768,6 +768,56 @@ static void test_weights_are_private(void)
 	CHECK(digest_hex(old, hex, &h) == 0 && h == hash_a);
 }
 
+/* A revert while the last load's files are still being written. The copy of
+ * the new model into the recorder's session is held here by a FIFO where its
+ * temporary file goes (a slow SD card, made exact): the swap has happened,
+ * the worker is still busy. The revert used to be accepted; its file
+ * exchange took the worker's one job slot and was lost when the copy ended:
+ * the policy ran the old model with the new one as current.hgw, which the
+ * next restart loaded. Running: good_b, previous good_a. */
+static void test_revert_while_files_are_written(void)
+{
+	char fifo[900], cur[700], old[700], hex[65];
+	tfmt(fifo, sizeof fifo, "%s/weights/%016llx.hgw.tmp", session, (unsigned long long)hash_a);
+	tfmt(cur, sizeof cur, "%s/current.hgw", state);
+	tfmt(old, sizeof old, "%s/previous.hgw", state);
+	unlink(fifo);
+	CHECK_EQ_INT(mkfifo(fifo, 0660), 0);
+	uint32_t v = 0;
+	CHECK_EQ_INT(load("good_a", NULL, &v, NULL), HG_OK);
+	CHECK_EQ_INT(wait_load(v, 5000), 3);
+	pump(200); /* good_a runs; the keep job waits for a reader of the FIFO */
+	CHECK(O.active.hash == hash_a);
+	policy_version pv;
+	memset(&pv, 0, sizeof pv);
+	empty e = { 0 };
+	hg_call_result r = call("policy_toy.revert", &EMPTY_TYPE, &e, &POLICY_VERSION_TYPE, &pv);
+	CHECK_EQ_INT(r.status, HG_E_REFUSED);
+	CHECK(strstr(r.reason, "still being written") != NULL);
+	pump(100);
+	CHECK(O.active.hash == hash_a); /* nothing was reverted */
+	/* The copy goes through; the revert asked again is taken, and the files follow it. */
+	int fd = open(fifo, O_RDONLY | O_NONBLOCK);
+	CHECK(fd >= 0);
+	uint64_t t0 = now_ms();
+	do {
+		char sink[4096];
+		while (read(fd, sink, sizeof sink) > 0)
+			;
+		pump(50);
+		r = call("policy_toy.revert", &EMPTY_TYPE, &e, &POLICY_VERSION_TYPE, &pv);
+	} while (r.status != HG_OK && now_ms() - t0 < 10000);
+	close(fd);
+	CHECK_EQ_INT(r.status, HG_OK);
+	pump(300);
+	CHECK(O.active.cause == 2 && O.active.hash == hash_b);
+	uint64_t h = 0;
+	CHECK(digest_hex(cur, hex, &h) == 0 && h == hash_b);
+	CHECK(digest_hex(old, hex, &h) == 0 && h == hash_a);
+	tfmt(fifo, sizeof fifo, "%s/weights/%016llx.hgw", session, (unsigned long long)hash_a);
+	unlink(fifo); /* the FIFO, renamed into place by the copy */
+}
+
 static void test_warmup_overrun(void)
 {
 	char path[700];
@@ -1089,6 +1139,7 @@ int main(void)
 	RUN_TEST(test_checks_fail);
 	RUN_TEST(test_recurrent_spec);
 	RUN_TEST(test_weights_are_private);
+	RUN_TEST(test_revert_while_files_are_written);
 	RUN_TEST(test_warmup_overrun);
 	RUN_TEST(test_features);
 	RUN_TEST(test_features_vs_pairer);

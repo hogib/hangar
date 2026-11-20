@@ -121,7 +121,11 @@ hash a model was trained on with the one it builds the same way.
   budget is what check 7 holds the new model's step to; a tick that overran its period
   is the one that delayed the running model's output.
 - `revert` takes effect when the call is served, between two ticks, rather than "at the
-  next tick boundary" with a wait: the loop serves calls between ticks.
+  next tick boundary" with a wait: the loop serves calls between ticks. It is refused
+  (`the last load's files are still being written: ask again`) while the worker is
+  still writing the last load's files, as `load_weights` is: the worker has one job,
+  and a revert's file exchange posted over it was lost, leaving `current.hgw` the
+  model reverted from (`test_revert_while_files_are_written`).
 - Not tested here: both models at the edge of `TickBudget` (the suite's overrun is
   forced), a request whose deadline passed during a restart, and the reset bits against
   a recorded stream with a reboot (the policy calls the pairer's `hg_ds_row_finish`, so
