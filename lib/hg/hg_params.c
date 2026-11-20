@@ -273,6 +273,15 @@ int hg_param_parse(const struct hg_field *f, const char *text, size_t len, unsig
 			errno = EINVAL;
 			return -1;
 		}
+		/* The field is a C string to everyone who reads it: a NUL inside
+		 * the quotes would end it there and leave the rest in the bytes,
+		 * where the formatter does not see it (the file written back
+		 * would not be the values in force). */
+		if (memchr(s, 0, (size_t)(qe - s))) {
+			set_err(err, errlen, "%s: text with a NUL byte in it", f->name);
+			errno = EINVAL;
+			return -1;
+		}
 		/* Twice over the text: its length without the escapes, held to
 		 * the field before a byte is written (a refused value leaves dst
 		 * as it was), then the bytes themselves. Not through a buffer of

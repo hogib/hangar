@@ -473,6 +473,13 @@ static void test_long_quoted_text(void)
 	if (!strstr(err, "8192"))
 		printf("    it said: %s\n", err);
 	CHECK(P[0] == 0x7f && P[5000] == 0x7f);
+	/* A NUL byte inside the quotes is refused: the text would end there for
+	 * every reader, with more behind it in the field's bytes. */
+	static const char nul[] = "\"ab\0cd\"";
+	err[0] = 0;
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], nul, sizeof nul - 1, P, err, sizeof err), -1);
+	CHECK(strstr(err, "NUL") != NULL);
+	CHECK(P[0] == 0x7f);
 	n = 8191;
 	text[1 + n] = '"';
 	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, n + 2, P, err, sizeof err), 0);
