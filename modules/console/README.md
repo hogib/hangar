@@ -285,7 +285,12 @@ talker's goodbye line and the console's own start line; the page has its four ta
 the Hellion frame and no external URL, `/api/links` carries the URL the manifest's
 `--hellion` gave, a second `dawn-patrold` run by hand without the option answers the
 default, a value that is not an `http(s)` URL or a missing one is refused with exit
-status 2, and the module under the manager is untouched by all that; the manager's
+status 2, and the module under the manager is untouched by all that; a console
+stopped across the 10 s deadline of three idle connections, whose clients speak
+before it is continued, gets the deadline sweep and their bytes in one `epoll_wait`
+batch and goes on serving (`test_close_and_event_in_one_batch`: a connection closed
+by one event of a batch keeps its struct until the batch ends; before that the
+plain binary aborted in `free()` and AddressSanitizer named `conn_event`); the manager's
 shutdown takes the console with it. No hellion runs in the suite: the tab's frame is
 the browser's work, and the URL under test points at a port nobody listens on.
 

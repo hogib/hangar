@@ -474,6 +474,59 @@ static void test_hellion_default(void)
 	CHECK(strstr(body, HELLION_TEST_URL) != NULL);
 }
 
+/* A connection closed by one event of an epoll batch and named by a later
+ * one of the same batch. An idle connection (a browser's spare one) is swept
+ * at its 10 s deadline by the 1 s tick; when the client's bytes arrive in the
+ * same wake-up, conn_event ran on the struct the sweep had freed (a read
+ * after free, then a second close and free: the plain binary aborted in
+ * free()). The two are put into one batch by stopping the console across the
+ * deadline: the timer expires while it is stopped, the bytes are sent after
+ * that, and on SIGCONT epoll_wait returns both, the timer first. No timing
+ * is tight: a slow machine only lengthens the stop. A console run by hand,
+ * so no watchdog restarts the stopped process. */
+static void test_close_and_event_in_one_batch(void)
+{
+	int port2 = free_port();
+	CHECK(port2 > 0);
+	char listen[32];
+	tfmt(listen, sizeof listen, "127.0.0.1:%d", port2);
+	pid_t pid;
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--role", "vehicle"), -1); /* still running */
+	char saved[64];
+	memcpy(saved, hostport, sizeof saved);
+	tfmt(hostport, sizeof hostport, "%s", listen);
+	CHECK(wait_api("/api/links", "\"hellion\"", 5000, body, sizeof body));
+	int idle[3];
+	for (int i = 0; i < 3; i++) {
+		idle[i] = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		struct sockaddr_in sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sin_family = AF_INET;
+		sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		sa.sin_port = htons((uint16_t)port2);
+		CHECK(idle[i] >= 0 && connect(idle[i], (struct sockaddr *)&sa, sizeof sa) == 0);
+	}
+	// A request answered after them: the console has accepted all three (it
+	// accepts until the queue is empty), so their deadlines are running.
+	CHECK_EQ_INT(api("GET", "/api/system", body, sizeof body), 200);
+	kill(pid, SIGSTOP);
+	sleep_ms(11500); /* past the 10 s deadline, and the tick has fired */
+	static const char req[] = "GET /api/system HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+	for (int i = 0; i < 3; i++)
+		CHECK(send(idle[i], req, sizeof req - 1, MSG_NOSIGNAL) == (ssize_t)(sizeof req - 1));
+	kill(pid, SIGCONT);
+	// The swept connections get nothing; the console is alive and serves.
+	CHECK_EQ_INT(wait_pid_ms(pid, 1500), -1);
+	CHECK_EQ_INT(api("GET", "/api/system", body, sizeof body), 200);
+	CHECK(strstr(body, "\"role\":\"vehicle\"") != NULL);
+	for (int i = 0; i < 3; i++)
+		close(idle[i]);
+	CHECK_EQ_INT(api("GET", "/api/system", body, sizeof body), 200);
+	memcpy(hostport, saved, sizeof saved);
+	kill(pid, SIGTERM);
+	CHECK_EQ_INT(wait_pid_ms(pid, 3000), 0);
+}
+
 /* The Fly view (#2): the page, the readings, and the calls through the
  * manager to the real safety module. */
 static void test_fly(void)
@@ -600,6 +653,7 @@ int main(void)
 	RUN_TEST(test_host_and_origin);
 	RUN_TEST(test_restart_stop_start);
 	RUN_TEST(test_hellion_default);
+	RUN_TEST(test_close_and_event_in_one_batch);
 	RUN_TEST(test_fly);
 	RUN_TEST(test_presets);
 	RUN_TEST(test_log);

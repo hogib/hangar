@@ -190,27 +190,51 @@ struct conn {
 	uint64_t deadline_ns;
 	int want_write;
 	int waiting; /* a call of its request is in flight: its answer comes from call_poll */
+	int closed;  /* conn_close was here: only the struct is left, until the batch ends */
+	struct conn *next_closed;
 };
 
 static int epfd = -1;
 static struct conn *conns[CON_MAX_CONNS];
 static int n_conns;
+static struct conn *closed_conns;
 
 static void calls_drop(struct conn *c);
 
+/* Closes the connection now; the struct itself stays until conns_reap(). One
+ * epoll_wait hands out a batch of events, and a connection closed by an
+ * early one (the 1 s tick's deadline sweep, a call's answer) may still be
+ * named by a later one of the same batch: that event must find memory that
+ * says "closed", not memory the allocator has handed to someone else. */
 static void conn_close(struct conn *c)
 {
+	if (c->closed)
+		return;
 	calls_drop(c);
 	epoll_ctl(epfd, EPOLL_CTL_DEL, c->fd, NULL);
 	close(c->fd);
 	free(c->in);
 	free(c->out);
+	c->fd = -1;
+	c->in = c->out = NULL;
 	for (int i = 0; i < n_conns; i++)
 		if (conns[i] == c) {
 			conns[i] = conns[--n_conns];
 			break;
 		}
-	free(c);
+	c->closed = 1;
+	c->next_closed = closed_conns;
+	closed_conns = c;
+}
+
+/* After every event of a batch was handled: nothing names them any more. */
+static void conns_reap(void)
+{
+	while (closed_conns) {
+		struct conn *c = closed_conns;
+		closed_conns = c->next_closed;
+		free(c);
+	}
 }
 
 static const char *reason(int status)
@@ -918,6 +942,8 @@ static void conn_accept(int lfd)
 
 static void conn_event(struct conn *c, uint32_t events)
 {
+	if (c->closed)
+		return; /* closed by an earlier event of this batch */
 	if (events & (EPOLLERR | EPOLLHUP)) {
 		conn_close(c);
 		return;
@@ -1162,10 +1188,12 @@ int main(int argc, char **argv)
 				conn_event(p, evs[i].events);
 			}
 		}
+		conns_reap();
 	}
 	logf_("stopping");
 	while (n_conns)
 		conn_close(conns[0]);
+	conns_reap();
 	close(lfd);
 	hg_wait_fd_close();
 	hg_sub_close(G.sub_system);
