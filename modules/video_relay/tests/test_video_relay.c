@@ -350,6 +350,24 @@ static int udp_bound(int *port)
 	return s;
 }
 
+/* Wait until the relay has logged that it listens (its last line before hg_ready): a
+ * fixed sleep lost frame 1, the key frame, on a slow runner, and with it 30 frames. */
+static int wait_listening(const char *log, int ms)
+{
+	for (int i = 0; i < ms / 10; i++) {
+		char buf[4096];
+		FILE *f = fopen(log, "r");
+		size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+		if (f)
+			fclose(f);
+		buf[n] = 0;
+		if (strstr(buf, "RTP on "))
+			return 1;
+		sleep_ms(10);
+	}
+	return 0;
+}
+
 static pid_t spawn_relay(const char *conf, const char *log)
 {
 	pid_t pid = fork();
@@ -432,7 +450,7 @@ static void test_module(void)
 		   "Decode=yes\nThreads=2\nSession=\nRecordDir=%s\nName=test\n",
 		   rport, qport, rec);
 	pid_t pid = spawn_relay(conf, log);
-	sleep_ms(300);
+	CHECK(wait_listening(log, 10000));
 
 	setenv("HANGAR_WIRING_FILE", tester_wiring, 1);
 	setenv("HANGAR_MODULE", "tester", 1);
