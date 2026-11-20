@@ -215,7 +215,7 @@ What remains:
   `hangar echo` of a `.req`/`.rep` body by its type hash (the envelope decodes like
   any schema).
 - The handshake's report of a module enabled on both machines
-  (`modules/bridge/README.md`), and with it the refusal in deviation 25.
+  (`modules/bridge/README.md`); the manager only logs it at the mirrored open.
 - Running the suites as root (user switching, `SCHED_FIFO`, capabilities, cgroups) on
   a machine or VM; they are skipped and reported here.
 
