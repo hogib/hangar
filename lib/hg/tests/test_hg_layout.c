@@ -301,8 +301,9 @@ static void test_frame_topic_defaults_to_4_slots(void)
 }
 
 /* A header a writer has damaged or made up: write_seq at the top of its
- * range. The reader's own arithmetic must not wrap into a loop: every read
- * returns (hg_next did not, found by fuzz/fuzz_topic.c). */
+ * range, then first_seq too. The reader's own arithmetic must not wrap into
+ * a loop: every read returns (hg_next did not, found by fuzz/fuzz_topic.c;
+ * hg_find_stamp did not with first_seq there, found by this test). */
 static void test_reader_returns_on_a_wild_header(void)
 {
 	hg_pub *p = hg_pub_open("lay.wild", DEPTH_TYPE, &(struct hg_pub_opts){ .slots = 4 });
@@ -315,7 +316,7 @@ static void test_reader_returns_on_a_wild_header(void)
 	char path[600];
 	hg_topic_path(path, sizeof path, "", "lay.wild", "");
 	static const size_t at[2] = { 200, 168 }; /* write_seq, first_seq (docs/01) */
-	for (int step = 0; step < 1; step++) {
+	for (int step = 0; step < 2; step++) {
 		FILE *f = fopen(path, "r+b");
 		CHECK(f != NULL);
 		if (!f)

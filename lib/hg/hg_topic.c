@@ -2181,6 +2181,11 @@ enum hg_result hg_find_stamp(hg_sub *s, uint64_t t_ns, void *buf, size_t buf_len
 	 * at or before t is the answer. */
 	uint64_t W = atomic_load_explicit(&s->h->write_seq, memory_order_acquire);
 	uint64_t k = (uint64_t)s->mask + 1;
+	/* Nothing of this file to read: none published yet, or a header whose
+	 * first_seq is past its write_seq. (With first_seq at 2^64 - 1 the lower
+	 * bound below wrapped to 0 and the loop ran down from W for ever.) */
+	if (W <= s->first)
+		return finish(s, info, HG_GONE);
 	/* Down to W-K+1, the slot the writer fills next: the seq check tells
 	 * whether it still holds that message, as hg_read_seq's does. */
 	uint64_t lo = W - s->first >= k ? W - k + 1 : s->first + 1;
