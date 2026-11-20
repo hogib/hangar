@@ -2,8 +2,12 @@
 /* The bridge, end to end on loopback (docs/08-bridge.md): two managers, a
  * vehicle and a topside, each with its own root and topic directory, each
  * with a bridge; between the two bridges a UDP forwarder in this process,
- * which drops, replays, modifies and forges datagrams when told to. No
+ * which drops, replays, modifies and forges datagrams when told to, and
+ * records what the topside sends so that a run can play it back later. No
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
+ *
+ * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
+ * clocks).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -27,6 +31,7 @@ static void unused_harness(void)
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 
 struct side {
@@ -34,6 +39,7 @@ struct side {
 	char root[256], modules[512], msg[512], control[512], topics[512], log[512], conf[512];
 	int port;
 	pid_t mgr;
+	const char *peer; /* Peer= of its bridge.conf; NULL: the forwarder */
 };
 static struct side V = { .role = "vehicle" }, T = { .role = "topside" };
 static const char *bridge_bin;
@@ -58,6 +64,16 @@ static int fwd_sock, fwd_port;
 static struct sockaddr_in fwd_v, fwd_t;
 static atomic_int fwd_drop_pct, fwd_stop, fwd_tamper; /* tamper: 1 replay, 2 modify, 3 forge */
 static atomic_long fwd_count;
+static atomic_int fwd_drop_kind_v; /* a datagram kind (4 pong) not passed on to the vehicle; 0 none */
+
+/* What the topside sent, in order, as someone on the tether would record it. */
+#define REC_MAX 16384
+struct rec {
+	uint16_t len;
+	unsigned char d[1300];
+};
+static struct rec *recs;
+static atomic_int fwd_rec_on, fwd_nrec;
 
 static void *forwarder(void *arg)
 {
@@ -72,6 +88,16 @@ static void *forwarder(void *arg)
 			continue;
 		const struct sockaddr_in *to = ntohs(from.sin_port) == V.port ? &fwd_t : &fwd_v;
 		atomic_fetch_add(&fwd_count, 1);
+		if (to == &fwd_v && atomic_load(&fwd_rec_on) && n <= (ssize_t)sizeof recs[0].d) {
+			int k = atomic_load(&fwd_nrec);
+			if (k < REC_MAX) {
+				recs[k].len = (uint16_t)n;
+				memcpy(recs[k].d, d, (size_t)n);
+				atomic_store(&fwd_nrec, k + 1);
+			}
+		}
+		if (to == &fwd_v && n > 4 && d[4] == atomic_load(&fwd_drop_kind_v))
+			continue;
 		rng = rng * 1103515245u + 12345u;
 		if ((int)((rng >> 16) % 100) < atomic_load(&fwd_drop_pct))
 			continue;
@@ -177,9 +203,10 @@ static void setup_side(struct side *s, const char *tag, const char *extra_conf)
 	write_file(p, text);
 	tfmt(p, sizeof p, "%s/etc/hangar/bridge.key", s->root);
 	write_file(p, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n");
-	tfmt(text, sizeof text,
-	     "[Bridge]\nPair=test\nKey=%s/etc/hangar/bridge.key\nPort=%d\nPeer=127.0.0.1:%d\nMsgDir=%s\n%s%s",
-	     s->root, s->port, fwd_port, s->msg, MIRRORS, extra_conf ? extra_conf : "");
+	char peer[64];
+	tfmt(peer, sizeof peer, "127.0.0.1:%d", fwd_port);
+	tfmt(text, sizeof text, "[Bridge]\nPair=test\nKey=%s/etc/hangar/bridge.key\nPort=%d\nPeer=%s\nMsgDir=%s\n%s%s",
+	     s->root, s->port, s->peer ? s->peer : peer, s->msg, MIRRORS, extra_conf ? extra_conf : "");
 	write_file(s->conf, text);
 	use(s);
 	manifest("bridge", "[Module]\nExec=%s %s\n[Bridge]\n", bridge_bin, s->conf);
@@ -245,12 +272,90 @@ static pid_t pid_of(const struct side *s, const char *module)
 	return module_status(module, &m) ? m.pid : -1;
 }
 
+/* ---- Another clock ------------------------------------------------------------ */
+
+/* Two machines never share a CLOCK_MONOTONIC; two roots on one host do,
+ * and a mistake in translating a time between them goes unseen. A time
+ * namespace gives one side its own: a process started with
+ * HANGAR_TEST_TIMENS=<seconds> in its environment (this binary: the suite
+ * sets it for the topside's manager and for its tester) enters a user and a
+ * time namespace whose CLOCK_MONOTONIC is that much ahead, and then runs
+ * HANGAR_TEST_EXEC, or itself again. The offset takes effect at the exec. */
+#define TIMENS_S 259200 /* three days: a laptop up since Monday, a Pi just powered */
+
+static void put_file(const char *path, const char *text)
+{
+	int fd = open(path, O_WRONLY);
+	if (fd < 0 || write(fd, text, strlen(text)) != (ssize_t)strlen(text))
+		_exit(125);
+	close(fd);
+}
+
+static void timens_enter(char **argv)
+{
+	char text[64], secs[32];
+	tfmt(secs, sizeof secs, "%s", getenv("HANGAR_TEST_TIMENS"));
+	unsetenv("HANGAR_TEST_TIMENS");
+	uid_t uid = getuid();
+	gid_t gid = getgid();
+	if (unshare(CLONE_NEWUSER | CLONE_NEWTIME) < 0)
+		_exit(125);
+	put_file("/proc/self/setgroups", "deny");
+	tfmt(text, sizeof text, "%u %u 1", (unsigned)uid, (unsigned)uid);
+	put_file("/proc/self/uid_map", text);
+	tfmt(text, sizeof text, "%u %u 1", (unsigned)gid, (unsigned)gid);
+	put_file("/proc/self/gid_map", text);
+	tfmt(text, sizeof text, "monotonic %s 0", secs);
+	put_file("/proc/self/timens_offsets", text);
+	const char *x = getenv("HANGAR_TEST_EXEC");
+	if (x && *x) {
+		char path[1024];
+		tfmt(path, sizeof path, "%s", x);
+		unsetenv("HANGAR_TEST_EXEC");
+		execl(path, path, (char *)NULL);
+	} else {
+		execv("/proc/self/exe", argv);
+	}
+	_exit(125);
+}
+
+/* 1 if a child started that way reads a clock that much ahead of ours. */
+static int timens_works(void)
+{
+	char now[32], secs[32];
+	tfmt(now, sizeof now, "%llu", (unsigned long long)(hg_now_ns() / 1000000000u));
+	tfmt(secs, sizeof secs, "%d", TIMENS_S);
+	pid_t c = fork();
+	if (c == 0) {
+		setenv("HANGAR_TEST_TIMENS", secs, 1);
+		unsetenv("HANGAR_TEST_EXEC");
+		execl(self_path, self_path, "--clock-ahead-of", now, (char *)NULL);
+		_exit(127);
+	}
+	return wait_pid_ms(c, 5000) == 0;
+}
+
+/* Starts a side's manager with its clock TIMENS_S ahead. */
+static void start_ahead(struct side *s)
+{
+	char secs[32];
+	tfmt(secs, sizeof secs, "%d", TIMENS_S);
+	setenv("HANGAR_TEST_TIMENS", secs, 1);
+	setenv("HANGAR_TEST_EXEC", T_hangard, 1);
+	const char *real = T_hangard;
+	T_hangard = self_path;
+	start(s);
+	T_hangard = real;
+	unsetenv("HANGAR_TEST_TIMENS");
+	unsetenv("HANGAR_TEST_EXEC");
+}
+
 /* ---- The tester: calls from the topside ---------------------------------------- */
 
 /* Run as a fresh process (this binary again, --tester <topside root> <out>):
  * the suite has used lib/hg unwired already, and a module's wiring is read
  * once per process. */
-static void tester(const char *root, const char *out_path)
+static void tester_init(const char *root)
 {
 	tfmt(T.root, sizeof T.root, "%s", root);
 	tfmt(T.control, sizeof T.control, "%s/run/hangar/control", root);
@@ -264,6 +369,11 @@ static void tester(const char *root, const char *out_path)
 	unsetenv("HANGAR_CONTROL");
 	if (hg_init() < 0)
 		_exit(3);
+}
+
+static void tester(const char *root, const char *out_path)
+{
+	tester_init(root);
 	FILE *f = fopen(out_path, "w");
 	struct depth d = { .depth_m = 4.5f }, r;
 	/* The first call waits for the request and reply topics to exist on
@@ -295,6 +405,53 @@ static void tester(const char *root, const char *out_path)
 	fprintf(f, "adminonly %s %s\n", hg_status_name(res.status), res.reason);
 	fclose(f);
 	_exit(0);
+}
+
+/* --tester-zero: server.secret echoes its request, so a request of zeros
+ * gets an OK reply whose body is all zeros, as every method with Reply=empty
+ * gives (safety.arm, disarm, clear): on the wire that reply ends inside its
+ * envelope. Five of those, then five with a body. */
+static void tester_zero(const char *root, const char *out_path)
+{
+	tester_init(root);
+	FILE *f = fopen(out_path, "w");
+	struct depth d = { .depth_m = 4.5f }, z = { 0 }, r;
+	hg_call_result res;
+	uint64_t t0 = now_ms();
+	do {
+		res = hg_call("server.secret", &DEPTH_TYPE, &d, &DEPTH_TYPE, &r, 1000);
+	} while (res.status != HG_OK && now_ms() - t0 < 8000);
+	fprintf(f, "first %s %s\n", hg_status_name(res.status), res.reason);
+	int zero_ok = 0, body_ok = 0;
+	char last[160] = "";
+	for (int i = 0; i < 5; i++) {
+		res = hg_call("server.secret", &DEPTH_TYPE, &z, &DEPTH_TYPE, &r, 500);
+		zero_ok += res.status == HG_OK;
+		if (res.status != HG_OK)
+			tfmt(last, sizeof last, "%s %s", hg_status_name(res.status), res.reason);
+		res = hg_call("server.secret", &DEPTH_TYPE, &d, &DEPTH_TYPE, &r, 500);
+		body_ok += res.status == HG_OK && r.depth_m == 4.5f;
+	}
+	fprintf(f, "zero %d body %d last %s\n", zero_ok, body_ok, last);
+	fclose(f);
+	_exit(0);
+}
+
+/* Runs this binary again as the topside's tester; its output, or NULL. */
+static const char *run_tester(const char *mode, int ahead, long timeout_ms)
+{
+	char out[600], secs[32];
+	tfmt(out, sizeof out, "%s/tester.out", T.root);
+	unlink(out);
+	tfmt(secs, sizeof secs, "%d", TIMENS_S);
+	pid_t c = fork();
+	if (c == 0) {
+		if (ahead)
+			setenv("HANGAR_TEST_TIMENS", secs, 1);
+		execl(self_path, self_path, mode, T.root, out, (char *)NULL);
+		_exit(127);
+	}
+	return wait_pid_ms(c, timeout_ms) == 0 ? read_file(out) : NULL;
 }
 
 /* ---- The suite ---------------------------------------------------------------- */
@@ -609,11 +766,83 @@ static void mismatch_run(void)
 	      cv, ct);
 }
 
+/* Two clock bases, three days apart: the topside's manager, its modules and
+ * its tester run in a time namespace. Stamps come out in the vehicle's
+ * clock, and a call whose OK reply has an all-zero body is answered. */
+static void clocks_run(void)
+{
+	if (!timens_works()) {
+		printf("skip  clocks: no user and time namespace here (unshare CLONE_NEWUSER|CLONE_NEWTIME)\n");
+		return;
+	}
+	setup_side(&V, "clk", NULL);
+	manifest("server", "[Module]\nExec=%s/server\n"
+			   "[Serve secret]\nRequest=depth\nReply=depth\nAllow=topside:tester\n", T_toys);
+	setup_side(&T, "clk", NULL);
+	manifest("pilot", "[Module]\nExec=%s/talker --topic pilot.depth --rate 50\n"
+			  "[Publish pilot.depth]\nType=depth\nRate=50\n", T_toys);
+	manifest("tester", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
+			   "[Call server.secret]\nRequest=depth\nReply=depth\n");
+	start(&V);
+	start_ahead(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "link up between two clock bases");
+	if (!up)
+		return;
+	sleep_ms(1000);
+	read_link(&V, &lv);
+	double off_s = lv.clock_offset_ns / 1e9;
+	EXPECT(off_s > TIMENS_S - 2 && off_s < TIMENS_S + 2,
+	       "the vehicle measures the topside's clock %.3f s ahead (%d s set), uncertainty %.3f ms", off_s, TIMENS_S,
+	       lv.clock_uncertainty_ns / 1e6);
+	use(&V);
+	hg_sub *pd = hg_sub_open("pilot.depth", &DEPTH_TYPE);
+	struct depth d;
+	struct hg_info in;
+	int n = 0, good = 0;
+	uint64_t t0 = now_ms();
+	while (pd && n < 50 && now_ms() - t0 < 3000) {
+		hg_wait(&pd, 1, 100);
+		while (hg_next(pd, &d, sizeof d, &in) == HG_MSG) {
+			uint64_t now = hg_now_ns();
+			n++;
+			good += in.stamp_ns <= now && now - in.stamp_ns < 50000000ull;
+		}
+	}
+	EXPECT(n >= 50 && good == n, "pilot.depth here: %d of %d stamps within 50 ms before now, in this clock", good, n);
+	const char *res = run_tester("--tester-zero", 1, 20000);
+	int zero = -1, body = -1;
+	const char *l = res ? strstr(res, "\nzero ") : NULL;
+	if (l)
+		sscanf(l, "\nzero %d body %d", &zero, &body);
+	EXPECT(res && strstr(res, "first HG_OK") && body == 5, "calls with a body in the reply: %d of 5 answered", body);
+	EXPECT(zero == 5, "calls whose OK reply is all zeros (as Reply=empty): %d of 5 answered%s%.*s", zero,
+	       zero == 5 ? "" : "; the last: ", l ? (int)strcspn(strstr(l, "last ") + 5, "\n") : 0,
+	       l ? strstr(l, "last ") + 5 : "");
+}
+
+static const struct run {
+	const char *name;
+	void (*fn)(void);
+} runs[] = {
+	{ "main", main_run },
+	{ "mismatch", mismatch_run },
+	{ "clocks", clocks_run },
+};
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
+	if (getenv("HANGAR_TEST_TIMENS"))
+		timens_enter(argv);
+	if (argc == 3 && strcmp(argv[1], "--clock-ahead-of") == 0)
+		return hg_now_ns() / 1000000000u + 5 >= strtoull(argv[2], NULL, 10) + TIMENS_S ? 0 : 1;
 	if (argc == 4 && strcmp(argv[1], "--tester") == 0)
 		tester(argv[2], argv[3]);
+	if (argc == 4 && strcmp(argv[1], "--tester-zero") == 0)
+		tester_zero(argv[2], argv[3]);
+	const char *only = argc == 3 && strcmp(argv[1], "--only") == 0 ? argv[2] : NULL;
 	ssize_t sl = readlink("/proc/self/exe", self_path, sizeof self_path - 1);
 	self_path[sl > 0 ? sl : 0] = 0;
 	T_hangard = getenv("HANGARD_BIN");
@@ -630,22 +859,30 @@ int main(int argc, char **argv)
 	unsetenv("HANGAR_PEER_TOPIC_DIR");
 	unsetenv("NOTIFY_SOCKET");
 	signal(SIGPIPE, SIG_IGN);
+	recs = malloc(REC_MAX * sizeof *recs);
+	if (!recs)
+		return 2;
 	fwd_sock = udp_bound(&fwd_port);
 	struct timeval tv = { 0, 100000 };
 	setsockopt(fwd_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
 	pthread_t th;
 	pthread_create(&th, NULL, forwarder, NULL);
 
-	for (int run = 0; run < 2; run++) {
+	for (size_t run = 0; run < sizeof runs / sizeof runs[0]; run++) {
+		if (only && strcmp(only, runs[run].name) != 0)
+			continue;
+		printf("-- %s\n", runs[run].name);
+		atomic_store(&fwd_drop_pct, 0);
+		atomic_store(&fwd_drop_kind_v, 0);
+		atomic_store(&fwd_rec_on, 0);
+		atomic_store(&fwd_nrec, 0);
+		V.peer = T.peer = NULL;
 		V.port = free_port();
 		T.port = free_port();
 		fwd_v = (struct sockaddr_in){ .sin_family = AF_INET, .sin_port = htons((uint16_t)V.port) };
 		fwd_t = (struct sockaddr_in){ .sin_family = AF_INET, .sin_port = htons((uint16_t)T.port) };
 		fwd_v.sin_addr.s_addr = fwd_t.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-		if (run == 0)
-			main_run();
-		else
-			mismatch_run();
+		runs[run].fn();
 		if (failed) {
 			printf("    logs: %s, %s\n", V.log, T.log);
 			setenv("HD_KEEP", "1", 1);

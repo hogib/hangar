@@ -655,13 +655,18 @@ static size_t build_msg(unsigned char *o, const struct tx_topic *t, const struct
 	uint32_t used = plen;
 	while (used && pl[used - 1] == 0)
 		used--;
+	/* A call envelope's time goes whole, whatever follows it: an OK reply
+	 * with an empty body ends inside received_ns, whose top bytes are zero
+	 * for the first two years of an uptime. */
+	size_t at = call_time_at(t->call_kind, plen);
+	if (at && used < at + 8)
+		used = (uint32_t)at + 8;
 	put32(o + k, plen);
 	put32(o + k + 4, used);
 	k += 8;
 	unsigned char *payload = o + k;
 	memcpy(payload, pl, used);
-	size_t at = call_time_at(t->call_kind, plen);
-	if (at && used >= at + 8)
+	if (at)
 		put64(payload + at, wire(get64(payload + at)));
 	return k + used;
 }
@@ -950,10 +955,12 @@ static void on_message(const unsigned char *b, size_t n)
 	memset(msgbuf, 0, full);
 	memcpy(msgbuf, b, used);
 	/* A request's deadline into this clock, shortened by the clock's
-	 * uncertainty; a reply's received time into this clock. */
+	 * uncertainty; a reply's received time into this clock. Decided on the
+	 * payload's full length, not on what was sent of it: the sender leaves
+	 * trailing zeros out, and the time may be the last thing that is not. */
 	int kind = is_call_topic(name);
 	size_t at = call_time_at(kind, full);
-	if (at && used >= at + 8) {
+	if (at) {
 		uint64_t v = to_local(get64(msgbuf + at));
 		if (kind == 1)
 			v = v > B.unc ? v - B.unc : 1;
