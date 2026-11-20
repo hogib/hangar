@@ -16,7 +16,7 @@ DEPTH_HOLD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodu
 DEPTH_HOLD_BIN := $(BUILDDIR)/hangar-depth-hold
 DEPTH_HOLD_TEST := $(TESTDIR)/test_depth_hold
 DEPTH_HOLD_TEST_MSG_SRC := $(DEPTH_HOLD_MSG_SRC) msg/depth.c msg/attitude.c msg/imu.c msg/set_mode_req.c \
-	msg/set_mode_rep.c
+	msg/set_mode_rep.c msg/policy_active.c
 
 $(OBJDIR)/modules/depth_hold/%.o: EE_CFLAGS := $(HG_CFLAGS)
 $(OBJDIR)/modules/depth_hold/%.o: EE_CPPFLAGS := $(DEPTH_HOLD_CPPFLAGS)

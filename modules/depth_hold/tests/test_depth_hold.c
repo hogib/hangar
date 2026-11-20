@@ -9,7 +9,8 @@
 // nav.imu) and as the pilot and safety: assisted holds the depth the pilot
 // leaves it at, a pilot override and the new depth held after it, a set
 // target reached, a failsafe hold in manual mode, a stale depth flagging the
-// mux's command, the idle CPU. Under 30 s.
+// mux's command, residual mode (the controller still driving under a policy's
+// residual, a set target reached), the idle CPU. Under 60 s.
 #include "hd_test.h"
 
 #include <math.h>
@@ -23,6 +24,7 @@
 #include "hg_call.h"
 #include "imu.h"
 #include "mux_state.h"
+#include "policy_active.h"
 #include "safety_state.h"
 #include "set_mode_rep.h"
 #include "set_mode_req.h"
@@ -167,7 +169,7 @@ static void test_follow_and_handover(void)
 
 static pid_t mgr;
 static const char *T_dh, *T_nav, *T_mux;
-static hg_pub *P_depth, *P_att, *P_imu, *P_pilot, *P_safety;
+static hg_pub *P_depth, *P_att, *P_imu, *P_pilot, *P_safety, *P_active, *P_policy;
 static hg_sub *S_cmd, *S_mux, *S_ctl, *S_target;
 
 static struct {
@@ -175,6 +177,8 @@ static struct {
 	struct wrench pilot;
 	uint8_t safety_state, safety_action, safety_enabled;
 	int publish_depth;
+	float residual;          /* policy.p.wrench's heave, published while policy_ref_seq */
+	uint64_t policy_ref_seq; /* the policy.p.active message it names */
 	uint64_t next_ns;
 	struct wrench cmd;
 	struct hg_info cmd_info, ctl_info;
@@ -189,7 +193,8 @@ static void copy_types(void)
 	if (!src || !*src)
 		src = "msg";
 	const char *types[] = { "attitude",   "nav_state",    "nav_params",   "depth_target", "depth_control_params",
-				"depth_set_req", "mux_state", "mux_params", "set_mode_req", "set_mode_rep", NULL };
+				"depth_set_req", "mux_state", "mux_params", "set_mode_req", "set_mode_rep", "policy_active",
+				NULL };
 	for (int i = 0; types[i]; i++) {
 		char from[1024], to[1024];
 		tfmt(from, sizeof from, "%s/%s.msg", src, types[i]);
@@ -244,6 +249,13 @@ static void pump(long ms)
 			m.accel[2] = (float)(V.p.a - 9.80665);
 			hg_publish(P_imu, &m, sizeof m, now);
 			hg_publish(P_pilot, &V.pilot, sizeof V.pilot, now);
+			if (V.policy_ref_seq) {
+				struct wrench r;
+				memset(&r, 0, sizeof r);
+				r.heave = V.residual;
+				struct hg_input ref = { .topic_id = hg_topic_id("policy.p.active"), .seq = V.policy_ref_seq };
+				hg_publish_with(P_policy, &r, sizeof r, now, 0, &ref, 1);
+			}
 			struct safety_state s;
 			memset(&s, 0, sizeof s);
 			s.state = V.safety_state;
@@ -285,13 +297,19 @@ static hg_call_result call(const char *target, const struct hg_type *rq, const v
 	return r;
 }
 
-static int set_mode(const char *mode)
+static int set_mode_hash(const char *mode, uint64_t hash)
 {
 	set_mode_req req;
 	memset(&req, 0, sizeof req);
 	tfmt(req.mode, sizeof req.mode, "%s", mode);
+	req.hash = hash;
 	set_mode_rep rep;
 	return call("mux.set_mode", &SET_MODE_REQ_TYPE, &req, &SET_MODE_REP_TYPE, &rep).status;
+}
+
+static int set_mode(const char *mode)
+{
+	return set_mode_hash(mode, 0);
 }
 
 /* Waits until the vehicle is still (|v| < 1 cm/s) for 1 s, or timeout_ms. */
@@ -327,7 +345,8 @@ static void test_chain(void)
 			       "[Serve hold]\nRequest=empty\nReply=empty\nAllow=tester admin\n", T_dh);
 	manifest("mux", "[Module]\nExec=%s\n"
 			"[Subscribe pilot.wrench]\n[Subscribe ctl.depth_hold]\n[Subscribe nav.depth]\n[Subscribe safety.state]\n"
-			"[Publish ctl.wrench]\nType=wrench\nRate=50\nSources=pilot.wrench ctl.depth_hold nav.depth\n"
+			"[Subscribe policy.p.wrench]\n[Subscribe policy.p.active]\n"
+			"[Publish ctl.wrench]\nType=wrench\nRate=50\nSources=pilot.wrench ctl.depth_hold policy.p.wrench nav.depth\n"
 			"[Publish mux.state]\nType=mux_state\nRate=10\n"
 			"[Params]\nType=mux_params\nAllow=tester admin\n"
 			"[Serve set_mode]\nRequest=set_mode_req\nReply=set_mode_rep\nAllow=tester admin\n", T_mux);
@@ -339,6 +358,8 @@ static void test_chain(void)
 			   "[Publish nav.imu]\nType=imu\nRate=50\nStaleAfter=200ms\n"
 			   "[Publish pilot.wrench]\nType=wrench\nRate=50\n"
 			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
+			   "[Publish policy.p.active]\nType=policy_active\n"
+			   "[Publish policy.p.wrench]\nType=wrench\nRate=50\nInputs=policy.p.active\n"
 			   "[Call mux.set_mode]\n[Call depth_hold.set]\n[Call depth_hold.hold]\n");
 	mgr = manager_start();
 	CHECK(wait_state("tester", "stopped", 5000));
@@ -352,7 +373,10 @@ static void test_chain(void)
 	P_imu = hg_pub_open("nav.imu", &IMU_TYPE, NULL);
 	P_pilot = hg_pub_open("pilot.wrench", &WRENCH_TYPE, NULL);
 	P_safety = hg_pub_open("safety.state", &SAFETY_STATE_TYPE, NULL);
-	CHECK(S_cmd && S_mux && S_ctl && S_target && P_depth && P_att && P_imu && P_pilot && P_safety);
+	P_active = hg_pub_open("policy.p.active", &POLICY_ACTIVE_TYPE, NULL);
+	P_policy = hg_pub_open("policy.p.wrench", &WRENCH_TYPE, NULL);
+	CHECK(S_cmd && S_mux && S_ctl && S_target && P_depth && P_att && P_imu && P_pilot && P_safety && P_active &&
+	      P_policy);
 	/* Armed, at 2 m, 3 N lighter than water: left alone it rises. */
 	V.p = (struct plant){ .z = 2.0, .net_weight = -3.0 };
 	V.safety_state = 1;
@@ -432,6 +456,42 @@ static void test_chain(void)
 	pump(700);
 	CHECK(!(V.ctl_info.flags & HG_SLOT_STALE));
 	CHECK(!(V.cmd_info.flags & HG_SLOT_STALE));
+
+	// Residual: the mux names the policy as the heave's source (4) and adds its
+	// residual to the controller's heave. depth_hold still drives: its target
+	// stays, a set target is reached, the integrator absorbs the residual.
+	CHECK(settle(10000));
+	struct policy_active act;
+	memset(&act, 0, sizeof act);
+	act.version = 1;
+	act.cause = 1;
+	act.hash = 0xabcdef;
+	act.swapped_ns = hg_now_ns();
+	CHECK_EQ_INT(hg_publish(P_active, &act, sizeof act, hg_now_ns()), HG_OK);
+	V.policy_ref_seq = 1;
+	V.residual = 0.1f; /* pushes down, within the residual envelope (0.2) */
+	pump(300);
+	double held = V.target.target_m;
+	CHECK_EQ_INT(set_mode_hash("residual:p", 0xabcdef), HG_OK);
+	pump(500);
+	CHECK(strcmp(V.mux.mode, "residual:p") == 0);
+	CHECK_EQ_INT(V.mux.source_heave, 4);
+	CHECK(V.mux.residual_active);
+	CHECK(V.target.driving && !V.target.latched);
+	CHECK(fabs(V.target.target_m - held) < 1e-6);
+	CHECK(fabs(V.cmd.heave - (V.target.integral + 0.1)) < 0.15); /* the residual is in the command */
+	CHECK(settle(10000));
+	pump(3000);
+	printf("    residual:p (+0.10 heave added): target %.3f m kept, holds %.3f m\n", held, V.p.z);
+	CHECK(fabs(V.p.z - held) < 0.05);
+	sreq.depth_m = (float)(held - 0.5);
+	CHECK_EQ_INT(call("depth_hold.set", &DEPTH_SET_REQ_TYPE, &sreq, &EMPTY_TYPE, &erep).status, HG_OK);
+	CHECK(settle(10000));
+	printf("    residual:p, set to %.2f m: holds %.3f m\n", (double)sreq.depth_m, V.p.z);
+	CHECK(fabs(V.target.target_m - sreq.depth_m) < 1e-6);
+	CHECK(fabs(V.p.z - sreq.depth_m) < 0.1);
+	CHECK_EQ_INT(V.mux.source_heave, 4);
+	V.policy_ref_seq = 0;
 
 	// Idle CPU: both modules sleep between their ticks.
 	struct mstat m1, m2;

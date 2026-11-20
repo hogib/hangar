@@ -40,8 +40,10 @@ water, start with them, and `hangar param set depth_hold kp=… kd=…`.
 ## Who drives
 
 It always publishes; whether its heave drives is the mux's choice (`modules/mux`):
-`assisted` while the pilot leaves the heave stick alone, and a failsafe `hold`. It reads
-that choice from `mux.state` (`source_heave` 2). While it does not drive, its **target
+`assisted` while the pilot leaves the heave stick alone, `residual:<name>`, and a
+failsafe `hold`. It reads that choice from `mux.state`: `source_heave` 2, a controller,
+or 4, a policy, which in residual mode is the controller's heave with the policy's
+bounded residual added, so the controller is still the one holding. While it does not drive, its **target
 follows the depth** and its integrator is held, so a handover (the stick released, a
 failsafe hold) **holds the depth it happens at**, with the trim it had learnt. A target
 from `set` holds until the controller, having driven with it, stops driving.

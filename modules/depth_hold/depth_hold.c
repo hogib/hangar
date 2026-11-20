@@ -6,11 +6,12 @@
  * accel_z, which docs/09's dataset joins and its policy reads).
  *
  * It always publishes; whether its heave drives is the mux's choice: in
- * `assisted` while the pilot leaves the heave stick alone, and in a failsafe
- * `hold`. It reads that choice from mux.state (source_heave 2): while it does
- * not drive, its target follows the depth and its integrator is held, so that
- * a handover holds the depth it happens at (dh_ctl.h). nav.state is its
- * Inputs topic: a stale depth flags its output, and a flagged output that
+ * `assisted` while the pilot leaves the heave stick alone, in `residual:<name>`
+ * with a policy's bounded residual added to it, and in a failsafe `hold`. It
+ * reads that choice from mux.state (source_heave 2, or 4 in residual): while
+ * it does not drive, its target follows the depth and its integrator is held,
+ * so that a handover holds the depth it happens at (dh_ctl.h). nav.state is
+ * its Inputs topic: a stale depth flags its output, and a flagged output that
  * drives makes the gate go neutral (docs/07). Before the first nav.state its
  * outputs are zeros flagged stale.
  *
@@ -84,7 +85,9 @@ static void tick(uint64_t now)
 	mod_latest(sub_mux, &D.mux, sizeof D.mux, &D.mux_info, &D.have_mux);
 	mod_latest(sub_safety, &D.safety, sizeof D.safety, &D.safety_info, &D.have_safety);
 	int mux_ok = D.have_mux && mod_fresh(sub_mux, &D.mux_info, now);
-	int driving = mux_ok && D.mux.source_heave == 2; /* 2: a controller (msg/mux_state.msg) */
+	/* 2: a controller; 4: a policy, which in residual mode is the controller's
+	 * heave with the policy's residual added (msg/mux_state.msg, mux.c). */
+	int driving = mux_ok && (D.mux.source_heave == 2 || D.mux.source_heave == 4);
 	int enabled = D.have_safety && mod_fresh(sub_safety, &D.safety_info, now) && D.safety.outputs_enabled;
 	int nav_ok = D.have_nav && isfinite(D.nav.depth_m) && isfinite(D.nav.vel_z) &&
 		     !(D.nav_info.flags & HG_SLOT_STALE) && mod_fresh(sub_nav, &D.nav_info, now);
