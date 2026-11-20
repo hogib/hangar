@@ -525,3 +525,9 @@ check: check-mavlink
 # modules/recorder/recorder.mk carries the rules): GPL-3.0-or-later modules over lib/hg.
 include modules/recorder/recorder.mk
 check: check-recording
+
+# The encoder (modules/encoder/README.md, modules/encoder/encoder.mk carries
+# the rules): GPL-3.0-or-later, C11 over lib/hg; the camera's own H.264 to the
+# topside over RTP, packetized here (RFC 6184), nothing encoded on the vehicle.
+include modules/encoder/encoder.mk
+check: check-encoder
