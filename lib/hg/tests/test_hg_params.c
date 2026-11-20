@@ -275,6 +275,7 @@ static void test_save_closes_once(void)
 	int fd = open(wiring, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	CHECK(write(fd, text, strlen(text)) == (ssize_t)strlen(text));
 	close(fd);
+	fflush(stdout); /* not twice, by a child that leaves through exit() */
 	pid_t pid = fork();
 	if (pid == 0) {
 		setenv("HANGAR_WIRING_FILE", wiring, 1);
@@ -347,6 +348,7 @@ static int start_module(const struct hg_type *t, const char *reqtext, hg_params_
 	if (fd < 0 || write(fd, text, strlen(text)) != (ssize_t)strlen(text))
 		return -2;
 	close(fd);
+	fflush(stdout); /* not twice, by a child that leaves through exit() */
 	pid_t pid = fork();
 	if (pid == 0) {
 		setenv("HANGAR_WIRING_FILE", wiring, 1);
@@ -427,8 +429,58 @@ static void test_defaults_meet_the_validator(void)
 	rm_dir(dir);
 }
 
+/* A quoted text for a char field larger than a schema (3584 bytes) was
+ * unescaped into a buffer of that size and cut there, before its length was
+ * compared with the field's: 5000 characters for a char[8192] were taken,
+ * success returned, and 3584 of them stored. */
+static void test_long_quoted_text(void)
+{
+	const struct hg_type *t = type_of("char note[8192]\n", "p");
+	static unsigned char P[8192];
+	static char text[10000], err[200];
+	size_t n = 5000;
+	text[0] = '"';
+	for (size_t i = 0; i < n; i++)
+		text[1 + i] = (char)('a' + i % 26);
+	text[1 + n] = '"';
+	memset(P, 0x7f, sizeof P);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, n + 2, P, err, sizeof err), 0);
+	CHECK_EQ_INT(strnlen((const char *)P, sizeof P), n);
+	CHECK(memcmp(P, text + 1, n) == 0 && P[n] == 0 && P[sizeof P - 1] == 0);
+	/* Escapes count as the one byte they stand for, at any length. */
+	memset(text, 0, sizeof text);
+	text[0] = '"';
+	size_t u = 1;
+	for (int i = 0; i < 4000; i++) {
+		text[u++] = '\\';
+		text[u++] = i % 2 ? 'n' : '"';
+	}
+	text[u++] = '"';
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, u, P, err, sizeof err), 0);
+	CHECK_EQ_INT(strnlen((const char *)P, sizeof P), 4000);
+	CHECK(P[0] == '"' && P[1] == '\n' && P[3999] == '\n');
+	/* One byte too many for the field is refused with both numbers, and the
+	 * values in force are not touched. */
+	n = 8192;
+	text[0] = '"';
+	memset(text + 1, 'z', n);
+	text[1 + n] = '"';
+	memset(P, 0x7f, sizeof P);
+	err[0] = 0;
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, n + 2, P, err, sizeof err), -1);
+	CHECK(strstr(err, "text of 8192 bytes; at most 8191") != NULL);
+	if (!strstr(err, "8192"))
+		printf("    it said: %s\n", err);
+	CHECK(P[0] == 0x7f && P[5000] == 0x7f);
+	n = 8191;
+	text[1 + n] = '"';
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, n + 2, P, err, sizeof err), 0);
+	CHECK_EQ_INT(strnlen((const char *)P, sizeof P), 8191);
+}
+
 int main(void)
 {
+	RUN_TEST(test_long_quoted_text);
 	RUN_TEST(test_save_closes_once);
 	RUN_TEST(test_defaults_meet_the_validator);
 	RUN_TEST(test_floats_are_finite);

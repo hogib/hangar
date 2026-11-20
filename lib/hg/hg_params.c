@@ -273,23 +273,30 @@ int hg_param_parse(const struct hg_field *f, const char *text, size_t len, unsig
 			errno = EINVAL;
 			return -1;
 		}
-		char tmp[HG_SCHEMA_MAX];
+		/* Twice over the text: its length without the escapes, held to
+		 * the field before a byte is written (a refused value leaves dst
+		 * as it was), then the bytes themselves. Not through a buffer of
+		 * a fixed size: the one there was held a schema's 3584 bytes and
+		 * cut a longer text for a larger field without a word. */
 		size_t n = 0;
-		for (const char *p = s + 1; p < qe - 1 && n < sizeof tmp; p++) {
-			if (*p == '\\' && p + 1 < qe - 1) {
+		for (const char *p = s + 1; p < qe - 1; p++, n++)
+			if (*p == '\\' && p + 1 < qe - 1)
 				p++;
-				tmp[n++] = *p == 'n' ? '\n' : *p == 't' ? '\t' : *p;
-			} else {
-				tmp[n++] = *p;
-			}
-		}
 		if (n >= f->count) {
 			set_err(err, errlen, "%s: text of %zu bytes; at most %u", f->name, n, f->count - 1);
 			errno = EINVAL;
 			return -1;
 		}
 		memset(field, 0, f->count);
-		memcpy(field, tmp, n);
+		n = 0;
+		for (const char *p = s + 1; p < qe - 1; p++) {
+			if (*p == '\\' && p + 1 < qe - 1) {
+				p++;
+				field[n++] = (unsigned char)(*p == 'n' ? '\n' : *p == 't' ? '\t' : *p);
+			} else {
+				field[n++] = (unsigned char)*p;
+			}
+		}
 		return 0;
 	}
 	uint32_t es = hg_field_elem_size(f->kind);
