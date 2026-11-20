@@ -1,0 +1,56 @@
+# /etc/hangar/joystick.conf: the pilot's controller (modules/joystick/README.md).
+# Manifest syntax, parsed strictly. Every key has a default; this file says them.
+[Joystick]
+# The Linux joystick device, or auto with Name= (a part of the controller's name,
+# as `cat /sys/class/input/js0/device/name` gives it).
+Device=/dev/input/js0
+#Device=auto
+#Name=Xbox
+# While there is no controller: how often to look for it again.
+Reopen=1s
+
+# One section per wrench axis: the controller's axis number (or none), its
+# direction, the deadband (the fraction of the stick's travel read as 0) and the
+# expo (0 linear, 1 cubic: finer near the centre). A section replaces its axis's
+# mapping: a key it does not give is plain (Source=none, Invert=no, Deadband=0.05,
+# Expo=0), not the built-in default's. The defaults are
+# QGroundControl's ArduSub layout on an Xbox controller under Linux: the left
+# stick heave and yaw, the right stick surge and sway (axes 0 1 left, 3 4 right;
+# 2 and 5 the triggers). Stick up reads negative on Linux, hence the inversions.
+[Axis surge]
+Source=4
+Invert=yes
+Deadband=0.05
+Expo=0
+
+[Axis sway]
+Source=3
+Invert=no
+Deadband=0.05
+Expo=0
+
+[Axis heave]
+Source=1
+Invert=yes
+Deadband=0.05
+Expo=0
+
+[Axis yaw]
+Source=0
+Invert=no
+Deadband=0.05
+Expo=0
+
+[Axis roll]
+Source=none
+
+[Axis pitch]
+Source=none
+
+# Buttons do nothing unless a section gives them a function: arm and disarm call
+# safety.arm and safety.disarm once per press (the manifest has the [Call]
+# sections); pass sets the button's bit in pilot.buttons while it is held.
+#[Button 7]
+#Function=arm
+#[Button 6]
+#Function=disarm

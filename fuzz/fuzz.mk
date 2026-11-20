@@ -19,10 +19,10 @@ FUZZ_SECONDS ?= 30
 FUZZ_DIR := $(BUILDDIR)/fuzz
 FUZZ_FLAGS := -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
 FUZZ_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ifuzz -Ilib/hg -Ilib/common -Imsg -Ihangard -Imodules/common \
-	-Imodules/bridge -Imodules/mavlink -Imodules/recorder -DFUZZ_REPO='"$(CURDIR)"'
+	-Imodules/bridge -Imodules/mavlink -Imodules/recorder -Imodules/encoder -Imodules/video_relay -Imodules/joystick -Ihangar -DFUZZ_REPO='"$(CURDIR)"'
 FUZZ_HDRS := $(wildcard fuzz/*.h lib/hg/*.h lib/common/*.h hangard/*.h msg/*.h modules/*/*.h lib/net/*.h lib/video/*.h)
 
-FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside schema wiring manifest bridge_conf params recording topic http
+FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside video schema wiring manifest bridge_conf conf params recording topic http
 
 # bridge.c is included by the harness (its statics are what is fuzzed).
 fuzz_bridge_SRC := $(BRIDGE_LIB_SRC) $(HG_SRC)
@@ -38,6 +38,8 @@ fuzz_mavlink_vehicle_MAXLEN := 2048
 fuzz_mavlink_topside_SRC := modules/mavlink/mavlink_vehicle.c $(FUZZ_MAVLINK_SRC)
 fuzz_mavlink_topside_DEPS := modules/mavlink/mavlink_topside.c modules/mavlink/mavlink_main.c
 fuzz_mavlink_topside_MAXLEN := 2048
+fuzz_video_SRC := modules/video_relay/depack.c modules/video_relay/mp4.c modules/encoder/h264.c
+fuzz_video_MAXLEN := 16384
 fuzz_schema_SRC := lib/hg/hg_type.c
 fuzz_schema_MAXLEN := 4096
 fuzz_wiring_SRC := $(HG_SRC)
@@ -46,6 +48,12 @@ fuzz_manifest_SRC := $(HANGARD_CORE_SRC) $(HG_SRC)
 fuzz_manifest_MAXLEN := 16384
 fuzz_bridge_conf_SRC := modules/bridge/bridge_conf.c modules/bridge/blake2s.c lib/hg/hg_ini.c $(HG_SRC)
 fuzz_bridge_conf_MAXLEN := 8192
+# hangar_params.c is included by the harness; the rest is linked.
+fuzz_conf_SRC := hangard/conf.c hangard/registry.c $(HANGARD_CORE_SRC) modules/mavlink/mavlink_conf.c \
+	modules/mavlink/param_backup.c modules/recorder/recorder_conf.c modules/joystick/joystick_map.c \
+	msg/params_job.c $(HG_SRC)
+fuzz_conf_DEPS := hangar/hangar_params.c
+fuzz_conf_MAXLEN := 8192
 fuzz_params_SRC := $(HG_SRC)
 fuzz_params_MAXLEN := 8192
 fuzz_recording_SRC := $(HGR_SRC) $(HG_SRC)
@@ -108,7 +116,7 @@ check-fuzz-corpus: $(FUZZ_CHECKS)
 
 # The generated seeds (fuzz/mkseeds.c), written into fuzz/corpus/ and checked in.
 FUZZ_SEEDS_SRC := $(HGR_SRC) $(HG_SRC) msg/depth.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c \
-	modules/mavlink/mav.c modules/mavlink/sha256.c
+	modules/mavlink/mav.c modules/mavlink/sha256.c modules/encoder/h264.c
 $(FUZZ_DIR)/mkseeds: fuzz/mkseeds.c $(FUZZ_SEEDS_SRC) $(FUZZ_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -Wall -Wextra -pthread -O1 -g $(FUZZ_CPPFLAGS) -o $@ fuzz/mkseeds.c $(FUZZ_SEEDS_SRC) -pthread -lrt -lm

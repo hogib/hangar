@@ -1,0 +1,6 @@
+hangar-registry 2
+system: degraded 123456789 mux: gave up after 3 failures
+safety 1234 5678 ready 0 0.000 1a2b3c4d 5e6f7a8b 2.500 -
+mux 1240 5700 backoff 3 4.000 1a2b3c4d 5e6f7a8b 2.000 -
+mavlink 1250 5800 stopping 0 0.000 0 0 5.000 stopped
+old 99 1 failed 9 0.5

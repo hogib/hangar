@@ -21,6 +21,7 @@
 #include "depth.h"
 #include "fuzz_bridge.h"
 #include "fuzz_mavlink.h"
+#include "h264.h"
 #include "hg_record.h"
 #include "hg_topic.h"
 #include "hg_type.h"
@@ -74,12 +75,21 @@ static void add_file(struct buf *b, const char *path)
 	fclose(f);
 }
 
+/* Set for seeds whose bytes hold the time and the pid of their making (a topic
+ * file's header): one that is there already is left as it is, so that a run
+ * changes nothing that is checked in. Remove the file to have it made again. */
+static int keep_existing;
+
 static void put(const char *harness, const char *name, struct buf *b)
 {
 	char path[512];
 	snprintf(path, sizeof path, "fuzz/corpus/%s", harness);
 	mkdir(path, 0777);
 	snprintf(path, sizeof path, "fuzz/corpus/%s/seed-%s", harness, name);
+	if (keep_existing && access(path, F_OK) == 0) {
+		b->n = 0;
+		return;
+	}
 	FILE *f = fopen(path, "wb");
 	if (!f || fwrite(b->p, 1, b->n, f) != b->n || fclose(f) != 0) {
 		fprintf(stderr, "mkseeds: %s: %s\n", path, strerror(errno));
@@ -246,6 +256,7 @@ static void topic_seeds(void)
 {
 	struct buf b = { 0 };
 	char path[300];
+	keep_existing = 1;
 	setenv("HANGAR_TOPIC_DIR", tmpdir, 1);
 	unsetenv("HANGAR_CONTROL");
 	hg_pub *p = hg_pub_open("nav.depth", &DEPTH_TYPE, &(struct hg_pub_opts){ .slots = 4, .rate_mhz = 50000 });
@@ -273,6 +284,7 @@ static void topic_seeds(void)
 		unlink(path);
 	}
 	free(b.p);
+	keep_existing = 0;
 }
 
 /* ---- bridge: a script of datagrams (fuzz_bridge.h) ------------------------------ */
@@ -597,6 +609,100 @@ static void mavlink_seeds(void)
 	free(b.p);
 }
 
+/* ---- video: the test clip as a camera gives it, and as RTP ---------------------- */
+
+static void rtp_collect(void *ctx, const uint8_t *pkt, size_t len)
+{
+	struct buf *b = ctx;
+	unsigned char h[2] = { (unsigned char)(len & 0xff), (unsigned char)(len >> 8) };
+	add(b, h, 2);
+	add(b, pkt, len);
+}
+
+static void video_seeds(void)
+{
+	struct buf clip = { 0 }, s = { 0 };
+	add_file(&clip, "modules/video_relay/tests/testsrc-320x240-60.h264");
+	/* The first frames are enough: an IDR with its SPS and PPS, then P frames. */
+	size_t keep = 0;
+	for (int i = 0; i < 6 && keep < clip.n; i++)
+		keep += h264_au_len(clip.p + keep, clip.n - keep);
+	unsigned char head[2] = { 1, 200 }; /* camera bytes, 1200-byte packets */
+	add(&s, head, 2);
+	add(&s, clip.p, keep);
+	put("video", "camera", &s);
+	head[1] = 10; /* 60-byte packets: everything is FU-A fragments */
+	add(&s, head, 2);
+	add(&s, clip.p, keep);
+	put("video", "camera-small-packets", &s);
+	for (int small = 0; small < 2; small++) {
+		struct rtp_h264 r;
+		rtp_h264_init(&r, 0x48414e47, 96, small ? 100 : 1200);
+		unsigned char mode = 0;
+		add(&s, &mode, 1);
+		size_t off = 0;
+		uint32_t ts = 0;
+		while (off < keep) {
+			size_t n = h264_au_len(clip.p + off, keep - off);
+			if (!n)
+				break;
+			rtp_h264_send_au(&r, clip.p + off, n, ts, rtp_collect, &s, NULL);
+			ts += 3000;
+			off += n;
+		}
+		put("video", small ? "rtp-fragments" : "rtp", &s);
+	}
+	free(clip.p);
+	free(s.p);
+}
+
+/* ---- conf: a byte choosing the reader (fuzz_conf.c), then the file ------------------- */
+
+static void conf_file(int which, const char *name, const char *path, const char *text)
+{
+	struct buf b = { 0 };
+	unsigned char w = (unsigned char)which;
+	add(&b, &w, 1);
+	if (path)
+		add_file(&b, path);
+	else
+		adds(&b, text);
+	put("conf", name, &b);
+	free(b.p);
+}
+
+static void conf_seeds(void)
+{
+	conf_file(0, "hangard-vehicle", "profiles/rov-vehicle/hangard.conf", NULL);
+	conf_file(0, "hangard-topside", "profiles/rov-topside/hangard.conf", NULL);
+	conf_file(0, "hangard-every-key", NULL,
+		  "# hangard.conf\nRole=vehicle\nPrivilegedModule=safety\nModuleDir=/etc/hangar/modules\n"
+		  "MsgDir=/usr/share/hangar/msg\nTopicDir=/dev/shm/hangar\nBridgeConf=/etc/hangar/bridge.conf\n"
+		  "DatasetDir=/etc/hangar/datasets\nRecordingDir=/var/lib/hangar/recordings\nHealthTick=100ms\n"
+		  "MaxModules=64\nLogFallbackDir=/run/hangar/log\nLogFallbackCap=256KB\n");
+	conf_file(1, "registry", NULL,
+		  "hangar-registry 2\nsystem: degraded 123456789 mux: gave up after 3 failures\n"
+		  "safety 1234 5678 ready 0 0.000 1a2b3c4d 5e6f7a8b 2.500 -\n"
+		  "mux 1240 5700 backoff 3 4.000 1a2b3c4d 5e6f7a8b 2.000 -\n"
+		  "mavlink 1250 5800 stopping 0 0.000 0 0 5.000 stopped\n"
+		  "old 99 1 failed 9 0.5\n");
+	conf_file(2, "mavlink-udp", "profiles/rov-vehicle/mavlink.conf", NULL);
+	conf_file(2, "mavlink-serial", "profiles/rov-vehicle/mavlink.conf.serial", NULL);
+	conf_file(2, "mavlink-example", "modules/mavlink/mavlink.conf", NULL);
+	conf_file(3, "mavlink-topside", "profiles/rov-topside/topside_mavlink.conf", NULL);
+	conf_file(3, "mavlink-topside-example", "modules/mavlink/topside_mavlink.conf", NULL);
+	conf_file(4, "ardusub-params", "modules/mavlink/ardusub.params", NULL);
+	conf_file(5, "recorder", "profiles/rov-vehicle/recorder.conf", NULL);
+	conf_file(5, "recorder-example", "modules/recorder/recorder.conf", NULL);
+	conf_file(6, "joystick", "profiles/rov-topside/joystick.conf", NULL);
+	conf_file(6, "joystick-example", "modules/joystick/joystick.conf", NULL);
+	conf_file(7, "dump", "profiles/rov-vehicle/ardusub.params", NULL);
+	conf_file(7, "dump-typed", NULL, "# NAME VALUE TYPE\nSURFACE_DEPTH -10 9\nSYSID_MYGCS 255 4\nFS_GCS_ENABLE 0 2  # off\n");
+	conf_file(7, "dump-mavros-yaml", NULL,
+		  "/mavros/param:\n  ros__parameters:\n    use_sim_time: false\n    SURFACE_DEPTH: -10.0\n    FS_GCS_ENABLE: 0\n");
+	conf_file(8, "backup", NULL, "# hangar parameter backup\nSURFACE_DEPTH -10 9\nFS_GCS_ENABLE 0 2\nJS_GAIN_DEFAULT 0.5 9\n");
+}
+
 int main(void)
 {
 	const char *tmp = getenv("TMPDIR");
@@ -608,6 +714,8 @@ int main(void)
 	topic_seeds();
 	bridge_seeds();
 	mavlink_seeds();
+	video_seeds();
+	conf_seeds();
 	rmdir(tmpdir);
 	return 0;
 }

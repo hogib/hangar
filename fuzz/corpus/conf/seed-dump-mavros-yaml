@@ -1,0 +1,5 @@
+/mavros/param:
+  ros__parameters:
+    use_sim_time: false
+    SURFACE_DEPTH: -10.0
+    FS_GCS_ENABLE: 0
