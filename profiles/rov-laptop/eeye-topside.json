@@ -1,0 +1,10 @@
+{
+  "capture_source": "bus",
+  "capture_stream": "camera",
+  "output_device": "",
+  "chain": [
+    {"effect": "blur"},
+    {"effect": "sobel"}
+  ],
+  "record_path": ""
+}
