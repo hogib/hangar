@@ -1,0 +1,51 @@
+# The second design of docs/09's adaptive depth hold (bench/e2e-depth-ff/README.md,
+# "Second design"): an inverse model of the heave axis around the integrator's
+# trim. No join looks ahead, so the policy builds the inputs at its tick.
+#
+# At run time the model reads the acceleration the controller wants (accel_z),
+# the vertical velocity and the integrator; the trainer puts the acceleration
+# the vehicle made (nav.state's accel[2], a label here) in accel_z's place and
+# fits the command that made it: thr.out some ticks before the anchor, less the
+# integrator (python/examples/depth_ff2.py).
+[Dataset]
+Anchor=nav.state
+AnchorRole=input
+Fields=vel_z
+Lateness=0
+Filter=mask
+ResetAfter=200ms
+# Outputs enabled and the depth controller driving the heave axis: thr.out is
+# then the controller's command and the residual's, nobody else's.
+Where=safety.state.outputs_enabled == 1 and ctl.depth_hold.target.driving == 1
+
+# What the controller wants (accel_z, m/s^2 down), its integrator (heave, up),
+# whether it drives.
+[Input ctl.depth_hold.target]
+Join=asof:0
+Fields=accel_z integral driving
+
+# The vertical acceleration the vehicle made (m/s^2, body z, gravity removed):
+# nav.state again, as a label.
+[Input made]
+Topic=nav.state
+Join=asof:0
+Role=label
+Fields=accel
+
+# The pulse widths the thrusters were sent: the eight messages up to the anchor,
+# so the trainer picks the command that had become thrust by then.
+[Input thr.out]
+Join=asof:0
+Window=8
+Role=label
+
+# The controller's own heave command at this tick (for the analysis).
+[Input ctl.depth_hold]
+Join=asof:0
+Role=label
+Fields=heave
+
+[Input safety.state]
+Join=asof:0
+Role=filter
+Fields=outputs_enabled

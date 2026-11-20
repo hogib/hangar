@@ -1,0 +1,11 @@
+# policy_depth_ff, second design (docs/09 "Example: adaptive depth hold"): Arch is
+# python/examples/depth_ff2.py's model, affine -> dense 32 -> tanh -> dense 32 ->
+# tanh -> dense 1 -> tanh -> affine over the dataset's three inputs (accel_z,
+# vel_z, integral). tools/sim/e2e-depth-ff2.sh rewrites it from the example's
+# model before the manager starts, and python/tests/test_depth_ff2.py checks
+# this copy against it, so a change to the model is caught either way.
+[Policy]
+Name=depth_ff
+Dataset=depth_ff
+Arch=853c233e2b96c1d6
+TickBudget=50%

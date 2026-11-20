@@ -1,0 +1,19 @@
+[Module]
+Description=Dataset pairer
+Exec=/usr/lib/hangar/pairer /etc/hangar/pairer.conf
+
+[Subscribe nav.state]
+[Subscribe ctl.depth_hold.target]
+[Subscribe ctl.depth_hold]
+[Subscribe thr.out]
+[Subscribe safety.state]
+
+[Publish dataset.depth_ff]
+Type=dataset:depth_ff
+Slots=1024
+
+[Publish pairer.status]
+Type=pairer_status
+
+[Health]
+Watchdog=10s
