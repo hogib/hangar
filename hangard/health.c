@@ -398,7 +398,11 @@ uint64_t health_next_deadline(void)
 	uint64_t at = 0;
 	for (int i = 0; i < G.n_modules; i++) {
 		const struct module *m = &G.modules[i];
-		if (m->st == ST_BACKOFF && (!at || m->restart_at < at))
+		/* A back-off the tick will not end in a start (shutting down, or
+		 * no manifest to start from) is no deadline: armed for it, the
+		 * timer would fire at once, for ever. */
+		if (m->st == ST_BACKOFF && !G.shutting_down && m->mf && !m->mf->refused &&
+		    (!at || m->restart_at < at))
 			at = m->restart_at;
 		if (m->stop_deadline && (!at || m->stop_deadline < at))
 			at = m->stop_deadline;
@@ -411,7 +415,7 @@ void health_tick(uint64_t now)
 	for (int i = 0; i < G.n_modules; i++) {
 		struct module *m = &G.modules[i];
 		const struct mf_module *mf = m->mf;
-		if (m->st == ST_BACKOFF && !G.shutting_down && now >= m->restart_at) {
+		if (m->st == ST_BACKOFF && !G.shutting_down && mf && !mf->refused && now >= m->restart_at) {
 			module_start(m);
 			continue;
 		}
