@@ -261,9 +261,9 @@ static void status_line(void)
 	double volt, amps, rem;
 	sv_battery(&V, &volt, &amps, &rem);
 	if (sitl)
-		mod_fmt(line, sizeof line, "SITL physics: %llu frames at %.0f Hz, %llu resets; t %.1f s, depth %.2f m, battery %.1f V",
+		mod_fmt(line, sizeof line, "SITL physics: %llu frames at %.0f Hz, %llu resets, %llu truth; t %.1f s, depth %.2f m, battery %.1f V",
 			(unsigned long long)sitl_frames, V.dt > 0 ? 1.0 / V.dt : 0.0, (unsigned long long)sitl_resets,
-			V.s.t, V.s.pos[2], volt);
+			(unsigned long long)truth_published, V.s.t, V.s.pos[2], volt);
 	else
 		mod_fmt(line, sizeof line, "standalone %d Hz: t %.1f s, depth %.2f m, %.1f A, battery %.1f V (%.0f %%)",
 			RATE_HZ, V.s.t, V.s.pos[2], amps, volt, rem * 100);
