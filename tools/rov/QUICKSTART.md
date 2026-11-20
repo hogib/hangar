@@ -30,7 +30,7 @@ vehicle's tether (Fathom-X: the laptop is 192.168.2.1, the Pi 192.168.2.10).
 | `tools/rov/lab.sh up [--video] [--no-battery-check]` | hangar up on the Pi; ArduSub's parameters saved (once a session) and set; the pre-arm check; the consoles tunnelled. `--video`: the lab's electric-eye stopped, the camera's own H.264 sent by the encoder, and the laptop's hellion and eeye started (the effects here, QGroundControl's video on 5600) | `lab: READY TO ARM`, then the consoles' and the video's addresses. With `--video`, four `[ OK ] pipeline` lines |
 | `tools/rov/lab.sh status` | both managers, the relay, the lab's services, the Pi's temperature and throttling, the laptop's video, the session | `safety … disarmed` or `armed`; `throttled=0x0` |
 | `tools/rov/lab.sh bench [SECONDS]` | CPU, memory, frame rates and the tether's traffic on both machines, 60 s by default | `lab: saved in ~/hangar-results/<date>-lab`, with a README of the state |
-| `tools/rov/lab.sh down` | everything put back: disarmed, ArduSub's parameters restored and compared with the backup, hangar stopped and its roots removed, the lab's electric-eye started again, the laptop's video and tunnels stopped | `lab: everything as found` |
+| `tools/rov/lab.sh down` | everything put back: disarmed, ArduSub's parameters restored and compared with the backup (through hangar, started again for it if it stopped), hangar stopped and its roots removed, the lab's electric-eye started again, the laptop's video and tunnels stopped | `lab: everything as found` |
 
 Then arm in QGroundControl (**Disarmed → Arm**), drive with the sticks, disarm, and
 `lab.sh down` before leaving. Run `down` even when something went wrong: it does every
@@ -50,7 +50,7 @@ session. Never on a vehicle that reads its battery.
 | `cannot reach bluerov2@192.168.2.10` | the tether's link (`ping 192.168.2.10`), the laptop's address on it, the Pi powered |
 | `hangar runs on the Pi: lab.sh down first` (deploy) | `lab.sh down`, then `deploy` again |
 | `no hangar at hangar-root on the Pi` (up) | `lab.sh deploy` first |
-| `the parameters could not be saved` | MAVROS cannot reach the Pixhawk: the USB cable, `/dev/ttyACM0`. Nothing was written to the Pixhawk. `lab.sh status`, then `lab.sh down` |
+| `the parameters could not be saved` | hangar's mavlink module cannot read the Pixhawk's parameters: the USB cable, `/dev/ttyACM0`; `~/hangar-rov/up.log` and the module's log on the Pi. Nothing was written to the Pixhawk. `lab.sh status`, then `lab.sh down` |
 | `mavlink, after 60 s: …` | ArduSub is not heard: as above. The relay's log is `~/hangar-rov/relay.log` on the Pi |
 | `NOT READY TO ARM: <reasons>` | the reasons are `hangar check`'s: `power.battery … below` → `--no-battery-check` (see above); `ArduSub … not MANUAL` → set MANUAL; anything else → `lab.sh status` |
 | no `[ OK ] pipeline` lines with `--video` | wait ten seconds and `lab.sh status`: the encoder starts after hangar. Still nothing: the camera's H.264 node (`H264_NODE` in `lab.conf`; `v4l2-ctl --list-formats-ext` on the Pi) |

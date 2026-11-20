@@ -284,10 +284,11 @@ cmd_up() {
     else
         wait_for mavlink 'ready .*ardusub (disarmed|armed)' 60 || up_failed
         # The backup of the parameters as the lab left them: once per session, so a
-        # second up never saves hangar's own values over it.
+        # second up never saves hangar's own values over it. Through hangar (rov.sh
+        # params, hangar ardusub-params), which is up by now: NAME VALUE TYPE lines.
         local backup; backup=$(sess_get params_backup)
         if [ -z "$backup" ]; then
-            backup=hangar-rov/lab-$(date +%Y%m%d-%H%M%S)-before.yaml
+            backup=hangar-rov/lab-$(date +%Y%m%d-%H%M%S)-before.params
             say "saving ArduSub's parameters to the Pi's ~/$backup"
             rsh FILE="$backup" '"$ROV" params save "$HOME/$FILE"' ||
                 { warn "the parameters could not be saved: nothing is written to the Pixhawk without a backup"; up_failed; }
@@ -431,6 +432,14 @@ EOF
 
 # ---- down ----------------------------------------------------------------------------
 
+# hangar on the Pi again, as up started it but without the encoder, until the mavlink
+# module hears ArduSub: for a restore after hangar stopped.
+hangar_up_again() {
+    rsh ROV_IP="$ROV_IP" GCS_IP="$LAPTOP_IP" RELAY="$RELAY" \
+        'mkdir -p "$HOME/hangar-rov"; "$ROV" up > "$HOME/hangar-rov/up.log" 2>&1' || return 1
+    wait_for mavlink 'ready .*ardusub (disarmed|armed)' 60
+}
+
 cmd_down() {
     local failed=()
     step() { # what command...: never stops at a failure, says which ones failed
@@ -449,11 +458,14 @@ cmd_down() {
     fi
     local backup; backup=$(sess_get params_backup)
     if [ -n "$backup" ]; then
-        # The relay is needed to restore: up again if hangar is already down. The
-        # restore ends with a comparison against the backup: its status is the step's.
+        # The restore goes the way the save went, through hangar: up again for it if it
+        # stopped. It ends with a comparison against the backup: its status is the
+        # step's. (A backup of an older session, MAVROS's YAML, restores the same way.)
+        if ! hangar_running; then
+            step "hangar up again for the restore" hangar_up_again
+        fi
         step "ArduSub's parameters as the lab left them (~/$backup)" \
-            rsh RELAY="$RELAY" FILE="$backup" '"$ROV" relay up > /dev/null
-                "$ROV" params restore "$HOME/$FILE" > "$HOME/hangar-rov/restore.log" 2>&1; rc=$?
+            rsh FILE="$backup" '"$ROV" params restore "$HOME/$FILE" > "$HOME/hangar-rov/restore.log" 2>&1; rc=$?
                 grep -vE "^ {4}|^Set parameter" "$HOME/hangar-rov/restore.log"; exit $rc'
     else
         say "no parameter backup in the session: ArduSub's parameters were not changed by lab.sh"

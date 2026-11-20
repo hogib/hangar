@@ -13,6 +13,11 @@
 #   rov.sh params save [FILE] every Pixhawk parameter to FILE (default under $HANGAR_ROV_STATE)
 #   rov.sh params diff FILE   the parameters that differ from FILE now
 #   rov.sh params restore FILE  set back the ones that differ, then diff again (disarmed only)
+#   rov.sh params via         which way the three go: hangar, mavros or none
+#     Through hangar (hangar ardusub-params) whenever the vehicle's manager is up, over
+#     MAVROS's UDP or Serial= alike; through MAVROS alone only when hangar is not up.
+#     hangar's files are NAME VALUE TYPE lines; MAVROS's, the YAML of ros2 param
+#     dump. hangar reads both; the MAVROS fallback, its own YAML only.
 #   rov.sh topside up|down|status  on the laptop, with BRIDGE=1: the topside role there
 #
 # BRIDGE=1 (opt-in) replaces the shim with the tether bridge: `rov.sh up` on the Pi
@@ -51,7 +56,7 @@ ENCODER=${ENCODER:-0}
 ENCODER_SOURCE=${ENCODER_SOURCE:-}
 BRIDGE=${BRIDGE:-0}
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
 die() { echo "rov: $*" >&2; exit 1; }
 
@@ -183,6 +188,73 @@ ros() { set +u; source "$ROS_SETUP"; set -u; }
 
 need_relay() { running "$STATE/relay.pid" || die "the relay is not running: rov.sh relay up"; }
 
+# ---- ArduSub's parameters ----------------------------------------------------------
+#
+# hangar's way (hangar ardusub-params: the vehicle's mavlink module reads and writes them
+# itself) whenever the vehicle's manager is up; MAVROS's only when it is not.
+
+hg_vehicle() { HANGAR_ROOT=$RV "$bin/hangar" "$@"; }
+
+params_via() {
+    if running "$RV/hangard.pid"; then echo hangar
+    elif running "$STATE/relay.pid"; then echo mavros
+    else echo none; fi
+}
+
+# The module must have heard ArduSub (a minute after an up, at most): ready is every
+# rated output published, the telemetry among them (lab.sh waits the same way).
+wait_ardusub() {
+    local t=0
+    while [ "$t" -lt 60 ]; do
+        hg_vehicle status 2>/dev/null | awk '$1 == "mavlink"' |
+            grep -E 'ready .*ardusub (disarmed|armed|disarming)' > /dev/null && return 0
+        sleep 2; t=$((t + 2))
+    done
+    die "the vehicle's mavlink module has not heard ArduSub in 60 s (rov.sh status)"
+}
+
+no_way() { die "neither hangar (rov.sh up) nor MAVROS (rov.sh relay up) runs: no way to the Pixhawk"; }
+
+params_save() {
+    mkdir -p "$STATE"
+    case $(params_via) in
+        hangar)
+            local f=${1:-$STATE/pixhawk-$(date +%Y%m%d-%H%M%S).params}
+            wait_ardusub
+            hg_vehicle ardusub-params save "$f" || die "hangar could not save the parameters"
+            say "saved through hangar to $f" ;;
+        mavros) mavros_params_save "${1:-}" ;;
+        *) no_way ;;
+    esac
+}
+
+params_diff() { # file; exit status 1 when something differs
+    [ -f "$1" ] || die "no file $1"
+    case $(params_via) in
+        hangar)
+            wait_ardusub
+            local rc=0; hg_vehicle ardusub-params diff "$1" || rc=$?
+            [ "$rc" -le 1 ] || die "hangar could not compare the parameters"
+            return "$rc" ;;
+        mavros) mavros_params_diff "$1" ;;
+        *) no_way ;;
+    esac
+}
+
+params_restore() { # file
+    [ -f "$1" ] || die "no file $1"
+    case $(params_via) in
+        hangar)
+            wait_ardusub
+            hg_vehicle ardusub-params restore "$1" || die "hangar could not restore the parameters"
+            params_diff "$1" ;;
+        mavros) mavros_params_restore "$1" ;;
+        *) no_way ;;
+    esac
+}
+
+# ---- the same through MAVROS, when hangar is not up ------------------------------
+
 # NAME: value, one per line, sorted; the node's own ROS parameters left out, and
 # the values ArduSub keeps itself (the STAT_ counters, the barometers' ground
 # pressure, calibrated at every boot), which differ after any session and which
@@ -190,26 +262,30 @@ need_relay() { running "$STATE/relay.pid" || die "the relay is not running: rov.
 flatten() { grep -E '^ {4}[A-Z][A-Z0-9_]*: ' "$1" | sed 's/^ *//' |
     grep -vE '^(STAT_[A-Z_]+|BARO[0-9]_GND_PRESS): ' | sort; }
 
-params_dump() { # file
+mavros_yaml() { grep 'ros__parameters:' "$1" > /dev/null ||
+    die "$1 is not MAVROS's YAML: restore or compare it with hangar up (rov.sh up)"; }
+
+mavros_params_dump() { # file
     ros
     timeout 120 ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}" \
         | grep 'success=True' > /dev/null || die "MAVROS could not pull the parameters"
     timeout 60 ros2 param dump /mavros/param > "$1"
 }
 
-params_save() {
+mavros_params_save() {
     need_relay
     mkdir -p "$STATE"
     local f=${1:-$STATE/pixhawk-$(date +%Y%m%d-%H%M%S).yaml}
-    params_dump "$f"
+    mavros_params_dump "$f"
     say "$(flatten "$f" | wc -l) parameters saved to $f"
 }
 
-params_diff() { # file; exit status 1 when something differs
+mavros_params_diff() { # file; exit status 1 when something differs
     need_relay
     [ -f "$1" ] || die "no file $1"
+    mavros_yaml "$1"
     local now; now=$(mktemp)
-    params_dump "$now"
+    mavros_params_dump "$now"
     if diff <(flatten "$1") <(flatten "$now") > "$now.diff"; then
         say "every parameter as in $1"; rm -f "$now" "$now.diff"; return 0
     fi
@@ -219,14 +295,15 @@ params_diff() { # file; exit status 1 when something differs
     return 1
 }
 
-params_restore() { # file
+mavros_params_restore() { # file
     need_relay
     [ -f "$1" ] || die "no file $1"
+    mavros_yaml "$1"
     ros
     timeout 10 ros2 topic echo --once /mavros/state 2>/dev/null | grep 'armed: false' > /dev/null \
         || die "the Pixhawk is armed, or MAVROS cannot say: restore only while disarmed"
     local now set; now=$(mktemp); set=$(mktemp)
-    params_dump "$now"
+    mavros_params_dump "$now"
     { echo "/mavros/param:"; echo "  ros__parameters:"
       comm -23 <(flatten "$1") <(flatten "$now") | sed 's/^/    /'; } > "$set"
     local n; n=$(($(wc -l < "$set") - 2))
@@ -235,7 +312,7 @@ params_restore() { # file
     timeout 120 ros2 param load /mavros/param "$set"
     rm -f "$now" "$set"
     sleep 2
-    params_diff "$1"
+    mavros_params_diff "$1"
 }
 
 # ---- commands -------------------------------------------------------------------
@@ -343,6 +420,7 @@ case "${1:-}" in
             save) params_save "${3:-}" ;;
             diff) [ -n "${3:-}" ] || usage 2; params_diff "$3" ;;
             restore) [ -n "${3:-}" ] || usage 2; params_restore "$3" ;;
+            via) params_via ;;
             *) usage 2 ;;
         esac ;;
     -h|--help|help|'') usage 0 ;;

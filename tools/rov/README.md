@@ -69,8 +69,8 @@ Props off until step 6 has passed. Stop at the first step that does not do what 
    `mavlink` says `ardusub disarmed mode 19` and counts frames received; `safety` says
    `disarmed`.
 4. **ArduSub's parameters.** `rov.sh params save` (a full copy, before anything is
-   written), then `HANGAR_ROOT=/dev/shm/hangar-vehicle ~/hangar-root/bin/hangar
-   ardusub-setup` and `... hangar check`, which must say `ok 1`.
+   written; [below](#the-parameter-backup)), then `HANGAR_ROOT=/dev/shm/hangar-vehicle
+   ~/hangar-root/bin/hangar ardusub-setup` and `... hangar check`, which must say `ok 1`.
 5. **QGroundControl** on the laptop: it shows the vehicle (hangar's topside module), in
    MANUAL, disarmed. The joystick under Vehicle Setup.
 6. **Props off, then:** arm from QGC → `safety.state` armed and ArduSub armed; disarm →
@@ -83,6 +83,40 @@ Props off until step 6 has passed. Stop at the first step that does not do what 
 8. **Put it back.** `rov.sh params restore <the file from step 4>` (it sets back only
    what differs, then compares again), `rov.sh down`, and check `systemctl is-active
    eeye hellion`. The sessions in `~/hangar-sessions` come home.
+
+## The parameter backup
+
+`rov.sh params save|diff|restore` go through hangar whenever the vehicle's manager is
+up: `hangar ardusub-params` (docs/12), the vehicle's `mavlink` module reading and
+writing the Pixhawk itself, over MAVROS's UDP or over `Serial=` alike, with
+MANUAL_CONTROL kept at 50 Hz meanwhile (418 parameters take 1.5 s against the fake;
+the Pixhawk's 979 are not measured yet).
+Only when hangar is not up do they go through MAVROS, as before (`rov.sh params via`
+says which). `lab.sh up` saves through hangar and stops if the save fails; `lab.sh
+down` restores and compares through hangar too, starting it again for that if it has
+stopped.
+
+The file is text, one parameter a line:
+
+```
+# hangar: ArduSub's parameters, 979, read 2026-11-21T09:12:03Z (mavlink.params_dump)
+# NAME VALUE TYPE (MAV_PARAM_TYPE); hangar ardusub-params restore sets them back
+SYSID_THISMAV 1 4
+ATC_RAT_RLL_P 0.135000005 9
+```
+
+`TYPE` is the `MAV_PARAM_TYPE` ArduSub reports (9 a float, 1 to 8 the integer types),
+so a restore writes each parameter with its own type; an integer's value is written as
+an integer, a float's with nine significant digits, so a value read back is the value
+written. A restore sets only what differs, each set read back before it counts, and
+refuses while armed; the values it replaced are kept beside the module's copy as
+`<name>.before`. ArduSub's own counters (`STAT_*`) and the barometers' ground pressure
+(`BARO*_GND_PRESS`) change by themselves: never set, left out of `diff`.
+
+The backups taken through MAVROS before (`pixhawk-*.yaml`, `lab-*-before.yaml`, the
+YAML of `ros2 param dump`) restore through hangar the same way. The MAVROS fallback
+reads its own YAML only. **Not yet tried on the real Pixhawk**: hangar's way is tested
+against the fake ArduSub over UDP and over a pseudo-terminal.
 
 ## The camera's own H.264 (the encoder, opt-in)
 
