@@ -226,16 +226,21 @@ static void tag_of(const unsigned char *key, const unsigned char *d, size_t len,
 	blake2s(out, TAG, key, 32, d, len);
 }
 
-static int send_raw(const unsigned char *d, size_t len)
+/* To the peer; or to the address given, for the answers of a handshake with
+ * someone who is not the peer yet. */
+static int send_raw(const unsigned char *d, size_t len, const struct sockaddr_in *to)
 {
-	if (!B.have_peer)
+	if (!to && !B.have_peer)
 		return -1;
-	return (int)sendto(B.sock, d, len, MSG_DONTWAIT, (struct sockaddr *)&B.peer, sizeof B.peer);
+	if (!to)
+		to = &B.peer;
+	return (int)sendto(B.sock, d, len, MSG_DONTWAIT, (const struct sockaddr *)to, sizeof *to);
 }
 
 /* Header, body, tag: with the sending key in force, the shared key for a
  * hello, or the handshake's pending key for a confirm. */
-static int send_dgram(int kind, int prio, const void *body, size_t blen, const unsigned char *key)
+static int send_dgram(int kind, int prio, const void *body, size_t blen, const unsigned char *key,
+		      const struct sockaddr_in *to)
 {
 	unsigned char d[DGRAM_MAX];
 	if (blen > BODY_MAX)
@@ -249,14 +254,14 @@ static int send_dgram(int kind, int prio, const void *body, size_t blen, const u
 	put64(d + 16, ++B.tx_seq);
 	memcpy(d + HDR, body, blen);
 	tag_of(key, d, HDR + blen, d + HDR + blen);
-	return send_raw(d, HDR + blen + TAG);
+	return send_raw(d, HDR + blen + TAG, to);
 }
 
 static int send_keyed(int kind, int prio, const void *body, size_t blen)
 {
 	if (!B.keyed)
 		return -1;
-	return send_dgram(kind, prio, body, blen, B.k_tx);
+	return send_dgram(kind, prio, body, blen, B.k_tx, NULL);
 }
 
 /* ---- Handshake (docs/08 "The link") ---------------------------------------- */
@@ -293,7 +298,7 @@ static void new_nonce(void)
  * and sent again for as long as that key lives: the echo is what makes one
  * fresh. Only a hello that echoes the nonce we offer now was made after we
  * offered it, by someone who holds the key. */
-static void send_hello(const unsigned char *echo)
+static void send_hello(const unsigned char *echo, const struct sockaddr_in *to)
 {
 	unsigned char b[HELLO_BODY];
 	memset(b, 0, sizeof b);
@@ -305,20 +310,20 @@ static void send_hello(const unsigned char *echo)
 	if (echo)
 		memcpy(b + 72, echo, 16);
 	put32(b + 88, B.keyed ? B.link_id : 0);
-	send_dgram(K_HELLO, BC_SAFETY, b, sizeof b, B.key);
+	send_dgram(K_HELLO, BC_SAFETY, b, sizeof b, B.key, to);
 	B.last_hello_ns = now_ns();
 	if (!B.nonce_since)
 		B.nonce_since = B.last_hello_ns;
 }
 
-static void send_confirm(const unsigned char *k_tx)
+static void send_confirm(const unsigned char *k_tx, const struct sockaddr_in *to)
 {
 	unsigned char b[32];
 	memcpy(b, B.vehicle ? B.nonce : B.p_nonce, 16);
 	memcpy(b + 16, B.vehicle ? B.p_nonce : B.nonce, 16);
 	uint32_t keep = B.link_id;
 	B.link_id = B.p_link;
-	send_dgram(K_CONFIRM, BC_SAFETY, b, sizeof b, k_tx);
+	send_dgram(K_CONFIRM, BC_SAFETY, b, sizeof b, k_tx, to);
 	B.link_id = keep;
 }
 
@@ -338,7 +343,12 @@ static void reset_generation(void);
  *   checks under them (on_dgram).
  *
  * So a recorded hello never sets a key, and the keys a fresh one sets are
- * made from a nonce of ours that no earlier session used. */
+ * made from a nonce of ours that no earlier session used.
+ *
+ * No hello sets the peer's address either: only a datagram that checks under
+ * a session key does (on_dgram). The answers go to the peer when there is one
+ * to keep (a link up, or Peer= fixed), and to where the hello came from
+ * otherwise (Peer=auto, no link: the handshake that makes it the peer). */
 static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in *from)
 {
 	if (n < HELLO_BODY) {
@@ -355,16 +365,13 @@ static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in 
 		B.st.rejected++; /* our own role or nonce, another pair: refused (docs/08) */
 		return;
 	}
-	if (!B.peer_fixed || !B.have_peer) {
-		B.peer = *from;
-		B.have_peer = 1;
-	}
+	const struct sockaddr_in *to = B.peer_fixed || B.up ? &B.peer : from;
 	if (B.keyed && get32(b + 88) == B.link_id) {
-		send_keyed(K_CONFIRM, BC_SAFETY, "", 0);
+		send_dgram(K_CONFIRM, BC_SAFETY, "", 0, B.k_tx, to);
 		return;
 	}
 	if (!B.nonce_since || memcmp(echo, B.nonce, 16) != 0) {
-		send_hello(nonce);
+		send_hello(nonce, to);
 		return;
 	}
 	int again = B.pending && memcmp(nonce, B.p_nonce, 16) == 0;
@@ -380,9 +387,9 @@ static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in 
 		memcpy(B.p_tx, B.vehicle ? up : down, 32);
 		memcpy(B.p_rx, B.vehicle ? down : up, 32);
 		B.pending = 1;
-		send_hello(nonce); /* the peer needs its nonce echoed too */
+		send_hello(nonce, to); /* the peer needs its nonce echoed too */
 	}
-	send_confirm(B.p_tx);
+	send_confirm(B.p_tx, to);
 }
 
 /* The pending keys become the keys in force: a new link, new streams. */
@@ -1126,6 +1133,20 @@ static void reset_generation(void)
 
 /* ---- Receiving datagrams --------------------------------------------------- */
 
+/* The peer is where a datagram came from whose tag checked under a session
+ * key, and nothing else moves it (Peer=auto; a fixed peer stays). */
+static void peer_is(const struct sockaddr_in *from)
+{
+	if (B.peer_fixed)
+		return;
+	if (B.have_peer && B.peer.sin_addr.s_addr == from->sin_addr.s_addr && B.peer.sin_port == from->sin_port &&
+	    B.peer_txt[0])
+		return;
+	B.peer = *from;
+	B.have_peer = 1;
+	snprintf(B.peer_txt, sizeof B.peer_txt, "%s:%u", inet_ntoa(B.peer.sin_addr), ntohs(B.peer.sin_port));
+}
+
 static int replay_ok(uint64_t seq)
 {
 	if (seq == 0)
@@ -1189,6 +1210,7 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 			B.st.rejected++; /* no sequence number: checked before anything changes */
 			return;
 		}
+		peer_is(from);
 		promote(); /* the peer holds the new keys: the link is up on them */
 	}
 	if (!replay_ok(get64(d + 16))) {
@@ -1202,10 +1224,7 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 		B.up = 1;
 		mod_log(WHO, "link back up with %s", B.peer_txt);
 	}
-	if (!B.peer_fixed) {
-		B.peer = *from;
-		B.have_peer = 1;
-	}
+	peer_is(from);
 	switch (kind) {
 	case K_CONFIRM:
 		break;
@@ -1597,9 +1616,9 @@ int main(int argc, char **argv)
 		if (B.nonce_since && now - B.nonce_since > NONCE_NS)
 			new_nonce();
 		if (!B.up && B.have_peer && now - B.last_hello_ns >= (B.pending ? HELLO_NS : 1000000000ull)) {
-			send_hello(B.pending ? B.p_nonce : NULL);
+			send_hello(B.pending ? B.p_nonce : NULL, NULL);
 			if (B.pending)
-				send_confirm(B.p_tx);
+				send_confirm(B.p_tx, NULL);
 			else if (B.keyed)
 				send_keyed(K_CONFIRM, BC_SAFETY, "", 0);
 		}

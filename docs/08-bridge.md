@@ -240,6 +240,11 @@ hello whose tag checks:
   echoing the nonce received;
 - it echoes the nonce offered now: it is fresh, and its keys become the pending ones.
 
+No hello sets the peer's address. With `Peer=auto` the peer is where the last
+datagram came from whose tag checked under a session key and whose `packet_seq` was
+new; a hello, whatever its source, is answered to the peer while a link is up (and
+always with a fixed `Peer=`), and to its source only when there is no link to keep.
+
 From the two nonces, `n_v` the vehicle's and `n_t` the topside's, each side derives
 one key per direction:
 
@@ -266,8 +271,9 @@ before that handshake completes: it is the peer's own, current hello, delivered 
 second time, and the keys it leads to are those the peer holds. What such a person
 can still do: delay or drop datagrams if they sit in the path (a link cut, which the
 staleness of every mirrored topic shows), and make each side send one hello per
-replayed hello. They cannot bring a link up, move one that is up to other keys, or
-put a message on a topic. And a link made of replayed datagrams, were there one,
+replayed hello: to its peer while the link is up, and, with `Peer=auto` and no link,
+back to the address the replay came from. They cannot bring a link up, move one that
+is up to other keys or to another address, or put a message on a topic. And a link made of replayed datagrams, were there one,
 would get no clock estimate (its pongs answer no ping of this link), so nothing it
 carried would be published ([Clocks](#clocks)).
 
@@ -572,7 +578,9 @@ them. The topside's recorder is a module of another name than the vehicle's
   peer reconnects. A whole recorded session, hello first, sent again from the peer's
   address: into its own session, after the peer rebooted, with the peer gone, and
   after this side's bridge restarted: no link comes up or changes, nothing is
-  published.
+  published. With `Peer=auto`, a recorded hello sent from another address: nothing
+  is sent there and nothing sent to the peer is lost; a peer restarting under a
+  stream of old hellos links again.
 - Priorities, over a link narrower than `MaxRate` and shared by both directions
   (`netem` and `tbf` at 5 Mbit for both together, with video): dataset rows going up
   and a file going down; once the rates settle, the median latency of `pilot.wrench`

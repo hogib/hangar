@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay).
+ * clocks, hold, replay, auto).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -40,6 +40,7 @@ struct side {
 	int port;
 	pid_t mgr;
 	const char *peer; /* Peer= of its bridge.conf; NULL: the forwarder */
+	int dport;        /* DiscoveryPort=, for Peer=auto; 0: the default */
 };
 static struct side V = { .role = "vehicle" }, T = { .role = "topside" };
 static const char *bridge_bin;
@@ -214,10 +215,12 @@ static void setup_side(struct side *s, const char *tag, const char *extra_conf)
 	write_file(p, text);
 	tfmt(p, sizeof p, "%s/etc/hangar/bridge.key", s->root);
 	write_file(p, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n");
-	char peer[64];
+	char peer[64], dport[64] = "";
 	tfmt(peer, sizeof peer, "127.0.0.1:%d", fwd_port);
-	tfmt(text, sizeof text, "[Bridge]\nPair=test\nKey=%s/etc/hangar/bridge.key\nPort=%d\nPeer=%s\nMsgDir=%s\n%s%s",
-	     s->root, s->port, s->peer ? s->peer : peer, s->msg, MIRRORS, extra_conf ? extra_conf : "");
+	if (s->dport)
+		tfmt(dport, sizeof dport, "DiscoveryPort=%d\n", s->dport);
+	tfmt(text, sizeof text, "[Bridge]\nPair=test\nKey=%s/etc/hangar/bridge.key\nPort=%d\nPeer=%s\n%sMsgDir=%s\n%s%s",
+	     s->root, s->port, s->peer ? s->peer : peer, dport, s->msg, MIRRORS, extra_conf ? extra_conf : "");
 	write_file(s->conf, text);
 	use(s);
 	manifest("bridge", "[Module]\nExec=%s %s\n[Bridge]\n", bridge_bin, s->conf);
@@ -1128,6 +1131,121 @@ static void replay_run(void)
 	       up_seen ? "a link came up" : "no link", published);
 }
 
+/* Sends the recorded hello at index h to the vehicle from sock, n times
+ * gap_ms apart, reading test.depth on the topside meanwhile; returns how
+ * many datagrams came back to sock (from anyone) until 300 ms after. */
+static int hello_from_elsewhere(int sock, int h, int n, int gap_ms, hg_sub *td, int *came, uint64_t *gaps)
+{
+	int got = 0;
+	struct depth d;
+	struct hg_info in;
+	unsigned char buf[1500];
+	for (int i = 0; i < n + 300 / gap_ms; i++) {
+		if (i < n)
+			sendto(sock, recs[h].d, recs[h].len, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
+		sleep_ms(gap_ms);
+		while (recv(sock, buf, sizeof buf, MSG_DONTWAIT) > 0)
+			got++;
+		use(&T);
+		while (td && hg_next(td, &d, sizeof d, &in) == HG_MSG) {
+			*came += 1;
+			*gaps += in.gap;
+		}
+	}
+	return got;
+}
+
+/* A hello does not move a link that is up (docs/08 "The link"). The
+ * vehicle's bridge has Peer=auto, so it takes its peer's address from what
+ * it hears. A recorded hello of the topside, sent again from another address:
+ * the hello of the session in force, then, after the topside's bridge has
+ * restarted, the hello of the session before. The vehicle must send nothing
+ * to that address and lose nothing of what it sends up.
+ *
+ * (Peer=auto beacons to the broadcast address of this host once a second
+ * while the run lasts, on a port of its own: a few datagrams nobody reads.) */
+static void auto_run(void)
+{
+	V.peer = "auto";
+	V.dport = T.dport = free_port();
+	setup_side(&V, "auto", NULL);
+	manifest("talker", "[Module]\nExec=%s/talker --topic test.depth --rate 100\n"
+			   "[Publish test.depth]\nType=depth\nRate=100\n", T_toys);
+	setup_side(&T, "auto", NULL);
+	atomic_store(&fwd_rec_on, 1);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "link up, the vehicle with Peer=auto: its peer is whoever it heard (%s)", up ? lv.peer_addr : "-");
+	if (!up)
+		return;
+	sleep_ms(500);
+	int port, h1 = -1, h2 = -1;
+	int atk = udp_bound(&port);
+	for (int i = 0; i < atomic_load(&fwd_nrec) && h1 < 0; i++)
+		if (recs[i].d[4] == 1)
+			h1 = i;
+	use(&T);
+	hg_sub *td = hg_sub_open("test.depth", &DEPTH_TYPE);
+	struct depth d;
+	struct hg_info in;
+	while (td && hg_next(td, &d, sizeof d, &in) == HG_MSG)
+		;
+	int came = 0;
+	uint64_t gaps = 0;
+	int got = h1 < 0 ? -1 : hello_from_elsewhere(atk, h1, 200, 5, td, &came, &gaps);
+	read_link(&V, &lv);
+	EXPECT(got == 0 && gaps == 0 && came > 100 && lv.state == 3,
+	       "the session's own hello from another address, 200 times in 1 s: %d datagrams sent there by the vehicle; "
+	       "test.depth on the topside %d messages, %llu lost",
+	       got, came, (unsigned long long)gaps);
+
+	/* A new session: the topside's bridge restarts. Its old hello is now one
+	 * of an earlier connection. */
+	use(&T);
+	pid_t b0 = pid_of(&T, "bridge");
+	int n0 = atomic_load(&fwd_nrec);
+	ctl("restart bridge");
+	wait_new_pid("bridge", b0, "ready", 5000);
+	up = wait_link(&T, 1, 8000, &lt) && wait_link(&V, 1, 3000, &lv);
+	sleep_ms(500);
+	for (int i = n0; i < atomic_load(&fwd_nrec) && h2 < 0; i++)
+		if (recs[i].d[4] == 1)
+			h2 = i;
+	use(&T);
+	while (td && hg_next(td, &d, sizeof d, &in) == HG_MSG)
+		;
+	came = 0;
+	gaps = 0;
+	got = !up || h2 < 0 ? -1 : hello_from_elsewhere(atk, h1, 200, 5, td, &came, &gaps);
+	read_link(&V, &lv);
+	EXPECT(got == 0 && gaps == 0 && came > 100 && lv.state == 3,
+	       "the hello of the session before, from another address, 200 times in 1 s: %d datagrams sent there; "
+	       "test.depth %d messages, %llu lost",
+	       got, came, (unsigned long long)gaps);
+	close(atk);
+
+	/* A handshake under way is not knocked over either: the topside's bridge
+	 * restarts once more while its first hello is sent at the vehicle a
+	 * thousand times a second, from the address the vehicle answers. */
+	uint32_t id0 = lv.peer_id;
+	use(&T);
+	b0 = pid_of(&T, "bridge");
+	ctl("restart bridge");
+	uint64_t t0 = now_ms();
+	int relinked = 0;
+	while (!relinked && now_ms() - t0 < 5000) {
+		for (int i = 0; i < 20; i++) {
+			sendto(fwd_sock, recs[h1].d, recs[h1].len, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
+			usleep(1000);
+		}
+		relinked = read_link(&V, &lv) == 0 && lv.state == 3 && lv.peer_id != id0 && lv.config_match;
+	}
+	EXPECT(relinked, "the topside's bridge restarted under 1000 old hellos a second: linked again after %.2f s",
+	       (now_ms() - t0) / 1e3);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -1137,6 +1255,7 @@ static const struct run {
 	{ "clocks", clocks_run },
 	{ "hold", hold_run },
 	{ "replay", replay_run },
+	{ "auto", auto_run },
 };
 
 int main(int argc, char **argv)
@@ -1187,6 +1306,7 @@ int main(int argc, char **argv)
 		atomic_store(&fwd_rec_on, 0);
 		atomic_store(&fwd_nrec, 0);
 		V.peer = T.peer = NULL;
+		V.dport = T.dport = 0;
 		V.port = free_port();
 		T.port = free_port();
 		fwd_v = (struct sockaddr_in){ .sin_family = AF_INET, .sin_port = htons((uint16_t)V.port) };

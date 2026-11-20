@@ -98,7 +98,9 @@ and calls to the other side).
   `HANGAR/1 role= pair= port= id= tag=`, the tag keyed BLAKE2s-128 under the shared
   key; the one candidate of the opposite role heard in the last 5 s is the peer, two
   is `ambiguous`. `Peer=<address>[:port]` fixes it (the lab: `192.168.2.10` and
-  `192.168.2.1`).
+  `192.168.2.1`). With `Peer=auto` the peer's address follows the datagrams that
+  check under a session key and pass the replay window, and nothing else: a hello
+  never moves it, and is answered to the peer while the link is up.
 - **`bridge.<role>.link`** at 10 Hz: state, `config_match`, the peer's role, id, boot
   id and address, last heard, round trip (now and least), the counters (`loss_rx`,
   `rejected`, `retransmits`, `clamped`, `dropped_old`, `dropped_late`, messages each
