@@ -22,7 +22,7 @@ FUZZ_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ifuzz -Ilib/hg -Ilib/common -Imsg -Ihan
 	-Imodules/bridge -Imodules/mavlink -Imodules/recorder -Imodules/encoder -Imodules/video_relay -Imodules/joystick -Ihangar -DFUZZ_REPO='"$(CURDIR)"'
 FUZZ_HDRS := $(wildcard fuzz/*.h lib/hg/*.h lib/common/*.h hangard/*.h msg/*.h modules/*/*.h lib/net/*.h lib/video/*.h)
 
-FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside video schema wiring manifest bridge_conf conf params recording topic http
+FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside control video schema wiring manifest bridge_conf conf params recording topic http
 
 # bridge.c is included by the harness (its statics are what is fuzzed).
 fuzz_bridge_SRC := $(BRIDGE_LIB_SRC) $(HG_SRC)
@@ -40,6 +40,10 @@ fuzz_mavlink_topside_DEPS := modules/mavlink/mavlink_topside.c modules/mavlink/m
 fuzz_mavlink_topside_MAXLEN := 2048
 fuzz_video_SRC := modules/video_relay/depack.c modules/video_relay/mp4.c modules/encoder/h264.c
 fuzz_video_MAXLEN := 16384
+# control.c is included by the harness; the manager around it is stubs there.
+fuzz_control_SRC := hangard/topics.c hangard/registry.c $(HANGARD_CORE_SRC) $(HG_SRC)
+fuzz_control_DEPS := hangard/control.c
+fuzz_control_MAXLEN := 8192
 fuzz_schema_SRC := lib/hg/hg_type.c
 fuzz_schema_MAXLEN := 4096
 fuzz_wiring_SRC := $(HG_SRC)
@@ -115,7 +119,7 @@ $(FUZZ_CHECKS): check-fuzz-corpus-%: $(TESTDIR)/fuzzreg_%
 check-fuzz-corpus: $(FUZZ_CHECKS)
 
 # The generated seeds (fuzz/mkseeds.c), written into fuzz/corpus/ and checked in.
-FUZZ_SEEDS_SRC := $(HGR_SRC) $(HG_SRC) msg/depth.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c \
+FUZZ_SEEDS_SRC := $(HGR_SRC) $(HG_SRC) msg/depth.c msg/wrench.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c \
 	modules/mavlink/mav.c modules/mavlink/sha256.c modules/encoder/h264.c
 $(FUZZ_DIR)/mkseeds: fuzz/mkseeds.c $(FUZZ_SEEDS_SRC) $(FUZZ_HDRS)
 	@mkdir -p $(dir $@)

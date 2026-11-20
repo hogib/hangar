@@ -22,6 +22,7 @@
 #include "fuzz_bridge.h"
 #include "fuzz_mavlink.h"
 #include "h264.h"
+#include "wrench.h"
 #include "hg_record.h"
 #include "hg_topic.h"
 #include "hg_type.h"
@@ -703,6 +704,98 @@ static void conf_seeds(void)
 	conf_file(8, "backup", NULL, "# hangar parameter backup\nSURFACE_DEPTH -10 9\nFS_GCS_ENABLE 0 2\nJS_GAIN_DEFAULT 0.5 9\n");
 }
 
+/* ---- control: a mode byte (fuzz_control.c), then requests ------------------------ */
+
+static void request(struct buf *b, const char *line, const void *body, size_t body_len)
+{
+	size_t n = strlen(line) + body_len;
+	unsigned char h[2] = { (unsigned char)(n & 0xff), (unsigned char)(n >> 8) };
+	add(b, h, 2);
+	adds(b, line);
+	if (body_len)
+		add(b, body, body_len);
+}
+
+static void control_seeds(void)
+{
+	struct buf b = { 0 };
+	char line[400];
+	unsigned char mode;
+
+	/* An operator in hangar-admin: everything a `hangar` command asks. */
+	mode = 1 | 2;
+	add(&b, &mode, 1);
+	request(&b, "status\n", NULL, 0);
+	request(&b, "paths", NULL, 0);
+	request(&b, "wiring safety", NULL, 0);
+	request(&b, "method safety.arm", NULL, 0);
+	request(&b, "method mux.set_params", NULL, 0);
+	request(&b, "start mux", NULL, 0);
+	request(&b, "restart mux\n", NULL, 0);
+	request(&b, "stop mux", NULL, 0);
+	request(&b, "reload", NULL, 0);
+	request(&b, "clear-failsafe", NULL, 0);
+	put("control", "admin", &b);
+
+	mode = 1;
+	add(&b, &mode, 1);
+	unsigned char body[16] = { 0 };
+	request(&b, "call safety.arm deadline=500 body=8\n", body, 8);
+	request(&b, "call depth_hold.set deadline=250 type=0 body=8\n", body, 8);
+	request(&b, "call nosuch.method body=0\n", NULL, 0);
+	request(&b, "param-read safety", NULL, 0);
+	request(&b, "param-write safety\nleak_required = 0\nrequired = \"mux\"\n", NULL, 0);
+	request(&b, "param-read safety", NULL, 0);
+	request(&b, "param-write depth_hold\nnot_a_field = 1\n", NULL, 0);
+	request(&b, "param-write", NULL, 0);
+	put("control", "admin-call-params", &b);
+
+	/* A module: its page, its outputs, a restart of itself. */
+	mode = 2 | (3 << 2); /* mux */
+	add(&b, &mode, 1);
+	request(&b, "page", NULL, 0);
+	snprintf(line, sizeof line, "open ctl.wrench hash=%016llx payload=%u schema=%u\n", (unsigned long long)WRENCH_TYPE.hash,
+		 WRENCH_TYPE.payload_bytes, WRENCH_TYPE.schema_bytes);
+	request(&b, line, WRENCH_TYPE.schema, WRENCH_TYPE.schema_bytes);
+	request(&b, line, WRENCH_TYPE.schema, WRENCH_TYPE.schema_bytes);
+	snprintf(line, sizeof line, "open nav.depth hash=%016llx payload=%u schema=%u\n", (unsigned long long)DEPTH_TYPE.hash,
+		 DEPTH_TYPE.payload_bytes, DEPTH_TYPE.schema_bytes);
+	request(&b, line, DEPTH_TYPE.schema, DEPTH_TYPE.schema_bytes);
+	request(&b, "status", NULL, 0);
+	request(&b, "start safety", NULL, 0);
+	request(&b, "restart-self", NULL, 0);
+	put("control", "module", &b);
+
+	/* The bridge: a topic of the other side, with its boot id and writer. */
+	mode = 2 | (1 << 2);
+	add(&b, &mode, 1);
+	snprintf(line, sizeof line,
+		 "open pilot.wrench hash=%016llx payload=%u schema=%u boot=00112233445566778899aabbccddeeff first=7 "
+		 "writer=joystick slots=16\n",
+		 (unsigned long long)WRENCH_TYPE.hash, WRENCH_TYPE.payload_bytes, WRENCH_TYPE.schema_bytes);
+	request(&b, line, WRENCH_TYPE.schema, WRENCH_TYPE.schema_bytes);
+	snprintf(line, sizeof line,
+		 "open nav.depth hash=%016llx payload=%u schema=%u boot=00112233445566778899aabbccddeeff slots=4\n",
+		 (unsigned long long)DEPTH_TYPE.hash, DEPTH_TYPE.payload_bytes, DEPTH_TYPE.schema_bytes);
+	request(&b, line, DEPTH_TYPE.schema, DEPTH_TYPE.schema_bytes);
+	snprintf(line, sizeof line,
+		 "open hangar.vehicle.system hash=%016llx payload=%u schema=%u boot=00000000000000000000000000000000\n",
+		 (unsigned long long)DEPTH_TYPE.hash, DEPTH_TYPE.payload_bytes, DEPTH_TYPE.schema_bytes);
+	request(&b, line, DEPTH_TYPE.schema, DEPTH_TYPE.schema_bytes);
+	put("control", "bridge", &b);
+
+	/* A stranger: refused by name, and a connection that says nothing. */
+	mode = 16;
+	add(&b, &mode, 1);
+	request(&b, "status", NULL, 0);
+	request(&b, "stop safety", NULL, 0);
+	request(&b, "clear-failsafe", NULL, 0);
+	request(&b, "", NULL, 0);
+	request(&b, "nonsense with arguments\n", NULL, 0);
+	put("control", "stranger", &b);
+	free(b.p);
+}
+
 int main(void)
 {
 	const char *tmp = getenv("TMPDIR");
@@ -716,6 +809,7 @@ int main(void)
 	mavlink_seeds();
 	video_seeds();
 	conf_seeds();
+	control_seeds();
 	rmdir(tmpdir);
 	return 0;
 }
