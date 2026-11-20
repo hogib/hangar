@@ -6,6 +6,7 @@
  * test of one review finding of 2026-11-20 (the D numbers of its comment). */
 #include "hd_test.h"
 
+#include <math.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 
@@ -360,6 +361,48 @@ static void test_char_field_without_nul_refused(void)
 	CHECK(wait_new_pid("paramer", st.pid, "ready", 5000));
 }
 
+/* A float without a range took NaN and inf: from a request's bytes, which
+ * no parser sees, and from `hangar param set` and a saved file, which
+ * strtod reads "nan" for. gains[3] of depth_hold_params has no range. */
+static void test_non_finite_parameters_refused(void)
+{
+	struct params_msg m, after;
+	CHECK_EQ_INT(read_params(&m), 0);
+	struct set_req req = { .base_version = m.version, .p = m.p };
+	req.p.gains[1] = NAN;
+	hg_call_result r = set_params(&req);
+	printf("    gains[1] = NaN in a request: %s (%s)\n", hg_status_name(r.status), r.reason);
+	CHECK_EQ_INT(r.status, HG_E_REFUSED);
+	CHECK(strstr(r.reason, "gains[1]") != NULL);
+	req.p = m.p;
+	req.p.gains[2] = INFINITY;
+	CHECK_EQ_INT(set_params(&req).status, HG_E_REFUSED);
+	char out[4096];
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "gains=nan", (char *)NULL), 1);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "gains=1,inf,2", (char *)NULL), 1);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "gains=1e39", (char *)NULL), 1);
+	CHECK_EQ_INT(read_params(&after), 0);
+	CHECK_EQ_INT(after.version, m.version);
+	CHECK(memcmp(&after.p, &m.p, sizeof m.p) == 0);
+	CHECK(!file_contains(params_file, "nan") && !file_contains(params_file, "inf"));
+	/* A saved file with one stops the start. */
+	CHECK(strncmp(ctl("stop paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "stopped", 5000));
+	char saved[2048];
+	tfmt(saved, sizeof saved, "%s", read_file(params_file));
+	write_file(params_file, "# hangar parameters: depth_hold_params\ngains = 1, nan, 1\n");
+	CHECK(strncmp(ctl("start paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "failed", 5000));
+	CHECK(file_contains(T_log, "saved parameters refused: line 2: gains[1]: nan is not a finite number"));
+	/* ... and the manager's param-write does not put one there. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "gains=inf", (char *)NULL), 1);
+	write_file(params_file, saved);
+	CHECK(strncmp(ctl("start paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "ready", 5000));
+	for (int i = 0; i < 100 && (read_params(&after) < 0 || after.version != m.version); i++)
+		sleep_ms(20);
+}
+
 /* A parameter file of `total` bytes: the first line (may be ""), comment
  * lines, and "kp = 1.25" placed so that byte `cut` falls after "kp = 1". */
 static void long_params_file(const char *path, const char *first, size_t cut)
@@ -495,6 +538,7 @@ int main(void)
 	RUN_TEST(test_malformed_reply_stops_the_command);
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
+	RUN_TEST(test_non_finite_parameters_refused);
 	RUN_TEST(test_long_parameter_file_refused);
 	RUN_TEST(test_reset_takes_the_types_defaults);
 	RUN_TEST(test_manager_down);

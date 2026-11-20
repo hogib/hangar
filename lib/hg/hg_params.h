@@ -80,7 +80,10 @@ int hg_param_parse(const struct hg_field *f, const char *text, size_t len, unsig
  * the length it needs, like snprintf. */
 int hg_param_format(const struct hg_field *f, const unsigned char *src, char *out, size_t outlen);
 /* Checks the field's value at src against its range, each element of an
- * array. 0, or -1 with the reason ("kp 12 above 10") in reason. */
+ * array, and a float field, with a range or without, for a finite value
+ * (hg_param_parse refuses nan, inf and a number the type cannot hold; a
+ * request's bytes come here unparsed). 0, or -1 with the reason ("kp 12
+ * above 10", "kp nan: not a finite number") in reason. */
 int hg_param_check_range(const struct hg_field *f, const struct hg_param_attr *a, const unsigned char *src,
 			 char *reason, size_t rlen);
 /* Fills dst (the whole struct, payload_bytes) with the defaults. */

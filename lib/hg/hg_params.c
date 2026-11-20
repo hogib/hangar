@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -201,6 +202,12 @@ static int parse_number(enum hg_field_kind k, const char *s, const char *e, unsi
 		double v = strtod(buf, &tail);
 		if (*tail || errno == ERANGE) {
 			set_err(err, errlen, "%s: '%s' is not a number", name, buf);
+			return -1;
+		}
+		/* strtod reads "nan" and "inf", and a double past FLT_MAX is inf
+		 * as a float with no ERANGE: a parameter is a finite number. */
+		if (!isfinite(v) || (k == HG_F32 && (v > FLT_MAX || v < -FLT_MAX))) {
+			set_err(err, errlen, "%s: %s is not a finite number of the field's type", name, buf);
 			return -1;
 		}
 		if (k == HG_F32) {
@@ -404,6 +411,30 @@ int hg_param_format(const struct hg_field *f, const unsigned char *src, char *ou
 int hg_param_check_range(const struct hg_field *f, const struct hg_param_attr *a, const unsigned char *src,
 			 char *reason, size_t rlen)
 {
+	/* A float is finite, range or no range: these bytes may come from a
+	 * request, which no text parser has seen. */
+	if (is_float(f->kind)) {
+		uint32_t fs = hg_field_elem_size(f->kind);
+		for (uint32_t i = 0; i < f->count; i++) {
+			const unsigned char *p = src + f->offset + (size_t)i * fs;
+			double v;
+			if (f->kind == HG_F32) {
+				float x;
+				memcpy(&x, p, 4);
+				v = x;
+			} else {
+				memcpy(&v, p, 8);
+			}
+			if (isfinite(v))
+				continue;
+			const char *what = isnan(v) ? "nan" : v > 0 ? "inf" : "-inf";
+			if (f->count > 1)
+				set_err(reason, rlen, "%s[%u] %s: not a finite number", f->name, i, what);
+			else
+				set_err(reason, rlen, "%s %s: not a finite number", f->name, what);
+			return -1;
+		}
+	}
 	if (!a->min_len || f->kind == HG_CHAR)
 		return 0;
 	unsigned char lo[8], hi[8];

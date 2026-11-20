@@ -130,8 +130,81 @@ static void test_file_read_whole_or_refused(void)
 	rmdir(dir);
 }
 
+/* A parameter is a finite number. strtod reads "nan" and "inf", and 1e39
+ * becomes inf as an f32 without ERANGE: a field with a range refused them
+ * by comparison (only NaN, and inf below an infinite bound), a field
+ * without one took them, from a file, a request or `hangar param set`. */
+static void test_floats_are_finite(void)
+{
+	const struct hg_type *t = type_of("f32 gain = 1\nf64 wide\nf32 ranged = 1 [0, 10]\nf32 g[3]\n", "float_params");
+	struct {
+		float gain;
+		double wide;
+		float ranged;
+		float g[3];
+	} v;
+	memset(&v, 0, sizeof v);
+	v.gain = 2;
+	char err[160];
+	static const char *const bad[] = { "nan", "NaN", "-nan", "inf", "-inf", "+inf", "infinity", "1e39", "-1e39", "nan(1)" };
+	for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+		err[0] = 0;
+		int rc = hg_param_parse(&t->fields[0], bad[i], strlen(bad[i]), (unsigned char *)&v, err, sizeof err);
+		if (rc == 0)
+			printf("    f32 gain: \"%s\" parsed as %g\n", bad[i], (double)v.gain);
+		CHECK_EQ_INT(rc, -1);
+		CHECK(strstr(err, "gain") != NULL);
+		CHECK(v.gain == 2); /* nothing written on a refusal */
+	}
+	CHECK_EQ_INT(hg_param_parse(&t->fields[1], "nan", 3, (unsigned char *)&v, err, sizeof err), -1);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[1], "inf", 3, (unsigned char *)&v, err, sizeof err), -1);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[1], "1e309", 5, (unsigned char *)&v, err, sizeof err), -1);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[3], "1, inf, 2", 9, (unsigned char *)&v, err, sizeof err), -1);
+	CHECK(strstr(err, "g[1]") != NULL);
+	/* What a float holds still parses. */
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], "3.4e38", 6, (unsigned char *)&v, err, sizeof err), 0);
+	CHECK(v.gain > 3.3e38f);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], "-0.5", 4, (unsigned char *)&v, err, sizeof err), 0);
+	CHECK(v.gain == -0.5f);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[0], "1e-30", 5, (unsigned char *)&v, err, sizeof err), 0);
+	CHECK_EQ_INT(hg_param_parse(&t->fields[1], "1e39", 4, (unsigned char *)&v, err, sizeof err), 0);
+	CHECK(v.wide == 1e39);
+	/* The bytes of a request: no range to fail, and still refused. */
+	static struct hg_param_attr attrs[8];
+	CHECK_EQ_INT(hg_params_attrs(t, attrs, err, sizeof err), 0);
+	char reason[64];
+	v.gain = 1;
+	v.ranged = 1;
+	for (uint32_t i = 0; i < t->n_fields; i++)
+		CHECK_EQ_INT(hg_param_check_range(&t->fields[i], &attrs[i], (unsigned char *)&v, reason, sizeof reason), 0);
+	v.gain = NAN;
+	reason[0] = 0;
+	CHECK_EQ_INT(hg_param_check_range(&t->fields[0], &attrs[0], (unsigned char *)&v, reason, sizeof reason), -1);
+	CHECK(strstr(reason, "gain") && strstr(reason, "finite"));
+	v.gain = INFINITY;
+	CHECK_EQ_INT(hg_param_check_range(&t->fields[0], &attrs[0], (unsigned char *)&v, reason, sizeof reason), -1);
+	v.gain = 1;
+	v.wide = -INFINITY;
+	CHECK_EQ_INT(hg_param_check_range(&t->fields[1], &attrs[1], (unsigned char *)&v, reason, sizeof reason), -1);
+	v.wide = 0;
+	v.g[2] = NAN;
+	reason[0] = 0;
+	CHECK_EQ_INT(hg_param_check_range(&t->fields[3], &attrs[3], (unsigned char *)&v, reason, sizeof reason), -1);
+	CHECK(strstr(reason, "g[2]") != NULL);
+	v.g[2] = 0;
+	v.ranged = NAN; /* with a range: refused before, and still */
+	CHECK_EQ_INT(hg_param_check_range(&t->fields[2], &attrs[2], (unsigned char *)&v, reason, sizeof reason), -1);
+	/* A saved file with one. */
+	struct hg_params_header hdr;
+	const char file[] = "# hangar parameters: float_params\ngain = nan\n";
+	err[0] = 0;
+	CHECK_EQ_INT(hg_params_file_parse(t, file, sizeof file - 1, (unsigned char *)&v, &hdr, NULL, 1, err, sizeof err), -1);
+	CHECK(strstr(err, "line 2") != NULL);
+}
+
 int main(void)
 {
+	RUN_TEST(test_floats_are_finite);
 	RUN_TEST(test_long_value_in_the_file);
 	RUN_TEST(test_file_read_whole_or_refused);
 	TEST_MAIN_END();

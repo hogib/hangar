@@ -75,6 +75,11 @@ u32  rate_hz = 50      [10, 200] @restart
 | range | `[min, max]`, inclusive; for arrays it applies to each element | Not for `char`. Checked by the library before the module sees a value |
 | `@restart` | after the range | Changing it restarts the module ([Restart-only fields](#restart-only-fields)) |
 
+A float parameter is a finite number, with a range or without: `nan`, `inf` and a
+number the field's type cannot hold (`1e39` for an `f32`) are refused wherever a value
+is read, in a saved file, from `hangar param`, and in the bytes of a `set_params`
+request ("gains[1] nan: not a finite number").
+
 These attributes are allowed in parameter types only. They are not part of the type
 hash, which covers the layout alone (field types, names and order): changing a default
 or a range does not make old clients incompatible. A UI can build its controls,
