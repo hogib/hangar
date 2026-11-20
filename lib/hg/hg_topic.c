@@ -2077,8 +2077,11 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
 			pending += s->first - s->last;
 			s->last = s->first;
 		}
-		uint64_t w = s->last + 1;
-		if (w > W) {
+		/* Asked of last, not of last + 1: a header whose write_seq (or
+		 * first_seq) is 2^64 - 1 makes last + 1 wrap to 0, which is not
+		 * past anything, and the loop went round for ever. The header is
+		 * the writer's to scribble on; the reader must come back. */
+		if (s->last >= W) {
 			int switched;
 			enum hg_result r = at_end(s, flags, &switched);
 			if (switched)
@@ -2086,6 +2089,7 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
 			info->gap += pending;
 			return finish(s, info, r);
 		}
+		uint64_t w = s->last + 1;
 		if (W - w >= k - 1) {
 			/* w <= W-K+1: gone, or in the slot the writer fills next. */
 			uint64_t nw = W - k + 2;

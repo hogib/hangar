@@ -300,6 +300,50 @@ static void test_frame_topic_defaults_to_4_slots(void)
 	hg_pub_close(p);
 }
 
+/* A header a writer has damaged or made up: write_seq at the top of its
+ * range. The reader's own arithmetic must not wrap into a loop: every read
+ * returns (hg_next did not, found by fuzz/fuzz_topic.c). */
+static void test_reader_returns_on_a_wild_header(void)
+{
+	hg_pub *p = hg_pub_open("lay.wild", DEPTH_TYPE, &(struct hg_pub_opts){ .slots = 4 });
+	CHECK(p != NULL);
+	if (!p)
+		return;
+	struct depth d = { 1, 2, 3 };
+	for (int i = 0; i < 3; i++)
+		CHECK_EQ_INT(hg_publish(p, &d, sizeof d, 0), 0);
+	char path[600];
+	hg_topic_path(path, sizeof path, "", "lay.wild", "");
+	static const size_t at[2] = { 200, 168 }; /* write_seq, first_seq (docs/01) */
+	for (int step = 0; step < 1; step++) {
+		FILE *f = fopen(path, "r+b");
+		CHECK(f != NULL);
+		if (!f)
+			break;
+		uint64_t top = UINT64_MAX;
+		CHECK_EQ_INT(fseek(f, (long)at[step], SEEK_SET), 0);
+		CHECK_EQ_INT(fwrite(&top, 8, 1, f), 1);
+		fclose(f);
+		for (int oldest = 0; oldest < 2; oldest++) {
+			hg_sub *s = hg_sub_open_from("lay.wild", DEPTH_TYPE, oldest ? HG_OLDEST : HG_NEWEST);
+			CHECK(s != NULL);
+			if (!s)
+				continue;
+			struct hg_info info;
+			struct depth got;
+			for (int i = 0; i < 8; i++)
+				CHECK(hg_next(s, &got, sizeof got, &info) != HG_MSG);
+			(void)hg_latest(s, &got, sizeof got, &info);
+			(void)hg_find_stamp(s, UINT64_MAX, &got, sizeof got, &info);
+			(void)hg_read_seq(s, UINT64_MAX, &got, sizeof got, &info);
+			(void)hg_skip(s);
+			CHECK(hg_next(s, &got, sizeof got, &info) != HG_MSG);
+			hg_sub_close(s);
+		}
+	}
+	/* Not closed through the library: its header is no longer one it wrote. */
+}
+
 static void test_names(void)
 {
 	CHECK(hg_valid_name("nav.depth"));
@@ -329,6 +373,7 @@ int main(void)
 	RUN_TEST(test_layout_bound);
 	RUN_TEST(test_frame_type);
 	RUN_TEST(test_frame_topic_defaults_to_4_slots);
+	RUN_TEST(test_reader_returns_on_a_wild_header);
 	RUN_TEST(test_names);
 	hg_test_teardown();
 	TEST_MAIN_END();
