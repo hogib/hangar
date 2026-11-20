@@ -3,7 +3,7 @@
 `hg_bench` is hangar's side of the benchmark of [docs/12](../docs/12-tools.md#the-benchmark):
 the targets of [docs/00](../docs/00-overview.md#targets), measured on the committed
 module library (`lib/hg`) and nothing else. The ROS 2 side, a talker/listener pair
-measured the same way on the same machine, is `bench/ros2/` (to be written). The
+measured the same way on the same machine, is [`bench/ros2/`](ros2/README.md). The
 first run on real hardware is planned in [PI-TEST.md](PI-TEST.md).
 
 | File | |
@@ -14,7 +14,7 @@ first run on real hardware is planned in [PI-TEST.md](PI-TEST.md).
 | `pi/hangard.conf`, `pi/install-root.sh` | a manager run out of one directory, `$HANGAR_ROOT` |
 | `PI-TEST.md` | the Pi visit, step by step |
 | `e2e-depth-ff/` | the learning loop end to end in simulation ([README](e2e-depth-ff/README.md)): docs/09's adaptive depth hold, run and measured |
-| `ros2/` | placeholder: the ROS 2 scripts and the comparison script |
+| `ros2/` | the ROS 2 baseline: a talker/listener package, `run.sh`, which runs it and `hg_bench` and writes the comparison ([its README](ros2/README.md)) |
 
 ## Building
 
@@ -114,11 +114,12 @@ MAVLink relay cost while they run: CPU per process (percent of one core) and PSS
 second, with the machine's load and temperature, from `/proc` and `/sys` alone. It is how
 the busy loops of hangar#1 were found on the lab's BlueROV2.
 
-## The ROS 2 side (placeholder)
+## The ROS 2 side
 
-`bench/ros2/` will hold a talker and a listener (rclcpp, default middleware) for the
-same message sizes and rates, a script that runs them in a container on the comparison
-machine and collects the same lines (resident memory, CPU at idle and at rate, latency,
-publish cost, sizes, start), and `compare.py`, which takes hangar's report and the
-ROS 2 report and prints the factor per line, the pass/fail of docs/12. Until then,
-the hangar report alone is what the Pi visit brings home.
+[`bench/ros2/`](ros2/README.md) holds a talker and a listener (rclcpp) for the same
+message sizes and rates, and `run.sh`, which builds them against the ROS 2 installed on
+the machine (or in a container), runs them through every middleware it finds and
+`hg_bench` beside them on the same two CPUs, and writes one JSON and one table: each
+line for hangar and for ROS 2, with the factor, the pass/fail of docs/12. It is not part
+of `make all` or `make check`. Not yet run on the Pi: until then, the hangar report alone
+is what a visit has brought home.
