@@ -1,0 +1,26 @@
+# /usr/share/hangar/modules/vision.module: the pilot's picture (docs/11-electric-eye.md
+# "vision", modules/vision/README.md): the visibility correction and the effect chain
+# of lib/vision over a frame topic. On the topside in camera-H.264 mode it reads
+# cam.decoded (video_relay); on the vehicle in placement B, cam.raw (camera): change
+# the [Subscribe] section, Inputs= and vision.conf's Input= together. Its settings
+# are in /etc/hangar/vision.conf; the chain is its parameters (a preset by name).
+[Module]
+Description=The pilot's picture: visibility correction and effects
+Exec=/usr/lib/hangar/hangar-vision /etc/hangar/vision.conf
+User=hg-vision
+
+[Subscribe cam.decoded]
+
+# One frame a frame read, the newest (an older one waiting is skipped), I422 full
+# range, referencing the frame it was made from. An event topic: no video, no
+# message, and the module is ready all the same.
+[Publish cam.pilot]
+Type=frame
+Slots=4
+Inputs=cam.decoded
+
+# The preset the Fly view's buttons set (Dawn Patrol calls set_params as
+# admin:<its user>), or eight stages as given (hangar param set vision ...).
+[Params]
+Type=vision_params
+Allow=admin topside:admin topside:pilot_console

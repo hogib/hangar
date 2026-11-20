@@ -542,3 +542,8 @@ check: check-joystick
 # topside's end of the vehicle's video, decoded in process with libavcodec.
 include modules/video_relay/video_relay.mk
 check: check-video_relay
+
+# vision (modules/vision/README.md, .mk carries the rules): the pilot's picture,
+# lib/vision's visibility correction and effect chain as a module (docs/11 B3).
+include modules/vision/vision.mk
+check: check-vision
