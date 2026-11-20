@@ -367,6 +367,10 @@ x86_64*)
 	if ! command -v nasm >/dev/null 2>&1; then
 		asm="no (nasm not found: C-only libjpeg-turbo, and x264 and libavcodec where built)"
 		echo "release.sh: WARNING: nasm not found; this x86-64 release has no codec assembly" >&2
+	elif grep -q '^WITH_SIMD:BOOL=OFF' "$ljt/build/CMakeCache.txt" 2>/dev/null; then
+		# A libturbojpeg.a kept from a run before nasm was installed.
+		asm="no (libjpeg-turbo kept from a build without nasm: remove $ljt/build)"
+		echo "release.sh: WARNING: $ljt/build was built without SIMD; remove it to rebuild" >&2
 	fi ;;
 esac
 {
