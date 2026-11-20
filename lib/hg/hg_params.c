@@ -78,6 +78,12 @@ static const char *quoted_end(const char *s, const char *end)
 	return NULL;
 }
 
+/* The bytes of a numeric field: hg_param_parse reads a field's values into a
+ * buffer of this size before it touches the struct, so that a refused value
+ * changes nothing. A parameter type with a larger array is refused as a type
+ * (hg_params_attrs): its saved file could be written and never read back. */
+#define PARAM_NUMBERS_MAX (8u * 4096u)
+
 int hg_params_attrs(const struct hg_type *t, struct hg_param_attr *out, char *err, size_t errlen)
 {
 	const char *s = t->schema, *end = t->schema + t->schema_bytes;
@@ -102,6 +108,11 @@ int hg_params_attrs(const struct hg_type *t, struct hg_param_attr *out, char *er
 		memset(a, 0, sizeof *a);
 		a->dflt = a->min = a->max = "";
 		const struct hg_field *f = &t->fields[fi];
+		if (f->kind != HG_CHAR && (uint64_t)hg_field_elem_size(f->kind) * f->count > PARAM_NUMBERS_MAX) {
+			set_err(err, errlen, "schema line %d: %s: %u elements; a parameter array is at most %u bytes", line,
+				f->name, f->count, PARAM_NUMBERS_MAX);
+			goto bad;
+		}
 		p = skip_blank(p, le);
 		if (p < le && *p == '=') {
 			p = skip_blank(p + 1, le);
@@ -322,7 +333,7 @@ int hg_param_parse(const struct hg_field *f, const char *text, size_t len, unsig
 		errno = EINVAL;
 		return -1;
 	}
-	unsigned char tmp[8 * 4096];
+	unsigned char tmp[PARAM_NUMBERS_MAX];
 	if ((size_t)es * f->count > sizeof tmp) {
 		set_err(err, errlen, "%s: too large", f->name);
 		errno = EINVAL;

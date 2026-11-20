@@ -249,6 +249,19 @@ static void test_long_list(void)
 	text[n] = ',';
 	CHECK_EQ_INT(hg_param_parse(&t->fields[0], text, (size_t)n + 1, (unsigned char *)back, err, sizeof err), -1);
 	CHECK(strstr(err, "2501 values for 2500 elements") != NULL);
+	/* The largest array a field's values are parsed through is 32 KB: one
+	 * that fits is a parameter type, a larger one is refused as a type
+	 * (its values could be formatted into a file and not parsed back).
+	 * Text has its own path and no such bound. */
+	static struct hg_param_attr attrs[4];
+	t = type_of("f64 k[4096]\n", "fits");
+	CHECK_EQ_INT(hg_params_attrs(t, attrs, err, sizeof err), 0);
+	t = type_of("f32 k[10656]\n", "too_large");
+	err[0] = 0;
+	CHECK_EQ_INT(hg_params_attrs(t, attrs, err, sizeof err), -1);
+	CHECK(strstr(err, "a parameter array is at most 32768 bytes") != NULL);
+	t = type_of("char note[40000]\n", "text");
+	CHECK_EQ_INT(hg_params_attrs(t, attrs, err, sizeof err), 0);
 }
 
 /* close() for this suite's own process, lib/hg's objects included: when
