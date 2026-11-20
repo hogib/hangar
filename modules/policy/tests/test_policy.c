@@ -557,6 +557,9 @@ static void test_checks_fail(void)
 		{ "good_b", "00000000000000000000000000000000000000000000000000000000000000ff", 1 },
 		{ "bad_arch", NULL, 2 },
 		{ "wrong_ds", NULL, 4 },
+		/* The step rate is part of the model: one trained on 10 Hz rows,
+		 * stepped at the anchor's 50 Hz, passed all eight checks. */
+		{ "slow10hz", NULL, 4 },
 		{ "bad_nan", NULL, 5 },
 		{ "bad_probe", NULL, 6 },
 	};
@@ -567,6 +570,8 @@ static void test_checks_fail(void)
 		CHECK_EQ_INT(O.load.check, cases[i].check);
 		if (O.load.check != cases[i].check)
 			printf("    %s: check %u: %s\n", cases[i].model, O.load.check, O.load.reason);
+		if (strcmp(cases[i].model, "slow10hz") == 0)
+			CHECK(strstr(O.load.reason, "100000000 ns tick") != NULL && strstr(O.load.reason, "20000000") != NULL);
 		pump(60);
 		/* The running model untouched, and the outputs name it. */
 		CHECK(O.active.hash == hash_a);

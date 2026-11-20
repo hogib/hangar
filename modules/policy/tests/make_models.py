@@ -16,6 +16,7 @@ The models (same architecture unless named bad_arch):
   bad_nan   a NaN weight                   (check 5)
   bad_probe a probe output off by 1        (check 6)
   wrong_ds  another dataset hash           (check 4)
+  slow10hz  good_a trained at a 100 ms tick (check 4: the anchor's is 20 ms)
 """
 import os
 import sys
@@ -42,10 +43,11 @@ def dense(W, b, outputs):
 OUT = ["heave", "surge"]
 
 
-def write(outdir, name, g, dataset_hash, probe_inputs, warmup=3, tamper=False, nan=False):
-    hdr = hgw.Header(name="toy", tick_period_ns=20_000_000, warmup_ticks=warmup, dataset="toy",
+def write(outdir, name, g, dataset_hash, probe_inputs, warmup=3, tamper=False, nan=False, tick_ns=20_000_000,
+          dataset="toy", **header):
+    hdr = hgw.Header(name="toy", tick_period_ns=tick_ns, warmup_ticks=warmup, dataset=dataset,
                      dataset_hash=dataset_hash, rows=123, newest_row_stamp_ns=42,
-                     trainer_program="make_models.py")
+                     trainer_program="make_models.py", **header)
     probe = reference.make_probe(g, [[list(x)] for x in probe_inputs]) if not nan else None
     if tamper:
         probe.outputs[0][0][0] += 1.0
@@ -69,6 +71,7 @@ def main():
     write(outdir, "bad_arch", dense([0.5, 0.25], [0.1], ["heave"]), dh, probes)
     write(outdir, "bad_probe", dense([0.5, 0.25, 1.0, -1.0], [0.1, 0.0], OUT), dh, probes, tamper=True)
     write(outdir, "wrong_ds", dense([0.5, 0.25, 1.0, -1.0], [0.1, 0.0], OUT), dh ^ 1, probes)
+    write(outdir, "slow10hz", dense([0.5, 0.25, 1.0, -1.0], [0.1, 0.0], OUT), dh, probes, tick_ns=100_000_000)
     g = dense([0.5, float("nan"), 1.0, -1.0], [0.1, 0.0], OUT)
     write(outdir, "bad_nan", g, dh, probes, nan=True)
     return 0

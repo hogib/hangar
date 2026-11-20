@@ -571,7 +571,10 @@ static void *worker(void *arg)
 			nn_load_req req = {
 				.file_hash = have_digest ? digest : NULL,
 				.arch = S.arch,
-				.tick_period_ns = 0, /* the model's own period is checked against the anchor's below */
+				/* The step rate is part of the model (docs/09 "LSTM"): the
+				 * period it was trained at against the anchor's declared
+				 * one. 0, an anchor without a rate, is not compared. */
+				.tick_period_ns = tick_period_ns,
 				.dataset = S.dataset,
 				.dataset_hash = RT->schema.type.hash,
 				.input_fields = input_fields,
@@ -976,8 +979,9 @@ static void reload_at_start(void)
 	mod_fmt(cur, sizeof cur, "%s/current.hgw", state_dir);
 	mod_fmt(old, sizeof old, "%s/previous.hgw", state_dir);
 	if (access(old, R_OK) == 0) {
-		nn_load_req req = { .arch = S.arch, .dataset = S.dataset, .dataset_hash = RT->schema.type.hash,
-				    .input_fields = input_fields, .n_input_fields = n_input_fields };
+		nn_load_req req = { .arch = S.arch, .tick_period_ns = tick_period_ns, .dataset = S.dataset,
+				    .dataset_hash = RT->schema.type.hash, .input_fields = input_fields,
+				    .n_input_fields = n_input_fields };
 		nn_model *m = NULL;
 		nn_report rep;
 		if (nn_load(old, &req, &m, &rep) == 0 && m) {
