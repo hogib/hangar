@@ -531,3 +531,9 @@ check: check-recording
 # topside over RTP, packetized here (RFC 6184), nothing encoded on the vehicle.
 include modules/encoder/encoder.mk
 check: check-encoder
+
+# The joystick module (modules/joystick/README.md, modules/joystick/joystick.mk
+# carries the rules): GPL-3.0-or-later, C11 over lib/hg; the pilot's controller
+# read natively, pilot.wrench and pilot.buttons without QGroundControl (hangar#3).
+include modules/joystick/joystick.mk
+check: check-joystick
