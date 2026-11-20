@@ -118,7 +118,8 @@ static void test_hz_large_payload(void)
 /* hz divided the sum of a window's intervals by messages - 1, but from the
  * second window on the interval to the window's first message is in the sum
  * too (the last stamp carries over): a 2 Hz topic showed a mean interval of
- * 1000 ms, a 4 Hz one 333 ms. The intervals are counted now. */
+ * 1000 ms, a 4 Hz one 333 ms. The intervals are counted now. And the first
+ * window counted the message already on the topic when hz started. */
 static void test_hz_mean_interval(void)
 {
 	pid_t pub = publisher("slow.t", "u32 n\n", 2000, 20, 500); /* 2 Hz for 10 s */
@@ -135,6 +136,10 @@ static void test_hz_mean_interval(void)
 		CHECK(ms > 400 && ms < 700); /* 500 ms; 1000 was the fault */
 	}
 	CHECK(with_mean >= 3);
+	/* The message that was there when hz started is not one of the first
+	 * second's: 2 Hz, not 3 messages in it. */
+	double first = strncmp(o, "slow.t: ", 8) == 0 ? atof(o + 8) : -1;
+	CHECK(first > 0.5 && first < 2.6); /* 3 messages in the 1.1 s of a window were 2.73 */
 }
 
 /* `hangar echo` parsed the header's schema again only when its length

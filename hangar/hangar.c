@@ -507,6 +507,7 @@ static int cmd_hz(int argc, char **argv)
 	signal(SIGTERM, on_int);
 	long windows = 0;
 	uint64_t window_start = hg_now_ns(), last = 0;
+	const uint64_t started = window_start;
 	uint64_t n = 0, n_dt = 0, min_dt = UINT64_MAX, max_dt = 0, sum_dt = 0;
 	unsigned char *buf = NULL;
 	size_t buflen = 0;
@@ -544,7 +545,11 @@ static int cmd_hz(int argc, char **argv)
 				n_dt++;
 			}
 			last = info.publish_ns;
-			n++;
+			/* A subscription's first read is the newest message already
+			 * there: the start of the first interval, not a message of
+			 * the first window. */
+			if (info.publish_ns >= started)
+				n++;
 		}
 		uint64_t now = hg_now_ns();
 		if (now - window_start >= 1000000000ull) {
