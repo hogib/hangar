@@ -197,6 +197,14 @@ static inline void hd_setup(const char *tag, const char *conf_extra)
 	unsetenv("NOTIFY_SOCKET");
 }
 
+/* RUN_TEST, or only the tests whose name holds $HD_ONLY when it is set. */
+#define HD_RUN(fn)                                 \
+	do {                                       \
+		const char *only_ = getenv("HD_ONLY"); \
+		if (!only_ || strstr(#fn, only_))  \
+			RUN_TEST(fn);              \
+	} while (0)
+
 /* HD_KEEP in the environment leaves the root in place, for a look at the logs. */
 static inline void hd_teardown(void)
 {

@@ -183,12 +183,29 @@ static void test_stop_survives_reexec_after_sigkill(void)
 	end("sleeper");
 }
 
+/* A stop asked for again while one is under way does not move the SIGKILL:
+ * a stop every 200 ms, StopTimeout 400 ms. */
+static void test_repeated_stop_keeps_the_deadline(void)
+{
+	manifest("stub", "[Module]\nExec=%s/stubborn\n[Restart]\nPolicy=never\nStopTimeout=400ms\n", T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("stub", "ready", 5000));
+	for (int i = 0; i < 8; i++) {
+		ctl("stop stub"); /* refused once it has stopped */
+		sleep_ms(200);
+	}
+	CHECK(file_contains(T_log, "SIGKILL to its"));
+	CHECK(wait_state("stub", "stopped", 2000));
+	end("stub");
+}
+
 int main(void)
 {
 	hd_setup("stop", NULL);
-	RUN_TEST(test_stop_needing_sigkill_stays_stopped);
-	RUN_TEST(test_restart_needing_sigkill_counts_no_failure);
-	RUN_TEST(test_stop_survives_reexec_after_sigkill);
+	HD_RUN(test_stop_needing_sigkill_stays_stopped);
+	HD_RUN(test_restart_needing_sigkill_counts_no_failure);
+	HD_RUN(test_stop_survives_reexec_after_sigkill);
+	HD_RUN(test_repeated_stop_keeps_the_deadline);
 	hd_teardown();
 	TEST_MAIN_END();
 }

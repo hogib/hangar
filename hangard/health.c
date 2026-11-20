@@ -244,7 +244,10 @@ void module_stop(struct module *m, enum state next, int count_failure, const cha
 	}
 	m->after_stop = next;
 	m->count_failure = count_failure;
-	m->stop_deadline = hg_now_ns() + (m->mf ? m->mf->stop_timeout_ns : 5000000000ull);
+	/* A stop asked for again changes what the exit leads to, not when the
+	 * SIGKILL comes: StopTimeout counts from the first SIGTERM. */
+	if (!m->stopping)
+		m->stop_deadline = hg_now_ns() + (m->mf ? m->mf->stop_timeout_ns : 5000000000ull);
 	m->stopping = 1;
 	if (m->st != ST_UNHEALTHY)
 		set_state(m, ST_STOPPING, why);
