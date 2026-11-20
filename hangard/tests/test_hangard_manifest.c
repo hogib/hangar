@@ -764,6 +764,48 @@ static void test_wiring_roundtrip(void)
 	free(w);
 }
 
+/* An Allow list longer than 127 bytes reaches the library whole: five
+ * tokens, the fourth of which a cut at 127 bytes turns into another name
+ * ("topside:pilot" from "topside:pilot_console"). And a value the library
+ * has no room for is an error, never a shorter value. */
+static void test_long_allow_list(void)
+{
+	fresh_set();
+	struct mf_module *m = add("srv", MOD "[Serve arm]\nRequest=empty\nReply=empty\n"
+					     "Allow=topside:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa topside:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "
+					     "topside:ccccccccccccccccccccccccc topside:pilot_console topside:joystick\n");
+	mf_set_check(&set);
+	CHECK(!m->refused);
+	static char text[16384];
+	int len = wiring_text(&set, m, text, sizeof text);
+	CHECK(len > 0);
+	static struct hg_wiring w;
+	char werr[200] = "";
+	CHECK_EQ_INT(hg_wiring_parse(text, (size_t)len, &w, werr, sizeof werr), 0);
+	const struct hg_wiring_serve *sv = NULL;
+	for (int i = 0; i < w.n_serves; i++)
+		if (strcmp(w.serves[i].method, "arm") == 0)
+			sv = &w.serves[i];
+	CHECK(sv != NULL);
+	if (!sv)
+		return;
+	CHECK_EQ_INT(sv->n_allow, 5);
+	int console = 0, pilot = 0, joystick = 0;
+	for (int i = 0; i < sv->n_allow; i++) {
+		console |= strcmp(sv->allow[i], "topside:pilot_console") == 0;
+		pilot |= strcmp(sv->allow[i], "topside:pilot") == 0;
+		joystick |= strcmp(sv->allow[i], "topside:joystick") == 0;
+	}
+	CHECK(console && joystick && !pilot);
+	/* A value past any buffer: a type name of 2000 bytes on a sub line. */
+	static char big[4096];
+	int n = snprintf(big, sizeof big, "hangar-wiring 1\nmodule x\nsub a.b type=");
+	memset(big + n, 'x', 2000);
+	n += 2000;
+	n += snprintf(big + n, sizeof big - (size_t)n, " hash=0000000000000001\n");
+	CHECK(hg_wiring_parse(big, (size_t)n, &w, werr, sizeof werr) < 0);
+}
+
 int main(void)
 {
 	hd_setup("manifest", NULL);
@@ -775,6 +817,7 @@ int main(void)
 	RUN_TEST(test_implicit);
 	RUN_TEST(test_bridge);
 	RUN_TEST(test_wiring_roundtrip);
+	RUN_TEST(test_long_allow_list);
 	mf_set_free(&set);
 	hd_teardown();
 	TEST_MAIN_END();

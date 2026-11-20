@@ -171,12 +171,14 @@ static int key_is(const struct tok *t, size_t klen, const char *key)
 	return strlen(key) == klen && memcmp(t->s, key, klen) == 0;
 }
 
-/* A NUL-terminated copy of the value part of a token, in buf. */
+/* A NUL-terminated copy of the value part of a token, in buf; NULL when it
+ * does not fit. Never a shorter value: an Allow list cut in the middle of a
+ * name is another list. */
 static const char *tok_val(const struct tok *t, const char *val, char *buf, size_t len)
 {
 	size_t n = t->len - (size_t)(val - t->s);
 	if (n >= len)
-		n = len - 1;
+		return NULL;
 	memcpy(buf, val, n);
 	buf[n] = 0;
 	return buf;
@@ -245,7 +247,7 @@ static int parse_method(const struct tok *t, int from, int n, struct hg_wiring_m
 			const char **what)
 {
 	int side = 0; /* 0: none yet, 1: req, 2: rep */
-	char buf[128];
+	char buf[1024]; /* allow=: HG_WIRING_MAX_ALLOW names of HG_WIRING_NAME and their commas */
 	for (int i = from; i < n; i++) {
 		const char *val;
 		size_t k = tok_key(&t[i], &val);
@@ -253,7 +255,8 @@ static int parse_method(const struct tok *t, int from, int n, struct hg_wiring_m
 			*what = "unexpected word";
 			return -1;
 		}
-		tok_val(&t[i], val, buf, sizeof buf);
+		if (!tok_val(&t[i], val, buf, sizeof buf))
+			goto bad;
 		if (key_is(&t[i], k, "req")) {
 			side = 1;
 			if (!tok_copy(&(struct tok){ buf, strlen(buf) }, m->req_type, sizeof m->req_type))
@@ -337,7 +340,8 @@ static int parse_sub(const struct tok *t, int n, struct hg_wiring_sub *s, const 
 			}
 			goto bad;
 		}
-		tok_val(&t[i], val, buf, sizeof buf);
+		if (!tok_val(&t[i], val, buf, sizeof buf))
+			goto bad;
 		if (key_is(&t[i], k, "type")) {
 			if (!tok_copy(&(struct tok){ buf, strlen(buf) }, s->type, sizeof s->type))
 				goto bad;
@@ -384,7 +388,8 @@ static int parse_pub(const struct tok *t, int n, struct hg_wiring_pub *p, const 
 			}
 			goto bad;
 		}
-		tok_val(&t[i], val, buf, sizeof buf);
+		if (!tok_val(&t[i], val, buf, sizeof buf))
+			goto bad;
 		if (key_is(&t[i], k, "type")) {
 			if (!tok_copy(&(struct tok){ buf, strlen(buf) }, p->type, sizeof p->type))
 				goto bad;
@@ -447,7 +452,8 @@ static int parse_mirror(const struct tok *t, int n, struct hg_wiring_mirror *m, 
 		size_t k = tok_key(&t[i], &val);
 		if (!k)
 			goto bad;
-		tok_val(&t[i], val, buf, sizeof buf);
+		if (!tok_val(&t[i], val, buf, sizeof buf))
+			goto bad;
 		if (key_is(&t[i], k, "type")) {
 			if (strcmp(buf, "any") != 0)
 				goto bad;
@@ -584,7 +590,8 @@ int hg_wiring_parse(const char *text, size_t len, struct hg_wiring *w, char *err
 					set_err(err, errlen, line, "bad key on actuator line");
 					goto bad;
 				}
-				tok_val(&t[i], val, buf, sizeof buf);
+				if (!tok_val(&t[i], val, buf, sizeof buf))
+					goto bad_act;
 				int64_t d;
 				if (key_is(&t[i], k, "command")) {
 					if (!tok_copy(&(struct tok){ buf, strlen(buf) }, a->command, sizeof a->command))
