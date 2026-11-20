@@ -229,6 +229,7 @@ want recorder "$builddir/recorder"
 want pairer "$builddir/pairer"
 want hangar-encoder "$builddir/hangar-encoder"
 want hangar-sim-vehicle "$builddir/hangar-sim-vehicle"
+want hangar-thrusters "$builddir/hangar-thrusters"
 
 want hangar-nav "$builddir/hangar-nav"
 want hangar-depth-hold "$builddir/hangar-depth-hold"
