@@ -1,0 +1,6 @@
+# hangar parameters: safety_params
+# version 1, set by profiles/sim-depth-ff, 2026-11-20T00:00:00Z
+# No leak sensor in the simulator; arming needs the mux and the thrusters, and
+# the simulator's battery (battery_required keeps its default, 1).
+leak_required = 0
+required = "mux thrusters"

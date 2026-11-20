@@ -5,6 +5,7 @@
 [Module]
 Description=Thrusters: ctl.wrench mixed to pulse widths, through the actuator gate
 Exec=/usr/lib/hangar/hangar-thrusters
+User=hg-thrusters
 
 [Subscribe ctl.wrench]
 [Subscribe safety.state]

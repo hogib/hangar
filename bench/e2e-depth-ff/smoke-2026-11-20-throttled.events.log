@@ -1,0 +1,49 @@
+[    0.0] start label=trim quick=True
+[    0.0] start label=trim quick=True
+[    0.0] armed 
+[    0.0] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[    0.0] target depth=3.0 tag=descent
+[   16.1] disarmed 
+[    0.0] start label=trim quick=True
+[    0.0] armed 
+[    0.0] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[    0.0] target depth=3.0 tag=descent
+[   16.0] phase what=train
+[   16.1] target depth=2.5 tag=train
+[   16.2] trainer.stats rows=1024 mean=[0.616, 0.091, -0.0, 0.0, 0.782] std=[0.572, 0.054, 0.009, 0.009, 0.413]
+[   22.1] target depth=4.0 tag=train
+[   28.2] target depth=3.0 tag=train
+[   34.2] target depth=5.0 tag=train
+[   40.2] target depth=3.5 tag=train
+[   46.2] target depth=2.0 tag=train
+[   52.3] target depth=4.5 tag=train
+[   58.3] target depth=3.0 tag=train
+[   64.3] target depth=2.5 tag=train
+[   70.4] target depth=4.0 tag=train
+[   76.4] target depth=3.0 tag=train
+[   82.4] target depth=5.0 tag=train
+[   88.1] target depth=3.0 tag=train:return
+[   98.1] deploy model=M1 version=1 state=done check=0 reason= hash=10605958891372005685 seconds=1.100855742 steps=102 loss=0.0003813063958659768
+[   98.1] phase what=B1 assisted nominal
+[   98.1] block.begin tag=B1
+[   98.1] target depth=3.0 tag=B1:hold
+[  106.1] target depth=4.0 tag=B1:down
+[  116.1] target depth=3.0 tag=B1:up
+[  126.1] block.end tag=B1
+[  126.1] phase what=T1 assisted, heavier
+[  126.2] buoyancy value=110.8 tag=T1
+[  142.2] buoyancy value=114.8 tag=T1:back
+[  158.2] set_mode mode=residual:depth_ff hash=932fef6b3e9fc935 reply={'mode': 'residual:depth_ff'}
+[  158.2] phase what=B2 residual M1 nominal
+[  158.2] block.begin tag=B2
+[  158.3] target depth=3.0 tag=B2:hold
+[  166.3] target depth=4.0 tag=B2:down
+[  176.4] target depth=3.0 tag=B2:up
+[  180.0] trainer steps=200 loss=2.01e-03 label_mean=-0.1246 rows=9140 lost=279
+[  186.4] block.end tag=B2
+[  186.4] phase what=T2 residual, heavier
+[  186.4] buoyancy value=110.8 tag=T2
+[  202.4] phase what=B3 residual M1 heavy
+[  202.4] block.begin tag=B3
+[  202.5] target depth=3.0 tag=B3:hold
+[  210.7] target depth=4.0 tag=B3:down

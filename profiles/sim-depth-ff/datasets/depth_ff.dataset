@@ -1,0 +1,32 @@
+# docs/09-learning.md "Example: adaptive depth hold", as written there but with
+# nav_state's field names (depth_m, not depth).
+[Dataset]
+Anchor=nav.state
+AnchorRole=input
+Fields=depth_m vel_z pitch roll
+Lateness=0
+Filter=mask
+ResetAfter=200ms
+# Outputs enabled, and the vehicle vertically still (m/s): what was applied held it.
+Where=safety.state.outputs_enabled == 1 and nav.state.vel_z > -0.05 and nav.state.vel_z < 0.05
+
+# The vertical acceleration the controller wants: an input the policy has at its tick.
+[Input ctl.depth_hold.target]
+Join=asof:0
+Fields=accel_z
+
+# The controller's own heave command at this tick.
+[Input ctl.depth_hold]
+Join=asof:0
+Role=label
+Fields=heave
+
+# The pulse widths the thrusters were sent, after the mixing.
+[Input thr.out]
+Join=asof:0
+Role=label
+
+[Input safety.state]
+Join=asof:0
+Role=filter
+Fields=outputs_enabled
