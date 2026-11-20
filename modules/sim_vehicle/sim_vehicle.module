@@ -1,0 +1,31 @@
+# /usr/share/hangar/modules/sim_vehicle.module: the vehicle simulator as ArduSub
+# SITL's external physics (docs/14-simulation.md "sim_vehicle", phase 1;
+# modules/sim_vehicle/README.md). SITL, started with its JSON model, sends its
+# servo outputs to UDP 9002; the module steps in lockstep and answers with the
+# sensors. nav.*, power.battery and thr.out are then the mavlink module's, from
+# SITL's telemetry: one writer per topic. The standalone variant, without
+# ArduSub, is profiles/sim-vehicle/sim_vehicle.module.off.
+[Module]
+Description=Vehicle simulator: ArduSub SITL's physics
+Exec=/usr/lib/hangar/hangar-sim-vehicle --seed 1 --sitl 127.0.0.1:9002
+
+# The truth, at 200 Hz of simulated time, while SITL steps it.
+[Publish sim.pose]
+Type=sim_pose
+Rate=200
+
+[Publish sim.velocity]
+Type=sim_velocity
+Rate=200
+
+[Publish sim.thrust]
+Type=sim_thrust_truth
+Rate=200
+
+[Params]
+Type=sim_vehicle_params
+Allow=admin topside:admin topside:pilot_console
+
+# SITL boots on its own schedule: the truth starts with its first frame.
+[Health]
+StartGrace=60s

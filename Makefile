@@ -552,3 +552,8 @@ check: check-vision
 # pilot's picture to QGroundControl, encoded in process with libx264.
 include modules/topside_encoder/topside_encoder.mk
 check: check-topside_encoder
+
+# sim_vehicle (modules/sim_vehicle/README.md, .mk carries the rules): the
+# vehicle simulator over lib/sim, standalone or as ArduSub SITL's physics.
+include modules/sim_vehicle/sim_vehicle.mk
+check: check-sim_vehicle
