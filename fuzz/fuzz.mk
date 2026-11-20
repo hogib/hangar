@@ -22,8 +22,22 @@ FUZZ_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ifuzz -Ilib/hg -Ilib/common -Imsg -Ihan
 	-Imodules/bridge -Imodules/mavlink -Imodules/recorder -DFUZZ_REPO='"$(CURDIR)"'
 FUZZ_HDRS := $(wildcard fuzz/*.h lib/hg/*.h lib/common/*.h hangard/*.h msg/*.h modules/*/*.h lib/net/*.h lib/video/*.h)
 
-FUZZ_HARNESSES := schema wiring manifest bridge_conf params recording topic http
+FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside schema wiring manifest bridge_conf params recording topic http
 
+# bridge.c is included by the harness (its statics are what is fuzzed).
+fuzz_bridge_SRC := $(BRIDGE_LIB_SRC) $(HG_SRC)
+fuzz_bridge_DEPS := modules/bridge/bridge.c
+fuzz_bridge_MAXLEN := 8192
+# The module's file is included by its harness; the other role's and the link
+# (mavlink_main.c, its main() renamed by fuzz/mavlink_main_wrap.c) are linked.
+FUZZ_MAVLINK_SRC := fuzz/mavlink_main_wrap.c modules/mavlink/mavlink_conf.c modules/mavlink/mav.c \
+	modules/mavlink/sha256.c modules/mavlink/param_backup.c $(MAVLINK_MSG_SRC) $(HG_SRC)
+fuzz_mavlink_vehicle_SRC := modules/mavlink/mavlink_topside.c $(FUZZ_MAVLINK_SRC)
+fuzz_mavlink_vehicle_DEPS := modules/mavlink/mavlink_vehicle.c modules/mavlink/mavlink_main.c
+fuzz_mavlink_vehicle_MAXLEN := 2048
+fuzz_mavlink_topside_SRC := modules/mavlink/mavlink_vehicle.c $(FUZZ_MAVLINK_SRC)
+fuzz_mavlink_topside_DEPS := modules/mavlink/mavlink_topside.c modules/mavlink/mavlink_main.c
+fuzz_mavlink_topside_MAXLEN := 2048
 fuzz_schema_SRC := lib/hg/hg_type.c
 fuzz_schema_MAXLEN := 4096
 fuzz_wiring_SRC := $(HG_SRC)
@@ -93,7 +107,8 @@ $(FUZZ_CHECKS): check-fuzz-corpus-%: $(TESTDIR)/fuzzreg_%
 check-fuzz-corpus: $(FUZZ_CHECKS)
 
 # The generated seeds (fuzz/mkseeds.c), written into fuzz/corpus/ and checked in.
-FUZZ_SEEDS_SRC := $(HGR_SRC) $(HG_SRC) msg/depth.c
+FUZZ_SEEDS_SRC := $(HGR_SRC) $(HG_SRC) msg/depth.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c \
+	modules/mavlink/mav.c modules/mavlink/sha256.c
 $(FUZZ_DIR)/mkseeds: fuzz/mkseeds.c $(FUZZ_SEEDS_SRC) $(FUZZ_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -Wall -Wextra -pthread -O1 -g $(FUZZ_CPPFLAGS) -o $@ fuzz/mkseeds.c $(FUZZ_SEEDS_SRC) -pthread -lrt -lm

@@ -17,10 +17,26 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "bridge_conf.h"
 #include "depth.h"
+#include "fuzz_bridge.h"
+#include "fuzz_mavlink.h"
 #include "hg_record.h"
 #include "hg_topic.h"
 #include "hg_type.h"
+
+/* fuzz_mavlink.h's link is the modules'; only its framing and key are used here. */
+int mav_link_receive(struct mav_link *l, void (*fn)(void *ctx, const struct mav_frame *f), void *ctx)
+{
+	(void)l, (void)fn, (void)ctx;
+	return 0;
+}
+
+int mav_link_service(struct mav_link *l, uint64_t now_ns)
+{
+	(void)l, (void)now_ns;
+	return 0;
+}
 
 struct buf {
 	unsigned char *p;
@@ -259,6 +275,328 @@ static void topic_seeds(void)
 	free(b.p);
 }
 
+/* ---- bridge: a script of datagrams (fuzz_bridge.h) ------------------------------ */
+
+static void le32(struct buf *b, uint32_t v)
+{
+	add(b, &v, 4);
+}
+
+static void le64(struct buf *b, uint64_t v)
+{
+	add(b, &v, 8);
+}
+
+static void op(struct buf *out, int code, const struct buf *body)
+{
+	unsigned char h[3] = { (unsigned char)code, (unsigned char)(body->n & 0xff), (unsigned char)(body->n >> 8) };
+	add(out, h, 3);
+	add(out, body->p, body->n);
+}
+
+/* A record of the reliable stream: u32 length (type and body), u8 type, body. */
+static void record(struct buf *out, int type, const struct buf *body)
+{
+	le32(out, (uint32_t)(1 + body->n));
+	unsigned char t = (unsigned char)type;
+	add(out, &t, 1);
+	add(out, body->p, body->n);
+}
+
+static void name8(struct buf *b, const char *name)
+{
+	unsigned char l = (unsigned char)strlen(name);
+	add(b, &l, 1);
+	add(b, name, l);
+}
+
+/* A message as build_msg writes it. */
+static void message(struct buf *b, const char *topic, uint64_t seq, const void *payload, uint32_t full, uint32_t used)
+{
+	name8(b, topic);
+	le64(b, seq);
+	le32(b, 0);
+	le64(b, 1000000000ull + seq * 20000000);
+	le64(b, 1000000000ull + seq * 20000000 + 1000);
+	unsigned char nref = 1;
+	add(b, &nref, 1);
+	le32(b, hg_topic_id("nav.imu"));
+	le32(b, 0);
+	le64(b, seq);
+	le32(b, full);
+	le32(b, used);
+	add(b, payload, used);
+}
+
+static void bridge_seeds(void)
+{
+	struct buf s = { 0 }, body = { 0 }, stream = { 0 };
+	struct bridge_conf c;
+	char err[200];
+	if (bc_parse(FZB_CONF, strlen(FZB_CONF), &c, err, sizeof err) < 0)
+		abort();
+	struct depth d = { .depth_m = 2.5f, .temp_c = 12.5f, .pressure_mbar = 1260.0f };
+	unsigned char mode;
+
+	/* A link that is up, on the topside: the info record, a schema, messages
+	 * on the stream and as datagrams, a ping, a pong, an ack, a tick. */
+	mode = FZB_KEYED | FZB_CLOCK;
+	add(&s, &mode, 1);
+	char info[96];
+	memset(info, 0, sizeof info);
+	snprintf(info, 32, "dev");
+	memcpy(info + 64, c.hash, 32);
+	add(&body, info, sizeof info);
+	record(&stream, 1, &body);
+	body.n = 0;
+	name8(&body, "nav.depth");
+	name8(&body, "mavlink");
+	le32(&body, 16);
+	le32(&body, DEPTH_TYPE.schema_bytes);
+	add(&body, DEPTH_TYPE.schema, DEPTH_TYPE.schema_bytes);
+	record(&stream, 2, &body);
+	body.n = 0;
+	message(&body, "nav.depth", 7, &d, DEPTH_TYPE.payload_bytes, 12);
+	record(&stream, 3, &body);
+	op(&s, FZB_STREAM, &stream);
+	body.n = 0;
+	unsigned char kp[2] = { 7 /* K_MSG */, 3 };
+	add(&body, kp, 2);
+	message(&body, "nav.depth", 8, &d, DEPTH_TYPE.payload_bytes, 12);
+	op(&s, FZB_SEALED, &body);
+	body.n = 0;
+	kp[0] = 3; /* K_PING */
+	add(&body, kp, 2);
+	le64(&body, 123456789);
+	op(&s, FZB_SEALED, &body);
+	body.n = 0;
+	le64(&body, 5000000);
+	le64(&body, 5000100);
+	op(&s, FZB_PONG, &body);
+	body.n = 0;
+	kp[0] = 6; /* K_ACK */
+	add(&body, kp, 2);
+	le64(&body, 101);
+	op(&s, FZB_SEALED, &body);
+	body.n = 0;
+	op(&s, FZB_TICK, &body);
+	put("bridge", "link-up", &s);
+
+	/* The same stream cut in two datagrams inside a record, and a record
+	 * larger than any this side takes, passed over. */
+	mode = FZB_KEYED | FZB_CLOCK | FZB_VEHICLE;
+	add(&s, &mode, 1);
+	struct buf part = { 0 };
+	add(&part, stream.p, 150);
+	op(&s, FZB_STREAM, &part);
+	part.n = 0;
+	add(&part, stream.p + 150, stream.n - 150);
+	le32(&part, (1u << 20) + 5000);
+	add(&part, "\x63", 1);
+	op(&s, FZB_STREAM, &part);
+	part.n = 0;
+	for (int i = 0; i < 100; i++)
+		le64(&part, 0);
+	op(&s, FZB_STREAM, &part);
+	put("bridge", "stream-split", &s);
+
+	/* A call's request and reply, whose times are translated. */
+	mode = FZB_KEYED | FZB_CLOCK | FZB_MIRROR_OK;
+	add(&s, &mode, 1);
+	stream.n = 0;
+	/* A request topic's layout: the envelope of hg_call.h (112 bytes), then a body. */
+	static const char req_schema[] = "u64 call_id\nu64 deadline_ns\nu64 request_type\nu32 target_id\nu32 reserved\n"
+					 "char method[32]\nchar caller[48]\nu8 body[16]\n";
+	body.n = 0;
+	name8(&body, "safety.req");
+	name8(&body, "console");
+	le32(&body, 16);
+	le32(&body, sizeof req_schema - 1);
+	add(&body, req_schema, sizeof req_schema - 1);
+	record(&stream, 2, &body);
+	body.n = 0;
+	unsigned char env[128];
+	memset(env, 0, sizeof env);
+	env[0] = 1;
+	env[8] = 0x80;
+	env[12] = 0x77;
+	memcpy(env + 32, "arm", 3);
+	message(&body, "safety.req", 1, env, 128, 40);
+	record(&stream, 3, &body);
+	op(&s, FZB_STREAM, &stream);
+	put("bridge", "call", &s);
+
+	/* A handshake from nothing: a first hello, a hello that echoes our
+	 * nonce, a confirm under the pending keys, then a ping on the new link. */
+	mode = FZB_OFFERED | FZB_VEHICLE;
+	add(&s, &mode, 1);
+	unsigned char hello[1 + 92];
+	memset(hello, 0, sizeof hello);
+	hello[0] = 1 | 4;
+	memset(hello + 1 + 40, 0xa1, 16);
+	memset(hello + 1 + 56, 0xb2, 16);
+	body.n = 0;
+	add(&body, hello, sizeof hello);
+	op(&s, FZB_HELLO, &body);
+	hello[0] = 1 | 2 | 4;
+	body.n = 0;
+	add(&body, hello, sizeof hello);
+	op(&s, FZB_HELLO, &body);
+	body.n = 0;
+	kp[0] = 2; /* K_CONFIRM */
+	add(&body, kp, 2);
+	for (int i = 0; i < 4; i++)
+		le64(&body, 0);
+	op(&s, FZB_PENDING, &body);
+	body.n = 0;
+	kp[0] = 3;
+	add(&body, kp, 2);
+	le64(&body, 42);
+	op(&s, FZB_SEALED, &body);
+	put("bridge", "handshake", &s);
+
+	/* Raw datagrams: what anyone on the network can send. */
+	mode = FZB_OFFERED | FZB_VEHICLE;
+	add(&s, &mode, 1);
+	unsigned char raw[24 + 92 + 16];
+	memset(raw, 0, sizeof raw);
+	memcpy(raw, "HGB1", 4);
+	raw[4] = 1;
+	raw[12] = 92;
+	raw[16] = 1;
+	body.n = 0;
+	add(&body, raw, sizeof raw);
+	op(&s, FZB_RAW, &body);
+	raw[4] = 5;
+	body.n = 0;
+	add(&body, raw, sizeof raw);
+	op(&s, FZB_RAW, &body);
+	body.n = 0;
+	adds(&body, "HANGAR/1 role=topside pair=fuzz port=5614 id=0badcafe");
+	op(&s, FZB_BEACON_TAG, &body);
+	body.n = 0;
+	adds(&body, "HANGAR/1 role=topside pair=fuzz port=5614 id=0badcafe tag=00112233445566778899aabbccddeeff");
+	op(&s, FZB_BEACON, &body);
+	body.n = 0;
+	op(&s, FZB_TICK, &body);
+	put("bridge", "raw", &s);
+	free(s.p);
+	free(body.p);
+	free(stream.p);
+	free(part.p);
+}
+
+/* ---- mavlink: a mode byte, then frames as mav_encode writes them ------------------- */
+
+static uint8_t mav_seq;
+
+static void frame(struct buf *b, uint32_t msgid, const uint8_t *payload, struct mav_signing *sign)
+{
+	const struct mav_msg_info *mi = mav_msg_info(msgid);
+	uint8_t out[MAV_MAX_FRAME];
+	size_t n = mav_encode(out, sizeof out, mav_seq++, 1, 1, msgid, payload, mi->len, mi->crc_extra, sign);
+	add(b, out, n);
+}
+
+/* Every message the modules know, each with a payload of no meaning. */
+static void all_messages(struct buf *b, struct mav_signing *sign)
+{
+	for (size_t i = 0; i < MAV_MSGS_COUNT; i++) {
+		uint8_t pl[MAV_MAX_PAYLOAD];
+		for (size_t k = 0; k < sizeof pl; k++)
+			pl[k] = (uint8_t)(k * 7 + i + 1);
+		frame(b, MAV_MSGS[i].id, pl, sign);
+	}
+}
+
+/* What ArduSub sends while it is asked to arm and refuses, with a parameter. */
+static void vehicle_story(struct buf *b, struct mav_signing *sign)
+{
+	uint8_t pl[MAV_MAX_PAYLOAD];
+	struct mav_heartbeat h = { .type = MAV_TYPE_SUBMARINE, .custom_mode = 19, .system_status = 3 };
+	mav_pack_heartbeat(&h, pl);
+	frame(b, MAV_MSG_ID_HEARTBEAT, pl, sign);
+	struct mav_statustext st = { .severity = 2 };
+	memcpy(st.text, "PreArm: Battery 1 low voltage failsafe", 38);
+	mav_pack_statustext(&st, pl);
+	frame(b, MAV_MSG_ID_STATUSTEXT, pl, sign);
+	struct mav_command_ack a = { .command = MAV_CMD_COMPONENT_ARM_DISARM, .result = 4 };
+	mav_pack_command_ack(&a, pl);
+	frame(b, MAV_MSG_ID_COMMAND_ACK, pl, sign);
+	struct mav_param_value p = { .param_value = 1.0f, .param_count = 3, .param_index = 0, .param_type = 9 };
+	memcpy(p.param_id, "SYSID_MYGCS", 11);
+	mav_pack_param_value(&p, pl);
+	frame(b, MAV_MSG_ID_PARAM_VALUE, pl, sign);
+	struct mav_attitude at = { .time_boot_ms = 5000, .roll = 0.1f, .pitch = -0.2f, .yaw = 1.5f };
+	mav_pack_attitude(&at, pl);
+	frame(b, MAV_MSG_ID_ATTITUDE, pl, sign);
+	h.base_mode = MAV_MODE_FLAG_SAFETY_ARMED;
+	mav_pack_heartbeat(&h, pl);
+	frame(b, MAV_MSG_ID_HEARTBEAT, pl, sign);
+}
+
+/* What QGroundControl sends: sticks and buttons, an arm, a mode, parameters. */
+static void topside_story(struct buf *b, struct mav_signing *sign)
+{
+	uint8_t pl[MAV_MAX_PAYLOAD];
+	struct mav_manual_control m = { .x = 500, .y = -500, .z = 500, .r = 100, .buttons = 2, .target = 1 };
+	mav_pack_manual_control(&m, pl);
+	frame(b, MAV_MSG_ID_MANUAL_CONTROL, pl, sign);
+	m.buttons = 4 | 8;
+	m.enabled_extensions = 3;
+	mav_pack_manual_control(&m, pl);
+	frame(b, MAV_MSG_ID_MANUAL_CONTROL, pl, sign);
+	struct mav_command_long c = { .command = MAV_CMD_COMPONENT_ARM_DISARM, .param1 = 1.0f, .target_system = 1 };
+	mav_pack_command_long(&c, pl);
+	frame(b, MAV_MSG_ID_COMMAND_LONG, pl, sign);
+	c.command = MAV_CMD_DO_SET_MODE;
+	mav_pack_command_long(&c, pl);
+	frame(b, MAV_MSG_ID_COMMAND_LONG, pl, sign);
+	memset(pl, 0, sizeof pl);
+	frame(b, MAV_MSG_ID_PARAM_REQUEST_LIST, pl, sign);
+	frame(b, MAV_MSG_ID_SET_MODE, pl, sign);
+	frame(b, MAV_MSG_ID_MISSION_REQUEST_LIST, pl, sign);
+	frame(b, MAV_MSG_ID_PARAM_SET, pl, sign);
+}
+
+static void mavlink_seeds(void)
+{
+	struct buf b = { 0 };
+	struct mav_signing key;
+	unsigned char mode;
+	static const char *const who[] = { "mavlink_vehicle", "mavlink_topside" };
+	for (int t = 0; t < 2; t++) {
+		void (*story)(struct buf *, struct mav_signing *) = t ? topside_story : vehicle_story;
+		mode = t ? 0 : FZM_ANY_ID;
+		add(&b, &mode, 1);
+		story(&b, NULL);
+		put(who[t], "udp", &b);
+		mode = FZM_ANY_ID | FZM_REPAIR;
+		add(&b, &mode, 1);
+		all_messages(&b, NULL);
+		put(who[t], "udp-all-messages", &b);
+		mode = FZM_SIGNING | FZM_REPAIR;
+		add(&b, &mode, 1);
+		fzm_key(&key);
+		story(&b, &key);
+		all_messages(&b, &key);
+		put(who[t], "udp-signed", &b);
+		mode = FZM_SERIAL | FZM_ANY_ID | 0x10; /* a serial line read 23 bytes at a time, with noise between frames */
+		add(&b, &mode, 1);
+		adds(&b, "noise\xfd\x03");
+		story(&b, NULL);
+		adds(&b, "\xfd\xfd\xfd");
+		all_messages(&b, NULL);
+		put(who[t], "serial-pieces", &b);
+		mode = FZM_SERIAL | FZM_SIGNING | FZM_REPAIR | 0x20;
+		add(&b, &mode, 1);
+		fzm_key(&key);
+		story(&b, &key);
+		put(who[t], "serial-signed", &b);
+	}
+	free(b.p);
+}
+
 int main(void)
 {
 	const char *tmp = getenv("TMPDIR");
@@ -268,6 +606,8 @@ int main(void)
 	text_seeds();
 	recording_seeds();
 	topic_seeds();
+	bridge_seeds();
+	mavlink_seeds();
 	rmdir(tmpdir);
 	return 0;
 }
