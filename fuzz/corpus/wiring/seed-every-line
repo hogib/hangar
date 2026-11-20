@@ -1,0 +1,20 @@
+hangar-wiring 1
+module depth_hold
+role vehicle
+# a comment line
+sub nav.depth type=depth hash=9f3a61c20b7e4d15 rate=50
+sub nav.imu type=imu hash=0c41e2aa93f81d70 rate=50
+sub hangar.vehicle.admin.req type=req:hangar hash=0000000000000001 slots=16 implicit
+subglob *.req implicit
+subglob nav.*
+sub safety.rep type=rep:safety hash=0000000000000002 slots=16 implicit
+pub ctl.depth_hold type=wrench hash=77d0b3a1c5e29f04 slots=16 rate=50 stale_after=60ms inputs=nav.depth,nav.imu
+pub depth_hold.req type=req:depth_hold hash=0000000000000003 slots=16 implicit
+pub depth_hold.rep type=rep:depth_hold hash=0000000000000004 slots=16 implicit sources=*.req,hangar.vehicle.admin.req
+pub depth_hold.state type=state hash=0000000000000005 rate=0.5 inputs=vehicle:cam.pilot,ctl.depth_hold
+serve reset req=empty hash=000000000000000a size=8 rep=empty hash=000000000000000b size=8 deadline=100ms allow=topside:pilot_console,admin
+call safety.disarm req=empty hash=000000000000000c size=8 rep=empty hash=000000000000000d size=16 remote=0
+call topside.ping req=ping hash=000000000000000e size=24 rep=pong hash=000000000000000f size=32 remote=1
+mirror cam.* type=any rate=30 stale_after=100ms
+mirror topside.ping.rep type=any
+actuator command=ctl.wrench command_timeout=200ms safety_timeout=300ms

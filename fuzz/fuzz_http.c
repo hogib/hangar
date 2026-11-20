@@ -1,6 +1,6 @@
-// libFuzzer target for hellion's HTTP parsers: the only code in hellion
-// that interprets bytes from the network. Run with `make fuzz-http`
-// (clang; FUZZ_SECONDS=N to change how long).
+// libFuzzer target for the HTTP parsers of lib/net/http.c, which hellion and
+// the console (modules/console) serve with: bytes from the network. Run with
+// `make fuzz-http` (clang; FUZZ_SECONDS=N to change how long).
 //
 // Beyond "no crash, no out-of-bounds access" (ASan and UBSan watch for
 // those), it checks what a successful parse promises its callers.

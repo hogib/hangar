@@ -1,0 +1,38 @@
+# /usr/share/hangar/modules/depth_hold.module: the classical depth controller
+# (modules/depth_hold/README.md). It always publishes; the mux decides whether
+# its heave drives (assisted, failsafe hold), and it reads that choice from
+# mux.state to hold the depth it is handed the axis at.
+[Module]
+Description=Depth hold controller
+Exec=/usr/lib/hangar/hangar-depth-hold
+
+[Subscribe nav.state]
+[Subscribe mux.state]
+[Subscribe safety.state]
+
+[Publish ctl.depth_hold]
+Type=wrench
+Rate=50
+Inputs=nav.state
+
+# The vertical motion the controller wants, accel_z among it (docs/09).
+[Publish ctl.depth_hold.target]
+Type=depth_target
+Rate=50
+Inputs=nav.state
+
+[Params]
+Type=depth_control_params
+Allow=topside:pilot_console admin topside:admin
+
+# A depth to hold.
+[Serve set]
+Request=depth_set_req
+Reply=empty
+Allow=topside:pilot_console topside:console admin topside:admin
+
+# The depth it is at.
+[Serve hold]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console topside:console admin topside:admin

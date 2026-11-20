@@ -1,0 +1,43 @@
+# policy_depth_ff: hangar-policy on policies/depth_ff.policy. Every dataset part
+# is subscribed (the row type is built over all of them); only the inputs are read.
+[Module]
+Description=Depth feed-forward policy (docs/09)
+Exec=/usr/lib/hangar/hangar-policy /etc/hangar/policies/depth_ff.policy
+
+[Subscribe nav.state]
+[Subscribe ctl.depth_hold.target]
+[Subscribe ctl.depth_hold]
+[Subscribe thr.out]
+[Subscribe safety.state]
+[Subscribe recorder.session]
+
+[Publish policy.depth_ff.wrench]
+Type=wrench
+Rate=50
+Inputs=nav.state ctl.depth_hold.target policy.depth_ff.active
+
+[Publish policy.depth_ff.active]
+Type=policy_active
+
+[Publish policy.depth_ff.load]
+Type=policy_load
+
+[Serve load_weights]
+Request=load_weights_req
+Reply=load_weights_rep
+Allow=topside:trainer topside:pilot_console admin topside:admin
+
+[Serve revert]
+Request=empty
+Reply=policy_version
+Allow=topside:trainer topside:pilot_console admin topside:admin
+
+[Serve reset_state]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+[Serve runtime_info]
+Request=empty
+Reply=runtime_info
+Allow=topside:trainer topside:pilot_console admin topside:admin

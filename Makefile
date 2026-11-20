@@ -15,6 +15,8 @@
 #   make check-asan        lib/hg's suites again under AddressSanitizer + UBSan
 #   make equivalence       hash every lib/vision operator's output and
 #                          compare with electric-eye v0.3.1's (tools/equivalence/)
+#   make fuzz              every fuzz harness for FUZZ_SECONDS each (fuzz/README.md)
+#   make analyze           the static analysers (tools/analyze/README.md)
 #   make clean
 #
 # Written for GNU make 3.81 and a C99 compiler (GCC 4.7+ or clang), so it
@@ -383,20 +385,8 @@ equivalence: $(BUILDDIR)/equiv
 	  fi; \
 	done
 
-# Fuzzes hellion's HTTP parsers with libFuzzer (needs clang): the one part
-# of hellion that parses bytes from the network. Not part of `check` --
-# it runs until FUZZ_SECONDS is up. Seeds live in lib/net/tests/fuzz_http_seeds/;
-# anything new it finds goes into $(BUILDDIR)/fuzz-http-corpus/.
-FUZZ_CC ?= clang
-FUZZ_SECONDS ?= 60
-.PHONY: fuzz-http
-fuzz-http:
-	@mkdir -p $(BUILDDIR)/fuzz-http-corpus
-	$(FUZZ_CC) -g -O1 -std=gnu99 $(LIB_CPPFLAGS) \
-	  -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
-	  -o $(BUILDDIR)/fuzz_http lib/net/tests/fuzz_http.c
-	$(BUILDDIR)/fuzz_http -max_total_time=$(FUZZ_SECONDS) -max_len=9000 \
-	  $(BUILDDIR)/fuzz-http-corpus lib/net/tests/fuzz_http_seeds
+# Fuzzing (`make fuzz`, and `make fuzz-http` for the HTTP parsers alone) is in
+# fuzz/fuzz.mk, included at the end of this file.
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -591,3 +581,8 @@ check: check-depth_hold
 # learning loop's vehicle side, version 1 (docs/09-learning.md).
 include modules/policy/policy.mk
 check: check-policy
+
+# Fuzzing (fuzz/README.md, fuzz/fuzz.mk carries the rules): a harness for every
+# place that parses bytes the program does not control, and their corpora
+# replayed by check.
+include fuzz/fuzz.mk

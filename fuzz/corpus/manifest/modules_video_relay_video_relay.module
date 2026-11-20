@@ -1,0 +1,26 @@
+# /usr/share/hangar/modules/video_relay.module: the topside's end of the
+# vehicle's video (docs/11-electric-eye.md "video_relay",
+# modules/video_relay/README.md): the RTP the encoder sends, relayed unchanged,
+# decoded in process into cam.decoded, recorded as MP4 into the topside
+# recorder's sessions. Enable it by symlinking into /etc/hangar/modules/. Its
+# settings are in /etc/hangar/video_relay.conf.
+[Module]
+Description=Video from the vehicle: relayed, decoded, recorded
+Exec=/usr/lib/hangar/hangar-video-relay /etc/hangar/video_relay.conf
+User=hg-video
+# The session directories it writes into belong to hangar-rec (docs/06).
+SupplementaryGroups=hangar-rec
+
+# One message a decoded frame, I422 full range, referencing the vehicle's frame
+# by the number the RTP timestamp carries: the seq of the encoder's video.index
+# message for it (modules/encoder/README.md). An event topic: no video, no
+# message, and the module is ready all the same.
+[Publish cam.decoded]
+Type=frame
+Slots=4
+Inputs=vehicle:video.index
+
+# The topside recorder's sessions: a session starting is a recording into its
+# video/ (video_relay.conf Session=).
+[Subscribe topside_recorder.session]
+Type=recorder_session

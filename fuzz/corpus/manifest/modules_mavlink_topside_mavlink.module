@@ -1,0 +1,34 @@
+# /usr/share/hangar/modules/topside_mavlink.module: what QGroundControl talks to
+# (docs/10-mavlink.md "The topside's MAVLink module"; modules/mavlink/README.md).
+# Enable it on the topside by symlinking into /etc/hangar/modules/. Its settings,
+# the button functions among them, are in /etc/hangar/topside_mavlink.conf.
+[Module]
+Description=QGroundControl's vehicle: the pilot's input and the vehicle's state
+Exec=/usr/lib/hangar/hangar-mavlink --topside /etc/hangar/topside_mavlink.conf
+User=hg-tmavlink
+
+# The vehicle's topics, mirrored up by the bridge (until then, the same-host shim).
+[Subscribe safety.state]
+[Subscribe ardusub.state]
+[Subscribe nav.attitude]
+[Subscribe nav.depth]
+[Subscribe power.battery]
+[Subscribe hangar.vehicle.system]
+# bridge.topside.link waits for the bridge.
+
+[Publish pilot.wrench]
+Type=wrench
+Rate=50
+
+[Publish pilot.buttons]
+Type=pilot_buttons
+Rate=50
+
+# Methods of the other side carry the types the caller was built with.
+[Call safety.arm]
+Request=empty
+Reply=empty
+
+[Call safety.disarm]
+Request=empty
+Reply=empty
