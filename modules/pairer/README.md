@@ -124,6 +124,12 @@ configuration lists, or the pairer exits 78 saying which differs; unwired, the c
 is skipped. The manifest's `Type=` for a dataset output is the row type: see
 deviation 1.
 
+**After each pass it skips the parts of its rows** (`hg_skip`, 2026-11-20, hangar#1).
+They are read by stamp and sequence, which leave `hg_next` where it was, so in the wait
+set unskipped a part was news from its first message on and the pairer spun at a full
+core; skipped, a part still wakes the loop once per message, so a row waiting for one is
+emitted when it comes.
+
 ## Offline: `hangar dataset`
 
 ```

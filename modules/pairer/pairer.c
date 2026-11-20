@@ -566,6 +566,14 @@ int main(int argc, char **argv)
 			}
 			read_anchor(d);
 			flush(d, hg_now_ns(), 0);
+			/* The parts are read by stamp and sequence (hg_find_stamp,
+			 * hg_read_seq), which leave hg_next where it was: in the wait set
+			 * unskipped, a part was news from its first message on and hg_wait
+			 * returned at once, every time (a full core). Skipped, a part wakes
+			 * the loop once per message, so a row waiting for one is emitted
+			 * when it comes. */
+			for (int i = 0; i < d->spec.n_parts; i++)
+				(void)hg_skip(d->parts[i]);
 		}
 		if (now - last_tick >= 1000000000u) {
 			last_tick = now;

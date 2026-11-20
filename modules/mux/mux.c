@@ -473,16 +473,13 @@ int main(int argc, char **argv)
 		mod_log(WHO, "hg_serve_method(set_mode): %s", strerror(errno));
 		return 4;
 	}
+	/* The wait set is the call topics alone. The inputs are read at the tick
+	 * (read_inputs, the newest of each); in the set they would be news from
+	 * their first message after a tick until the next, and hg_wait would
+	 * return at once all that time: the mux spun at a full core between its
+	 * ticks (2026-11-19, on the vehicle). */
 	hg_sub *subs[HG_MAX_WAIT];
 	int n = 0;
-	subs[n++] = sub_pilot;
-	subs[n++] = sub_ctl;
-	subs[n++] = sub_depth;
-	subs[n++] = sub_safety;
-	for (int i = 0; i < n_policies; i++) {
-		subs[n++] = policies[i].wrench;
-		subs[n++] = policies[i].active;
-	}
 	int nc = hg_call_subs(subs + n, HG_MAX_WAIT - n);
 	if (nc < 0) {
 		mod_log(WHO, "hg_call_subs: %s", strerror(errno));
@@ -494,12 +491,13 @@ int main(int argc, char **argv)
 	mod_log(WHO, "%d polic%s in the wiring; mode manual", n_policies, n_policies == 1 ? "y" : "ies");
 	uint64_t now = hg_now_ns(), next = now + PERIOD_NS;
 	M.next_state_ns = now;
-	/* The loop ticks at 50 Hz from its own clock; a request or a message
-	 * between ticks is read and served at once, the output waits for the tick. */
+	/* The loop ticks at 50 Hz from its own clock: a request between ticks is
+	 * served at once; the inputs are read, and the output published, at the
+	 * tick. */
 	while (!mod_stop) {
 		now = hg_now_ns();
 		int timeout = next > now ? (int)((next - now) / 1000000u) : 0;
-		unsigned r = hg_wait(subs, n, timeout);
+		unsigned r = n ? hg_wait(subs, n, timeout) : mod_sleep_ms(timeout);
 		if (r & HG_READY_INTERRUPT)
 			break;
 		hg_serve();

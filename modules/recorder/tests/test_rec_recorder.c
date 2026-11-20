@@ -108,6 +108,23 @@ static hg_call_result call(const char *method, const void *req, const struct hg_
 	return hg_call(method, rt, req ? req : &none, &EMPTY_TYPE, &rep, 2000);
 }
 
+/* A recorder and a pairer sleep between their reads: before the fix of
+ * 2026-11-19 each spun at a full core on its wait (the recorder on its *
+ * glob, read only at each drain; the pairer on the parts of a row, read only
+ * by stamp and sequence). Here at the chain's 100 Hz, more than at rest. */
+static void check_cpu(const char *name, pid_t pid, double limit)
+{
+	long long t0 = th_cpu_ticks(pid);
+	struct timespec a, b;
+	clock_gettime(CLOCK_MONOTONIC, &a);
+	sleep_ms(1000);
+	clock_gettime(CLOCK_MONOTONIC, &b);
+	long ms = (long)((b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+	double pct = th_cpu_percent(t0, th_cpu_ticks(pid), ms);
+	printf("    %s: %.1f %% of a core\n", name, pct);
+	CHECK(pct >= 0 && pct < limit);
+}
+
 static void test_setup(void)
 {
 	R_bin = getenv("RECORDER_BIN");
@@ -131,6 +148,7 @@ static void test_setup(void)
 	CHECK(wait_file_contains(log_path("recorder"), "chain.b: meta", 3000));
 	CHECK(wait_file_contains(log_path("recorder"), "chain.a: every:2", 3000));
 	CHECK(wait_file_contains(log_path("recorder"), "no group hangar-rec", 3000) || getenv("REC_HAVE_GROUP"));
+	check_cpu("recorder, idle beside a 100 Hz chain", rec_pid, 10);
 }
 
 static int open_rec(const char *session, const char *name, struct hgr_reader *r)

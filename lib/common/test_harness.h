@@ -74,3 +74,38 @@ static const char *current_test_name = "";
            checks_failed ? "FAILED" : "PASSED", tests_run, checks_failed);     \
     return checks_failed ? 1 : 0;                                              \
   } while (0)
+
+/* CPU used by a process, from /proc/<pid>/stat (utime + stime, in clock
+ * ticks); -1 when it cannot be read. th_cpu_percent turns two readings ms
+ * apart into percent of one core. For "a module asleep costs nothing": a
+ * module that spins on a wait shows about 100 (hangar, 2026-11-19). */
+#include <sys/types.h>
+#include <unistd.h>
+
+static inline long long th_cpu_ticks(pid_t pid)
+{
+  char path[64], line[1024];
+  snprintf(path, sizeof path, "/proc/%d/stat", (int)pid);
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return -1;
+  size_t n = fread(line, 1, sizeof line - 1, f);
+  fclose(f);
+  line[n] = 0;
+  const char *p = strrchr(line, ')'); /* the name may hold spaces and parentheses */
+  if (!p)
+    return -1;
+  unsigned long long ut = 0, st = 0;
+  /* After ") ": state, then fields 4..13, then utime (14) and stime (15). */
+  if (sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) != 2)
+    return -1;
+  return (long long)(ut + st);
+}
+
+static inline double th_cpu_percent(long long ticks0, long long ticks1, long ms)
+{
+  long hz = sysconf(_SC_CLK_TCK);
+  if (ticks0 < 0 || ticks1 < 0 || ms <= 0 || hz <= 0)
+    return -1;
+  return (double)(ticks1 - ticks0) * 100.0 * 1000.0 / ((double)hz * (double)ms);
+}

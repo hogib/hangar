@@ -479,6 +479,40 @@ static void test_start(void)
 		printf("    check: %s\n", cli_out);
 }
 
+/* At rest, every module of the chain sleeps between its messages. Before the
+ * fix of 2026-11-19, safety (on a reply topic and the *.req glob's copies),
+ * the mux (on the inputs it reads only at its tick) and the recorder and the
+ * pairer spun at a full core each, on the vehicle and in the simulator: a
+ * subscription in the wait set that is never read stays news (hg_wait_unread).
+ * The topside's pilot input arrives at 50 Hz meanwhile, as with QGC idle. */
+static void test_idle_cpu(void)
+{
+	const struct {
+		int topside;
+		const char *name;
+	} mods[] = { { 0, "safety" }, { 0, "mux" }, { 0, "mavlink" }, { 1, "topside_mavlink" } };
+	enum { N = sizeof mods / sizeof mods[0] };
+	pid_t pid[N];
+	long long t0[N];
+	for (int i = 0; i < N; i++) {
+		use_root(mods[i].topside);
+		struct mstat m;
+		CHECK(module_status(mods[i].name, &m) && m.pid > 0);
+		pid[i] = m.pid;
+	}
+	use_root(0);
+	for (int i = 0; i < N; i++)
+		t0[i] = th_cpu_ticks(pid[i]);
+	uint64_t start = now_ms();
+	pump(1000);
+	long ms = (long)(now_ms() - start);
+	for (int i = 0; i < N; i++) {
+		double pct = th_cpu_percent(t0[i], th_cpu_ticks(pid[i]), ms);
+		printf("    %-16s %5.1f %% of a core at rest\n", mods[i].name, pct);
+		CHECK(pct >= 0 && pct < 10);
+	}
+}
+
 static void test_pilot_to_vehicle(void)
 {
 	/* The joystick reaches the mux as pilot.wrench, the gate as ctl.wrench;
@@ -628,6 +662,7 @@ int main(int argc, char **argv)
 	tfmt(topics_v, sizeof topics_v, "%s/dev/shm/hangar", root_v);
 	tfmt(topics_t, sizeof topics_t, "%s/dev/shm/hangar", root_t);
 	RUN_TEST(test_start);
+	RUN_TEST(test_idle_cpu);
 	RUN_TEST(test_pilot_to_vehicle);
 	RUN_TEST(test_kill_safety);
 	RUN_TEST(test_kill_mux);

@@ -161,6 +161,16 @@ static inline int mod_fresh(hg_sub *s, const struct hg_info *info, uint64_t now)
 	return now <= info->publish_ns + m.stale_after_ns;
 }
 
+/* For a loop with nothing to wait on: sleeps timeout_ms, and answers as
+ * hg_wait would, HG_READY_INTERRUPT when a signal ended the sleep, else 0. */
+static inline unsigned mod_sleep_ms(int timeout_ms)
+{
+	if (timeout_ms <= 0)
+		return 0;
+	struct timespec ts = { .tv_sec = timeout_ms / 1000, .tv_nsec = (long)(timeout_ms % 1000) * 1000000L };
+	return nanosleep(&ts, NULL) < 0 && errno == EINTR ? HG_READY_INTERRUPT : 0;
+}
+
 static inline float mod_clampf(float v, float lo, float hi)
 {
 	return v < lo ? lo : v > hi ? hi : v;

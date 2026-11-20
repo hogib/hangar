@@ -93,6 +93,11 @@ starting, ready or unhealthy to backoff or failed (a stop by request goes throug
 `stopping` and is not an exit); at most one dump every 2 s, and none while one is being
 written.
 
+**Its wait set is its call topics alone** (2026-11-20, hangar#1), with the timeout to
+the next drain. The topics recorded are read in the drain, every 50 ms, and new ones
+are found there too; while the `*` glob was in the wait set, every message between two
+drains was news and the recorder spun at a full core.
+
 ## `recorder.conf`
 
 The manifest syntax, parsed as strictly: an unknown section or key, a repeated key or a

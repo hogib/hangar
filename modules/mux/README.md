@@ -36,6 +36,11 @@ C11, libc (libm) and lib/hg only.
   2 controller, 4 policy), `residual_active`, the limit bits (0-5 envelope, 6-11 rate,
   12 depth, 13-18 residual).
 
+**Its wait set is its call topics alone** (2026-11-20, hangar#1). The inputs are read
+at the 50 Hz tick, the newest of each; while they were in the wait set they were news
+from their first message after a tick until the next, `hg_wait` returned at once all
+that time, and the mux spun at a full core between its ticks.
+
 ## Deviations from docs/07, and why
 
 1. **A message from a model other than the running one is no contribution and no

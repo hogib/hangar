@@ -240,6 +240,16 @@ static void topic_attach(int i)
 	      t->pol.class == REC_BB_NORMAL ? "normal" : "high");
 }
 
+/* For a recorder with no calls to wait on: sleeps, and answers as hg_wait
+ * would, HG_READY_INTERRUPT when a signal ended the sleep, else 0. */
+static unsigned sleep_ms(int ms)
+{
+	if (ms <= 0)
+		return 0;
+	struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (long)(ms % 1000) * 1000000L };
+	return nanosleep(&ts, NULL) < 0 && errno == EINTR ? (unsigned)HG_READY_INTERRUPT : 0u;
+}
+
 /* New matches of the glob become topics. */
 static void topics_scan(void)
 {
@@ -794,9 +804,13 @@ int main(int argc, char **argv)
 	session_pub = hg_pub_open("recorder.session", &RECORDER_SESSION_TYPE, &eo);
 	if (!status_pub || !session_pub)
 		logf_("cannot open recorder.status or recorder.session: %s", strerror(errno));
+	/* The wait set is the call topics alone. The topics recorded are read in
+	 * drain(), every DRAIN_NS; the glob in the set made every message between
+	 * two drains news, and hg_wait returned at once until the next drain: the
+	 * recorder spun at a full core (2026-11-19, on the vehicle). New topics are
+	 * found by drain() too (hg_glob_poll). */
 	hg_sub *subs[HG_MAX_WAIT];
 	int n = 0;
-	subs[n++] = glob;
 	if (hg_wiring()) {
 		if (hg_serve_method("start", on_start, NULL) < 0 || hg_serve_method("stop", on_stop, NULL) < 0 ||
 		    hg_serve_method("dump", on_dump, NULL) < 0)
@@ -818,12 +832,15 @@ int main(int argc, char **argv)
 	publish_status();
 	uint64_t last_drain = hg_now_ns(), last_tick = last_drain;
 	while (!stopping) {
-		unsigned r = hg_wait(subs, n, 10);
+		uint64_t now = hg_now_ns();
+		uint64_t due = last_drain + DRAIN_NS;
+		int timeout = due > now ? (int)((due - now + 999999u) / 1000000u) : 0;
+		unsigned r = n ? hg_wait(subs, n, timeout) : sleep_ms(timeout);
 		if (r & HG_READY_INTERRUPT)
 			break;
-		if (n > 1)
+		if (n)
 			hg_serve();
-		uint64_t now = hg_now_ns();
+		now = hg_now_ns();
 		if (now - last_drain >= DRAIN_NS) {
 			last_drain = now;
 			drain();

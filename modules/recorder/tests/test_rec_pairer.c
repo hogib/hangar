@@ -96,12 +96,31 @@ static void test_setup(void)
 
 static hg_sub *rows_sub, *status_sub;
 
+/* A recorder and a pairer sleep between their reads: before the fix of
+ * 2026-11-19 each spun at a full core on its wait (the recorder on its *
+ * glob, read only at each drain; the pairer on the parts of a row, read only
+ * by stamp and sequence). Here at the chain's 100 Hz, more than at rest. */
+static void check_cpu(const char *name, pid_t pid, double limit)
+{
+	long long t0 = th_cpu_ticks(pid);
+	struct timespec a, b;
+	clock_gettime(CLOCK_MONOTONIC, &a);
+	sleep_ms(1000);
+	clock_gettime(CLOCK_MONOTONIC, &b);
+	long ms = (long)((b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+	double pct = th_cpu_percent(t0, th_cpu_ticks(pid), ms);
+	printf("    %s: %.1f %% of a core\n", name, pct);
+	CHECK(pct >= 0 && pct < limit);
+}
+
 static void test_live_rows_and_status(void)
 {
 	rows_sub = hg_sub_open("dataset.chain_ds", NULL);
 	status_sub = hg_sub_open_from("pairer.status", &PAIRER_STATUS_TYPE, HG_OLDEST);
 	CHECK(rows_sub && status_sub);
-	sleep_ms(2500);
+	sleep_ms(1500);
+	check_cpu("pairer, rows at 100 Hz", pairer_pid, 25);
+	check_cpu("recorder, beside it", rec_pid, 10);
 	struct hg_topic_meta m;
 	CHECK_EQ_INT(hg_sub_meta(rows_sub, &m), 0);
 	CHECK_EQ_INT(m.slot_count, 256);
