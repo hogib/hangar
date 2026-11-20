@@ -194,11 +194,15 @@ static int open_peer(void)
 }
 
 /* One access unit: packetized, sent, and one video.index message. The RTP
- * timestamp is the frame number times the nominal period, so the frame's
- * identity crosses the tether (docs/11). */
+ * timestamp is the frame's number times the nominal period, so the frame's
+ * identity crosses the tether (docs/11). The number is the seq of the
+ * video.index message that names the frame, not the camera's own count
+ * (frame_seq), which skips when the camera drops a frame: the topside's
+ * video_relay recovers it from the timestamp and references
+ * (vehicle:video.index, seq) exactly. */
 static void send_frame(const uint8_t *au, size_t len, uint64_t frame_seq, uint64_t capture_ns)
 {
-	uint32_t ts = (uint32_t)(frame_seq * 90000u / C.fps);
+	uint32_t ts = (uint32_t)(hg_pub_next_seq(pub_index) * 90000u / C.fps);
 	uint32_t bytes = 0;
 	int f = rtp_h264_send_au(&R, au, len, ts, send_packet, NULL, &bytes);
 	if (f < 0)

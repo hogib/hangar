@@ -39,9 +39,13 @@ C11, libc and lib/hg only: no ffmpeg, no libx264.
 - **Parameter sets.** The SPS and PPS of each frame are kept; an IDR frame without them
   gets the kept ones in front, so a receiver that starts at any keyframe decodes (the
   SDP `hellion` writes has no `sprop-parameter-sets`).
-- **Frame identity.** The RTP timestamp is the frame number times 90 000 / `FrameRate`:
-  the driver's sequence count plus one for a camera, the frame's index from one for a
-  file. Frames the camera drops are jumps in it.
+- **Frame identity.** The RTP timestamp is the frame number times 90 000 / `FrameRate`,
+  the number being the seq of the `video.index` message that names the frame (one per
+  frame sent, from one), so the topside's `video_relay` references `(vehicle:video.index,
+  seq)` exactly. The camera's own count (the driver's sequence plus one) is in
+  `video.index`'s `frame_seq`; a frame the camera drops is a jump there, not in the
+  timestamps. (Until 2026-11-20 the timestamp used the camera's count, which made the
+  two differ after the first dropped frame.)
 - **Keyframes.** Asked of the camera at start and whenever none has come for
   `KeyframeInterval` (1 s), with `V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME`; a driver
   without that control is said once in the log, and then the camera's own interval is
