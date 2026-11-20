@@ -99,11 +99,24 @@ class _RowCodec(object):
         self.labels = list(labels) if labels is not None else \
             [f.name for f in layout.fields if roles[f.name] == "label" and numeric(f) and not f.name.endswith(
                 ("._seq", "._stamp_ns", "._count", "._flags"))]
-        for n in self.inputs + self.labels:
-            if n not in by_name or not numeric(by_name[n]):
-                raise LearnError("%s: not a scalar numeric field of the row" % n)
-        self._in = [(by_name[n].offset, "<" + schema.KINDS[by_name[n].kind][2]) for n in self.inputs]
-        self._lab = [(by_name[n].offset, "<" + schema.KINDS[by_name[n].kind][2]) for n in self.labels]
+        self._in = [self._locate(by_name, n) for n in self.inputs]
+        self._lab = [self._locate(by_name, n) for n in self.labels]
+
+    @staticmethod
+    def _locate(by_name, n):
+        """(offset, struct code) of a scalar field, or of one element of an
+        array field named `field[i]` (thr.out.pwm[4])."""
+        base, idx = n, 0
+        if n.endswith("]") and "[" in n:
+            base, _, i = n[:-1].partition("[")
+            if not i.isdigit():
+                raise LearnError("%s: an element is field[i]" % n)
+            idx = int(i)
+        f = by_name.get(base)
+        if f is None or f.kind == "char" or idx >= f.count or (f.is_array and base == n):
+            raise LearnError("%s: not a numeric field (or element) of the row" % n)
+        size = schema.KINDS[f.kind][0]
+        return (f.offset + idx * size, "<" + schema.KINDS[f.kind][2])
 
     def row(self, payload, lost_before=False):
         seq, stamp = struct.unpack_from("<QQ", payload, 0)

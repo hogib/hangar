@@ -169,6 +169,15 @@ class FromFile(unittest.TestCase):
         self.assertEqual(s.next_chunk().inputs.shape, (2, 3, 1))
         self.assertRaises(learn.LearnError, learn.open_dataset, self.PATH, inputs=["t.nope"])
 
+    def test_array_element(self):
+        s = learn.open_dataset(self.PATH, batch=2, seq_len=3, inputs=["t.b.0.gyro[2]", "t.a.depth_m"])
+        from hangar import dataset
+        ds = dataset.open_dataset(self.PATH)
+        self.assertEqual(s.replay.at(0).x[0], ds.row(0)["t.b.0.gyro"][2])
+        ds.close()
+        self.assertRaises(learn.LearnError, learn.open_dataset, self.PATH, inputs=["t.b.0.gyro"])
+        self.assertRaises(learn.LearnError, learn.open_dataset, self.PATH, inputs=["t.b.0.gyro[9]"])
+
     def test_probes_from_a_run_start(self):
         s = learn.open_dataset(self.PATH, batch=2, seq_len=3)
         p = s.probes(4)
@@ -207,6 +216,36 @@ class WithTorch(unittest.TestCase):
         self.assertEqual(f.header.lineage[0].rows, len(s.replay))
         self.assertRaises(learn.LearnError, learn.export, model, path, s, ["heave"],
                           runtime={"dataset_hash": s.dataset_hash ^ 1})
+
+
+EXAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "depth_ff.py")
+
+
+class Example(unittest.TestCase):
+    @unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
+    def test_data_path(self):
+        import subprocess
+        p = subprocess.run([sys.executable, EXAMPLE, "--synthetic", "--check"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stdout.decode())
+        self.assertIn(b"15000 rows in the buffer, 0 lost", p.stdout)
+
+    @unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
+    def test_residual_label(self):
+        sys.path.insert(0, os.path.dirname(EXAMPLE))
+        import depth_ff
+        L = numpy.array([[0.1, 1620.0, 1620.0]])
+        self.assertAlmostEqual(float(depth_ff.residual(L)[0]), 0.2, places=6)
+
+    @unittest.skipUnless(HAVE_TORCH, "PyTorch is not installed")
+    def test_trains_and_exports(self):
+        import subprocess
+        import tempfile
+        out = os.path.join(tempfile.mkdtemp(), "depth_ff.hgw")
+        p = subprocess.run([sys.executable, EXAMPLE, "--synthetic", "--steps", "150", "--out", out],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stdout.decode())
+        self.assertTrue(os.path.getsize(out) > 4096)
 
 
 if __name__ == "__main__":
