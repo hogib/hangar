@@ -657,6 +657,7 @@ struct hg_sub {
 	uint64_t reopens;
 	uint64_t reopen_since;      /* replaced, but no new file at the path since then; 0 if not */
 	int fd_dir;                 /* the same, for the hg_wait_fd helper: written under FD.lock */
+	int gave_up;                /* a read has said that no new file came within REOPEN_GIVE_UP_NS */
 	uint32_t reopen_word;       /* the old file's futex_word as of reopen_since */
 	uint32_t mask;
 	uint32_t payload_bytes;
@@ -1566,6 +1567,7 @@ static void use_mapping(hg_sub *s, const struct mapping *m)
 	memcpy(s->origin, m->l.origin_boot, 16);
 	s->seen_flags = 0;
 	s->reopen_since = 0;
+	s->gave_up = 0;
 	s->fd_dir = 0;
 	s->type_bad = s->has_expect && m->l.type_hash != s->expect_hash;
 	s->type_bad_reported = 0;
@@ -1755,11 +1757,18 @@ static enum hg_result at_end(hg_sub *s, uint32_t flags, int *switched)
 			*switched = 1;
 			return HG_NONE;
 		}
-		if (r < 0)
+		int e = errno;
+		int late = hg_now_ns() - s->reopen_since >= REOPEN_GIVE_UP_NS;
+		if (late)
+			s->gave_up = 1; /* said by this read: news to a waiter once (has_news) */
+		if (r < 0) {
+			errno = e;
 			return HG_ERROR;
-		return hg_now_ns() - s->reopen_since >= REOPEN_GIVE_UP_NS ? HG_CLOSED : HG_NONE;
+		}
+		return late ? HG_CLOSED : HG_NONE;
 	}
 	s->reopen_since = 0;
+	s->gave_up = 0;
 	if (s->fd_dir) {
 		fd_lock(s); /* the replacing writer backed out */
 		s->fd_dir = 0;
@@ -2305,7 +2314,11 @@ static int has_news(const hg_sub *s)
 	uint64_t w = atomic_load_explicit(&s->h->write_seq, memory_order_seq_cst);
 	uint32_t f = atomic_load_explicit(&s->h->flags, memory_order_seq_cst) &
 		     (HG_FLAG_CLOSED | HG_FLAG_DIED | HG_FLAG_REPLACED);
-	return w > s->last || f != s->seen_flags;
+	if (w > s->last || f != s->seen_flags)
+		return 1;
+	/* Replaced, and no new file a second later: the reads turn to
+	 * HG_CLOSED then, which a reader asleep must be told. */
+	return s->reopen_since && !s->gave_up && hg_now_ns() - s->reopen_since >= REOPEN_GIVE_UP_NS;
 }
 
 #define GLOB_POLL_NS 10000000u /* glob matches are polled, every 10 ms at most */
@@ -2392,6 +2405,7 @@ unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char
 			uint32_t f = atomic_load_explicit(&s->h->flags, memory_order_acquire);
 			if (!(f & HG_FLAG_REPLACED)) {
 				s->reopen_since = 0; /* the replacing writer backed out */
+				s->gave_up = 0;
 				continue;
 			}
 			if (reopen(s, f) <= 0)
@@ -2456,6 +2470,14 @@ unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char
 		uint64_t until = deadline;
 		if (have_glob && now + GLOB_POLL_NS < until)
 			until = now + GLOB_POLL_NS;
+		/* A replacement that has not come: the sleep ends when the reads
+		 * give it up, and the next pass finds that as news. */
+		for (int i = 0; i < n; i++) {
+			const hg_sub *s = subs[i];
+			if (!s->glob && s->h && s->reopen_since && !s->gave_up &&
+			    s->reopen_since + REOPEN_GIVE_UP_NS < until)
+				until = s->reopen_since + REOPEN_GIVE_UP_NS;
+		}
 		struct timespec ts = { .tv_sec = (time_t)(until / 1000000000u),
 				       .tv_nsec = (long)(until % 1000000000u) };
 		long r = syscall(SYS_futex_waitv, wv, (unsigned)nw, 0u, until == UINT64_MAX ? NULL : &ts,

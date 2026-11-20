@@ -55,6 +55,33 @@ static void test_bit2_without_new_file(void)
 	hg_pub_close(p);
 }
 
+static void test_give_up_is_news(void)
+{
+	// Flagged as replaced and no new file a second later: the replacing
+	// writer failed, and reads say HG_CLOSED from then on. A reader asleep
+	// in hg_wait learns it then, not at the end of its own timeout.
+	hg_pub *p = open_words("rp.gaveup");
+	hg_sub *s = hg_sub_open("rp.gaveup", WORDS_TYPE);
+	pub_n(p, 1);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(hg_stub_mark_replaced("rp.gaveup"), 0);
+	CHECK_EQ_INT(hg_wait(&s, 1, 0), HG_READY_TOPICS);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_NONE);
+	uint64_t t0 = hg_now_ns();
+	unsigned r = hg_wait(&s, 1, 3000);
+	uint64_t ms = ms_since(t0);
+	printf("    woken %s after %llu ms\n", r == HG_READY_TOPICS ? "with news" : "by the timeout", (unsigned long long)ms);
+	CHECK_EQ_INT(r, HG_READY_TOPICS);
+	CHECK(ms >= 900 && ms < 1500);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_CLOSED);
+	// Said once: the next wait sleeps.
+	t0 = hg_now_ns();
+	CHECK_EQ_INT(hg_wait(&s, 1, 100), 0);
+	CHECK(ms_since(t0) >= 100);
+	hg_sub_close(s);
+	hg_pub_close(p);
+}
+
 static void test_bad_file_at_the_path(void)
 {
 	// Flagged as replaced, and what is at the path is no topic file: the
@@ -314,6 +341,7 @@ int main(void)
 {
 	hg_test_setup("replace");
 	RUN_TEST(test_bit2_without_new_file);
+	RUN_TEST(test_give_up_is_news);
 	RUN_TEST(test_bad_file_at_the_path);
 	RUN_TEST(test_wrong_type_then_the_right_one);
 	RUN_TEST(test_restart_continues_seq_without_gap);

@@ -446,6 +446,16 @@ different `origin_boot`, when the sender has rebooted and its numbers start agai
 in `info` changes, `hg_next` and `hg_latest` start from the new file's `first_seq + 1`,
 and nothing is counted in `gap`.
 
+A reader that reads between the flag and the rename finds the old file still at the
+path: `HG_NONE`, and its wait (`hg_wait`, and the helper of `hg_wait_fd`) then
+includes the directory word, which the rename bumps. If no new file is there one
+second after the flag, the replacing writer failed: reads say `HG_CLOSED` from then
+on, and that is news to `hg_wait` once, at that second. What is at the path may also
+be no topic file at all: `HG_ERROR`, said once, and the reader waits for the directory
+word as before. A subscription that expects another type than the file's
+(`HG_ERROR`, `EPROTOTYPE`) follows a replacement like any other, and reads the new
+file if its type is the one expected.
+
 **Liveness and staleness.** A reader can tell a dead writer (flag bit 1) from a
 closed one (bit 0) from a live one with nothing new. A topic with a declared rate is
 **stale** when `now − last_publish_ns` exceeds `stale_after_ns` (the manifest's
