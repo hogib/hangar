@@ -707,6 +707,8 @@ struct method_info {
 	struct hg_schema req, rep;
 };
 
+/* 0, or -1 after a message: the callers stop on < 0 (fail() returns 1, the
+ * command's exit status, hence the minus). */
 static int method_info(const char *target, struct method_info *mi)
 {
 	static char reply[HG_CONTROL_MAX];
@@ -719,19 +721,19 @@ static int method_info(const char *target, struct method_info *mi)
 	char *line = strchr(reply, '\n');
 	char *end = line ? strchr(line + 1, '\n') : NULL;
 	if (!line || !end)
-		return fail("method: malformed reply");
+		return -fail("method: malformed reply");
 	*end = 0;
 	if (sscanf(line + 1, "req=%63s hash=%llx size=%u rep=%63s hash=%llx size=%u deadline=%llu running=%d reqschema=%u repschema=%u",
 		   mi->req_name, &mi->req_hash, &mi->req_size, mi->rep_name, &mi->rep_hash, &mi->rep_size,
 		   &mi->deadline_ms, &mi->running, &mi->req_schema_len, &mi->rep_schema_len) != 10)
-		return fail("method: malformed reply line: %s", line + 1);
+		return -fail("method: malformed reply line: %s", line + 1);
 	const char *rq = end + 1, *rp = rq + mi->req_schema_len;
 	if (rp + mi->rep_schema_len > reply + n)
-		return fail("method: the schemas are short");
+		return -fail("method: the schemas are short");
 	char err[128];
 	if (hg_schema_parse(rq, mi->req_schema_len, &mi->req, err, sizeof err) < 0 ||
 	    hg_schema_parse(rp, mi->rep_schema_len, &mi->rep, err, sizeof err) < 0)
-		return fail("method: schema: %s", err);
+		return -fail("method: schema: %s", err);
 	mi->req.type.name = mi->req_name;
 	mi->rep.type.name = mi->rep_name;
 	return 0;
@@ -968,6 +970,7 @@ struct saved_params {
 	unsigned file_len;
 };
 
+/* 0, or -1 after a message, as method_info. */
 static int params_saved(const char *module, struct saved_params *sp)
 {
 	static char reply[HG_CONTROL_MAX];
@@ -982,17 +985,17 @@ static int params_saved(const char *module, struct saved_params *sp)
 	unsigned long long hash;
 	unsigned slen = 0;
 	if (!line || !end)
-		return fail("param-read: malformed reply");
+		return -fail("param-read: malformed reply");
 	*end = 0;
 	if (sscanf(line + 1, "type=%63s hash=%llx running=%d schema=%u file=%u", sp->type_name, &hash, &sp->running,
 		   &slen, &sp->file_len) != 5)
-		return fail("param-read: malformed reply line");
+		return -fail("param-read: malformed reply line");
 	const char *schema = end + 1, *file = schema + slen;
 	if (file + sp->file_len > reply + n || sp->file_len >= sizeof sp->file)
-		return fail("param-read: short reply");
+		return -fail("param-read: short reply");
 	char err[128];
 	if (hg_schema_parse(schema, slen, &sp->schema, err, sizeof err) < 0)
-		return fail("param-read: schema: %s", err);
+		return -fail("param-read: schema: %s", err);
 	sp->schema.type.name = sp->type_name;
 	memcpy(sp->file, file, sp->file_len);
 	sp->file[sp->file_len] = 0;
