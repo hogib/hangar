@@ -13,9 +13,21 @@
  *
  *   fake_ardusub --to 127.0.0.1:14660 --control 127.0.0.1:14670 [--key FILE]
  *                [--params FILE] [--gcs-sysid 255] [--depth 2.0] [--bind host:port]
+ *   fake_ardusub --pty LINK --control ... (a serial autopilot, a Pixhawk on USB)
+ *
+ * With --pty the fake is the far end of a pseudo-terminal, LINK a symbolic
+ * link to its slave side (what the module's Serial= names, as a udev by-id
+ * link would), and MAVLink a byte stream on it. The line is raw from its
+ * creation, so nothing echoes before the module opens it. The master is read
+ * on the 5 ms timer, not from the epoll: with no slave open a master reports
+ * a hang-up for ever.
  *
  * Control lines: status | arm | disarm | mode N | refuse <text> | accept |
- * refuse-disarm on|off | silence SECONDS | boot-reset | set NAME VALUE | quit */
+ * refuse-disarm on|off | silence SECONDS | boot-reset | set NAME VALUE | quit;
+ * with --pty also: vanish SECONDS (the line goes away, as a USB unplug, and
+ * comes back on a new pseudo-terminal behind the same LINK) | stopread on|off
+ * (stop reading: the module's writes back up) | garbage (line noise with a
+ * 0xFD in it, then a HEARTBEAT written in two halves 30 ms apart). */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -23,8 +35,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <termios.h>
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
@@ -60,6 +74,16 @@ static struct {
 	uint8_t mc_from;
 	uint64_t rx, rejected, rejected_gcs, arms, disarms, params_set, setinterval, mode_sets;
 	int quit;
+	/* --pty */
+	int serial, pty, noread;
+	const char *link;
+	uint64_t reopen_ns;
+	uint8_t rxbuf[4 * MAV_MAX_FRAME];
+	size_t rx_len;
+	uint8_t half[MAV_MAX_FRAME];
+	size_t half_len;
+	uint64_t half_ns;
+	uint64_t ptys;
 } S;
 
 static const uint32_t TELEMETRY[7] = { MAV_MSG_ID_ATTITUDE, MAV_MSG_ID_SCALED_IMU, MAV_MSG_ID_SCALED_PRESSURE2,
@@ -78,14 +102,55 @@ static uint32_t boot_ms(void)
 	return (uint32_t)((now_ns() - S.boot_ns) / 1000000u);
 }
 
+/* A new pseudo-terminal, raw, behind S.link. */
+static int open_pty(void)
+{
+	int m = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+	if (m < 0 || grantpt(m) < 0 || unlockpt(m) < 0)
+		return -1;
+	const char *name = ptsname(m);
+	int sl = name ? open(name, O_RDWR | O_NOCTTY | O_CLOEXEC) : -1;
+	if (sl < 0) {
+		close(m);
+		return -1;
+	}
+	struct termios t;
+	tcgetattr(sl, &t);
+	cfmakeraw(&t);
+	tcsetattr(sl, TCSANOW, &t);
+	close(sl);
+	char tmp[600];
+	snprintf(tmp, sizeof tmp, "%s.new", S.link);
+	unlink(tmp);
+	if (symlink(name, tmp) < 0 || rename(tmp, S.link) < 0) {
+		close(m);
+		return -1;
+	}
+	S.pty = m;
+	S.rx_len = 0;
+	S.ptys++;
+	return 0;
+}
+
+static void write_line(const uint8_t *p, size_t n)
+{
+	if (S.pty >= 0)
+		(void)!write(S.pty, p, n);
+}
+
 static void send_msg(uint32_t msgid, const uint8_t *payload, size_t len, uint8_t crc_extra)
 {
 	if (now_ns() < S.silent_until)
 		return;
+	if (S.half_len)
+		return; /* a frame is half written (garbage): nothing may come between its halves */
 	uint8_t frame[MAV_MAX_FRAME];
 	size_t n = mav_encode(frame, sizeof frame, S.seq++, 1, MAV_COMP_ID_AUTOPILOT1, msgid, payload, len, crc_extra,
 			      &S.signing);
-	sendto(S.fd, frame, n, 0, (const struct sockaddr *)&S.to, sizeof S.to);
+	if (S.serial)
+		write_line(frame, n);
+	else
+		sendto(S.fd, frame, n, 0, (const struct sockaddr *)&S.to, sizeof S.to);
 }
 
 #define SEND(NAME, lname, msgp)                                                     \
@@ -310,8 +375,45 @@ static void on_frame(const struct mav_frame *f)
 	}
 }
 
+/* The serial line: a byte stream, frames reassembled across reads. */
+static void receive_line(void)
+{
+	while (S.pty >= 0 && !S.noread) {
+		ssize_t r = read(S.pty, S.rxbuf + S.rx_len, sizeof S.rxbuf - S.rx_len);
+		if (r <= 0)
+			break; /* EAGAIN; or EIO while no slave is open */
+		S.rx_len += (size_t)r;
+		size_t off = 0;
+		while (off < S.rx_len) {
+			if (S.rxbuf[off] != MAV_STX) {
+				off++;
+				continue;
+			}
+			struct mav_frame f;
+			const char *why;
+			size_t used = mav_decode(S.rxbuf + off, S.rx_len - off, &f, &S.signing, &why);
+			if (!used)
+				break;
+			if (!f.valid) {
+				if (used > 1)
+					S.rejected++;
+				off += used > 1 && strncmp(why, "unknown", 7) == 0 ? used : 1;
+				continue;
+			}
+			off += used;
+			on_frame(&f);
+		}
+		memmove(S.rxbuf, S.rxbuf + off, S.rx_len - off);
+		S.rx_len -= off;
+	}
+}
+
 static void receive(void)
 {
+	if (S.serial) {
+		receive_line();
+		return;
+	}
 	for (;;) {
 		uint8_t buf[2048];
 		ssize_t n = recv(S.fd, buf, sizeof buf, MSG_DONTWAIT);
@@ -353,13 +455,13 @@ static void control(void)
 			snprintf(reply, sizeof reply,
 				 "armed=%d mode=%u mc=%d,%d,%d,%d,%u,%u,%d,%d mc_count=%llu mc_from=%u mc_age_ms=%llu "
 				 "rx=%llu rejected=%llu rejected_gcs=%llu params_set=%llu setinterval=%llu arms=%llu disarms=%llu "
-				 "mode_sets=%llu\n",
+				 "mode_sets=%llu ptys=%llu\n",
 				 S.armed, S.mode, S.mc.x, S.mc.y, S.mc.z, S.mc.r, S.mc.buttons, S.mc.buttons2, S.mc.s, S.mc.t,
 				 (unsigned long long)S.mc_count, S.mc_from,
 				 (unsigned long long)(S.mc_ns ? (now_ns() - S.mc_ns) / 1000000u : 999999),
 				 (unsigned long long)S.rx, (unsigned long long)S.rejected, (unsigned long long)S.rejected_gcs,
 				 (unsigned long long)S.params_set, (unsigned long long)S.setinterval, (unsigned long long)S.arms,
-				 (unsigned long long)S.disarms, (unsigned long long)S.mode_sets);
+				 (unsigned long long)S.disarms, (unsigned long long)S.mode_sets, (unsigned long long)S.ptys);
 		} else if (strcmp(buf, "arm") == 0) {
 			S.armed = 1;
 			send_heartbeat();
@@ -393,6 +495,31 @@ static void control(void)
 			}
 		} else if (strcmp(buf, "quit") == 0) {
 			S.quit = 1;
+		} else if (S.serial && strncmp(buf, "vanish ", 7) == 0) {
+			if (S.pty >= 0)
+				close(S.pty);
+			S.pty = -1;
+			unlink(S.link);
+			S.reopen_ns = now_ns() + (uint64_t)(atof(buf + 7) * 1e9);
+		} else if (S.serial && strncmp(buf, "stopread ", 9) == 0) {
+			S.noread = strcmp(buf + 9, "on") == 0;
+		} else if (S.serial && strcmp(buf, "garbage") == 0) {
+			static const uint8_t junk[] = { 0x00, 0x13, 0xFD, 0x07, 0x00, 0x00, 0x42, 0x01, 0x01, 0xFF, 0xFD, 0xFD,
+							0x55, 0xAA, 0x0A, 0x0D };
+			write_line(junk, sizeof junk);
+			struct mav_heartbeat h = { .custom_mode = 77u /* a mark the suite looks for */, .type = MAV_TYPE_SUBMARINE,
+						   .autopilot = MAV_AUTOPILOT_ARDUPILOTMEGA,
+						   .base_mode = MAV_MODE_FLAG_CUSTOM_MODE_ENABLED |
+								(S.armed ? MAV_MODE_FLAG_SAFETY_ARMED : 0),
+						   .system_status = MAV_STATE_STANDBY, .mavlink_version = 3 };
+			uint8_t pl[MAV_LEN_HEARTBEAT], frame[MAV_MAX_FRAME];
+			mav_pack_heartbeat(&h, pl);
+			size_t n = mav_encode(frame, sizeof frame, S.seq++, 1, MAV_COMP_ID_AUTOPILOT1, MAV_MSG_ID_HEARTBEAT,
+					      pl, sizeof pl, MAV_CRC_HEARTBEAT, &S.signing);
+			write_line(frame, n / 2);
+			memcpy(S.half, frame + n / 2, n - n / 2);
+			S.half_len = n - n / 2;
+			S.half_ns = now_ns() + 30000000ull;
 		} else {
 			snprintf(reply, sizeof reply, "err unknown command\n");
 		}
@@ -432,6 +559,8 @@ int main(int argc, char **argv)
 			S.depth = (float)atof(argv[i + 1]);
 		else if (strcmp(argv[i], "--bind") == 0)
 			bind_at = argv[i + 1]; /* the MAVLink socket's own address, for a suite that sends to it */
+		else if (strcmp(argv[i], "--pty") == 0)
+			S.link = argv[i + 1];
 		else {
 			fprintf(stderr, "fake_ardusub: unknown option %s\n", argv[i]);
 			return 2;
@@ -495,6 +624,14 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
+	S.pty = -1;
+	if (S.link) {
+		S.serial = 1;
+		if (open_pty() < 0) {
+			fprintf(stderr, "fake_ardusub: a pseudo-terminal at %s: %s\n", S.link, strerror(errno));
+			return 1;
+		}
+	}
 	S.boot_ns = now_ns();
 	int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	struct itimerspec its = { .it_interval = { 0, 5000000 }, .it_value = { 0, 5000000 } };
@@ -506,13 +643,13 @@ int main(int argc, char **argv)
 	epoll_ctl(ep, EPOLL_CTL_ADD, S.cfd, &ev);
 	ev.data.fd = tfd;
 	epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &ev);
-	fprintf(stderr, "fake_ardusub: to %s, control %s, signing %s, %d parameters\n", to, ctl, key ? "on" : "off",
-		S.n_params);
+	fprintf(stderr, "fake_ardusub: to %s, control %s, signing %s, %d parameters\n", S.serial ? S.link : to, ctl,
+		key ? "on" : "off", S.n_params);
 	while (!S.quit) {
 		struct epoll_event evs[4];
 		int k = epoll_wait(ep, evs, 4, 50);
 		for (int i = 0; i < k; i++) {
-			if (evs[i].data.fd == S.fd)
+			if (evs[i].data.fd == S.fd && !S.serial)
 				receive();
 			else if (evs[i].data.fd == S.cfd)
 				control();
@@ -522,6 +659,18 @@ int main(int argc, char **argv)
 			}
 		}
 		uint64_t now = now_ns();
+		if (S.serial) {
+			if (S.pty < 0 && S.reopen_ns && now >= S.reopen_ns) {
+				S.reopen_ns = 0;
+				if (open_pty() < 0)
+					fprintf(stderr, "fake_ardusub: reopen: %s\n", strerror(errno));
+			}
+			if (S.half_len && now >= S.half_ns) {
+				write_line(S.half, S.half_len);
+				S.half_len = 0;
+			}
+			receive_line();
+		}
 		if (now >= S.next_hb_ns) {
 			S.next_hb_ns = now + 1000000000ull;
 			send_heartbeat();
@@ -535,5 +684,7 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+	if (S.link)
+		unlink(S.link);
 	return 0;
 }

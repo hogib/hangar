@@ -90,8 +90,19 @@ check-mavlink_vehicle check-mavlink_topside check-phase1_chain: check-%: $(TESTD
 	  echo "FAIL  $*"; cat $(TESTDIR)/$*.log; exit 1; \
 	fi
 
+# The vehicle suite again over a serial line: the fake ArduSub at the far end of
+# a pseudo-terminal, the module's Serial= naming it (a Pixhawk on USB).
+.PHONY: check-mavlink_serial
+check-mavlink_serial: $(TESTDIR)/test_mavlink_vehicle $(MAVLINK_BIN) $(MAVLINK_FAKE) $(BUILDDIR)/hangard \
+		$(BUILDDIR)/hangar $(BUILDDIR)/hangar-safety $(BUILDDIR)/hangar-mux
+	@if $(MAVLINK_TEST_ENV) MAVLINK_TEST_SERIAL=1 $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/mavlink_serial.log 2>&1; then \
+	  echo "ok    mavlink_serial"; \
+	else \
+	  echo "FAIL  mavlink_serial"; cat $(TESTDIR)/mavlink_serial.log; exit 1; \
+	fi
+
 .PHONY: check-mavlink
-check-mavlink: check-mavgen check-mav_frame check-mavlink_vehicle check-mavlink_topside check-phase1_chain
+check-mavlink: check-mavgen check-mav_frame check-mavlink_vehicle check-mavlink_serial check-mavlink_topside check-phase1_chain
 
 # The same chain against the real container (tools/sim/SETUP.md): the vehicle
 # module talks to SITL through MAVProxy's second output, 127.0.0.1:14560, which

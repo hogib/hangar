@@ -10,9 +10,18 @@
 // an ArduSub restart, the rates requested again; silence; an unsigned frame
 // refused by both ends; the Neutral command. This process plays `safety`
 // (safety.state, ctl.wrench, the caller of mavlink.arm). Under 30 s.
+//
+// With MAVLINK_TEST_SERIAL=1 the same suite runs over a serial line: the
+// fake ArduSub at the far end of a pseudo-terminal (fake_ardusub --pty), the
+// module's Serial= naming it, as a Pixhawk on USB. The two tests that inject
+// UDP datagrams into the module's port are left out; four of the line's own
+// take their place: noise and a frame cut across two writes, the line
+// vanishing and coming back, a reader that stops reading, and the line held
+// exclusively.
 #include "hd_test.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <math.h>
 #include <netinet/in.h>
 
@@ -34,7 +43,8 @@
 static pid_t mgr, fake;
 static const char *T_mavlink, *T_fake;
 static int port_module, port_control, port_fake;
-static char conf_path[600], key_path[600], params_path[600];
+static char conf_path[600], key_path[600], params_path[600], line_path[600];
+static int serial_mode;
 static hg_pub *P_safety, *P_cmd;
 static hg_sub *S_ap, *S_mc, *S_att, *S_depth, *S_bat, *S_thr, *S_param;
 static struct ardusub_state last_ap;
@@ -93,12 +103,18 @@ static void write_files(void)
 	tfmt(params_path, sizeof params_path, "%s/ardusub.params", T_root);
 	write_file(params_path, "# the suite's parameter file\nSYSID_MYGCS 255\nFS_GCS_ENABLE 1\nJS_GAIN_DEFAULT 1\nBTN0_FUNCTION 0\n");
 	tfmt(conf_path, sizeof conf_path, "%s/mavlink.conf", T_root);
-	char text[1024];
+	char text[1400], link[700];
+	if (serial_mode) {
+		tfmt(line_path, sizeof line_path, "%s/ttyFAKE", T_root);
+		tfmt(link, sizeof link, "Serial=%s\nBaud=115200\n", line_path);
+	} else {
+		tfmt(link, sizeof link, "Bind=127.0.0.1:%d\n", port_module);
+	}
 	tfmt(text, sizeof text,
-	     "[Link]\nBind=127.0.0.1:%d\nSigning=yes\nKeyFile=%s\nSysId=255\nCompId=190\nTargetSysId=1\n"
+	     "[Link]\n%sSigning=yes\nKeyFile=%s\nSysId=255\nCompId=190\nTargetSysId=1\n"
 	     "[Params]\nFile=%s\n[Depth]\nFluidDensity=1000\nSurfacePressure=1013.25\n"
 	     "[Telemetry ATTITUDE]\nRate=50\n[Telemetry SYS_STATUS]\nRate=5\n",
-	     port_module, key_path, params_path);
+	     link, key_path, params_path);
 	write_file(conf_path, text);
 }
 
@@ -159,9 +175,21 @@ static void fake_start(void)
 			dup2(fd, 2);
 			close(fd);
 		}
-		execl(T_fake, T_fake, "--to", to, "--control", ctl, "--key", key_path, "--gcs-sysid", "255", "--bind", at,
-		      (char *)NULL);
+		if (serial_mode)
+			execl(T_fake, T_fake, "--pty", line_path, "--control", ctl, "--key", key_path, "--gcs-sysid", "255",
+			      (char *)NULL);
+		else
+			execl(T_fake, T_fake, "--to", to, "--control", ctl, "--key", key_path, "--gcs-sysid", "255", "--bind",
+			      at, (char *)NULL);
 		_exit(127);
+	}
+	if (serial_mode) {
+		/* The module opens the line at its start: the link must exist by then
+		 * (a line that is not there is retried, but the suite's timings are
+		 * shorter than the back-off). */
+		uint64_t t0 = now_ms();
+		while (access(line_path, F_OK) != 0 && now_ms() - t0 < 2000)
+			sleep_ms(10);
 	}
 }
 
@@ -714,6 +742,143 @@ static void test_other_component(void)
 	watch_mode = -1;
 }
 
+
+/* ---- The serial line (MAVLINK_TEST_SERIAL=1) --------------------------------- */
+
+static const char *module_log(void)
+{
+	static char path[600];
+	tfmt(path, sizeof path, "%s/run/hangar/log/mavlink.log", T_root);
+	return path;
+}
+
+static void test_serial_noise(void)
+{
+	/* Line noise with 0xFD bytes in it, then a HEARTBEAT written in two
+	 * halves 30 ms apart, marked with mode 77: the module must find it. */
+	uint64_t t0 = now_ms();
+	while ((!have_ap || last_ap.mode != 19) && now_ms() - t0 < 3000)
+		pump(50);
+	watch_mode = 77;
+	saw_other_mode = 0;
+	CHECK(strncmp(fake_cmd("garbage"), "ok", 2) == 0);
+	t0 = now_ms();
+	while (!saw_other_mode && now_ms() - t0 < 1500)
+		pump(20);
+	CHECK_EQ_INT(saw_other_mode, 1);
+	watch_mode = -1;
+	/* And the stream goes on: the next ordinary HEARTBEAT, mode 19. */
+	t0 = now_ms();
+	while (last_ap.mode != 19 && now_ms() - t0 < 2500)
+		pump(50);
+	CHECK_EQ_INT(last_ap.mode, 19);
+	CHECK(strstr(module_status_line(), "serial open") != NULL);
+}
+
+static void test_serial_backpressure(void)
+{
+	/* The far end stops reading for 1.5 s: the module's writes back up, and
+	 * it must not stall. ardusub.state goes on at 10 Hz, the module stays
+	 * ready, the same process; when reading resumes the manual control
+	 * arriving is the current one, at once. */
+	struct mstat m0;
+	CHECK(module_status("mavlink", &m0));
+	uint64_t seq0 = last_ap_info.seq;
+	long long c0 = fake_num(fake_cmd("status"), "mc_count");
+	CHECK(strncmp(fake_cmd("stopread on"), "ok", 2) == 0);
+	pump(1500);
+	CHECK(last_ap_info.seq - seq0 >= 12);
+	struct mstat m1;
+	CHECK(module_status("mavlink", &m1) && strcmp(m1.state, "ready") == 0 && m1.pid == m0.pid);
+	CHECK(strncmp(fake_cmd("stopread off"), "ok", 2) == 0);
+	uint64_t t0 = now_ms();
+	long long age = 999999;
+	while (now_ms() - t0 < 1000) {
+		pump(20);
+		age = fake_num(fake_cmd("status"), "mc_age_ms");
+		if (age >= 0 && age < 100)
+			break;
+	}
+	CHECK(age >= 0 && age < 100);
+	long long c1 = fake_num(fake_cmd("status"), "mc_count");
+	pump(500);
+	long long c2 = fake_num(fake_cmd("status"), "mc_count");
+	printf("    reader stopped 1.5 s: %lld MANUAL_CONTROL got through meanwhile and after (kernel buffer), "
+	       "then %lld in 0.5 s; status: %s\n", c1 - c0, c2 - c1, module_status_line());
+	CHECK(c2 - c1 >= 18 && c2 - c1 <= 32);
+}
+
+static void test_serial_vanish(void)
+{
+	/* The line goes away for 0.3 s (a USB glitch) and comes back on a new
+	 * pseudo-terminal behind the same path. The module closes it at once,
+	 * says so, keeps running, and reopens at its first retry (0.5 s). (A
+	 * longer outage, a Pixhawk rebooting, outlasts StaleAfter + StaleGrace of
+	 * the telemetry, and the manager restarts the module, as for an ArduSub
+	 * gone silent over UDP; the new instance opens the line when it returns.) */
+	struct mstat m0;
+	CHECK(module_status("mavlink", &m0));
+	CHECK(strncmp(fake_cmd("vanish 0.3"), "ok", 2) == 0);
+	uint64_t t0 = now_ms();
+	while (!strstr(module_status_line(), "serial down") && now_ms() - t0 < 1500)
+		pump(20);
+	CHECK(strstr(module_status_line(), "serial down") != NULL);
+	if (!strstr(module_status_line(), "serial down"))
+		printf("    status: %s\n", module_status_line());
+	pump(150); /* the last ardusub.state of before the outage */
+	uint64_t rx = last_ap.last_rx_ns;
+	pump(200);
+	CHECK_EQ_INT(last_ap.last_rx_ns, rx); /* silent while it is gone */
+	t0 = now_ms();
+	while (!strstr(module_status_line(), "serial open") && now_ms() - t0 < 4000)
+		pump(50);
+	CHECK(strstr(module_status_line(), "serial open") != NULL);
+	t0 = now_ms();
+	while (last_ap.last_rx_ns == rx && now_ms() - t0 < 2000)
+		pump(50);
+	CHECK(last_ap.last_rx_ns > rx);
+	struct mstat m1;
+	CHECK(module_status("mavlink", &m1) && m1.pid == m0.pid && strcmp(m1.state, "ready") == 0);
+	CHECK(wait_file_contains(module_log(), "serial", 1000));
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "ptys"), 2);
+	/* MANUAL_CONTROL flows again. */
+	long long c0 = fake_num(fake_cmd("status"), "mc_count");
+	pump(500);
+	CHECK(fake_num(fake_cmd("status"), "mc_count") - c0 >= 18);
+}
+
+static void test_serial_exclusive(void)
+{
+	/* While the module has the line, a second program cannot open it
+	 * (TIOCEXCL): a MAVROS left running would otherwise read half the
+	 * frames. Root is exempt, so the check is skipped as root. */
+	if (geteuid() == 0) {
+		printf("    (skipped: root opens an exclusive terminal anyway)\n");
+		return;
+	}
+	int fd = open(line_path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+	int e = errno;
+	if (fd >= 0)
+		close(fd);
+	CHECK(fd < 0 && e == EBUSY);
+}
+
+/* The module's CPU while it runs: telemetry at 50 Hz in, manual control at
+ * 50 Hz out, the same on UDP and on the serial line. No busy-waiting
+ * (hangar#1): well under a tenth of a core. */
+static void test_cpu(void)
+{
+	struct mstat m;
+	CHECK(module_status("mavlink", &m) && m.pid > 0);
+	long long t0 = th_cpu_ticks(m.pid);
+	uint64_t a = now_ms();
+	pump(2000);
+	double pct = th_cpu_percent(t0, th_cpu_ticks(m.pid), (long)(now_ms() - a));
+	printf("    the module over %s: %.2f %% of a core (telemetry and manual control at 50 Hz)\n",
+	       serial_mode ? "a serial line" : "UDP", pct);
+	CHECK(pct >= 0 && pct < 10);
+}
+
 static void test_neutral_command(void)
 {
 	/* The module stopped: the manager runs its Neutral command, which sends
@@ -766,7 +931,8 @@ int main(void)
 		fprintf(stderr, "MAVLINK_BIN and FAKE_ARDUSUB_BIN must be set\n");
 		return 2;
 	}
-	hd_setup("mavlink_vehicle", NULL);
+	serial_mode = getenv("MAVLINK_TEST_SERIAL") && strcmp(getenv("MAVLINK_TEST_SERIAL"), "1") == 0;
+	hd_setup(serial_mode ? "mavlink_serial" : "mavlink_vehicle", NULL);
 	copy_types();
 	RUN_TEST(test_start);
 	RUN_TEST(test_params_and_setup);
@@ -774,8 +940,16 @@ int main(void)
 	RUN_TEST(test_disarm_and_disagreement);
 	RUN_TEST(test_refusal);
 	RUN_TEST(test_restart_time_silence);
-	RUN_TEST(test_signing);
-	RUN_TEST(test_other_component);
+	if (serial_mode) {
+		RUN_TEST(test_serial_noise);
+		RUN_TEST(test_serial_backpressure);
+		RUN_TEST(test_serial_vanish);
+		RUN_TEST(test_serial_exclusive);
+	} else {
+		RUN_TEST(test_signing);
+		RUN_TEST(test_other_component);
+	}
+	RUN_TEST(test_cpu);
 	RUN_TEST(test_neutral_command);
 	RUN_TEST(test_shutdown);
 	if (fake > 0)
