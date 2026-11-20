@@ -36,7 +36,9 @@ hg_gate *hg_gate_open_with(const char *command, uint64_t command_timeout_ns, uin
 void hg_gate_close(hg_gate *g);
 
 /* The newest command, as a pointer into the gate (valid until the next
- * check), or NULL with *why set to one line (static storage in the gate). */
+ * check), or NULL with *why set to one line (static storage in the gate).
+ * Every check reads both topics, open or closed, so a loop that waits on
+ * hg_gate_subs and then checks sleeps until one of them has a message. */
 const void *hg_gate_check(hg_gate *g, const char **why);
 
 /* The subscriptions the gate reads, for the module's wait set: Command first,

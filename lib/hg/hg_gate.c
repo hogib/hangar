@@ -116,8 +116,17 @@ const void *hg_gate_check(hg_gate *g, const char **why)
 	}
 	uint64_t now = hg_now_ns();
 
-	/* 1. safety.state: fresh and outputs_enabled. */
+	/* Both topics are read on every check, whatever the verdict: the module
+	 * waits on both (hg_gate_subs), and a Command topic left unread while
+	 * the gate is closed would stay news and turn its wait into a spin.
+	 * A command that cannot be read (too large) is passed over. */
 	enum hg_result rs = newest(g->safety, g->sbuf, sizeof g->sbuf, &g->s_info, &g->have_s);
+	enum hg_result rc = newest(g->cmd, g->cmdbuf, sizeof g->cmdbuf, &g->cmd_info, &g->have_cmd);
+	int cmd_errno = errno;
+	if (rc == HG_ERROR)
+		(void)hg_skip(g->cmd);
+
+	/* 1. safety.state: fresh and outputs_enabled. */
 	struct hg_gate_safety *j = &g->judged;
 	memset(j, 0, sizeof *j);
 	if (g->have_s) {
@@ -149,10 +158,9 @@ const void *hg_gate_check(hg_gate *g, const char **why)
 	}
 
 	/* 2. The command: present, within CommandTimeout, not flagged. */
-	enum hg_result rc = newest(g->cmd, g->cmdbuf, sizeof g->cmdbuf, &g->cmd_info, &g->have_cmd);
 	if (rc == HG_ERROR) {
 		snprintf(g->why, sizeof g->why, "command unreadable: %s",
-			 errno == EMSGSIZE ? "payload over HG_GATE_COMMAND_MAX" : strerror(errno));
+			 cmd_errno == EMSGSIZE ? "payload over HG_GATE_COMMAND_MAX" : strerror(cmd_errno));
 		goto closed;
 	}
 	if (!g->have_cmd) {

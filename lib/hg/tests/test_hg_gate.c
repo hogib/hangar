@@ -18,7 +18,8 @@ static const char SAFETY_SCHEMA[] =
 	"u8 state\nu8 outputs_enabled\nu8 action\nu8 reserved\nu32 triggers\nu64 since_ns\n"
 	"char by[48]\nchar reason[64]\n";
 static const char WRENCH_SCHEMA[] = "f32 surge\nf32 sway\nf32 heave\nf32 roll\nf32 pitch\nf32 yaw\n";
-static struct hg_schema safety_parsed, wrench_parsed, depth_in_parsed;
+static const char BIG_SCHEMA[] = "u8 b[512]\n"; /* over HG_GATE_COMMAND_MAX */
+static struct hg_schema safety_parsed, wrench_parsed, depth_in_parsed, big_parsed;
 
 static void write_wiring(void)
 {
@@ -41,6 +42,9 @@ static void write_wiring(void)
 		(unsigned long long)depth_in_parsed.type.hash);
 	fprintf(f, "pub ctl.wrench type=wrench hash=%016llx slots=16 rate=50 stale_after=60ms sources=nav.depth\n",
 		(unsigned long long)wrench_parsed.type.hash);
+	fprintf(f, "sub big.cmd type=big hash=%016llx rate=50\n", (unsigned long long)big_parsed.type.hash);
+	fprintf(f, "pub big.cmd type=big hash=%016llx slots=16 rate=50 stale_after=60ms\n",
+		(unsigned long long)big_parsed.type.hash);
 	fprintf(f, "pub thr.cmd type=wrench hash=%016llx slots=16 rate=50 stale_after=60ms inputs=ctl.wrench actuator\n",
 		(unsigned long long)wrench_parsed.type.hash);
 	fclose(f);
@@ -93,7 +97,7 @@ static void test_open_and_absent(void)
 	struct hg_gate_safety s;
 	hg_gate_safety(g, &s);
 	CHECK(!s.present);
-	/* The safety state appears, disarmed: the command is not even looked at. */
+	/* The safety state appears, disarmed: closed whatever the command. */
 	P_safety = hg_pub_open("safety.state", &safety_parsed.type, NULL);
 	CHECK(P_safety != NULL);
 	pub_safety(0, 0);
@@ -177,6 +181,63 @@ static void test_open_closed_stale(void)
 	hg_gate_close(g);
 }
 
+/* docs/07's loop: hg_wait on the gate's two subscriptions, then the check.
+ * Returns how many times it went round in ms. */
+static long gate_loop(hg_gate *g, int ms, const char **why)
+{
+	hg_sub *subs[2];
+	hg_gate_subs(g, subs, 2);
+	long loops = 0;
+	uint64_t t0 = hg_now_ns();
+	while (ms_since(t0) < (uint64_t)ms) {
+		hg_wait(subs, 2, 100);
+		hg_gate_check(g, why);
+		loops++;
+	}
+	return loops;
+}
+
+/* A closed gate reads its Command topic all the same: left unread it would
+ * stay news, and hg_wait would return at once for as long as the vehicle is
+ * disarmed with the mux publishing (hangar issue #1). */
+static void test_closed_gate_sleeps(void)
+{
+	hg_gate *g = hg_gate_open();
+	CHECK(g != NULL);
+	const char *why = NULL;
+	pub_safety(0, 0);
+	pub_cmd(0.9f);
+	uint64_t u0 = hg_wait_unread();
+	long loops = gate_loop(g, 400, &why);
+	printf("    disarmed, one command, nothing more published, 400 ms: %ld loops, hg_wait_unread +%llu, '%s'\n",
+	       loops, (unsigned long long)(hg_wait_unread() - u0), why);
+	CHECK(loops < 20);
+	CHECK_EQ_INT(hg_wait_unread() - u0, 0);
+	/* What it read while closed is the command it gives once armed. */
+	pub_cmd(0.9f);
+	CHECK(hg_gate_check(g, &why) == NULL);
+	pub_safety(1, 1);
+	const float *w = hg_gate_check(g, &why);
+	CHECK(w && w[0] == 0.9f);
+	hg_gate_close(g);
+
+	/* A command too large for the gate is an error on every check, and no
+	 * news either. */
+	hg_pub *big = hg_pub_open("big.cmd", &big_parsed.type, NULL);
+	g = hg_gate_open_with("big.cmd", 0, 0);
+	CHECK(big && g);
+	static unsigned char b[512];
+	pub_safety(1, 1);
+	CHECK_EQ_INT(hg_publish_with(big, b, sizeof b, hg_now_ns(), HG_NO_REFS, NULL, 0), 0);
+	CHECK(hg_gate_check(g, &why) == NULL);
+	CHECK(why && strstr(why, "HG_GATE_COMMAND_MAX") != NULL);
+	loops = gate_loop(g, 250, &why);
+	printf("    a 512-byte command, 250 ms: %ld loops, '%s'\n", loops, why);
+	CHECK(loops < 20);
+	hg_gate_close(g);
+	hg_pub_close(big);
+}
+
 static void test_flagged_command(void)
 {
 	hg_gate *g = hg_gate_open();
@@ -256,16 +317,19 @@ int main(void)
 	hg_test_setup("gate");
 	if (hg_schema_parse(SAFETY_SCHEMA, strlen(SAFETY_SCHEMA), &safety_parsed, NULL, 0) < 0 ||
 	    hg_schema_parse(WRENCH_SCHEMA, strlen(WRENCH_SCHEMA), &wrench_parsed, NULL, 0) < 0 ||
-	    hg_schema_parse(DEPTH_SCHEMA, strlen(DEPTH_SCHEMA), &depth_in_parsed, NULL, 0) < 0) {
+	    hg_schema_parse(DEPTH_SCHEMA, strlen(DEPTH_SCHEMA), &depth_in_parsed, NULL, 0) < 0 ||
+	    hg_schema_parse(BIG_SCHEMA, strlen(BIG_SCHEMA), &big_parsed, NULL, 0) < 0) {
 		fprintf(stderr, "schemas\n");
 		return 2;
 	}
 	safety_parsed.type.name = "safety_state";
 	wrench_parsed.type.name = "wrench";
 	depth_in_parsed.type.name = "depth";
+	big_parsed.type.name = "big";
 	write_wiring();
 	RUN_TEST(test_open_and_absent);
 	RUN_TEST(test_open_closed_stale);
+	RUN_TEST(test_closed_gate_sleeps);
 	RUN_TEST(test_flagged_command);
 	RUN_TEST(test_closed_writer);
 	RUN_TEST(test_standalone_open);
