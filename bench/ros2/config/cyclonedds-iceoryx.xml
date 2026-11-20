@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- bench/ros2/config/cyclonedds-iceoryx.xml: Cyclone DDS over iceoryx.
+
+     Samples of fixed-size types travel through iceoryx's shared memory, and
+     the publisher can loan them from it: no serialization, no copy. It needs
+     iceoryx's daemon, RouDi (iox-roudi), running; bench/ros2/matrix.py starts
+     and stops it and counts its memory and CPU beside the pair's.
+
+     Used with CYCLONEDDS_URI=file://<this file> and
+     ROS_DISABLE_LOANED_MESSAGES=0. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <SharedMemory>
+      <Enable>true</Enable>
+      <LogLevel>warn</LogLevel>
+    </SharedMemory>
+  </Domain>
+</CycloneDDS>

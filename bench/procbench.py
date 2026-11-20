@@ -21,6 +21,8 @@ GROUPS = [
     ('hangar', ('hangard', 'hangar-safety', 'hangar-mux', 'hangar-mavlink', 'hangar-encoder', 'dawn-patrold', 'recorder', 'pairer')),
     ('electric-eye', ('eeye', 'hellion', 'ffmpeg', 'rpicam-vid')),
     ('MAVROS relay', ('mavros_node',)),
+    # bench/ros2's pair and what a middleware runs beside it (iceoryx's RouDi, Zenoh's router)
+    ('ROS 2 benchmark', ('hgb_talker', 'hgb_listener', 'hgb_composed', 'iox-roudi', 'rmw_zenohd')),
 ]
 
 

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- bench/ros2/config/fastdds-datasharing.xml: Fast DDS's zero-copy path.
+
+     Data-sharing delivery: writer and reader on one host share the writer's
+     history through a memory-mapped file under /dev/shm, and with a
+     fixed-size ("plain") message type the publisher can loan its samples
+     from that pool: nothing is serialized and nothing copied on the way.
+     This is the nearest thing in ROS 2 to a hangar topic.
+
+     Used with (bench/ros2/matrix.py sets them):
+       FASTRTPS_DEFAULT_PROFILES_FILE=<this file>
+       RMW_FASTRTPS_USE_QOS_FROM_XML=1     history memory policy and data sharing from here
+       ROS_DISABLE_LOANED_MESSAGES=0       Jazzy keeps a subscription's loans off unless asked
+
+     The publish mode stays SYNCHRONOUS (rmw_fastrtps's default since
+     Galactic): publish() hands the sample over in the caller's thread.
+     Reliability and history depth still come from the node's QoS. -->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <data_writer profile_name="default publisher profile" is_default_profile="true">
+      <qos>
+        <publishMode>
+          <kind>SYNCHRONOUS</kind>
+        </publishMode>
+        <data_sharing>
+          <kind>AUTOMATIC</kind>
+        </data_sharing>
+      </qos>
+      <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    </data_writer>
+    <data_reader profile_name="default subscription profile" is_default_profile="true">
+      <qos>
+        <data_sharing>
+          <kind>AUTOMATIC</kind>
+        </data_sharing>
+      </qos>
+      <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    </data_reader>
+  </profiles>
+</dds>
