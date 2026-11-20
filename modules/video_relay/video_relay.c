@@ -508,9 +508,14 @@ static void status_line(uint64_t now)
 	last_frames = D.frames;
 	last_bytes = rx_bytes;
 	char line[256];
+	char relay[64] = "; no relay";
+	if (C.n_relay && relay_errors)
+		mod_fmt(relay, sizeof relay, "; %llu relay errors", (unsigned long long)relay_errors);
+	else if (C.n_relay)
+		relay[0] = 0;
 	mod_fmt(line, sizeof line, "%.1f frames/s, %.0f kbit/s; %llu frames, %llu decoded, %llu lost packets, %llu skipped%s%s",
 		fps, kbps, (unsigned long long)D.frames, (unsigned long long)decoded, (unsigned long long)D.lost,
-		(unsigned long long)D.skipped, rec.fd >= 0 ? "; recording" : "", C.n_relay ? "" : "; no relay");
+		(unsigned long long)D.skipped, rec.fd >= 0 ? "; recording" : "", relay);
 	if (strcmp(line, status)) {
 		snprintf(status, sizeof status, "%s", line);
 		hg_status(line);
@@ -593,9 +598,10 @@ int main(int argc, char **argv)
 		status_line(hg_now_ns());
 	}
 	rec_stop("stopping");
-	mod_log(WHO, "stopping: %llu packets, %llu frames, %llu decoded, %llu lost packets, %llu frames skipped; decode %.2f ms a frame on average, %.2f ms at most",
-		(unsigned long long)D.packets, (unsigned long long)D.frames, (unsigned long long)decoded,
-		(unsigned long long)D.lost, (unsigned long long)D.skipped,
+	mod_log(WHO, "stopping: %llu packets (%llu relayed, %llu relay errors), %llu frames, %llu decoded, %llu lost packets, %llu frames skipped, %llu stream restarts, %llu recordings; decode %.2f ms a frame on average, %.2f ms at most",
+		(unsigned long long)D.packets, (unsigned long long)relayed, (unsigned long long)relay_errors,
+		(unsigned long long)D.frames, (unsigned long long)decoded, (unsigned long long)D.lost,
+		(unsigned long long)D.skipped, (unsigned long long)D.resyncs, (unsigned long long)rec_files,
 		decoded ? (double)decode_ns_sum / (double)decoded / 1e6 : 0.0, (double)decode_ns_max / 1e6);
 	if (efd >= 0)
 		hg_wait_fd_close();
