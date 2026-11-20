@@ -609,7 +609,7 @@ is needed.
 [Dataset]
 Anchor=nav.state
 AnchorRole=input
-Fields=depth vel_z pitch roll
+Fields=depth_m vel_z pitch roll
 Lateness=0
 Filter=mask
 ResetAfter=200ms
