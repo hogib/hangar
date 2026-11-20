@@ -625,6 +625,41 @@ static void test_allow(void)
 	CHECK(file_contains(T_log, "needs [Publish policy.lacking.load] Type=policy_load"));
 }
 
+/* hangar.learn and hangar.topic, run while this process drives the anchor. */
+static void test_python_side(void)
+{
+	char ds[24], ha[24], script[700];
+	tfmt(ds, sizeof ds, "%016llx", (unsigned long long)ds_hash);
+	tfmt(ha, sizeof ha, "%016llx", (unsigned long long)hash_a);
+	tfmt(script, sizeof script, "%s/../modules/policy/tests/learn_live.py", T_python);
+	CHECK(O.active.hash == hash_a);
+	pid_t pid = fork();
+	if (pid == 0) {
+		setenv("PYTHONPATH", T_python, 1);
+		setenv("POLICY_PYTHON", T_python, 1);
+		setenv("HANGAR_BIN", T_hangar, 1);
+		execlp("python3", "python3", script, models, ds, ha, (char *)NULL);
+		_exit(127);
+	}
+	int status = -1;
+	uint64_t t0 = now_ms();
+	while (now_ms() - t0 < 20000) {
+		pump(20);
+		int st;
+		if (waitpid(pid, &st, WNOHANG) == pid) {
+			status = WIFEXITED(st) ? WEXITSTATUS(st) : 128;
+			break;
+		}
+	}
+	if (status < 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+	}
+	CHECK_EQ_INT(status, 0);
+	pump(60);
+	CHECK(O.active.hash == hash_a);
+}
+
 static void test_mux_residual(void)
 {
 	/* Running good_a: heave 0.5 a + 0.25 t + 0.1 = 0.1 with a = t = 0, inside
@@ -696,6 +731,7 @@ int main(void)
 	RUN_TEST(test_restart_reloads);
 	RUN_TEST(test_nonfinite);
 	RUN_TEST(test_allow);
+	RUN_TEST(test_python_side);
 	RUN_TEST(test_mux_residual);
 	RUN_TEST(test_idle_cpu);
 	RUN_TEST(test_shutdown);

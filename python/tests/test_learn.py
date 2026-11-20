@@ -1,0 +1,213 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+"""hangar.learn without a vehicle (docs/09 "Tests"): stateful chunks (a
+chunk ends at a reset, a lost row and a change of boot, the next starts
+fresh; a slot started inside a run carries no loss on its first chunk;
+masked rows and padding carry none), the replay buffer's span and its
+draws, the file stream over the pairer's fixture with the C writer's row
+type hash, probes from a run's start, lineage per boot. carry() and export
+need PyTorch: skipped without it. The live reader and deploy run against
+a real policy in modules/policy's suite."""
+
+import os
+import random
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+try:
+    import numpy  # noqa: F401
+    HAVE_NUMPY = True
+except ImportError:
+    HAVE_NUMPY = False
+try:
+    import torch  # noqa: F401
+    HAVE_TORCH = True
+except ImportError:
+    HAVE_TORCH = False
+
+from hangar import learn  # noqa: E402
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+B0, B1 = b"\x01" * 16, b"\x02" * 16
+MS = 10 ** 6
+
+
+def row(seq, flags=0, boot=B0, lost=False, stamp=None):
+    return learn._Row(seq, stamp if stamp is not None else seq * 20 * MS, boot, flags, [float(seq)], [float(-seq)], lost)
+
+
+def replay(rows, span=None):
+    rp = learn.Replay(span, rng=random.Random(1))
+    for r in rows:
+        rp.add(r)
+    return rp
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
+class Chunks(unittest.TestCase):
+    def chunker(self, rows, T, B=1):
+        return learn.Chunker(replay(rows), B, T, 1, 1)
+
+    def test_run_from_reset(self):
+        rows = [row(1, learn.RESET)] + [row(i) for i in range(2, 11)]
+        ch = self.chunker(rows, 4)
+        ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 0, True, False
+        c = ch.next()
+        self.assertTrue(c.fresh[0])
+        self.assertEqual(list(c.inputs[0, :, 0]), [1, 2, 3, 4])
+        self.assertEqual(list(c.labels[0, :, 0]), [-1, -2, -3, -4])
+        self.assertEqual(list(c.mask[0]), [1, 1, 1, 1])
+        c = ch.next()  # carried on: not fresh
+        self.assertFalse(c.fresh[0])
+        self.assertEqual(list(c.inputs[0, :, 0]), [5, 6, 7, 8])
+
+    def test_chunk_ends_at_reset_lost_and_boot(self):
+        for second in (row(4, learn.RESET), row(4, lost=True), row(4, boot=B1)):
+            rows = [row(1, learn.RESET), row(2), row(3), second, row(5), row(6)]
+            ch = self.chunker(rows, 5)
+            ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 0, True, False
+            c = ch.next()
+            self.assertEqual(list(c.inputs[0, :, 0]), [1, 2, 3, 0, 0])
+            self.assertEqual(list(c.mask[0]), [1, 1, 1, 0, 0])  # padding carries no loss
+            self.assertIsNone(ch.slots[0].pos)               # drawn again, fresh
+            c = ch.next()
+            self.assertTrue(c.fresh[0])
+
+    def test_inside_a_run_warms_up(self):
+        rows = [row(1, learn.RESET)] + [row(i) for i in range(2, 21)]
+        ch = self.chunker(rows, 3)
+        ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 5, True, True
+        c = ch.next()
+        self.assertEqual(list(c.mask[0]), [0, 0, 0])
+        self.assertTrue(c.fresh[0])
+        c = ch.next()
+        self.assertEqual(list(c.mask[0]), [1, 1, 1])
+        self.assertFalse(c.fresh[0])
+
+    def test_draw_sets_warm(self):
+        rows = [row(1, learn.RESET)] + [row(i) for i in range(2, 200)]
+        ch = self.chunker(rows, 3, B=16)
+        for _ in range(5):
+            ch.next()
+        for s in ch.slots:
+            if s.pos is not None:
+                self.assertFalse(s.warm and not s.fresh)
+
+    def test_masked_rows_no_loss(self):
+        rows = [row(1, learn.RESET), row(2, learn.MASKED), row(3)]
+        ch = self.chunker(rows, 3)
+        ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 0, True, False
+        self.assertEqual(list(ch.next().mask[0]), [1, 0, 1])
+
+    def test_newest_ends_the_chunk(self):
+        rows = [row(1, learn.RESET), row(2)]
+        ch = self.chunker(rows, 4)
+        ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 0, True, False
+        c = ch.next()
+        self.assertEqual(list(c.mask[0]), [1, 1, 0, 0])
+        self.assertIsNone(ch.slots[0].pos)
+
+
+class ReplayBuffer(unittest.TestCase):
+    def test_span_drops_old_rows(self):
+        rp = replay([row(i) for i in range(1, 101)], span="1s")  # 20 ms apart
+        self.assertEqual(len(rp), 51)
+        self.assertEqual(rp.base, 49)
+        self.assertEqual(rp.at(rp.base).seq, 50)
+        self.assertEqual(rp.total, 100)
+
+    def test_half_the_draws_recent(self):
+        rows = [row(i, stamp=i * MS * 100) for i in range(1, 601)]  # 60 s
+        rp = learn.Replay("10min", recent="10s", rng=random.Random(3))
+        for r in rows:
+            rp.add(r)
+        draws = [rp.at(rp.draw()).stamp for _ in range(4000)]
+        recent = sum(1 for s in draws if rows[-1].stamp - s <= 10 * 10 ** 9) / len(draws)
+        # half from the last 10 s, plus the uniform half's share of them (1/6)
+        self.assertAlmostEqual(recent, 0.5 + 0.5 * 101 / 600, delta=0.04)
+
+    def test_boot_change_starts_a_run(self):
+        rp = replay([row(1, learn.RESET), row(2), row(3, boot=B1)])
+        self.assertTrue(rp.at(2).starts_run)
+
+    def test_durations(self):
+        self.assertEqual(learn._duration_ns("10min"), 600 * 10 ** 9)
+        self.assertEqual(learn._duration_ns("500ms"), 500 * MS)
+        self.assertEqual(learn._duration_ns("2s"), 2 * 10 ** 9)
+        self.assertRaises(ValueError, learn._duration_ns, "ten")
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
+class FromFile(unittest.TestCase):
+    PATH = os.path.join(FIXTURES, "dataset.chain.hgr")
+
+    def test_fields_and_hash(self):
+        s = learn.open_dataset(self.PATH, batch=4, seq_len=5)
+        self.assertEqual(s.input_fields, ["t.a.depth_m", "t.a.temp_c", "t.a.pressure_mbar",
+                                          "t.g.depth_m", "t.g.temp_c", "t.g.pressure_mbar"])
+        self.assertEqual(s.label_fields, ["t.c.surge", "t.c.heave", "t.s.depth_m"])
+        from hangar import dataset
+        ds = dataset.open_dataset(self.PATH)
+        self.assertEqual(s.dataset_hash, ds.header.type_hash)  # the C writer's row type hash
+        self.assertEqual(len(s.replay), ds.count)
+        ds.close()
+
+    def test_chunks_and_rows(self):
+        s = learn.open_dataset(self.PATH, batch=4, seq_len=5)
+        c = s.next_chunk()
+        self.assertEqual(c.inputs.shape, (4, 5, 6))
+        self.assertEqual(c.labels.shape, (4, 5, 3))
+        self.assertEqual(c.mask.shape, (4, 5))
+        flat = learn.open_dataset(self.PATH, batch=8)
+        c = flat.next_chunk()
+        self.assertEqual(c.inputs.shape, (8, 6))
+        self.assertTrue(c.fresh.all())
+
+    def test_inputs_named(self):
+        s = learn.open_dataset(self.PATH, batch=2, seq_len=3, inputs=["t.a.depth_m"], labels=["t.c.heave"])
+        self.assertEqual(s.next_chunk().inputs.shape, (2, 3, 1))
+        self.assertRaises(learn.LearnError, learn.open_dataset, self.PATH, inputs=["t.nope"])
+
+    def test_probes_from_a_run_start(self):
+        s = learn.open_dataset(self.PATH, batch=2, seq_len=3)
+        p = s.probes(4)
+        self.assertEqual(len(p), 1)
+        self.assertEqual(len(p[0]), 4)
+        self.assertEqual(len(p[0][0]), 6)
+
+    def test_lineage(self):
+        s = learn.open_dataset(self.PATH, batch=2, seq_len=3)
+        lin = s.lineage()
+        self.assertEqual(len(lin), 1)
+        self.assertEqual(lin[0].rows, len(s.replay))
+        self.assertEqual(lin[0].first_seq, s.replay.at(0).seq)
+
+
+@unittest.skipUnless(HAVE_TORCH, "PyTorch is not installed")
+class WithTorch(unittest.TestCase):
+    def test_carry(self):
+        h = torch.ones(1, 3, 2, requires_grad=True) * 2
+        c = (h, h + 1)
+        out = learn.carry(c, numpy.array([False, True, False]))
+        self.assertFalse(out[0].requires_grad)
+        self.assertEqual(out[0][0, 1].abs().sum().item(), 0)
+        self.assertEqual(out[1][0, 0, 0].item(), 3)
+        self.assertIsNone(learn.carry(None, [True]))
+
+    def test_export_checks_the_runtime(self):
+        import tempfile
+        s = learn.open_dataset(os.path.join(FIXTURES, "dataset.chain.hgr"), batch=2, seq_len=3)
+        model = torch.nn.Sequential(torch.nn.Linear(6, 1))
+        path = os.path.join(tempfile.mkdtemp(), "m.hgw")
+        learn.export(model, path, s, ["heave"], runtime={"dataset_hash": s.dataset_hash, "ops": [("dense", 1)]})
+        from hangar.nn import hgw
+        f = hgw.parse(open(path, "rb").read())
+        self.assertEqual(f.header.dataset_hash, s.dataset_hash)
+        self.assertEqual(f.header.lineage[0].rows, len(s.replay))
+        self.assertRaises(learn.LearnError, learn.export, model, path, s, ["heave"],
+                          runtime={"dataset_hash": s.dataset_hash ^ 1})
+
+
+if __name__ == "__main__":
+    unittest.main()
