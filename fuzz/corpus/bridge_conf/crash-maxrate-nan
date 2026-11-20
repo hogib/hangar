@@ -1,0 +1,4 @@
+[Bridge]
+Pair=p
+Key=/k
+MaxRate=nanMbit

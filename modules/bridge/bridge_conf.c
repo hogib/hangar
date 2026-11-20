@@ -163,7 +163,9 @@ static int on_key(void *ctx, const char *key, const char *value, int line, char 
 			char *e;
 			double r = strtod(value, &e);
 			double mul = strcmp(e, "Mbit") == 0 ? 1e6 : strcmp(e, "kbit") == 0 ? 1e3 : strcmp(e, "bit") == 0 ? 1 : -1;
-			if (r <= 0 || mul < 0)
+			/* A number above zero that fits the field: nan, inf and 2e58Mbit
+			 * are not rates, and their conversion is not defined. */
+			if (!(r > 0) || mul < 0 || !(r * mul < 1e18))
 				goto bad;
 			c->max_rate_bps = (uint64_t)(r * mul);
 		} else if (strcmp(key, "MsgDir") == 0) {

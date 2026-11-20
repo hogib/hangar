@@ -1,0 +1,4 @@
+[Bridge]
+Pair=p
+Key=/k
+MaxRate=2e58Mbit
