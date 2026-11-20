@@ -1,0 +1,3 @@
+# Fuzz corpora are bytes: no end-of-line conversion on the way in or out (an
+# HTTP seed is CRLF, a crash input is whatever crashed).
+fuzz/corpus/** -text
