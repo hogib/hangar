@@ -290,7 +290,7 @@ static int read_file(const char *path, char *reason, size_t len)
 			return -1;
 		}
 		memset(&want[n_want], 0, sizeof want[n_want]);
-		snprintf(want[n_want].id, sizeof want[n_want].id, "%s", id);
+		memcpy(want[n_want].id, id, strlen(id) + 1); /* 16 at most, checked above */
 		want[n_want].value = (float)v;
 		want[n_want].type = (uint8_t)type;
 		n_want++;
