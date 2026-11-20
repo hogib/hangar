@@ -246,7 +246,11 @@ int mavlink_conf_load(struct mavlink_conf *c, const char *path, int topside, cha
 		} else if (strcmp(section, "Params") == 0) {
 			if (strcmp(k, "File") == 0)
 				snprintf(c->params_file, sizeof c->params_file, "%s", v);
-			else
+			else if (strcmp(k, "BackupDir") == 0) {
+				if (v[0] != '/')
+					FAIL("BackupDir: an absolute path");
+				snprintf(c->params_backup_dir, sizeof c->params_backup_dir, "%s", v);
+			} else
 				FAIL("unknown key %s in [Params]", k);
 		} else if (strcmp(section, "Depth") == 0) {
 			if (strcmp(k, "FluidDensity") == 0) {

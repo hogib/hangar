@@ -31,6 +31,8 @@
 #include "manual_control.h"
 #include "mavlink.h"
 #include "mavlink_gen.h"
+#include "param_backup.h"
+#include "params_file_req.h"
 #include "thruster_out.h"
 #include "wrench.h"
 
@@ -50,6 +52,7 @@ static struct mavlink_conf C;
 static struct mav_link L;
 static hg_gate *G;
 static hg_pub *pub_mc, *pub_state, *pub_param, *pub_att, *pub_imu, *pub_depth, *pub_bat, *pub_thr;
+static hg_pub *pub_job; /* ardusub.params_job, when the manifest declares it */
 
 /* ArduSub as the module knows it. */
 static struct {
@@ -298,6 +301,7 @@ static void param_seen(const struct mav_param_value *p, uint64_t now)
 	out.index = p->param_index;
 	out.count = p->param_count;
 	hg_publish_with(pub_param, &out, sizeof out, now, HG_NO_REFS, NULL, 0);
+	pj_param_value(id, p->param_value, p->param_type, p->param_index, p->param_count, now);
 	for (int i = 0; i < A.n_params; i++) {
 		if (strcmp(A.params[i].id, id) != 0)
 			continue;
@@ -571,6 +575,110 @@ static int on_setup(const hg_call_ctx *c, const void *req, void *rep, char *reas
 	return HG_OK;
 }
 
+/* ---- Saving and restoring every parameter (param_backup.c) ---------------------------- */
+
+static void pj_send_list(void)
+{
+	struct mav_param_request_list r = { .target_system = A.sysid, .target_component = MAV_COMP_ID_AUTOPILOT1 };
+	MAV_SEND(&L, PARAM_REQUEST_LIST, param_request_list, &r);
+}
+
+static void pj_send_read_index(int index)
+{
+	struct mav_param_request_read r;
+	memset(&r, 0, sizeof r);
+	r.target_system = A.sysid;
+	r.target_component = MAV_COMP_ID_AUTOPILOT1;
+	r.param_index = (int16_t)index;
+	MAV_SEND(&L, PARAM_REQUEST_READ, param_request_read, &r);
+}
+
+static void pj_send_set(const char *id, float value, uint8_t type)
+{
+	struct mav_param_set p;
+	memset(&p, 0, sizeof p);
+	p.target_system = A.sysid;
+	p.target_component = MAV_COMP_ID_AUTOPILOT1;
+	memcpy(p.param_id, id, strnlen(id, 16));
+	p.param_value = value;
+	p.param_type = type ? type : MAV_PARAM_TYPE_REAL32;
+	MAV_SEND(&L, PARAM_SET, param_set, &p);
+}
+
+/* A file name of the request, terminated whatever the caller sent. */
+static void req_name(const void *req, char out[64])
+{
+	memcpy(out, ((const params_file_req *)req)->name, 63);
+	out[63] = 0;
+}
+
+static int params_common(char *reason, uint64_t now)
+{
+	if (!A.seen || now > A.last_rx_ns + 3000000000ull) {
+		mod_fmt(reason, HG_CALL_REASON, "ArduSub silent");
+		return -1;
+	}
+	if (A.setup_pending) {
+		mod_fmt(reason, HG_CALL_REASON, "mavlink.setup is under way");
+		return -1;
+	}
+	return 0;
+}
+
+static int on_params_dump(const hg_call_ctx *c, const void *req, void *rep, char *reason)
+{
+	uint64_t now = hg_now_ns();
+	char name[64];
+	req_name(req, name);
+	if (params_common(reason, now) < 0 || pj_start_dump(name, now, reason, HG_CALL_REASON) < 0)
+		return HG_E_REFUSED;
+	pj_current(rep); /* the job's number: ardusub.params_job says when it is over */
+	mod_log(WHO, "params_dump %s by %s: into %s", name, c->caller, pj_dir());
+	return HG_OK;
+}
+
+static int on_params_load(const hg_call_ctx *c, const void *req, void *rep, char *reason)
+{
+	uint64_t now = hg_now_ns();
+	char name[64];
+	req_name(req, name);
+	if (params_common(reason, now) < 0)
+		return HG_E_REFUSED;
+	/* Never while ArduSub can drive: as mavlink.setup. */
+	hg_gate_check(G, NULL);
+	hg_gate_safety(G, &A.safety);
+	if (!A.safety.present || A.safety.state != 0) {
+		mod_fmt(reason, HG_CALL_REASON, "safety.state is not disarmed");
+		return HG_E_REFUSED;
+	}
+	if (A.armed != 0) {
+		mod_fmt(reason, HG_CALL_REASON, "ArduSub is armed");
+		return HG_E_REFUSED;
+	}
+	if (pj_start_load(name, now, reason, HG_CALL_REASON) < 0)
+		return HG_E_REFUSED;
+	pj_current(rep);
+	mod_log(WHO, "params_load %s by %s: from %s", name, c->caller, pj_dir());
+	return HG_OK;
+}
+
+static void params_tick(uint64_t now)
+{
+	if (!pj_running() && !pub_job)
+		return;
+	/* A load stops the moment ArduSub is armed; a dump only reads. */
+	if (pj_running() && A.armed != 0)
+		pj_abort("ArduSub armed", now);
+	pj_tick(now);
+	struct params_job m;
+	if (pub_job && pj_status(&m, now)) {
+		hg_publish_with(pub_job, &m, sizeof m, now, HG_NO_REFS, NULL, 0);
+		if (m.job && m.state != 1)
+			mod_log(WHO, "params job %u %s: %u of %u read%s%s", m.job, m.state == 2 ? "done" : "failed",
+				m.received, m.total, m.reason[0] ? ": " : "", m.reason);
+	}
+}
+
 /* ---- The tick ------------------------------------------------------------------------ */
 
 static void send_next_param(uint64_t now)
@@ -729,8 +837,9 @@ static void tick(uint64_t now)
 	}
 	if (A.seen && now >= A.rates_next_ns)
 		request_rates(now);
-	if (A.seen && A.n_params && now >= A.param_next_ns)
+	if (A.seen && A.n_params && now >= A.param_next_ns && !pj_running())
 		send_next_param(now);
+	params_tick(now);
 	if (now >= A.next_state_ns)
 		publish_state(now);
 }
@@ -788,6 +897,26 @@ int mavlink_vehicle_main(const char *conf_path)
 	if (hg_serve_method("arm", on_arm, NULL) < 0 || hg_serve_method("setup", on_setup, NULL) < 0) {
 		mod_log(WHO, "hg_serve_method: %s", strerror(errno));
 		return 4;
+	}
+	/* Saving and restoring every parameter: when the manifest declares the two
+	 * methods and ardusub.params_job (an older manifest runs without them). */
+	{
+		char dir[512];
+		if (C.params_backup_dir[0]) {
+			mod_fmt(dir, sizeof dir, "%s", C.params_backup_dir);
+		} else if (mod_state_dir(dir, sizeof dir) == 0) {
+			size_t u = strlen(dir);
+			mod_fmt(dir + u, sizeof dir - u, "/params-backup");
+		}
+		struct pj_send send = { pj_send_list, pj_send_read_index, pj_send_set };
+		pj_init(dir, &send);
+		pub_job = hg_pub_open("ardusub.params_job", &PARAMS_JOB_TYPE, NULL);
+		int d = hg_serve_method("params_dump", on_params_dump, NULL);
+		int l = hg_serve_method("params_load", on_params_load, NULL);
+		if (!pub_job || d < 0 || l < 0)
+			mod_log(WHO, "params_dump/params_load not wired (the manifest lacks them): no parameter backup");
+		else
+			mod_log(WHO, "parameter backups in %s", dir);
 	}
 	hg_sub *subs[HG_MAX_WAIT_FD];
 	int n = hg_gate_subs(G, subs, 2);

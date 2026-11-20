@@ -50,6 +50,7 @@ struct mavlink_conf {
 	uint64_t link_timeout_ns;      /* topside: safety.state older than this is the link down (until the bridge) */
 	/* [Params] */
 	char params_file[MC_PATH];
+	char params_backup_dir[MC_PATH]; /* mavlink.params_dump/_load's files; "": <state dir>/params-backup */
 	/* [Depth] */
 	double fluid_density;          /* kg/m^3 */
 	double surface_pressure_hpa;

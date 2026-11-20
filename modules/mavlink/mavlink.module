@@ -34,6 +34,11 @@ Inputs=safety.state
 [Publish ardusub.param]
 Type=ardusub_param
 
+# The progress and the end of a params_dump or params_load (job 0 first: the
+# backup directory).
+[Publish ardusub.params_job]
+Type=params_job
+
 # The telemetry topics of docs/10 "Telemetry".
 [Publish nav.attitude]
 Type=attitude
@@ -80,4 +85,18 @@ Allow=safety
 [Serve setup]
 Request=empty
 Reply=empty
+Allow=admin topside:admin
+
+# Every ArduSub parameter into a file of the module's backup directory, and
+# such a file set back (hangar ardusub-params save|diff|restore; the module's
+# README, "Saving and restoring ArduSub's parameters"). The reply is the job;
+# ardusub.params_job follows it to its end.
+[Serve params_dump]
+Request=params_file_req
+Reply=params_job
+Allow=admin topside:admin
+
+[Serve params_load]
+Request=params_file_req
+Reply=params_job
 Allow=admin topside:admin

@@ -17,10 +17,10 @@
 #                             HANGAR_SITL=1 and tools/sim/run.sh up with HANGAR_SIM=1
 
 MAVLINK_SRC := modules/mavlink/mavlink_main.c modules/mavlink/mavlink_vehicle.c modules/mavlink/mavlink_topside.c \
-	modules/mavlink/mavlink_conf.c modules/mavlink/mav.c modules/mavlink/sha256.c
+	modules/mavlink/mavlink_conf.c modules/mavlink/mav.c modules/mavlink/sha256.c modules/mavlink/param_backup.c
 MAVLINK_MSG_SRC := msg/wrench.c msg/manual_control.c msg/ardusub_state.c msg/ardusub_param.c msg/attitude.c \
 	msg/imu.c msg/depth.c msg/battery.c msg/thruster_out.c msg/arm_req.c msg/arm_rep.c msg/empty.c \
-	msg/safety_state.c msg/pilot_buttons.c msg/hangar_system.c
+	msg/safety_state.c msg/pilot_buttons.c msg/hangar_system.c msg/params_job.c msg/params_file_req.c
 MAVLINK_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodules/common -Imodules/mavlink -Ihangard/tests
 MAVLINK_BIN := $(BUILDDIR)/hangar-mavlink
 MAVLINK_FAKE := $(TESTDIR)/mavlink-modules/fake_ardusub
