@@ -86,7 +86,7 @@ lost_wake    sent, msgs (= sent), gaps (0), timeouts (0), torn (0), wakes, ok
 
 The targets of docs/00 map onto: `publish.sizes[bytes=256].ns` (under 1000 on a Pi 4),
 `latest.sizes[bytes=256].ns` (under 500), `wake[rate_hz=1000].p50_us/p99_us`
-(reported), `idle.*_delta` (0), `sizes[].bytes` of `hangard` (under 100 KB). The
+(reported), `idle.*_delta` (0), `sizes[].bytes` of `hangard` (reported; a guide figure of about 200 KB, docs/00). The
 spike's numbers for the same loops on x86-64 are `spike/RESULTS.json`
 (`publish_ns`, `publish16_ns`, `latest_ns`, `latency_under_manager_1kHz_256B_20s`,
 `idle_manager_30s`, `rss_kb_at_1kHz`); the harness's `publish` is a few ns slower than
