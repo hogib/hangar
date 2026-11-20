@@ -174,7 +174,7 @@ class Trainer(threading.Thread):
                 raise RuntimeError("no model yet")
             self.model.eval()
             t = now()
-            r = learn.deploy(self.model, "depth_ff", stream=self.stream, outputs=["heave"])
+            r = learn.deploy(self.model, "depth_ff", stream=self.stream, outputs=["heave"], steps=self.steps)
             self.model.train()
         r["seconds"] = (now() - t) / 1e9
         r["steps"] = self.steps

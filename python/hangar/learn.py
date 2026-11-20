@@ -463,11 +463,15 @@ def _watch(ta, tl, timeout):
 # ---- Export and deploy ----------------------------------------------------------
 
 def export(model, path, stream, outputs, probes=None, runtime=None, name=None, warmup_ticks=None,
-           tick_period_ns=None, parent_hash=0, steps=0):
+           tick_period_ns=None, parent_hash=0, steps=0, session="live"):
     """The .hgw of a PyTorch model (hangar.nn.export_torch): bound to the
     stream's input fields and to `outputs` (wrench fields), the probes from
     the reference, the header's lineage from the stream's buffer; refused
-    unless it matches `runtime` (runtime_info's dict) when given."""
+    unless it matches `runtime` (runtime_info's dict) when given. The
+    lineage's `steps`, `parent_hash` (the first 8 bytes of the BLAKE2s of
+    the weights this training started from, 0 for none) and `session` (the
+    recorder's session the rows are in, "live" for rows nobody recorded) are
+    the caller's to give: the stream knows the rows, not the training."""
     from .nn import export_torch, hgw
     newest = stream.replay.rows[-1] if len(stream.replay) else None
     tp = tick_period_ns or (runtime or {}).get("tick_period_ns") or 0
@@ -484,7 +488,7 @@ def export(model, path, stream, outputs, probes=None, runtime=None, name=None, w
         parent_hash=parent_hash,
         newest_row_boot=newest.boot if newest else b"\0" * 16,
         newest_row_stamp_ns=newest.stamp if newest else 0,
-        lineage=stream.lineage(),
+        lineage=stream.lineage(session),
     )
     if runtime:
         if runtime.get("dataset_hash") and runtime["dataset_hash"] != stream.dataset_hash:
@@ -516,13 +520,39 @@ def state_dir(policy):
     return os.path.join(root + "/var/lib/hangar" if root else "/var/lib/hangar", "policy_" + policy)
 
 
+def recording_session(directory=None):
+    """The id of the recorder's open session (recorder.session), or "live"
+    when nothing is being recorded or there is no recorder."""
+    try:
+        t = _topic.open_topic("recorder.session", directory, start="oldest")
+    except _topic.TopicError:
+        return "live"
+    try:
+        msgs = t.read()
+        if not msgs:
+            return "live"
+        d = t.decode(msgs[-1])
+        return d["id"] if int(d.get("active", 0)) and d.get("id") else "live"
+    finally:
+        t.close()
+
+
 def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeout=60.0, directory=None,
-           incoming=None):
+           incoming=None, steps=None, parent_hash=None, session=None):
     """Export (unless given a file), send, load_weights, and wait for the
     load's end: {"version", "state" ("done" | "rejected"), "check", "reason",
     "hash"}. until the bridge: the file is copied into the policy's incoming
-    directory, not sent with bridge.send."""
-    if isinstance(model_or_file, (str, os.PathLike)):
+    directory, not sent with bridge.send.
+
+    The lineage a model is exported with: `steps`, the training steps so far
+    (the caller counts them; 0 when not given); `parent_hash`, by default the
+    hash under which this same model object was last deployed (its training
+    went on from those weights), 0 at its first deploy; `session`, by default
+    the recorder's open session, else "live". They were left at 0, 0 and
+    "live" whatever the trainer knew: the header had the fields and deploy()
+    had no way to fill them."""
+    exported = not isinstance(model_or_file, (str, os.PathLike))
+    if not exported:
         path = str(model_or_file)
     else:
         if stream is None or outputs is None:
@@ -531,11 +561,19 @@ def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeou
         import tempfile
         fd, path = tempfile.mkstemp(suffix=".hgw")
         os.close(fd)
-        export(model_or_file, path, stream, outputs, probes, runtime=rt)
+        if parent_hash is None:
+            parent_hash = getattr(model_or_file, "hangar_deployed_hash", 0)
+        export(model_or_file, path, stream, outputs, probes, runtime=rt, steps=int(steps or 0),
+               parent_hash=int(parent_hash), session=session or recording_session(directory))
     with open(path, "rb") as f:
         data = f.read()
     digest = hashlib.blake2s(data, digest_size=32).hexdigest()
     h64 = struct.unpack("<Q", bytes.fromhex(digest)[:8])[0]
+    if exported:
+        try:
+            model_or_file.hangar_deployed_hash = h64  # the next deploy of this model started from here
+        except AttributeError:
+            pass
     name = "%016x.hgw" % h64
     inc = incoming or os.path.join(state_dir(policy), "incoming")  # until the bridge
     tmp = os.path.join(inc, "." + name + ".tmp")

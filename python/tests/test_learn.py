@@ -217,6 +217,75 @@ class WithTorch(unittest.TestCase):
         self.assertRaises(learn.LearnError, learn.export, model, path, s, ["heave"],
                           runtime={"dataset_hash": s.dataset_hash ^ 1})
 
+    def test_export_writes_the_lineage_it_is_given(self):
+        # steps, parent_hash and the session were 0, 0 and "live" in every
+        # file deploy() wrote: export had the first two as arguments that
+        # deploy never passed, and no way to name the session.
+        import tempfile
+        from hangar.nn import hgw
+        s = learn.open_dataset(os.path.join(FIXTURES, "dataset.chain.hgr"), batch=2, seq_len=3)
+        model = torch.nn.Sequential(torch.nn.Linear(6, 1))
+        path = os.path.join(tempfile.mkdtemp(), "m.hgw")
+        rt = {"dataset_hash": s.dataset_hash, "ops": [("dense", 1)]}
+        learn.export(model, path, s, ["heave"], runtime=rt)
+        f = hgw.parse(open(path, "rb").read())
+        self.assertEqual((f.header.steps, f.header.parent_hash, f.header.lineage[0].session), (0, 0, "live"))
+        learn.export(model, path, s, ["heave"], runtime=rt, steps=1234, parent_hash=0x1122334455667788,
+                     session="20261120-101500-rov")
+        f = hgw.parse(open(path, "rb").read())
+        self.assertEqual(f.header.steps, 1234)
+        self.assertEqual(f.header.parent_hash, 0x1122334455667788)
+        self.assertEqual(f.header.lineage[0].session, "20261120-101500-rov")
+        self.assertEqual(f.header.lineage[0].rows, len(s.replay))
+
+    def test_deploy_fills_the_lineage(self):
+        # deploy() with a model: what it hands to export. The policy's side
+        # (runtime_info, the incoming directory, load_weights) is stood in
+        # for; the file it would send is read back.
+        import tempfile
+        from hangar.nn import hgw
+        s = learn.open_dataset(os.path.join(FIXTURES, "dataset.chain.hgr"), batch=2, seq_len=3)
+        model = torch.nn.Sequential(torch.nn.Linear(6, 1))
+        inc = tempfile.mkdtemp()
+        topics = tempfile.mkdtemp()
+
+        class Sent(Exception):
+            pass
+
+        def no_topic(*a, **k):
+            raise Sent()
+
+        saved = learn.runtime_info, learn._topic.open_topic
+        learn.runtime_info = lambda policy: {"dataset_hash": s.dataset_hash, "ops": [("dense", 1)]}
+        try:
+            hashes = []
+            for steps in (100, 250):
+                learn._topic.open_topic = saved[1]  # recorder.session: absent here, so "live"
+                real = saved[1]
+
+                def open_topic(name, directory=None, start="newest", timeout=0.0):
+                    if name.startswith("policy."):
+                        raise Sent()  # the file is in the incoming directory by now
+                    return real(name, directory, start, timeout)
+
+                learn._topic.open_topic = open_topic
+                self.assertRaises(Sent, learn.deploy, model, "toy", stream=s, outputs=["heave"], incoming=inc,
+                                  directory=topics, steps=steps)
+                newest = max((os.path.join(inc, n) for n in os.listdir(inc)), key=os.path.getmtime)
+                f = hgw.parse(open(newest, "rb").read())
+                hashes.append((f.header.steps, f.header.parent_hash, f.header.lineage[0].session,
+                               int(os.path.basename(newest)[:16], 16)))
+                with torch.no_grad():
+                    model[0].weight += 0.5  # trained on: other weights, another hash
+        finally:
+            learn.runtime_info, learn._topic.open_topic = saved
+        (steps1, parent1, session1, hash1), (steps2, parent2, session2, hash2) = hashes
+        self.assertEqual((steps1, parent1, session1), (100, 0, "live"))  # the first deploy has no parent
+        self.assertEqual(steps2, 250)
+        self.assertEqual(parent2, hash1)  # the second started from the first
+        self.assertNotEqual(hash2, hash1)
+        self.assertEqual(learn.recording_session(topics), "live")
+
 
 EXAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "depth_ff.py")
 

@@ -218,7 +218,7 @@ def main():
         if step % 50 == 0:
             print("step %d: loss %.6f" % (step, loss.item()))
         if a.deploy_every and time.monotonic() - deployed >= a.deploy_every:
-            print(learn.deploy(model, a.policy, stream=stream, outputs=["heave"]))
+            print(learn.deploy(model, a.policy, stream=stream, outputs=["heave"], steps=step))
             deployed = time.monotonic()
     model.eval()
     if a.synthetic:
