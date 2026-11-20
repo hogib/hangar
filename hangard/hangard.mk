@@ -15,7 +15,7 @@ HANGARD_CORE_SRC := hangard/manifest.c hangard/wiring.c hangard/policy_check.c m
 HANGARD_SRC := hangard/hangard.c hangard/conf.c hangard/registry.c hangard/topics.c \
 	hangard/spawn.c hangard/health.c hangard/control.c $(HANGARD_CORE_SRC) \
 	msg/hangar_system.c msg/hangar_modules.c
-HANGAR_CLI_SRC := hangar/hangar.c $(HANGARD_CORE_SRC)
+HANGAR_CLI_SRC := hangar/hangar.c hangar/hangar_params.c $(HANGARD_CORE_SRC)
 HANGARD_MSG_SRC := hangard/msg/hangar_system.msg hangard/msg/hangar_modules.msg
 HANGARD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ihangard -Imsg -Ilib/common -Imodules/common -Imodules/bridge
 HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral server caller paramer

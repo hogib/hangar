@@ -8,7 +8,11 @@
 // disagreement; ArduSub armed behind hangar's back or out of MANUAL disarmed
 // at once; telemetry stamped in hangar's time and continuing forward across
 // an ArduSub restart, the rates requested again; silence; an unsigned frame
-// refused by both ends; the Neutral command. This process plays `safety`
+// refused by both ends; the Neutral command; every parameter saved, compared
+// and set back through hangar ardusub-params (mavlink.params_dump and
+// params_load: a dropped PARAM_VALUE asked again by index, typed values, only
+// what differs set and each confirmed, STAT_* left alone, refused while armed,
+// MANUAL_CONTROL at 50 Hz all the while). This process plays `safety`
 // (safety.state, ctl.wrench, the caller of mavlink.arm). Under 30 s.
 //
 // With MAVLINK_TEST_SERIAL=1 the same suite runs over a serial line: the
@@ -84,7 +88,7 @@ static void copy_types(void)
 	if (!src || !*src)
 		src = "msg";
 	const char *types[] = { "manual_control", "ardusub_state", "ardusub_param", "attitude", "battery", "thruster_out",
-				"arm_req", "arm_rep", NULL };
+				"arm_req", "arm_rep", "params_job", "params_file_req", NULL };
 	for (int i = 0; types[i]; i++) {
 		char from[1024], to[1024];
 		tfmt(from, sizeof from, "%s/%s.msg", src, types[i]);
@@ -124,13 +128,15 @@ static void write_manifests(void)
 			    "[Subscribe ctl.wrench]\n[Subscribe safety.state]\n"
 			    "[Publish ardusub.manual_control]\nType=manual_control\nRate=50\nActuator=yes\nInputs=ctl.wrench\n"
 			    "[Publish ardusub.state]\nType=ardusub_state\nRate=10\nInputs=safety.state\n"
-			    "[Publish ardusub.param]\nType=ardusub_param\n"
+			    "[Publish ardusub.param]\nType=ardusub_param\n[Publish ardusub.params_job]\nType=params_job\n"
 			    "[Publish nav.attitude]\nType=attitude\nRate=50\nStaleAfter=500ms\n[Publish nav.imu]\nType=imu\nRate=50\nStaleAfter=500ms\n"
 			    "[Publish nav.depth]\nType=depth\nRate=50\nStaleAfter=500ms\n[Publish power.battery]\nType=battery\nRate=2\nStaleAfter=3s\n"
 			    "[Publish thr.out]\nType=thruster_out\nRate=50\nStaleAfter=500ms\n"
 			    "[Actuator]\nCommand=ctl.wrench\nNeutral=%s --neutral %s\n"
 			    "[Serve arm]\nRequest=arm_req\nReply=arm_rep\nAllow=safety\n"
 			    "[Serve setup]\nRequest=empty\nReply=empty\nAllow=admin topside:admin\n"
+			    "[Serve params_dump]\nRequest=params_file_req\nReply=params_job\nAllow=admin topside:admin\n"
+			    "[Serve params_load]\nRequest=params_file_req\nReply=params_job\nAllow=admin topside:admin\n"
 			    "[Restart]\nBackoff=0.1s..0.2s\n", T_mavlink, conf_path, T_mavlink, conf_path);
 	manifest("safety", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
 			   "[Subscribe ardusub.state]\n[Subscribe ardusub.manual_control]\n[Subscribe nav.attitude]\n"
@@ -461,6 +467,183 @@ static void test_params_and_setup(void)
 	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "call", "mavlink.setup", (char *)NULL), 1);
 	CHECK(strstr(cli_out, "not disarmed") != NULL);
 	set_safety(0, 0);
+}
+
+/* ---- hangar ardusub-params -------------------------------------------------- */
+
+/* The command run while this process goes on playing safety (safety.state at
+ * 10 Hz, ctl.wrench at 50 Hz): its exit status, its output in cli_out, its
+ * duration in *ms. */
+static int cli_pumping(long timeout_ms, uint64_t *ms, const char *a1, const char *a2)
+{
+	char out_path[600];
+	tfmt(out_path, sizeof out_path, "%s/cli.out", T_root);
+	uint64_t t0 = now_ms();
+	pid_t pid = fork();
+	if (pid == 0) {
+		int fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd >= 0) {
+			dup2(fd, 1);
+			dup2(fd, 2);
+			close(fd);
+		}
+		execl(T_hangar, T_hangar, "ardusub-params", a1, a2, (char *)NULL);
+		_exit(127);
+	}
+	int st = -1;
+	for (;;) {
+		pump(20);
+		pid_t w = waitpid(pid, &st, WNOHANG);
+		if (w == pid)
+			break;
+		if (now_ms() - t0 > (uint64_t)timeout_ms) {
+			kill(pid, SIGKILL);
+			waitpid(pid, &st, 0);
+			st = -1;
+			break;
+		}
+	}
+	if (ms)
+		*ms = now_ms() - t0;
+	cli_out[0] = 0;
+	FILE *f = fopen(out_path, "r");
+	if (f) {
+		size_t n = fread(cli_out, 1, sizeof cli_out - 1, f);
+		cli_out[n] = 0;
+		fclose(f);
+	}
+	int rc = st >= 0 && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+	if (rc != 0)
+		printf("    hangar ardusub-params %s: exit %d: %s", a1, rc, cli_out);
+	return rc;
+}
+
+/* "NAME VALUE TYPE" from the fake. */
+static int fake_get(const char *id, double *v, unsigned *type)
+{
+	char cmd[64], name[32];
+	tfmt(cmd, sizeof cmd, "get %s", id);
+	return sscanf(fake_cmd(cmd), "%31s %lf %u", name, v, type) == 3 ? 0 : -1;
+}
+
+/* The value a saved file gives a name, and its type; -1 if absent. */
+static int file_get(const char *path, const char *id, double *v, unsigned *type, int *lines)
+{
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return -1;
+	char line[256];
+	int found = -1, n = 0;
+	while (fgets(line, sizeof line, f)) {
+		if (line[0] == '#')
+			continue;
+		n++;
+		char name[32];
+		double val;
+		unsigned t;
+		if (sscanf(line, "%31s %lf %u", name, &val, &t) == 3 && strcmp(name, id) == 0) {
+			*v = val;
+			*type = t;
+			found = 0;
+		}
+	}
+	fclose(f);
+	if (lines)
+		*lines = n;
+	return found;
+}
+
+static void test_params_backup(void)
+{
+	set_safety(0, 0);
+	char saved[600], yaml[600];
+	tfmt(saved, sizeof saved, "%s/pixhawk.params", T_root);
+	tfmt(yaml, sizeof yaml, "%s/mavros.yaml", T_root);
+	const char *st = fake_cmd("status");
+	long long n_params = fake_num(st, "n_params"), r0 = fake_num(st, "reads_index");
+	CHECK(n_params > 400);
+	/* Save: the list streamed with two PARAM_VALUEs lost, asked again by
+	 * index; MANUAL_CONTROL at 50 Hz all the while. */
+	fake_cmd("drop 17 203");
+	long long mc0 = fake_num(fake_cmd("status"), "mc_count");
+	uint64_t ms = 0;
+	CHECK_EQ_INT(cli_pumping(20000, &ms, "save", saved), 0);
+	long long mc1 = fake_num(fake_cmd("status"), "mc_count");
+	double hz = (double)(mc1 - mc0) * 1000.0 / (double)ms;
+	printf("    %lld parameters saved in %llu ms over %s, two re-read by index; MANUAL_CONTROL %.1f Hz meanwhile\n",
+	       n_params, (unsigned long long)ms, serial_mode ? "the serial line" : "UDP", hz);
+	CHECK(hz >= 47.0 && hz <= 53.0);
+	CHECK(strstr(cli_out, "parameters saved to") != NULL);
+	CHECK(fake_num(fake_cmd("status"), "reads_index") >= r0 + 2);
+	int lines = 0;
+	double v, fv;
+	unsigned t, ft;
+	CHECK_EQ_INT(file_get(saved, "COMPASS_X03", &v, &t, &lines), 0);
+	CHECK_EQ_INT(lines, (int)n_params);
+	CHECK_EQ_INT(fake_get("COMPASS_X03", &fv, &ft), 0);
+	CHECK(t == MAV_PARAM_TYPE_INT8 && ft == t && v == fv);
+	CHECK_EQ_INT(file_get(saved, "EK3_X07", &v, &t, NULL), 0);
+	CHECK_EQ_INT(fake_get("EK3_X07", &fv, &ft), 0);
+	CHECK(t == MAV_PARAM_TYPE_REAL32 && (float)v == (float)fv);
+	double atc5, servo10;
+	CHECK_EQ_INT(file_get(saved, "ATC_RAT_X05", &atc5, &t, NULL), 0);
+	CHECK_EQ_INT(file_get(saved, "SERVO_X10", &servo10, &t, NULL), 0);
+	CHECK_EQ_INT(t, MAV_PARAM_TYPE_INT16);
+	/* Two changed behind the file's back: named, and nothing else (STAT_RUNTIME
+	 * and BARO1_GND_PRESS moved since, by themselves). */
+	fake_cmd("set ATC_RAT_X05 9.5");
+	fake_cmd("set SERVO_X10 1234");
+	CHECK_EQ_INT(cli_pumping(20000, NULL, "diff", saved), 1);
+	CHECK(strstr(cli_out, "ATC_RAT_X05") && strstr(cli_out, "SERVO_X10") && strstr(cli_out, "2 differ"));
+	CHECK(!strstr(cli_out, "STAT_") && !strstr(cli_out, "GND_PRESS"));
+	/* Restore: refused while safety.state is not disarmed, and while ArduSub
+	 * is armed (a disarm it refuses keeps it so). */
+	set_safety(1, 1);
+	CHECK_EQ_INT(cli_pumping(5000, NULL, "restore", saved), 1);
+	CHECK(strstr(cli_out, "not disarmed") != NULL);
+	set_safety(0, 0);
+	fake_cmd("refuse-disarm on");
+	fake_cmd("arm");
+	uint64_t t0 = now_ms();
+	while ((!have_ap || last_ap.armed == 0) && now_ms() - t0 < 2000)
+		pump(10);
+	CHECK(last_ap.armed != 0);
+	CHECK_EQ_INT(cli_pumping(5000, NULL, "restore", saved), 1);
+	CHECK(strstr(cli_out, "ArduSub is armed") != NULL);
+	fake_cmd("refuse-disarm off");
+	CHECK(wait_ap(0, 3000));
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "armed"), 0);
+	/* Restore: the two that differ set, each read back, nothing else. */
+	long long s0 = fake_num(fake_cmd("status"), "params_set");
+	CHECK_EQ_INT(cli_pumping(20000, &ms, "restore", saved), 0);
+	CHECK(strstr(cli_out, "2 parameters set and confirmed") != NULL);
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "params_set"), s0 + 2);
+	CHECK_EQ_INT(fake_get("ATC_RAT_X05", &fv, &ft), 0);
+	CHECK((float)fv == (float)atc5);
+	CHECK_EQ_INT(fake_get("SERVO_X10", &fv, &ft), 0);
+	CHECK(fv == servo10);
+	printf("    restore of 2 in %llu ms (a full read first)\n", (unsigned long long)ms);
+	CHECK_EQ_INT(cli_pumping(20000, NULL, "diff", saved), 0);
+	CHECK(strstr(cli_out, "every parameter as in") != NULL);
+	if (serial_mode)
+		return; /* the rest is the same over either link */
+	/* MAVROS's YAML (the backups rov.sh made) reads too, its STAT_ ignored; a
+	 * write ArduSub does not take fails after its tries, the rest confirmed. */
+	write_file(yaml, "/mavros/param:\n  ros__parameters:\n    ATC_RAT_X07: 2.5\n    ATC_RAT_X08: 7.25\n"
+			 "    STAT_RUNTIME: 5\n    use_sim_time: false\n");
+	fake_cmd("ignore-set ATC_RAT_X08");
+	s0 = fake_num(fake_cmd("status"), "params_set");
+	CHECK_EQ_INT(cli_pumping(20000, NULL, "restore", yaml), 1);
+	CHECK(strstr(cli_out, "1 of 2 parameters not confirmed") != NULL);
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "params_set"), s0 + 1 + 3);
+	CHECK_EQ_INT(fake_get("ATC_RAT_X07", &fv, &ft), 0);
+	CHECK(fv == 2.5);
+	CHECK_EQ_INT(fake_get("STAT_RUNTIME", &fv, &ft), 0);
+	CHECK(fv > 100);
+	fake_cmd("ignore-set -");
+	/* And back as saved. */
+	CHECK_EQ_INT(cli_pumping(20000, NULL, "restore", saved), 0);
+	CHECK(strstr(cli_out, "1 parameter set and confirmed") != NULL);
 }
 
 static void arm_ok(void)
@@ -936,6 +1119,7 @@ int main(void)
 	copy_types();
 	RUN_TEST(test_start);
 	RUN_TEST(test_params_and_setup);
+	RUN_TEST(test_params_backup);
 	RUN_TEST(test_arming_and_commands);
 	RUN_TEST(test_disarm_and_disagreement);
 	RUN_TEST(test_refusal);

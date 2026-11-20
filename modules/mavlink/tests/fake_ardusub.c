@@ -6,8 +6,11 @@
  * takes MANUAL_CONTROL from the ground station's system id only, arms and
  * disarms on MAV_CMD_COMPONENT_ARM_DISARM with COMMAND_ACK (a scripted
  * refusal sends PreArm: STATUSTEXTs first), changes mode on SET_MODE and
- * MAV_CMD_DO_SET_MODE, answers PARAM_REQUEST_READ and PARAM_SET from a small
- * table, and, given a key, requires and produces MAVLink 2 signatures. A
+ * MAV_CMD_DO_SET_MODE, answers PARAM_REQUEST_READ and PARAM_SET from a typed
+ * table of about 430 parameters (as ArduSub's 1 000, smaller), streams the
+ * whole table on PARAM_REQUEST_LIST at 800 a second (four every 5 ms, as a
+ * real link paces it) with the indices `drop` names left out once, keeps
+ * STAT_RUNTIME and BARO1_GND_PRESS changing by themselves, and, given a key, requires and produces MAVLink 2 signatures. A
  * second UDP socket takes one-line commands from the suite and answers
  * "status" with everything it has seen.
  *
@@ -23,7 +26,10 @@
  * a hang-up for ever.
  *
  * Control lines: status | arm | disarm | mode N | refuse <text> | accept |
- * refuse-disarm on|off | silence SECONDS | boot-reset | set NAME VALUE | quit;
+ * refuse-disarm on|off | silence SECONDS | boot-reset | set NAME VALUE | quit |
+ * get NAME ("NAME VALUE TYPE", or "none") | drop I [J ...] (those indices left
+ * out of the next list stream) | ignore-set NAME|- (PARAM_SETs of NAME answered
+ * with the old value, as a refused write);
  * with --pty also: vanish SECONDS (the line goes away, as a USB unplug, and
  * comes back on a new pseudo-terminal behind the same LINK) | stopread on|off
  * (stop reading: the module's writes back up) | garbage (line noise with a
@@ -47,7 +53,8 @@
 #include "mavlink_conf.h"
 #include "mavlink_gen.h"
 
-#define MAX_PARAMS 64
+#define MAX_PARAMS 640
+#define MAX_DROP 8
 #define MANUAL 19u
 
 static struct {
@@ -63,8 +70,12 @@ static struct {
 	char refuse[64];
 	int refuse_disarm;
 	float depth;
-	struct { char id[17]; float value; } params[MAX_PARAMS];
+	struct { char id[17]; float value; uint8_t type; } params[MAX_PARAMS];
 	int n_params;
+	int listing, list_next;      /* a list stream under way, and its next index */
+	int drop[MAX_DROP], n_drop;
+	char ignore_set[17];
+	uint64_t lists, reads_index, reads_name, values_sent;
 	uint64_t interval_ns[8];     /* ATTITUDE SCALED_IMU SCALED_PRESSURE2 SYS_STATUS SERVO_OUTPUT_RAW BATTERY_STATUS SCALED_PRESSURE - */
 	uint64_t next_ns[8];
 	uint64_t next_hb_ns;
@@ -197,13 +208,19 @@ static int param_index(const char *id)
 	return -1;
 }
 
+static int int_type(uint8_t t)
+{
+	return t >= MAV_PARAM_TYPE_UINT8 && t <= MAV_PARAM_TYPE_INT64;
+}
+
 static void send_param(int i)
 {
 	struct mav_param_value p;
 	memset(&p, 0, sizeof p);
 	memcpy(p.param_id, S.params[i].id, strlen(S.params[i].id));
 	p.param_value = S.params[i].value;
-	p.param_type = MAV_PARAM_TYPE_REAL32;
+	p.param_type = S.params[i].type;
+	S.values_sent++;
 	p.param_count = (uint16_t)S.n_params;
 	p.param_index = (uint16_t)i;
 	SEND(PARAM_VALUE, param_value, &p);
@@ -348,13 +365,18 @@ static void on_frame(const struct mav_frame *f)
 		memcpy(id, r.param_id, 16);
 		id[16] = 0;
 		int i = r.param_index >= 0 ? r.param_index : param_index(id);
+		if (r.param_index >= 0)
+			S.reads_index++;
+		else
+			S.reads_name++;
 		if (i >= 0 && i < S.n_params)
 			send_param(i);
 		break;
 	}
 	case MAV_MSG_ID_PARAM_REQUEST_LIST:
-		for (int i = 0; i < S.n_params; i++)
-			send_param(i);
+		S.lists++;
+		S.listing = 1;
+		S.list_next = 0; /* streamed from the main loop */
 		break;
 	case MAV_MSG_ID_PARAM_SET: {
 		struct mav_param_set p;
@@ -364,7 +386,8 @@ static void on_frame(const struct mav_frame *f)
 		id[16] = 0;
 		int i = param_index(id);
 		if (i >= 0) {
-			S.params[i].value = p.param_value;
+			if (strcmp(id, S.ignore_set) != 0)
+				S.params[i].value = int_type(S.params[i].type) ? roundf(p.param_value) : p.param_value;
 			S.params_set++;
 			send_param(i);
 		}
@@ -455,13 +478,15 @@ static void control(void)
 			snprintf(reply, sizeof reply,
 				 "armed=%d mode=%u mc=%d,%d,%d,%d,%u,%u,%d,%d mc_count=%llu mc_from=%u mc_age_ms=%llu "
 				 "rx=%llu rejected=%llu rejected_gcs=%llu params_set=%llu setinterval=%llu arms=%llu disarms=%llu "
-				 "mode_sets=%llu ptys=%llu\n",
+				 "mode_sets=%llu ptys=%llu n_params=%d lists=%llu reads_index=%llu reads_name=%llu values_sent=%llu\n",
 				 S.armed, S.mode, S.mc.x, S.mc.y, S.mc.z, S.mc.r, S.mc.buttons, S.mc.buttons2, S.mc.s, S.mc.t,
 				 (unsigned long long)S.mc_count, S.mc_from,
 				 (unsigned long long)(S.mc_ns ? (now_ns() - S.mc_ns) / 1000000u : 999999),
 				 (unsigned long long)S.rx, (unsigned long long)S.rejected, (unsigned long long)S.rejected_gcs,
 				 (unsigned long long)S.params_set, (unsigned long long)S.setinterval, (unsigned long long)S.arms,
-				 (unsigned long long)S.disarms, (unsigned long long)S.mode_sets, (unsigned long long)S.ptys);
+				 (unsigned long long)S.disarms, (unsigned long long)S.mode_sets, (unsigned long long)S.ptys,
+				 S.n_params, (unsigned long long)S.lists, (unsigned long long)S.reads_index,
+				 (unsigned long long)S.reads_name, (unsigned long long)S.values_sent);
 		} else if (strcmp(buf, "arm") == 0) {
 			S.armed = 1;
 			send_heartbeat();
@@ -493,6 +518,19 @@ static void control(void)
 					S.params[S.n_params++].value = v;
 				}
 			}
+		} else if (strncmp(buf, "get ", 4) == 0) {
+			int i = param_index(buf + 4);
+			if (i < 0)
+				snprintf(reply, sizeof reply, "none\n");
+			else
+				snprintf(reply, sizeof reply, "%s %.9g %u\n", S.params[i].id, (double)S.params[i].value,
+					 (unsigned)S.params[i].type);
+		} else if (strncmp(buf, "drop ", 5) == 0) {
+			S.n_drop = 0;
+			for (char *t = strtok(buf + 5, " "); t && S.n_drop < MAX_DROP; t = strtok(NULL, " "))
+				S.drop[S.n_drop++] = atoi(t);
+		} else if (strncmp(buf, "ignore-set ", 11) == 0) {
+			snprintf(S.ignore_set, sizeof S.ignore_set, "%.16s", strcmp(buf + 11, "-") == 0 ? "" : buf + 11);
 		} else if (strcmp(buf, "quit") == 0) {
 			S.quit = 1;
 		} else if (S.serial && strncmp(buf, "vanish ", 7) == 0) {
@@ -527,15 +565,60 @@ static void control(void)
 	}
 }
 
-static void add_param(const char *id, float v)
+static void add_typed(const char *id, float v, uint8_t type)
 {
 	int i = param_index(id);
 	if (i < 0 && S.n_params < MAX_PARAMS) {
 		i = S.n_params++;
 		snprintf(S.params[i].id, sizeof S.params[i].id, "%.16s", id);
+		S.params[i].type = type;
 	}
 	if (i >= 0)
 		S.params[i].value = v;
+}
+
+static void add_param(const char *id, float v)
+{
+	add_typed(id, v, MAV_PARAM_TYPE_REAL32);
+}
+
+/* The bulk of the table: groups of typed parameters, as ArduSub's are, with
+ * values that print exactly and inexactly alike. */
+static void add_bulk(void)
+{
+	static const struct { const char *prefix; int n; uint8_t type; } G[] = {
+		{ "ATC_RAT", 40, MAV_PARAM_TYPE_REAL32 }, { "PSC_POS", 30, MAV_PARAM_TYPE_REAL32 },
+		{ "INS_ACC", 36, MAV_PARAM_TYPE_REAL32 }, { "COMPASS", 30, MAV_PARAM_TYPE_INT8 },
+		{ "SERVO", 64, MAV_PARAM_TYPE_INT16 },   { "RC", 64, MAV_PARAM_TYPE_INT16 },
+		{ "EK3", 50, MAV_PARAM_TYPE_REAL32 },     { "LOG", 20, MAV_PARAM_TYPE_INT32 },
+		{ "SR0", 20, MAV_PARAM_TYPE_INT16 },      { "BATT", 20, MAV_PARAM_TYPE_REAL32 },
+	};
+	for (size_t g = 0; g < sizeof G / sizeof G[0]; g++)
+		for (int i = 0; i < G[g].n; i++) {
+			char id[20];
+			snprintf(id, sizeof id, "%s_X%02d", G[g].prefix, i);
+			float v = int_type(G[g].type) ? (float)((i * 7 + (int)g) % 100) : 0.1f * (float)i + 0.0123456f * (float)g;
+			add_typed(id, v, G[g].type);
+		}
+	add_typed("STAT_BOOTCNT", 12, MAV_PARAM_TYPE_INT16);
+	add_typed("STAT_RUNTIME", 1000, MAV_PARAM_TYPE_INT32);
+	add_typed("BARO1_GND_PRESS", 101325.0f, MAV_PARAM_TYPE_REAL32);
+}
+
+/* The list stream: four parameters every 5 ms tick. */
+static void stream_list(void)
+{
+	for (int k = 0; k < 4 && S.list_next < S.n_params; k++) {
+		int i = S.list_next++, dropped = 0;
+		for (int d = 0; d < S.n_drop; d++)
+			if (S.drop[d] == i) {
+				dropped = 1;
+				S.drop[d] = -1; /* once */
+			}
+		if (!dropped)
+			send_param(i);
+	}	if (S.list_next >= S.n_params)
+		S.listing = 0;
 }
 
 int main(int argc, char **argv)
@@ -588,6 +671,7 @@ int main(int argc, char **argv)
 		snprintf(id, sizeof id, "BTN%d_SFUNCTION", i);
 		add_param(id, 0);
 	}
+	add_bulk();
 	if (params) {
 		struct mc_param file[MC_MAX_PARAMS];
 		char err[200];
@@ -674,7 +758,15 @@ int main(int argc, char **argv)
 		if (now >= S.next_hb_ns) {
 			S.next_hb_ns = now + 1000000000ull;
 			send_heartbeat();
+			/* ArduSub's own bookkeeping moves by itself. */
+			int r = param_index("STAT_RUNTIME"), b = param_index("BARO1_GND_PRESS");
+			if (r >= 0)
+				S.params[r].value += 1;
+			if (b >= 0)
+				S.params[b].value = 101325.0f + (float)(boot_ms() % 7000) / 1000.0f;
 		}
+		if (S.listing && now >= S.silent_until)
+			stream_list();
 		for (int t = 0; t < 7; t++) {
 			if (!S.interval_ns[t])
 				continue;

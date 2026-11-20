@@ -886,6 +886,33 @@ static int cmd_call(int argc, char **argv)
 	return st == HG_OK ? 0 : 1;
 }
 
+/* hangar_params.c's way in: a call by name with field=value arguments, as
+ * cmd_call makes it. The status (HG_OK, ...), or -100 when no call could be
+ * made (the reason printed); reason gets the reply's, rep its body. */
+int hangar_call(const char *target, char **kv, int nkv, long timeout_ms, char reason[64], void *rep, size_t rep_max)
+{
+	static struct method_info mi;
+	if (method_info(target, &mi) < 0)
+		return -100;
+	static unsigned char body[HG_CALL_MAX_PAYLOAD], rep_body[HG_CALL_MAX_PAYLOAD];
+	memset(body, 0, sizeof body);
+	memset(rep_body, 0, sizeof rep_body);
+	for (int i = 0; i < nkv; i++)
+		if (set_field(&mi.req.type, body, kv[i]))
+			return -100;
+	struct hg_call_reply_envelope env;
+	memset(&env, 0, sizeof env);
+	int st = do_call(target, &mi, body, mi.req.type.payload_bytes, timeout_ms, &env, rep_body, sizeof rep_body);
+	snprintf(reason, 64, "%.63s", env.reason);
+	memcpy(rep, rep_body, rep_max < sizeof rep_body ? rep_max : sizeof rep_body);
+	return st;
+}
+
+const char *hangar_topic_dir(void)
+{
+	return topic_dir();
+}
+
 /* ---- param ---- */
 
 /* The newest <module>.params message and its schema; -1 if the topic is
@@ -1183,6 +1210,7 @@ static int cmd_param(int argc, char **argv)
 /* ---- main ---------------------------------------------------------------- */
 
 int hangar_dataset_main(int argc, char **argv); /* hangar_dataset.c */
+int hangar_params_main(int argc, char **argv);  /* hangar_params.c */
 
 static void usage(void)
 {
@@ -1198,6 +1226,9 @@ static void usage(void)
 	      "  hz <topic> [--seconds N]\n"
 	      "  run <module>                a module in the foreground, wired from its manifest\n"
 	      "  ardusub-setup               set ArduSub's parameters from /etc/hangar/ardusub.params (mavlink.setup)\n"
+	      "  ardusub-params save|diff|restore <file>\n"
+	      "                              every ArduSub parameter into a file, compared with one, set back\n"
+	      "                              (mavlink.params_dump, mavlink.params_load)\n"
 	      "  check                       the arming checklist, without arming (safety.check)\n"
 	      "  call <module>.<method> [field=value ...] [--timeout MS] [--json]\n"
 	      "                              a call as admin:<user> through the manager; the reply decoded\n"
@@ -1255,6 +1286,8 @@ int main(int argc, char **argv)
 			puts("accepted: the module sets the file's parameters; ardusub.state.params says when they all read as the file (1), or which differs (2, the module's status line)");
 		return rc;
 	}
+	if (strcmp(cmd, "ardusub-params") == 0)
+		return hangar_params_main(argc - 2, argv + 2);
 	if (strcmp(cmd, "check") == 0) {
 		/* docs/12's hangar check, the phase 1 subset: the safety module's
 		 * arming checklist, run without arming (safety.check). */
