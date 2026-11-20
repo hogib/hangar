@@ -57,7 +57,11 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   followed by an `fsync`: the docs want the latch renamed into place before the
   failsafe is published, and a storage flush in front of that message would delay
   the failsafe itself by as long as an SD card takes; the unreadable-latch rule is
-  what makes the missing flush safe.
+  what makes the missing flush safe. The latch also carries `hold_since`, the
+  `CLOCK_MONOTONIC` time at which a hold began: a hold lasts `hold_time` from then,
+  across any number of restarts of the module, and a hold whose beginning is not
+  known (a latch from before a reboot, whose time is of another clock; a latch
+  without the line) is over, neutral.
 
 ## Deviations from docs/07, and why
 
@@ -108,7 +112,7 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   file is a mirrored request to the library. With the bridge the same code reads the
   mirrored topic.
 
-## Tests (`make check-safety`, 25 s)
+## Tests (`make check-safety`, 45 s)
 
 A manager with the module, a fake mux (parameters only, named `mux`), the toy talker
 as `depth_hold`, the toy crasher for a module given up with `OnGiveUp=failsafe`; the
@@ -133,4 +137,7 @@ failsafe by e-stop, the module is stopped, its latch file emptied (then, a secon
 time, filled with a cut header and garbage) and the module killed: the manager's
 restart comes back in failsafe by `latch`, neutral, `latch unreadable` in the reason
 and the log, `arm` refused until `clear`, which removes the file. It started
-`disarmed`, reason `start`, before.
+`disarmed`, reason `start`, before. `test_hold_across_restarts`: `hold_time` 6 s,
+the module killed 2 s and 4 s into the hold with the inputs flowing: it comes back in
+the hold each time and the hold ends 6.0 s after it began (10.2 s before: each start
+began it again), and an ended hold stays ended across a third restart.

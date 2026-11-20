@@ -134,10 +134,13 @@ static void latch_write(void)
 {
 	char text[512];
 	/* disarmed and hold_expired come back too: a restart must not undo a
-	 * disarm the pilot asked for, or run an ended hold a second time. */
+	 * disarm the pilot asked for, or run an ended hold a second time; and
+	 * hold_since, when the hold began, so that it must not begin again. */
 	mod_fmt(text, sizeof text,
-		"# hangar safety failsafe latch\nstate 2\naction %u\ntriggers %u\nlatched %u\ndisarmed %u\nhold_expired %u\nreason %s\n",
-		S.action, S.triggers, F.latched, F.disarmed_in_failsafe ? 1u : 0u, F.hold_expired ? 1u : 0u, S.reason);
+		"# hangar safety failsafe latch\nstate 2\naction %u\ntriggers %u\nlatched %u\ndisarmed %u\nhold_expired %u\n"
+		"hold_since %llu\nreason %s\n",
+		S.action, S.triggers, F.latched, F.disarmed_in_failsafe ? 1u : 0u, F.hold_expired ? 1u : 0u,
+		(unsigned long long)F.hold_since_ns, S.reason);
 	if (mod_write_file(latch_path, text) < 0)
 		mod_log(WHO, "cannot write the latch %s: %s", latch_path, strerror(errno));
 }
@@ -176,6 +179,7 @@ static int latch_read(void)
 		return errno == ENOENT ? 0 : latch_unreadable(strerror(errno));
 	char line[256];
 	unsigned action = 0, triggers = 0, latched = 0, disarmed = 0, hold_expired = 0;
+	unsigned long long hold_since = 0;
 	char reason[64] = "";
 	int seen = 0;
 	while (fgets(line, sizeof line, f)) {
@@ -192,6 +196,8 @@ static int latch_read(void)
 			disarmed = v;
 		else if (sscanf(line, "hold_expired %u", &v) == 1)
 			hold_expired = v;
+		else if (sscanf(line, "hold_since %llu", &hold_since) == 1)
+			;
 		else if (strncmp(line, "reason ", 7) == 0) {
 			mod_fmt(reason, sizeof reason, "%s", line + 7);
 			char *nl = strchr(reason, '\n');
@@ -206,6 +212,18 @@ static int latch_read(void)
 	F.disarmed_in_failsafe = disarmed != 0;
 	F.hold_expired = hold_expired != 0;
 	S.action = (uint8_t)(action > ACT_HOLD ? ACT_NEUTRAL : action);
+	/* A hold lasts hold_time from when it began, not from each start of this
+	 * module: a module restarted during a hold (a crash loop, a reload)
+	 * would otherwise hold for as long as it kept restarting. The beginning
+	 * is a CLOCK_MONOTONIC time, good across restarts of the process; after
+	 * a reboot it is from another clock (ahead of now, or long past), and a
+	 * hold whose beginning is not known is over. */
+	uint64_t now = hg_now_ns();
+	F.hold_since_ns = 0;
+	if (hold_since && hold_since <= now)
+		F.hold_since_ns = hold_since;
+	else if (hold_since || S.action == ACT_HOLD)
+		F.hold_expired = 1;
 	if (F.disarmed_in_failsafe || F.hold_expired)
 		S.action = ACT_NEUTRAL;
 	S.outputs_enabled = S.action != ACT_NEUTRAL;

@@ -7,7 +7,7 @@
 // transition and refused transition, each trigger and the combination rule,
 // the latch across a restart, clear against the manager, and the Allow
 // lists through a raw caller; readings that are not numbers, a latch that
-// cannot be read. About 35 s.
+// cannot be read, a hold across restarts. About 45 s.
 #include "hd_test.h"
 
 #include <math.h>
@@ -842,6 +842,60 @@ static void test_latch_unreadable(void)
 	CHECK(file_contains(log, "is there but it has no `state 2` line: starting in failsafe"));
 }
 
+/* A hold lasts hold_time from when it began. hold_since was not latched, so
+ * a module restarted during the hold began it again at each start: with
+ * hold_time 6 s and a crash at 2 s and at 4 s the hold ended 10 s after it
+ * began; a module that kept crashing held for as long as it did. Now the
+ * latch carries the beginning. The times: the hold must end about 6 s after
+ * it began, and is given until 9 s; the fault makes it 10 s or more. */
+static void test_hold_across_restarts(void)
+{
+	CHECK_EQ_INT(last_state.state, 0);
+	CHECK_EQ_INT(param_set("safety", "action_leak=2", "hold_time=6", NULL, NULL), 0);
+	pump(300);
+	arm_ok();
+	T.leak_wet = 1;
+	CHECK(wait_safety(2, 2, 2000));
+	uint64_t t0 = now_ms();
+	CHECK(last_state.outputs_enabled);
+	while (now_ms() - t0 < 2000)
+		pump(20);
+	CHECK(crash_and_restart(NULL));
+	/* Back in the hold (after the manager's modules round names depth_hold
+	 * ready again), not in a new one. */
+	CHECK(wait_latched(2, 3000));
+	CHECK(last_state.outputs_enabled);
+	while (now_ms() - t0 < 4000)
+		pump(20);
+	CHECK(crash_and_restart(NULL));
+	uint64_t t_end = 0;
+	while (now_ms() - t0 < 14000) {
+		pump(20);
+		if (have_state && last_state.state == 2 && strstr(last_state.reason, "hold ended")) {
+			t_end = now_ms();
+			break;
+		}
+	}
+	CHECK(t_end != 0);
+	uint64_t dt = t_end - t0;
+	printf("    hold ended %llu ms after it began, across two restarts (hold_time 6 s)\n", (unsigned long long)dt);
+	CHECK(dt >= 5500 && dt < 9000);
+	CHECK(wait_safety(2, 0, 1000));
+	CHECK(!last_state.outputs_enabled);
+	/* And an ended hold stays ended across one more restart. */
+	CHECK(crash_and_restart(NULL));
+	CHECK(wait_latched(0, 5000));
+	pump(1500); /* the modules round has named depth_hold ready again by now */
+	CHECK_EQ_INT(last_state.state, 2);
+	CHECK_EQ_INT(last_state.action, 0);
+	CHECK(!last_state.outputs_enabled);
+	T.leak_wet = 0;
+	T.ap_armed = 0;
+	pump(300);
+	clear_ok();
+	CHECK_EQ_INT(param_set("safety", "action_leak=1", "hold_time=1", NULL, NULL), 0);
+}
+
 static void test_module_trigger(void)
 {
 	/* A module given up with OnGiveUp=failsafe: the system's failsafe is the
@@ -943,6 +997,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_latch);
 	RUN_TEST(test_not_a_number);
 	RUN_TEST(test_latch_unreadable);
+	RUN_TEST(test_hold_across_restarts);
 	RUN_TEST(test_module_trigger);
 	RUN_TEST(test_allow);
 	RUN_TEST(test_shutdown);
