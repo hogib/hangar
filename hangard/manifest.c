@@ -6,6 +6,8 @@
 #define _GNU_SOURCE
 #include "manifest.h"
 
+#include "bridge_conf.h"
+
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -1267,6 +1269,7 @@ void mf_set_free(struct mf_set *s)
 	for (int i = 0; i < s->n_types; i++)
 		free(s->types[i].schema);
 	free(s->types);
+	free(s->bridge);
 	memset(s, 0, sizeof *s);
 }
 
@@ -1626,9 +1629,6 @@ static void check_module(struct mf_set *s, struct mf_module *m)
 {
 	if (strcmp(m->name, "hangar") == 0)
 		refuse(m, module_line(m), "a module may not be named hangar");
-	if (m->bridge)
-		refuse(m, m->lines[SEC_BRIDGE],
-		       "[Bridge]: the bridge (bridge.conf, mirror lines, its own topics) is not implemented in this stage");
 	if (m->legacy) {
 		if (m->n_pubs || m->n_subs || m->n_serves || m->n_calls || m->has_params)
 			refuse(m, module_line(m), "Legacy=yes: a legacy module declares no topics, calls or parameters");
@@ -1859,6 +1859,102 @@ static int allow_names(const struct mf_serve *sv, const struct mf_module *server
 
 /* Pass 2: calls, the implicit topics and subscriptions. Needs every
  * module's declared types resolved. */
+/* 1 if [Calls] Remote= names one of m's methods (set_params with [Params]). */
+static int serves_remote(const struct mf_set *s, const struct mf_module *m)
+{
+	if (!s->bridge)
+		return 0;
+	for (int i = 0; i < m->n_serves; i++)
+		if (bc_remote_matches(s->bridge, m->name, m->serves[i].method))
+			return 1;
+	return m->has_params && bc_remote_matches(s->bridge, m->name, "set_params");
+}
+
+static void add_mirror(struct mf_module *b, const char *pattern, uint32_t rate_mhz, uint64_t stale_after_ns)
+{
+	for (int i = 0; i < b->n_mirrors; i++)
+		if (strcmp(b->mirrors[i].pattern, pattern) == 0)
+			return;
+	if (b->n_mirrors == (int)(sizeof b->mirrors / sizeof b->mirrors[0])) {
+		refuse(b, module_line(b), "more than %d mirrored topics or globs", b->n_mirrors);
+		return;
+	}
+	struct mf_mirror *mm = &b->mirrors[b->n_mirrors++];
+	mf_fmt(mm->pattern, sizeof mm->pattern, "%s", pattern);
+	mm->rate_mhz = rate_mhz;
+	mm->stale_after_ns = stale_after_ns;
+}
+
+/* The bridge's wiring (docs/08 "The bridge module", "Calls across the
+ * tether"), from bridge.conf and every other module of this machine, after
+ * their own implicit topics: a sub line for each topic it sends, a mirror
+ * line for each it receives, its own bridge.<role>.link. */
+static void derive_bridge(struct mf_set *s, struct mf_module *b)
+{
+	const struct bridge_conf *c = s->bridge;
+	int up = strcmp(s->role, "vehicle") == 0; /* what this machine sends goes up */
+	char topic[MF_TOPIC], why[MF_ERR];
+	int t = resolve_type(s, "bridge_link", why, sizeof why);
+	if (t < 0) {
+		refuse(b, module_line(b), "bridge_link: %s", why);
+		return;
+	}
+	mf_fmt(topic, sizeof topic, "bridge.%s.link", s->role);
+	struct mf_pub *p = add_pub(b, topic, t, 16);
+	if (!p)
+		return;
+	p->rate_mhz = 10000;
+	p->stale_after_ns = 300000000ull;
+	for (int i = 0; i < c->n_mirrors; i++) {
+		const struct bc_mirror *mi = &c->mirrors[i];
+		for (int k = 0; k < mi->n_patterns; k++) {
+			if (mi->up == up)
+				add_sub(b, mi->patterns[k], bc_is_glob(mi->patterns[k]));
+			else
+				add_mirror(b, mi->patterns[k], mi->expect_mhz, mi->stale_after_ns);
+		}
+	}
+	if (!c->n_remote)
+		return;
+	/* Calls across: the request topics of this machine's callers of the
+	 * other side's methods, the reply topics of its servers of listed
+	 * methods, the operators' admin topic; and every request and reply
+	 * topic of the other side, by glob. */
+	mf_fmt(topic, sizeof topic, "hangar.%s.admin.req", s->role);
+	add_sub(b, topic, 0);
+	for (int k = 0; k < s->n_modules; k++) {
+		const struct mf_module *o = s->modules[k];
+		if (o->refused || o == b)
+			continue;
+		for (int i = 0; i < o->n_calls; i++)
+			if (o->calls[i].remote) {
+				mf_fmt(topic, sizeof topic, "%s.req", o->name);
+				add_sub(b, topic, 0);
+				break;
+			}
+		if (serves_remote(s, o)) {
+			mf_fmt(topic, sizeof topic, "%s.rep", o->name);
+			add_sub(b, topic, 0);
+		}
+	}
+	add_mirror(b, "*.req", 0, 0);
+	add_mirror(b, "*.rep", 0, 0);
+}
+
+/* 1 if the bridge receives topic (a mirror line of the bridge matches it). */
+static int bridge_receives(const struct mf_set *s, const char *topic)
+{
+	for (int k = 0; k < s->n_modules; k++) {
+		const struct mf_module *b = s->modules[k];
+		if (!b->bridge || b->refused)
+			continue;
+		for (int i = 0; i < b->n_mirrors; i++)
+			if (hg_glob_match(b->mirrors[i].pattern, topic))
+				return 1;
+	}
+	return 0;
+}
+
 static void derive_implicit(struct mf_set *s, struct mf_module *m)
 {
 	char admin_req[MF_TOPIC];
@@ -1893,7 +1989,10 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 			 * HANGAR_PEER_TOPIC_DIR in the manager's environment) the other
 			 * root's server reads this module's .req directly, so the call
 			 * is remote, not unrouted. */
-			if (getenv("HANGAR_PEER_TOPIC_DIR")) {
+			if (getenv("HANGAR_PEER_TOPIC_DIR") ||
+			    (s->bridge && bc_remote_matches(s->bridge, c->server, c->method))) {
+				/* The bridge carries it: [Calls] Remote= names it (docs/08
+				 * "Calls across the tether"). */
 				c->remote = 1;
 				c->noroute = 0;
 			} else {
@@ -1956,6 +2055,11 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 			if (other)
 				add_sub(m, "*.req", 1);
 		}
+		/* A method [Calls] Remote= names is called from the other side: the
+		 * callers' request topics are the bridge's to create, found by the
+		 * glob (docs/08 "Calls across the tether"). */
+		if (s->bridge && serves_remote(s, m))
+			add_sub(m, "*.req", 1);
 	}
 	if (m->has_params) {
 		char why[MF_ERR];
@@ -2084,7 +2188,7 @@ static void check_set(struct mf_set *s)
 				mf_fmt(sub->pub_type, sizeof sub->pub_type, "req:hangar");
 				sub->hash = t ? t->hash : 0;
 				sub->slots = 16;
-			} else if (!m->refused && !sub->implicit) {
+			} else if (!m->refused && !sub->implicit && !bridge_receives(s, sub->topic)) {
 				warn(s, "%s: [Subscribe %s]: no enabled module publishes it", m->name, sub->topic);
 			}
 		}
@@ -2119,6 +2223,43 @@ static void check_set(struct mf_set *s)
 	}
 }
 
+/* At most one module per machine has [Bridge] (docs/08); its bridge.conf is
+ * read before the modules' implicit topics, which [Calls] Remote= changes. */
+static void load_bridge(struct mf_set *s)
+{
+	free(s->bridge);
+	s->bridge = NULL;
+	struct mf_module *b = NULL;
+	for (int k = 0; k < s->n_modules; k++) {
+		struct mf_module *m = s->modules[k];
+		if (m->refused || !m->bridge)
+			continue;
+		if (b) {
+			refuse(m, m->lines[SEC_BRIDGE], "[Bridge]: %s has it already; one module per machine", b->name);
+			continue;
+		}
+		b = m;
+	}
+	if (!b)
+		return;
+	if (!s->bridge_conf_path[0]) {
+		refuse(b, b->lines[SEC_BRIDGE], "[Bridge]: no BridgeConf");
+		return;
+	}
+	struct bridge_conf *c = malloc(sizeof *c);
+	char err[MF_ERR];
+	if (!c) {
+		refuse(b, b->lines[SEC_BRIDGE], "[Bridge]: out of memory");
+		return;
+	}
+	if (bc_load(s->bridge_conf_path, c, err, sizeof err) < 0) {
+		refuse(b, b->lines[SEC_BRIDGE], "[Bridge]: %s", err);
+		free(c);
+		return;
+	}
+	s->bridge = c;
+}
+
 int mf_set_check(struct mf_set *s)
 {
 	s->n_warnings = 0;
@@ -2126,9 +2267,13 @@ int mf_set_check(struct mf_set *s)
 	for (int k = 0; k < s->n_modules; k++)
 		if (!s->modules[k]->refused)
 			check_module(s, s->modules[k]);
+	load_bridge(s);
 	for (int k = 0; k < s->n_modules; k++)
 		if (!s->modules[k]->refused)
 			derive_implicit(s, s->modules[k]);
+	for (int k = 0; k < s->n_modules; k++)
+		if (!s->modules[k]->refused && s->modules[k]->bridge && s->bridge)
+			derive_bridge(s, s->modules[k]);
 	check_set(s);
 	int ok = 0;
 	for (int k = 0; k < s->n_modules; k++)

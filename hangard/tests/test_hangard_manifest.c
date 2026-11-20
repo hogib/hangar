@@ -494,10 +494,74 @@ static void test_graph_refusals(void)
 	} else {
 		printf("    (no known FNV-1a 32 collision among valid names: id check not exercised)\n");
 	}
-	// The bridge is not implemented in this stage: refused, saying so.
+	// The bridge without a BridgeConf, with a bad one, and twice.
 	fresh_set();
 	add("bridge", MOD "[Bridge]\n");
-	expect_graph("bridge", 3, "not implemented in this stage");
+	expect_graph("bridge", 3, "no BridgeConf");
+	char conf[1024];
+	snprintf(conf, sizeof conf, "%s/bridge.conf", T_root);
+	write_file(conf, "[Bridge]\nPair=lab\n[Mirror nav.depth]\nDelivery=latest\n");
+	fresh_set();
+	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+	add("bridge", MOD "[Bridge]\n");
+	expect_graph("bridge", 3, "Direction");
+	write_file(conf, "[Bridge]\nPair=lab\n");
+	fresh_set();
+	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+	add("bridge", MOD "[Bridge]\n");
+	add("bridge2", MOD "[Bridge]\n");
+	expect_graph("bridge2", 3, "one module per machine");
+}
+
+/* The bridge's wiring from bridge.conf (docs/08): a sub for each topic it
+ * sends, a mirror line for each it receives, and the calls [Calls] Remote=
+ * names as request and reply topics, on the vehicle. */
+static void test_bridge(void)
+{
+	char conf[1024], from[1024], to[1024];
+	const char *src = getenv("HANGAR_MSG_SRC");
+	snprintf(from, sizeof from, "%s/bridge_link.msg", src && *src ? src : "msg");
+	snprintf(to, sizeof to, "%s/bridge_link.msg", T_msg);
+	copy_file(from, to);
+	snprintf(conf, sizeof conf, "%s/bridge.conf", T_root);
+	write_file(conf, "[Bridge]\nPair=lab\n[Calls]\nRemote=safety.*\n"
+			 "[Mirror nav.*]\nDirection=up\n"
+			 "[Mirror pilot.wrench]\nDirection=down\nPriority=command\nExpectRate=50\nStaleAfter=100ms\n"
+			 "MaxAge=200ms\n");
+	fresh_set();
+	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+	add("bridge", MOD "[Bridge]\n");
+	add("safety", MOD "[Serve arm]\nRequest=empty\nReply=empty\nAllow=topside:joystick\n");
+	add("nav", MOD "[Publish nav.depth]\nType=depth\nRate=10\n");
+	add("mux", MOD "[Subscribe pilot.wrench]\n");
+	int ok = mf_set_check(&set);
+	for (int i = 0; i < set.n_modules; i++)
+		if (set.modules[i]->refused)
+			printf("    %s\n", set.modules[i]->reason);
+	CHECK_EQ_INT(ok, 4);
+	// No warning for pilot.wrench: the bridge brings it.
+	for (int i = 0; i < set.n_warnings; i++) {
+		printf("    warning: %s\n", set.warnings[i]);
+		CHECK(strstr(set.warnings[i], "pilot.wrench") == NULL);
+	}
+	static char text[16384];
+	int len = wiring_text(&set, mf_find(&set, "bridge"), text, sizeof text);
+	CHECK(len > 0);
+	const char *want[] = { "pub bridge.vehicle.link type=bridge_link", "subglob nav.*", "sub safety.rep",
+			       "sub hangar.vehicle.admin.req", "mirror pilot.wrench type=any rate=50 stale_after=100ms",
+			       "mirror *.req type=any", "mirror *.rep type=any", NULL };
+	for (int i = 0; want[i]; i++)
+		if (!strstr(text, want[i])) {
+			printf("    the bridge's wiring lacks '%s':\n%s", want[i], text);
+			CHECK(0);
+		}
+	// The server of a remote method finds its callers' mirrored request topics.
+	len = wiring_text(&set, mf_find(&set, "safety"), text, sizeof text);
+	if (!strstr(text, "subglob *.req")) {
+		printf("    safety's wiring lacks 'subglob *.req':\n%s", text);
+		CHECK(0);
+	}
+	mf_set_free(&set);
 }
 
 static void test_implicit(void)
@@ -684,6 +748,7 @@ int main(void)
 	RUN_TEST(test_parse_refusals);
 	RUN_TEST(test_graph_refusals);
 	RUN_TEST(test_implicit);
+	RUN_TEST(test_bridge);
 	RUN_TEST(test_wiring_roundtrip);
 	mf_set_free(&set);
 	hd_teardown();

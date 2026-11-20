@@ -190,6 +190,117 @@ static void req_page(int fd, const struct peer *p)
 }
 
 /* "open <topic> hash=<hex> payload=<n> schema=<len>[ boot=<hex> first=<n>]\n<schema>" */
+static int hexnib(int c)
+{
+	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+/* The bridge's open of a topic of the other side (docs/08 "Mirrored topics"):
+ * the sender's schema, the mirror line's rate and staleness, the sender's boot
+ * id and first seq, and the module that writes it there as the writer. Only
+ * the bridge, only a topic a mirror line of its wiring matches, never one a
+ * module of this machine publishes. */
+static void open_mirrored(int fd, const struct peer *p, const struct module *m, const char *topic,
+			  const char *boot_hex, unsigned long long first, const char *writer, unsigned slots,
+			  unsigned long long hash, unsigned payload, const char *schema, size_t schema_len)
+{
+	if (!m->mf->bridge) {
+		err_reply(fd, "%s is not the bridge: a mirrored topic (boot=) is refused", m->name);
+		return;
+	}
+	/* This machine's own names are never the other side's to write: the
+	 * manager's hangar.<role>.* (its admin topic's caller field is trusted)
+	 * and the bridge's bridge.<role>.*. The writer "hangar" only on the
+	 * other side's admin topic, where it names the other side's operator. */
+	char own_h[MF_TOPIC], own_b[MF_TOPIC], other_admin[MF_TOPIC];
+	mf_fmt(own_h, sizeof own_h, "hangar.%s.", G.set.role);
+	mf_fmt(own_b, sizeof own_b, "bridge.%s.", G.set.role);
+	mf_fmt(other_admin, sizeof other_admin, "hangar.%s.admin.req", G.set.other_role);
+	if (strncmp(topic, own_h, strlen(own_h)) == 0 || strncmp(topic, own_b, strlen(own_b)) == 0) {
+		err_reply(fd, "%s is this machine's own: not mirrored", topic);
+		return;
+	}
+	if (strcmp(writer, "hangar") == 0 && strcmp(topic, other_admin) != 0) {
+		err_reply(fd, "%s: the writer hangar only on %s", topic, other_admin);
+		return;
+	}
+	const struct mf_mirror *mm = NULL;
+	for (int i = 0; i < m->mf->n_mirrors && !mm; i++)
+		if (hg_glob_match(m->mf->mirrors[i].pattern, topic))
+			mm = &m->mf->mirrors[i];
+	if (!mm) {
+		err_reply(fd, "%s: no mirror line of bridge.conf lets it in", topic);
+		return;
+	}
+	for (int k = 0; k < G.set.n_modules; k++) {
+		const struct mf_module *o = G.set.modules[k];
+		if (o->refused)
+			continue;
+		for (int i = 0; i < o->n_pubs; i++)
+			if (strcmp(o->pubs[i].topic, topic) == 0) {
+				err_reply(fd, "%s is published here by %s: not mirrored", topic, o->name);
+				return;
+			}
+	}
+	unsigned char boot[16];
+	if (strlen(boot_hex) != 32) {
+		err_reply(fd, "open: boot= needs 32 hex digits");
+		return;
+	}
+	for (int i = 0; i < 16; i++) {
+		int hi = hexnib(boot_hex[2 * i]), lo = hexnib(boot_hex[2 * i + 1]);
+		if (hi < 0 || lo < 0) {
+			err_reply(fd, "open: boot= needs 32 hex digits");
+			return;
+		}
+		boot[i] = (unsigned char)(hi << 4 | lo);
+	}
+	if (writer[0] && !mf_valid_module_name(writer)) {
+		err_reply(fd, "open: writer=%s is not a module name", writer);
+		return;
+	}
+	struct hg_schema *parsed = malloc(sizeof *parsed);
+	if (!parsed) {
+		err_reply(fd, "out of memory");
+		return;
+	}
+	char perr[160];
+	if (hg_schema_parse(schema, schema_len, parsed, perr, sizeof perr) < 0 || parsed->type.hash != hash ||
+	    parsed->type.payload_bytes != payload) {
+		free(parsed);
+		err_reply(fd, "the schema of %s does not parse, or differs from hash= and payload=", topic);
+		return;
+	}
+	free(parsed);
+	char who[96];
+	if (topic_other_writer(topic, p->pid, who, sizeof who)) {
+		err_reply(fd, "%s already has a writer: %s", topic, who);
+		return;
+	}
+	struct topic_params tp = { .name = topic,
+				   .writer = writer[0] ? writer : m->name,
+				   .writer_pid = p->pid,
+				   .type_hash = hash,
+				   .payload_bytes = payload,
+				   .schema = schema,
+				   .schema_bytes = (uint32_t)schema_len,
+				   .slots = slots ? slots : 16, /* the sender's, as its ring holds */
+				   .rate_mhz = mm->rate_mhz,
+				   .stale_after_ns = mm->rate_mhz ? mm->stale_after_ns : 0,
+				   .origin_boot = boot,
+				   .first_seq = first };
+	char err[256];
+	int tfd = topic_create(&tp, err, sizeof err);
+	if (tfd < 0) {
+		err_reply(fd, "cannot create %s: %s", topic, err);
+		return;
+	}
+	reply(fd, "ok\n", 3, tfd);
+	close(tfd);
+	hd_log("%s: opened %s, mirrored from %s (writer %s)", m->name, topic, G.set.other_role,
+	       writer[0] ? writer : m->name);
+}
+
 static void req_open(int fd, const struct peer *p, char *req, size_t len)
 {
 	struct module *m = module_by_pid(p->pid);
@@ -205,9 +316,9 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 	*nl = 0;
 	const char *schema = nl + 1;
 	size_t schema_len = len - (size_t)(schema - req);
-	char topic[MF_TOPIC] = "", boot_hex[40] = "";
+	char topic[MF_TOPIC] = "", boot_hex[40] = "", writer[40] = "";
 	unsigned long long hash = 0, first = 0;
-	unsigned payload = 0, slen = 0;
+	unsigned payload = 0, slen = 0, slots = 0;
 	int have_boot = 0;
 	char *save, *tok = strtok_r(req + 5, " ", &save);
 	if (!tok || strlen(tok) >= sizeof topic) {
@@ -223,6 +334,8 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 			have_boot = 1;
 			continue;
 		}
+		if (sscanf(tok, "writer=%31s", writer) == 1 || (have_boot && sscanf(tok, "slots=%u", &slots) == 1))
+			continue;
 		err_reply(fd, "open: unknown key %s", tok);
 		return;
 	}
@@ -234,16 +347,16 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 		err_reply(fd, "open: %s is not a topic name", topic);
 		return;
 	}
+	if (have_boot) {
+		open_mirrored(fd, p, m, topic, boot_hex, first, writer, slots, hash, payload, schema, schema_len);
+		return;
+	}
 	const struct mf_pub *pub = NULL;
 	for (int i = 0; i < m->mf->n_pubs; i++)
 		if (strcmp(m->mf->pubs[i].topic, topic) == 0)
 			pub = &m->mf->pubs[i];
 	if (!pub) {
 		err_reply(fd, "%s is not a declared or implicit output of %s", topic, m->name);
-		return;
-	}
-	if (have_boot) {
-		err_reply(fd, "%s is not the bridge: a mirrored topic (boot=) is refused", m->name);
 		return;
 	}
 	const struct mf_type *t = mf_type_at(&G.set, pub->type_idx);

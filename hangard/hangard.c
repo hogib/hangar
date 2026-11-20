@@ -353,6 +353,7 @@ static void log_set(const struct mf_set *set)
 static int load_set(struct mf_set *set, char *err, size_t errlen)
 {
 	mf_set_init(set, G.conf.role, G.conf.privileged_module, G.conf.msg_dir);
+	mf_fmt(set->bridge_conf_path, sizeof set->bridge_conf_path, "%s", G.conf.bridge_conf);
 	if (mf_set_load_dir(set, G.conf.module_dir) < 0) {
 		mf_fmt(err, errlen, "cannot read %s: %s", G.conf.module_dir, strerror(errno));
 		return -1;

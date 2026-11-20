@@ -11,13 +11,13 @@
 #   make msg                also regenerates msg/hangar_{system,modules}.{h,c}
 #                           from hangard/msg/*.msg
 
-HANGARD_CORE_SRC := hangard/manifest.c hangard/wiring.c
+HANGARD_CORE_SRC := hangard/manifest.c hangard/wiring.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c lib/hg/hg_ini.c
 HANGARD_SRC := hangard/hangard.c hangard/conf.c hangard/registry.c hangard/topics.c \
 	hangard/spawn.c hangard/health.c hangard/control.c $(HANGARD_CORE_SRC) \
 	msg/hangar_system.c msg/hangar_modules.c
 HANGAR_CLI_SRC := hangar/hangar.c $(HANGARD_CORE_SRC)
 HANGARD_MSG_SRC := hangard/msg/hangar_system.msg hangard/msg/hangar_modules.msg
-HANGARD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ihangard -Imsg -Ilib/common
+HANGARD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ihangard -Imsg -Ilib/common -Imodules/common -Imodules/bridge
 HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral server caller paramer
 HANGARD_TOYDIR := $(TESTDIR)/hangard-modules
 HANGARD_TESTS := hangard_manifest hangard_run hangard_health hangard_adopt hangard_calls hangard_params
@@ -27,6 +27,9 @@ HANGARD_LIB_TESTS := hangard_manifest
 $(OBJDIR)/hangard/%.o: EE_CFLAGS := $(HG_CFLAGS)
 $(OBJDIR)/hangard/%.o: EE_CPPFLAGS := $(HANGARD_CPPFLAGS)
 $(OBJDIR)/hangar/%.o: EE_CFLAGS := $(HG_CFLAGS)
+# bridge.conf's reader and BLAKE2s, shared with the bridge module (modules/bridge).
+$(OBJDIR)/modules/bridge/%.o: EE_CFLAGS := $(HG_CFLAGS)
+$(OBJDIR)/modules/bridge/%.o: EE_CPPFLAGS := $(HANGARD_CPPFLAGS)
 $(OBJDIR)/hangar/%.o: EE_CPPFLAGS := $(HANGARD_CPPFLAGS)
 $(OBJDIR)/msg/%.o: EE_CFLAGS := $(HG_CFLAGS)
 $(OBJDIR)/msg/%.o: EE_CPPFLAGS := -Ilib/hg

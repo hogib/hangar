@@ -175,6 +175,19 @@ int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, si
 		    c->method, rq->name, (unsigned long long)rq->hash, rq->payload_bytes, rp->name,
 		    (unsigned long long)rp->hash, rp->payload_bytes, c->remote, c->noroute ? " noroute=1" : "");
 	}
+	/* The bridge's: the topics bridge.conf says come to this machine, with
+	 * the receiving file's rate and staleness (docs/08 "Configuration"). */
+	for (int i = 0; i < m->n_mirrors; i++) {
+		const struct mf_mirror *mm = &m->mirrors[i];
+		put(&o, "mirror %s type=any", mm->pattern);
+		if (mm->rate_mhz) {
+			put(&o, " rate=");
+			put_rate(&o, mm->rate_mhz);
+			put(&o, " stale_after=");
+			put_duration(&o, mm->stale_after_ns);
+		}
+		put(&o, "\n");
+	}
 	if (o.overflow) {
 		errno = ENOSPC;
 		return -1;

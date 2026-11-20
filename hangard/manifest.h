@@ -141,6 +141,14 @@ struct mf_module {
 	int n_calls;
 	struct mf_call calls[MF_MAX_CALLS];
 	int bridge;
+	/* The bridge's mirror lines (docs/03 "Wiring"): the topics bridge.conf
+	 * says come to this machine, which it may create (docs/08). */
+	int n_mirrors;
+	struct mf_mirror {
+		char pattern[MF_TOPIC];
+		uint32_t rate_mhz;
+		uint64_t stale_after_ns;
+	} mirrors[64];
 
 	/* [Actuator] */
 	int has_actuator;
@@ -192,9 +200,14 @@ struct mf_module {
 	int lines[16];           /* section header lines, for refusals: see manifest.c */
 };
 
+struct bridge_conf;
+
 struct mf_set {
 	char role[16];
 	char other_role[16];
+	/* BridgeConf, read when a module has [Bridge] (docs/08); NULL otherwise. */
+	char bridge_conf_path[MF_PATH];
+	struct bridge_conf *bridge;
 	char privileged_module[MF_NAME];
 	char msg_dir[MF_PATH];
 	int n_modules;
