@@ -33,6 +33,12 @@ struct mavlink_conf {
 	struct sockaddr_in bind;       /* the module's own socket */
 	struct sockaddr_in peer;       /* vehicle: ArduSub, fixed; topside: QGroundControl */
 	int have_peer;
+	/* vehicle: the autopilot on a serial line instead (a Pixhawk on USB,
+	 * /dev/ttyACM0, or a telemetry UART): "" for UDP. Exclusive with Bind and
+	 * Peer. Baud is ignored by a USB CDC device but not by a UART. */
+	char serial[MC_PATH];
+	int baud;                      /* 115200 by default */
+	int rtscts;                    /* FlowControl=rtscts */
 	int signing;
 	char key_file[MC_PATH];
 	uint8_t sysid, compid;         /* the module's own ids */
@@ -68,6 +74,9 @@ struct mc_param {
 #define MC_MAX_PARAMS 64
 /* The number read, or -1 with err. */
 int mavlink_params_load(const char *path, struct mc_param *out, int max, char *err, size_t errlen);
+
+/* 1 if Baud= may name this rate (those with a termios constant everywhere). */
+int mc_baud_supported(int baud);
 
 /* "host:port" into an IPv4 socket address; -1 if malformed. */
 int mc_parse_addr(const char *s, struct sockaddr_in *out);

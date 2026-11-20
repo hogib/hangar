@@ -255,8 +255,17 @@ static void publish_state(uint64_t now)
 				n++;
 			}
 	}
-	char line[256];
-	mod_fmt(line, sizeof line, "ardusub %s mode %u params %u; gate %s%s%s%s; rx %llu rejected %llu (%s)",
+	char line[256], link[160] = "";
+	if (L.serial) {
+		/* Short: a status line keeps 127 characters, and the rest of this one
+		 * matters more. The device and the counters are in the log. */
+		mod_fmt(link, sizeof link, "serial %s", L.line_state);
+		if (L.tx_dropped)
+			mod_fmt(link + strlen(link), sizeof link - strlen(link), " tx-dropped %llu",
+				(unsigned long long)L.tx_dropped);
+		mod_fmt(link + strlen(link), sizeof link - strlen(link), "; ");
+	}
+	mod_fmt(line, sizeof line, "%sardusub %s mode %u params %u; gate %s%s%s%s; rx %llu rejected %llu (%s)", link,
 		A.armed == 1 ? "armed" : A.armed == 2 ? "disarming" : "disarmed", A.mode, A.params_state, A.gate_why,
 		A.mismatch[0] ? "; differs: " : "", A.mismatch, unread, (unsigned long long)L.received,
 		(unsigned long long)L.rejected, L.last_reject[0] ? L.last_reject : "-");
@@ -619,7 +628,7 @@ static struct sockaddr_in peer_noted;
 
 static void note_peer(void)
 {
-	if (!L.have_peer || memcmp(&L.peer, &peer_noted, sizeof L.peer) == 0)
+	if (L.serial || !L.have_peer || memcmp(&L.peer, &peer_noted, sizeof L.peer) == 0)
 		return;
 	char dir[1024], path[1100], text[64], ip[INET_ADDRSTRLEN];
 	if (mod_state_dir(dir, sizeof dir) < 0)
@@ -798,13 +807,19 @@ int mavlink_vehicle_main(const char *conf_path)
 	timerfd_settime(tfd, 0, &its, NULL);
 	int ep = epoll_create1(EPOLL_CLOEXEC);
 	struct epoll_event ev = { .events = EPOLLIN, .data.fd = L.fd };
-	epoll_ctl(ep, EPOLL_CTL_ADD, L.fd, &ev);
+	/* A serial line that is not there yet has no descriptor: it joins the
+	 * set when mav_link_service opens it, and leaves it by being closed. */
+	int link_fd = L.fd;
+	if (L.fd >= 0)
+		epoll_ctl(ep, EPOLL_CTL_ADD, L.fd, &ev);
 	ev.data.fd = efd;
 	epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev);
 	ev.data.fd = tfd;
 	epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &ev);
-	mod_log(WHO, "the vehicle's MAVLink module: as system %u component %u to ArduSub (system %u), signing %s, %d parameters in %s",
-		C.sysid, C.compid, A.sysid, C.signing ? "on" : "off", A.n_params, C.params_file);
+	char how[200];
+	mav_link_describe(&L, how, sizeof how);
+	mod_log(WHO, "the vehicle's MAVLink module: as system %u component %u to ArduSub (system %u) over %s, signing %s, %d parameters in %s",
+		C.sysid, C.compid, A.sysid, how, C.signing ? "on" : "off", A.n_params, C.params_file);
 	uint64_t now = hg_now_ns();
 	A.next_mc_ns = now;
 	A.next_state_ns = now;
@@ -816,22 +831,43 @@ int mavlink_vehicle_main(const char *conf_path)
 			break;
 		now = hg_now_ns();
 		for (int i = 0; i < k; i++) {
-			if (evs[i].data.fd == L.fd) {
+			if (evs[i].data.fd == link_fd && L.fd >= 0) {
 				now_ctx = now;
 				mav_link_receive(&L, on_frame, &now_ctx);
-			} else {
+			} else if (evs[i].data.fd != link_fd) {
 				uint64_t v;
 				(void)!read(evs[i].data.fd, &v, sizeof v);
 			}
 		}
 		hg_serve();
 		tick(now);
+		mav_link_service(&L, now);
+		if (L.fd != link_fd) {
+			/* The line closed (it left the set by its close: a read or a write
+			 * found it gone) or reopened. */
+			if (L.fd >= 0) {
+				struct epoll_event le = { .events = EPOLLIN, .data.fd = L.fd };
+				epoll_ctl(ep, EPOLL_CTL_ADD, L.fd, &le);
+				mod_log(WHO, "serial %s open", L.dev);
+			} else {
+				mod_log(WHO, "serial %s %s; reopening in %.1f s", L.dev, L.line_state, (double)L.backoff_ns / 1e9);
+			}
+			link_fd = L.fd;
+			publish_state(now);
+		}
 	}
 	/* On SIGTERM: neutral and a disarm before the exit (docs/07). */
 	send_manual_control(NULL, hg_now_ns(), 0);
 	if (A.seen)
 		send_command(MAV_CMD_COMPONENT_ARM_DISARM, 0, 0, 0);
-	mod_log(WHO, "stopping: neutral and disarm sent");
+	mav_link_drain(&L, 300); /* a serial line: let them out before the close */
+	if (L.serial) {
+		char how[600];
+		mav_link_describe(&L, how, sizeof how);
+		mod_log(WHO, "stopping: neutral and disarm sent; %s", how);
+	} else {
+		mod_log(WHO, "stopping: neutral and disarm sent");
+	}
 	hg_wait_fd_close();
 	mav_link_close(&L);
 	return 0;
@@ -852,13 +888,23 @@ int mavlink_neutral_main(const char *conf_path)
 	for (int i = 0; i < n_params; i++)
 		if (strcmp(A.params[i].id, "SYSID_MYGCS") == 0 || strcmp(A.params[i].id, "MAV_GCS_SYSID") == 0)
 			C.sysid = (uint8_t)A.params[i].value;
-	if (mav_link_open(&L, &C, err, sizeof err) < 0) {
+	/* Not exclusive: the module that held the line exclusively is gone when
+	 * the manager runs this (it runs Neutral for a dead or stopped module). */
+	if (mav_link_open_ex(&L, &C, 0, err, sizeof err) < 0) {
 		fprintf(stderr, "%s --neutral: %s\n", WHO, err);
 		return 1;
 	}
 	A.sysid = C.target_sysid ? C.target_sysid : 1;
+	if (L.serial && L.fd < 0) {
+		/* The line is not there (unplugged, the autopilot rebooting): there
+		 * is nobody to tell, and ArduSub's own GCS failsafe acts on the
+		 * silence. */
+		fprintf(stderr, "%s --neutral: %s %s: nothing sent\n", WHO, L.dev, L.line_state);
+		mav_link_close(&L);
+		return 0;
+	}
 	/* The address the module learned, if it ever heard ArduSub; else the next
-	 * packet, within the manager's 1 s. */
+	 * packet, within the manager's 1 s. (A serial line is its own peer.) */
 	int from_file = 0;
 	if (!L.have_peer && peer_file_read(&L.peer) == 0) {
 		L.have_peer = 1;
@@ -897,8 +943,11 @@ int mavlink_neutral_main(const char *conf_path)
 		struct timespec ts = { 0, 20000000 };
 		nanosleep(&ts, NULL);
 	}
-	fprintf(stderr, "%s --neutral: neutral manual control and disarm sent to ArduSub (system %u), signed %s\n", WHO,
-		A.sysid, C.signing ? "yes" : "no");
+	mav_link_drain(&L, 300);
+	char how[200];
+	mav_link_describe(&L, how, sizeof how);
+	fprintf(stderr, "%s --neutral: neutral manual control and disarm sent to ArduSub (system %u) over %s, signed %s\n",
+		WHO, A.sysid, how, C.signing ? "yes" : "no");
 	mav_link_close(&L);
 	return 0;
 }

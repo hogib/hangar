@@ -57,6 +57,7 @@ static void defaults(struct mavlink_conf *c, int topside)
 		c->link_timeout_ns = 2000000000ull;
 	} else {
 		mc_parse_addr("127.0.0.1:14660", &c->bind);
+		c->baud = 115200;
 		c->signing = 1;
 		snprintf(c->key_file, sizeof c->key_file, "/etc/hangar/mavlink.key");
 		c->sysid = 255;
@@ -132,7 +133,7 @@ int mavlink_conf_load(struct mavlink_conf *c, const char *path, int topside, cha
 		return -1;
 	}
 	char buf[512], section[64] = "", arg[64] = "";
-	int line = 0;
+	int line = 0, udp_keys = 0;
 	while (fgets(buf, sizeof buf, f)) {
 		line++;
 		char *s = trim(buf);
@@ -179,7 +180,28 @@ int mavlink_conf_load(struct mavlink_conf *c, const char *path, int topside, cha
 			if (strcmp(k, "Bind") == 0) {
 				if (mc_parse_addr(v, &c->bind) < 0)
 					FAIL("Bind: host:port");
+				udp_keys++;
+			} else if (strcmp(k, "Serial") == 0) {
+				if (topside)
+					FAIL("Serial: the vehicle's module only (the topside speaks to QGroundControl over UDP)");
+				if (!*v || *v != '/')
+					FAIL("Serial: an absolute device path, such as /dev/ttyACM0");
+				snprintf(c->serial, sizeof c->serial, "%s", v);
+			} else if (strcmp(k, "Baud") == 0) {
+				char *end;
+				long b = strtol(v, &end, 10);
+				if (*end || !mc_baud_supported((int)b))
+					FAIL("Baud: one of 9600 19200 38400 57600 115200 230400 460800 500000 921600 1000000 1500000 2000000");
+				c->baud = (int)b;
+			} else if (strcmp(k, "FlowControl") == 0) {
+				if (strcmp(v, "none") == 0)
+					c->rtscts = 0;
+				else if (strcmp(v, "rtscts") == 0)
+					c->rtscts = 1;
+				else
+					FAIL("FlowControl: none or rtscts");
 			} else if (strcmp(k, "Peer") == 0 || strcmp(k, "GCS") == 0) {
+				udp_keys++;
 				if (!*v) {
 					c->have_peer = 0;
 				} else if (mc_parse_addr(v, &c->peer) < 0) {
@@ -270,9 +292,24 @@ int mavlink_conf_load(struct mavlink_conf *c, const char *path, int topside, cha
 		}
 	}
 	fclose(f);
+	if (c->serial[0] && udp_keys) {
+		snprintf(err, errlen, "%s: [Link] Serial= and Bind=/Peer= name two links: the autopilot is on one or the other", path);
+		return -1;
+	}
+	if (c->serial[0])
+		c->have_peer = 0; /* a serial line has no address; the line itself is the peer */
 	return 0;
 }
 #undef FAIL
+
+int mc_baud_supported(int baud)
+{
+	static const int ok[] = { 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000, 1500000, 2000000 };
+	for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++)
+		if (ok[i] == baud)
+			return 1;
+	return 0;
+}
 
 int mavlink_params_load(const char *path, struct mc_param *out, int max, char *err, size_t errlen)
 {
