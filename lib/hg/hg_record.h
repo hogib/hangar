@@ -167,7 +167,8 @@ struct hgr_reader {
 };
 
 /* Maps the file read-only and validates the header. 0, or -1 with errno
- * (EPROTO: not a recording). */
+ * (EPROTO: not a recording; EFBIG: larger than this build can map, 4 GiB
+ * and more where size_t is 32 bits). */
 int hgr_open(struct hgr_reader *r, const char *path);
 void hgr_reader_close(struct hgr_reader *r);
 /* The type of the file's messages, parsed from the header's schema into

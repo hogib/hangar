@@ -230,9 +230,16 @@ int hgr_open(struct hgr_reader *r, const char *path)
 		errno = e;
 		return -1;
 	}
-	if ((size_t)st.st_size < HGR_HEADER_BYTES) {
+	if (st.st_size < (off_t)HGR_HEADER_BYTES) {
 		close(fd);
 		errno = EPROTO;
+		return -1;
+	}
+	/* Where size_t is 32 bits and off_t 64, a file of 4 GiB or more cannot
+	 * be mapped; cast, its length modulo 4 GiB would be, as a shorter file. */
+	if ((uint64_t)st.st_size != (uint64_t)(size_t)st.st_size) {
+		close(fd);
+		errno = EFBIG;
 		return -1;
 	}
 	void *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);

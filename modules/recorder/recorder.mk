@@ -99,6 +99,23 @@ check-recording-py:
 
 check-recording: $(RECORDER_CHECKS) check-recording-py
 
+# hgr_open against a recording of 4 GiB and more where size_t is 32 bits
+# (modules/recorder/tests/test_rec_hgr32.c): the one case a 64-bit build
+# cannot reach, so the test is built -m32, from its source and the two
+# library files it needs. Skipped where the compiler has no 32-bit libc (a
+# cross build; a host without one).
+.PHONY: check-rec_hgr32
+check-rec_hgr32:
+	@mkdir -p $(TESTDIR); \
+	if echo 'int main(void){return 0;}' | $(CC) -m32 -x c - -o $(TESTDIR)/.m32-probe >/dev/null 2>&1; then \
+	  if $(CC) -m32 $(HG_CFLAGS) -O1 -g $(RECORDER_CPPFLAGS) -o $(TESTDIR)/test_rec_hgr32 \
+	       modules/recorder/tests/test_rec_hgr32.c lib/hg/hg_record.c lib/hg/hg_type.c > $(TESTDIR)/rec_hgr32.log 2>&1 && \
+	     $(if $(TIMEOUT),$(TIMEOUT) 60) $(abspath $(TESTDIR)/test_rec_hgr32) >> $(TESTDIR)/rec_hgr32.log 2>&1; then \
+	    echo "ok    rec_hgr32"; \
+	  else echo "FAIL  rec_hgr32"; cat $(TESTDIR)/rec_hgr32.log; exit 1; fi; \
+	else echo "skip  rec_hgr32: $(CC) cannot build with -m32"; fi
+check-recording: check-rec_hgr32
+
 # The library-side suites under the sanitizers, as check-tsan/check-asan run
 # lib/hg's (same probe, same flags, same build directories).
 check-tsan-recording:
