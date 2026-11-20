@@ -213,6 +213,55 @@ static void test_exit_78_with_an_unterminated_status(void)
 	unlink(T_log);
 }
 
+/* The wiring memfds are the image's own: a re-exec makes new ones and must
+ * not carry the old along. Four modules, a manager limited to 64
+ * descriptors, sixteen re-execs: a memfd leaked per module and re-exec would
+ * use them up, and the wiring of a module started afterwards could not be
+ * made. */
+static void test_reexec_leaks_no_wiring(void)
+{
+	const char *names[] = { "w1", "w2", "w3", "w4" };
+	for (int i = 0; i < 4; i++)
+		manifest(names[i], "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	T_nofile = 64;
+	mgr = manager_start();
+	T_nofile = 0;
+	for (int i = 0; i < 4; i++)
+		CHECK(wait_state(names[i], "ready", 5000));
+	struct mstat m;
+	module_status("w1", &m);
+	int ok = 1;
+	for (int i = 0; i < 16 && ok; i++) {
+		log_clear();
+		ok = strncmp(ctl_ms("reexec", 2000), "ok", 2) == 0 && wait_file_contains(T_log, "ready: 4 modules", 3000);
+	}
+	CHECK(ok);
+	CHECK(!file_contains(T_log, "cannot create the wiring memfd"));
+	/* A manager out of descriptors may not answer at all: ask with a limit. */
+	ok = ok && strncmp(ctl_ms("restart w1", 2000), "ok", 2) == 0;
+	CHECK(ok);
+	CHECK(ok && wait_new_pid("w1", m.pid, "ready", 5000));
+	if (!ok) {
+		/* What a manager that cannot be asked leaves: its modules, by the
+		 * pids of its registry. */
+		char reg[1024], text[4096];
+		tfmt(reg, sizeof reg, "%s/run/hangar/registry", T_root);
+		tfmt(text, sizeof text, "%s", read_file(reg));
+		manager_kill9(mgr);
+		for (char *l = strtok(text, "\n"); l; l = strtok(NULL, "\n")) {
+			int pid = 0;
+			if (l[0] == 'w' && sscanf(l + 3, "%d", &pid) == 1 && pid > 1)
+				kill(pid, SIGKILL);
+		}
+		unlink(reg);
+	} else {
+		manager_stop(mgr);
+	}
+	for (int i = 0; i < 4; i++)
+		manifest_remove(names[i]);
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("spawn", NULL);
@@ -221,6 +270,7 @@ int main(void)
 	HD_RUN(test_no_record_outlives_its_instance);
 	HD_RUN(test_environment);
 	HD_RUN(test_exit_78_with_an_unterminated_status);
+	HD_RUN(test_reexec_leaks_no_wiring);
 	hd_teardown();
 	TEST_MAIN_END();
 }

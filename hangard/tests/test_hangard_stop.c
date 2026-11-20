@@ -30,11 +30,10 @@ static void kill_leftover(const char *name)
 
 static void end(const char *name)
 {
-	struct mstat m;
-	int pid = module_status(name, &m) ? m.pid : 0;
+	/* A manager that shut down has killed and reaped its modules and removed
+	 * the registry; one that had to be killed leaves the pids there. No pid
+	 * is signalled that the manager may already have reaped. */
 	manager_stop(mgr);
-	if (pid > 1)
-		kill(pid, SIGKILL); /* ours: the pid the manager listed for it */
 	kill_leftover(name);
 	manifest_remove(name);
 	if (!getenv("HD_KEEP"))
@@ -376,7 +375,6 @@ static void test_adopted_unhealthy_is_stopped(void)
 	CHECK(wait_file_contains(T_log, "(failure 1)", 2000));
 	CHECK(kill(pid1, 0) < 0 || !module_status("stub", &m) || m.pid != pid1);
 	end("stub");
-	kill(pid1, SIGKILL);
 }
 
 /* `hangar stop`, then the manager killed before the module has gone: the
@@ -389,8 +387,6 @@ static void test_adopted_stop_ends_stopped(void)
 		mgr = manager_start();
 		CHECK(wait_state("stub", "ready", 5000));
 		struct mstat m;
-		module_status("stub", &m);
-		int pid1 = m.pid;
 		CHECK(strncmp(ctl("stop stub"), "ok", 2) == 0);
 		CHECK(wait_state("stub", "stopping", 2000));
 		manager_kill9(mgr);
@@ -406,7 +402,6 @@ static void test_adopted_stop_ends_stopped(void)
 		CHECK_EQ_INT(m.pid, 0);
 		CHECK(!file_contains(T_log, "stub: started"));
 		end("stub");
-		kill(pid1, SIGKILL);
 	}
 }
 
@@ -430,7 +425,6 @@ static void test_adopted_restart_ends_restarted(void)
 	module_status("stub", &m);
 	CHECK_EQ_INT(m.failures, 0);
 	end("stub");
-	kill(pid1, SIGKILL);
 }
 
 int main(void)

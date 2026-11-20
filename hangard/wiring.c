@@ -197,7 +197,7 @@ int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, si
 
 int wiring_memfd(const char *text, size_t len)
 {
-	int fd = (int)syscall(SYS_memfd_create, "hangar-wiring", HG_MFD_ALLOW_SEALING);
+	int fd = (int)syscall(SYS_memfd_create, "hangar-wiring", HG_MFD_CLOEXEC | HG_MFD_ALLOW_SEALING);
 	if (fd < 0)
 		return -1;
 	size_t off = 0;

@@ -12,12 +12,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -31,6 +33,7 @@
 
 static char T_root[256], T_modules[512], T_msg[512], T_control[512], T_topics[512], T_log[512];
 static const char *T_hangard, *T_hangar, *T_toys;
+static int T_nofile; /* not 0: the RLIMIT_NOFILE of the managers manager_start starts */
 
 /* snprintf through a va_list: bounded copies that may truncate are the
  * intent here, and this keeps the compiler from flagging each one. */
@@ -272,6 +275,10 @@ static inline pid_t manager_start(void)
 		int nul = open("/dev/null", O_RDONLY);
 		if (nul >= 0)
 			dup2(nul, 0);
+		if (T_nofile) {
+			struct rlimit rl = { (rlim_t)T_nofile, (rlim_t)T_nofile };
+			setrlimit(RLIMIT_NOFILE, &rl);
+		}
 		execl(T_hangard, T_hangard, (char *)NULL);
 		_exit(127);
 	}
@@ -321,6 +328,41 @@ static inline const char *ctl(const char *req)
 	static char reply[HG_CONTROL_MAX];
 	if (hg_control_call(T_control, req, strlen(req), reply, sizeof reply, NULL, 0) < 0)
 		tfmt(reply, sizeof reply, "err connect: %s", strerror(errno));
+	return reply;
+}
+
+/* One control request that waits at most ms for the connection and ms for
+ * the reply, for a manager that may not be answering: the reply, or "" when
+ * none came. */
+static inline const char *ctl_ms(const char *req, long ms)
+{
+	static char reply[HG_CONTROL_MAX];
+	reply[0] = 0;
+	int s = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	if (s < 0)
+		return reply;
+	struct sockaddr_un sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sun_family = AF_UNIX;
+	tfmt(sa.sun_path, sizeof sa.sun_path, "%s", T_control);
+	struct pollfd pf = { .fd = s, .events = POLLOUT };
+	uint64_t t0 = now_ms();
+	/* A full backlog refuses a non-blocking connect with EAGAIN: ask again. */
+	while (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0 && errno != EISCONN) {
+		if ((errno != EAGAIN && errno != EINPROGRESS && errno != EINTR) || now_ms() - t0 > (uint64_t)ms) {
+			close(s);
+			return reply;
+		}
+		sleep_ms(10);
+	}
+	if (poll(&pf, 1, (int)ms) > 0 && (pf.revents & POLLOUT) && send(s, req, strlen(req), MSG_NOSIGNAL) > 0) {
+		pf.events = POLLIN;
+		if (poll(&pf, 1, (int)ms) > 0 && (pf.revents & POLLIN)) {
+			ssize_t n = recv(s, reply, sizeof reply - 1, 0);
+			reply[n > 0 ? n : 0] = 0;
+		}
+	}
+	close(s);
 	return reply;
 }
 

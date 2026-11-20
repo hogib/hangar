@@ -12,8 +12,10 @@
  * when it does not fit. */
 int wiring_text(const struct mf_set *s, const struct mf_module *m, char *out, size_t len);
 
-/* A sealed memfd (F_SEAL_SHRINK | GROW | WRITE | SEAL) holding text; not
- * close-on-exec, so that it crosses into the module. -1 with errno. */
+/* A sealed memfd (F_SEAL_SHRINK | GROW | WRITE | SEAL) holding text.
+ * Close-on-exec: the module gets a duplicate, made in the child after its
+ * sweep of the descriptors, and the manager's own does not cross a re-exec,
+ * whose image makes its own. -1 with errno. */
 int wiring_memfd(const char *text, size_t len);
 
 #endif
