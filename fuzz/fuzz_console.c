@@ -7,14 +7,19 @@
  * dawn_patrold.c is included whole. The harness makes a connection as
  * conn_accept does, over a socket pair, writes the input to the far end in
  * pieces and hands the connection its events. There is no manager: a POST that
- * reaches the control socket or a call is refused where it starts; the topic
- * directory is this process's own and empty.
+ * reaches the control socket or a call is refused where it starts. The topic
+ * directory is this process's own, with what a manager and two modules would
+ * have put there (the system, two module records with awkward status lines, a
+ * depth reading), a log file, and one file that is not a topic.
  *
  * Input: one byte, the size of the pieces the bytes arrive in (0: all at
  * once; else that many * 8 + 1), then the bytes of the connection. */
 #include "fuzz.h"
 
+#include <dirent.h>
 #include <sys/stat.h>
+
+#include "depth.h"
 
 #define main console_main
 #include "dawn_patrold.c"
@@ -28,12 +33,58 @@ static char dir[256];
 
 static void cleanup(void)
 {
-	char p[300];
-	static const char *const names[] = { "topics/.dir", "topics", "log", "" };
-	for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
-		snprintf(p, sizeof p, "%s/%s", dir, names[i]);
-		if (unlink(p) < 0)
-			rmdir(p);
+	static const char *const subs[] = { "topics", "log", "" };
+	for (size_t i = 0; i < sizeof subs / sizeof subs[0]; i++) {
+		char d[300], p[600];
+		snprintf(d, sizeof d, "%s/%s", dir, subs[i]);
+		DIR *dp = opendir(d);
+		struct dirent *e;
+		while (dp && (e = readdir(dp))) {
+			snprintf(p, sizeof p, "%s/%s", d, e->d_name);
+			unlink(p);
+		}
+		if (dp)
+			closedir(dp);
+		rmdir(d);
+	}
+}
+
+/* What the console reads: the manager's two topics, a module's output, a log. */
+static void fixtures(void)
+{
+	char p[600];
+	hg_pub *sys = hg_pub_open("hangar.vehicle.system", &HANGAR_SYSTEM_TYPE, NULL);
+	hg_pub *mods = hg_pub_open("hangar.vehicle.modules", &HANGAR_MODULES_TYPE, &(struct hg_pub_opts){ .slots = 16 });
+	hg_pub *depth = hg_pub_open("nav.depth", &DEPTH_TYPE, &(struct hg_pub_opts){ .rate_mhz = 50000 });
+	if (!sys || !mods || !depth)
+		abort();
+	uint64_t now = hg_now_ns();
+	struct hangar_system s = { .state = 1, .since_ns = now, .manager_ns = now, .modules = 2, .manager_pid = 1 };
+	snprintf(s.reason, sizeof s.reason, "mux: gave up after \"3\" failures\\");
+	hg_publish(sys, &s, sizeof s, now);
+	struct hangar_modules m = { .state = 1, .index = 0, .count = 2, .pid = 4242, .since_ns = now, .published_ns = now };
+	snprintf(m.name, sizeof m.name, "safety");
+	snprintf(m.status, sizeof m.status, "armed \"no\"\t<b>&amp;</b> \x01\x7f\xff tail");
+	hg_publish(mods, &m, sizeof m, now);
+	m = (struct hangar_modules){ .state = 4, .index = 1, .count = 2, .exit_known = 1, .last_exit = -11, .failures = 3,
+				     .since_ns = now, .published_ns = now };
+	memset(m.name, 'm', sizeof m.name);   /* not terminated, as a damaged record */
+	memset(m.status, 's', sizeof m.status);
+	hg_publish(mods, &m, sizeof m, now);
+	struct depth d = { .depth_m = 2.5f, .temp_c = 12.5f, .pressure_mbar = 1260.0f };
+	hg_publish(depth, &d, sizeof d, now);
+	snprintf(p, sizeof p, "%s/topics/not_a_topic", dir);
+	FILE *f = fopen(p, "w");
+	if (f) {
+		fputs("this is not a topic file\n", f);
+		fclose(f);
+	}
+	snprintf(p, sizeof p, "%s/log/safety.log", dir);
+	f = fopen(p, "w");
+	if (f) {
+		for (int i = 0; i < 200; i++)
+			fprintf(f, "line %d of the log, with a \"quote\" and a \\ and \xc3\xa9\n", i);
+		fclose(f);
 	}
 }
 
@@ -57,6 +108,7 @@ static void setup(void)
 	unsetenv("HANGAR_WIRING");
 	unsetenv("HANGAR_WIRING_FILE");
 	unsetenv("HANGAR_PEER_TOPIC_DIR");
+	fixtures();
 	G.sub_system = hg_sub_open("hangar.vehicle.system", &HANGAR_SYSTEM_TYPE);
 	G.sub_modules = hg_sub_open_from("hangar.vehicle.modules", &HANGAR_MODULES_TYPE, HG_OLDEST);
 	if (!G.sub_system || !G.sub_modules)

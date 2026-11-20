@@ -45,7 +45,7 @@ fuzz_mavlink_topside_MAXLEN := 2048
 fuzz_video_SRC := modules/video_relay/depack.c modules/video_relay/mp4.c modules/encoder/h264.c
 fuzz_video_MAXLEN := 16384
 # dawn_patrold.c is included by the harness; lib/net/http.c is gnu99 like the rest of lib/net.
-fuzz_console_SRC := modules/console/console_api.c msg/hangar_system.c msg/hangar_modules.c lib/net/http.c $(HG_SRC)
+fuzz_console_SRC := modules/console/console_api.c msg/hangar_system.c msg/hangar_modules.c msg/depth.c lib/net/http.c $(HG_SRC)
 fuzz_console_DEPS := modules/console/dawn_patrold.c
 fuzz_console_CPPFLAGS := -Ilib/net -Imodules/console
 fuzz_console_STD := -std=gnu11

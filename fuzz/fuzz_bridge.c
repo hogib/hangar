@@ -133,8 +133,8 @@ static void reset(unsigned mode)
 		B.peer_info = B.config_match = B.mirror_ok = 1;
 }
 
-/* A datagram as a peer holding `key` would send it now. */
-static void sealed(int kind, int prio, const unsigned char *body, size_t blen, const unsigned char *key)
+/* A datagram as a peer holding `key` would send it, with the sequence number seq. */
+static void sealed_at(uint64_t seq, int kind, int prio, const unsigned char *body, size_t blen, const unsigned char *key)
 {
 	unsigned char d[DGRAM_MAX];
 	if (blen > BODY_MAX)
@@ -145,11 +145,17 @@ static void sealed(int kind, int prio, const unsigned char *body, size_t blen, c
 	d[6] = d[7] = 0;
 	put32(d + 8, kind == K_HELLO ? 0 : B.link_id);
 	put32(d + 12, (uint32_t)blen);
-	put64(d + 16, ++peer_seq);
+	put64(d + 16, seq);
 	if (blen)
 		memcpy(d + HDR, body, blen);
 	tag_of(key, d, HDR + blen, d + HDR + blen);
 	on_dgram(d, HDR + blen + TAG, &from);
+}
+
+/* The same with the next sequence number, as a peer sends one after another. */
+static void sealed(int kind, int prio, const unsigned char *body, size_t blen, const unsigned char *key)
+{
+	sealed_at(++peer_seq, kind, prio, body, blen, key);
 }
 
 static const unsigned char *key_now(int kind)
@@ -208,6 +214,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		case FZB_PENDING:
 			if (len >= 2)
 				sealed(p[0], p[1], p + 2, len - 2, op == FZB_PENDING ? B.p_rx : key_now(p[0]));
+			break;
+		case FZB_SEALED_AT:
+			if (len >= 3)
+				sealed_at(peer_seq + (uint64_t)(int64_t)(int8_t)p[0], p[1], p[2], p + 3, len - 3, key_now(p[1]));
 			break;
 		case FZB_BEACON:
 			on_beacon((const char *)p, len, &from);

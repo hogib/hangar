@@ -33,6 +33,8 @@ enum {
 			     * our nonce echoed, (bit 2) the opposite role */
 	FZB_PENDING = 7,    /* as FZB_SEALED, under the pending handshake's key */
 	FZB_PONG = 8,       /* t2, t3: a sealed pong for the last ping sent */
+	FZB_SEALED_AT = 9,  /* a signed byte, then as FZB_SEALED: sealed with the sequence number that far from
+			     * the last one used (0: the same again), for the replay window */
 	FZB_OPS
 };
 

@@ -395,6 +395,26 @@ static void bridge_seeds(void)
 	op(&s, FZB_TICK, &body);
 	put("bridge", "link-up", &s);
 
+	/* The replay window: pings in order, one late but new, one twice, one too old. */
+	mode = FZB_KEYED | FZB_CLOCK;
+	add(&s, &mode, 1);
+	for (int i = 0; i < 70; i++) {
+		body.n = 0;
+		kp[0] = 3;
+		add(&body, kp, 2);
+		le64(&body, (uint64_t)i);
+		op(&s, FZB_SEALED, &body);
+	}
+	static const signed char at[] = { -3, -3, 0, -100, 5, 2 };
+	for (size_t i = 0; i < sizeof at; i++) {
+		unsigned char h3[3] = { (unsigned char)at[i], 3, 0 };
+		body.n = 0;
+		add(&body, h3, 3);
+		le64(&body, 99);
+		op(&s, FZB_SEALED_AT, &body);
+	}
+	put("bridge", "replay-window", &s);
+
 	/* The same stream cut in two datagrams inside a record, and a record
 	 * larger than any this side takes, passed over. */
 	mode = FZB_KEYED | FZB_CLOCK | FZB_VEHICLE;
@@ -811,7 +831,8 @@ static void console_seed(const char *name, int piece, const char *text)
 static void console_seeds(void)
 {
 	static const char *const gets[] = { "/", "/api/system", "/api/modules", "/api/topics", "/api/topic/nav.depth",
-					    "/api/links", "/api/fly", "/api/log?lines=50", "/api/nothing" };
+					    "/api/links", "/api/fly", "/api/log?lines=50", "/api/nothing",
+					    "/api/topic/hangar.vehicle.modules", "/api/topic/not_a_topic", "/api/log?module=safety&lines=5" };
 	for (size_t i = 0; i < sizeof gets / sizeof gets[0]; i++) {
 		char req[300], name[40];
 		snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAccept: */*\r\n\r\n", gets[i]);
