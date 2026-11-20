@@ -855,6 +855,30 @@ static void test_bridge_subscription_limit(void)
 	}
 }
 
+/* A set holds 128 manifests. The directory's 129th and 130th, in name
+ * order, cannot be listed as refused, having no entry: a warning names how
+ * many were left out and the first of them. */
+static void test_more_manifests_than_a_set_holds(void)
+{
+	char dir[1024], path[1200];
+	snprintf(dir, sizeof dir, "%s/many", T_root);
+	mkdir_p(dir);
+	for (int i = 0; i < 130; i++) {
+		snprintf(path, sizeof path, "%s/m%03d.module", dir, i);
+		write_file(path, MOD);
+	}
+	fresh_set();
+	CHECK_EQ_INT(mf_set_load_dir(&set, dir), 128);
+	mf_set_check(&set);
+	CHECK_EQ_INT(set.n_modules, 128);
+	CHECK(mf_find(&set, "m127") != NULL && mf_find(&set, "m128") == NULL);
+	int said = 0;
+	for (int i = 0; i < set.n_warnings; i++)
+		if (strstr(set.warnings[i], "2 manifests") && strstr(set.warnings[i], "m128.module"))
+			said = 1;
+	CHECK(said);
+}
+
 int main(void)
 {
 	hd_setup("manifest", NULL);
@@ -868,6 +892,7 @@ int main(void)
 	RUN_TEST(test_wiring_roundtrip);
 	RUN_TEST(test_long_allow_list);
 	RUN_TEST(test_bridge_subscription_limit);
+	RUN_TEST(test_more_manifests_than_a_set_holds);
 	mf_set_free(&set);
 	hd_teardown();
 	TEST_MAIN_END();

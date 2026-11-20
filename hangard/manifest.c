@@ -1226,8 +1226,14 @@ int mf_set_load_dir(struct mf_set *s, const char *dir)
 		size_t len = strlen(e->d_name);
 		if (len < 8 || strcmp(e->d_name + len - 7, ".module") != 0 || e->d_name[0] == '.')
 			continue;
-		if (n == (int)(sizeof names / sizeof names[0]))
-			break;
+		if (n == (int)(sizeof names / sizeof names[0])) {
+			/* More than twice what a set holds: which ones are read is
+			 * then the directory's order, not the names'. */
+			if (!s->n_left_out++)
+				mf_fmt(s->first_left_out, sizeof s->first_left_out, "%.*s",
+				       (int)sizeof s->first_left_out - 1, e->d_name);
+			continue;
+		}
 		names[n++] = strdup(e->d_name);
 	}
 	closedir(d);
@@ -1254,10 +1260,17 @@ int mf_set_load_dir(struct mf_set *s, const char *dir)
 			m->refused = 1;
 			mf_fmt(m->reason, sizeof m->reason, "%s", err);
 		}
-		if (mf_set_add(s, m) < 0)
+		if (mf_set_add(s, m) < 0) {
+			/* A second file of one name cannot be (one directory); this is
+			 * the set full. It has no entry to be listed refused in, so it
+			 * is counted, for the warning that says so. */
+			if (errno == ENOSPC && !s->n_left_out++)
+				mf_fmt(s->first_left_out, sizeof s->first_left_out, "%.*s",
+				       (int)sizeof s->first_left_out - 1, names[i]);
 			free(m);
-		else
+		} else {
 			read_++;
+		}
 	}
 	for (int i = 0; i < n; i++)
 		free(names[i]);
@@ -2296,6 +2309,9 @@ static void load_bridge(struct mf_set *s)
 int mf_set_check(struct mf_set *s)
 {
 	s->n_warnings = 0;
+	if (s->n_left_out)
+		warn(s, "%d manifests were not read: a manager holds %d, and these come after them by name, the first %s",
+		     s->n_left_out, MF_MAX_MODULES, s->first_left_out);
 	gen_admin_type(s);
 	for (int k = 0; k < s->n_modules; k++)
 		if (!s->modules[k]->refused)

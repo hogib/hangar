@@ -213,6 +213,10 @@ struct mf_set {
 	char msg_dir[MF_PATH];
 	int n_modules;
 	struct mf_module *modules[MF_MAX_MODULES];
+	/* Manifests mf_set_load_dir found and had no entry for, and the first
+	 * of them: mf_set_check's first warning. */
+	int n_left_out;
+	char first_left_out[MF_NAME + 8];
 	int n_types, cap_types;
 	struct mf_type *types;
 	/* Lines that are not refusals (hangar check's WARN): one per entry. */
