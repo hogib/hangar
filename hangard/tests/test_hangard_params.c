@@ -583,6 +583,9 @@ static void test_cli(void)
 	CHECK(m.p.kp == 0.5f && m.p.enabled == 0 && strcmp(m.changed_by, "saved") == 0);
 	// param-write while running is refused.
 	CHECK(strncmp(ctl("param-write paramer\nkp = 1\n"), "err paramer is running", 22) == 0);
+	// A request that names no module names none: not the module of the
+	// request before it, whose bytes are still in the manager's buffer.
+	CHECK(strncmp(ctl("param-write"), "err no module", 13) == 0);
 }
 
 static void test_shutdown(void)

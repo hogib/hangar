@@ -1013,7 +1013,10 @@ static void req_param_write(int fd, const struct peer *p, char *req, size_t len)
 	size_t lines_len = nl ? len - (size_t)(lines - req) : 0;
 	if (nl)
 		*nl = 0;
-	const char *name = req + 12;
+	/* From the end of the word: a request that is the word alone ends
+	 * there, and one byte further is whatever the request before it left in
+	 * the buffer (the module it named). */
+	const char *name = req + 11;
 	while (*name == ' ')
 		name++;
 	struct module *m = params_module(fd, name);
