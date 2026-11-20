@@ -40,8 +40,9 @@ int hg_glob_match(const char *p, const char *n)
 }
 
 /* Reads an unsigned decimal with up to `scale_digits` fractional digits as an
- * integer of that scale (e.g. 3 digits: "2.5" -> 2500). -1 if malformed; the
- * caller handles the unit suffix that follows. */
+ * integer of that scale (e.g. 3 digits: "2.5" -> 2500). -1 if malformed, or
+ * if the scaled value does not fit 63 bits; the caller handles the unit suffix
+ * that follows. */
 static int64_t scaled(const char **sp, int scale_digits)
 {
 	const char *s = *sp;
@@ -59,6 +60,8 @@ static int64_t scaled(const char **sp, int scale_digits)
 		s++;
 		while (*s >= '0' && *s <= '9') {
 			if (frac < scale_digits) {
+				if (v > (INT64_MAX - 9) / 10)
+					return -1;
 				v = v * 10 + (*s - '0');
 				frac++;
 			} else if (*s != '0') {
@@ -70,8 +73,11 @@ static int64_t scaled(const char **sp, int scale_digits)
 	}
 	if (digits == 0)
 		return -1;
-	for (; frac < scale_digits; frac++)
+	for (; frac < scale_digits; frac++) {
+		if (v > INT64_MAX / 10)
+			return -1;
 		v *= 10;
+	}
 	*sp = s;
 	return v;
 }

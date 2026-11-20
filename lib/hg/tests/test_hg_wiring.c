@@ -166,6 +166,11 @@ static void test_durations_and_rates(void)
 	CHECK_EQ_INT(hg_parse_duration("ms"), -1);
 	CHECK_EQ_INT(hg_parse_duration("1.5ns"), -1);
 	CHECK_EQ_INT(hg_parse_duration("1m"), -1);
+	/* What does not fit 63 bits of nanoseconds is malformed, not wrapped. */
+	CHECK(hg_parse_duration("9223372036s") == 9223372036000000000ll);
+	CHECK_EQ_INT(hg_parse_duration("9223372037s"), -1);
+	CHECK_EQ_INT(hg_parse_duration("1125899906842624s"), -1);
+	CHECK_EQ_INT(hg_parse_duration("1125899906842624.5s"), -1);
 	CHECK_EQ_INT(hg_parse_rate_mhz("50"), 50000);
 	CHECK_EQ_INT(hg_parse_rate_mhz("0.5"), 500);
 	CHECK_EQ_INT(hg_parse_rate_mhz("12.345"), 12345);
