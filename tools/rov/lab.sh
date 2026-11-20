@@ -117,6 +117,22 @@ exit 1
 EOF
 }
 
+# A copy of the session file on the Pi (~/hangar-rov/lab-session), sent whenever up has
+# written down something to undo there: the laptop's copy lives in ~/.cache, and a down
+# without it would know of nothing to put back. down reads the Pi's when its own is gone.
+sess_push() {
+    [ -f "$SESSION" ] || return 0
+    rsh DATA="$(base64 -w0 < "$SESSION")" \
+        'mkdir -p "$HOME/hangar-rov" && echo "$DATA" | base64 -d > "$HOME/hangar-rov/lab-session"' ||
+        warn "the session could not be copied to the Pi: do not lose $SESSION before lab.sh down"
+}
+sess_pull() { # 0 if the Pi had one; only name=value lines of plain characters are taken
+    local data
+    data=$(rsh 'cat "$HOME/hangar-rov/lab-session" 2>/dev/null' | grep -E '^[a-z_]+=[A-Za-z0-9 _./:+-]*$')
+    [ -n "$data" ] || return 1
+    printf '%s\n' "$data" > "$SESSION"
+}
+
 # ---- the clock -----------------------------------------------------------------------
 
 # The Pi has no clock of its own and nothing sets it over the tether: every log and
@@ -258,6 +274,9 @@ cmd_up() {
             ! alive "$LAB_STATE_DIR/hellion.pid" hellion &&
             die "port $HELLION_CONTROL_PORT is taken on this laptop: set HELLION_CONTROL_PORT"
     fi
+    # A session this laptop has lost and the Pi still knows of is the one to continue:
+    # a new one would save hangar's own values as "the parameters as found".
+    [ -f "$SESSION" ] || { sess_pull && say "no session file on this laptop: taken from the Pi's copy"; }
     [ -f "$SESSION" ] && say "a session is open since $(sess_get started): continuing it"
     [ -f "$SESSION" ] || sess_set started "$(date -Is)"
     set_clock || up_failed
@@ -268,6 +287,7 @@ cmd_up() {
         # Written down before the stop: one that fails half-way has stopped some of them,
         # and down starts them all (starting one that runs changes nothing).
         sess_set services_stopped "$LAB_SERVICES"
+        sess_push
         remote_sudo systemctl stop $LAB_SERVICES || up_failed
     fi
 
@@ -295,6 +315,7 @@ cmd_up() {
             rsh FILE="$backup" '"$ROV" params save "$HOME/$FILE"' ||
                 { warn "the parameters could not be saved: nothing is written to the Pixhawk without a backup"; up_failed; }
             sess_set params_backup "$backup"
+            sess_push
         else
             say "the session's parameter backup is ~/$backup"
         fi
@@ -442,8 +463,31 @@ hangar_up_again() {
     wait_for mavlink 'ready .*ardusub (disarmed|armed)' 60
 }
 
+# The end of a down that found no session file, here or on the Pi. If nothing of hangar
+# ran there either, there was nothing to put back. If hangar ran, up had been at work
+# and what it changed is unknown: "as found" is not claimed, and what can be seen is said.
+down_without_session() { # hangar-was-running failed-steps
+    local inactive=""
+    is_local || inactive=$(remote SERVICES="$LAB_SERVICES" <<< \
+        'for s in $SERVICES; do systemctl is-active --quiet "$s" || printf "%s " "$s"; done')
+    is_local || ssh "${SSH_OPTS[@]}" -O exit "$TARGET" 2>/dev/null
+    if [ "$1" = 0 ] && [ "$2" = 0 ]; then
+        say "no session was open and nothing of hangar ran on the Pi: nothing to put back"
+        [ -z "$inactive" ] || say "  (not running on the Pi: $inactive)"
+        return 0
+    fi
+    warn "NO SESSION FILE ($SESSION), here or on the Pi: what lab.sh up changed is not known."
+    [ "$1" = 1 ] && warn "  hangar ran on the Pi and is stopped now."
+    warn "  ArduSub's parameters were NOT restored. If up saved them, the backup is the Pi's"
+    warn "  newest ~/hangar-rov/lab-*-before.params; on the Pi: rov.sh up, rov.sh params restore"
+    warn "  <that file>, rov.sh reset (tools/rov/README.md, \"The parameter backup\")."
+    [ -z "$inactive" ] || warn "  Not running on the Pi: $inactive(if up --video stopped them: sudo systemctl start $inactive)"
+    warn "not claimed: everything as found"
+    exit 1
+}
+
 cmd_down() {
-    local failed=()
+    local failed=() was_up=0 lost=0
     step() { # what command...: never stops at a failure, says which ones failed
         local what=$1; shift
         if "$@"; then say "ok    $what"; else warn "FAILED $what"; failed+=("$what"); fi
@@ -455,7 +499,18 @@ cmd_down() {
     fi
     tunnels_down
 
+    # No session file here: the Pi's copy of it, if up left one. With neither, what up
+    # changed is not known, and down says so at the end instead of "as found".
+    if [ ! -f "$SESSION" ]; then
+        if sess_pull; then
+            say "no session file on this laptop: taken from the Pi's copy (open since $(sess_get started))"
+        else
+            lost=1
+        fi
+    fi
+
     if hangar_running; then
+        was_up=1
         # The call's own status, not the sleep's (the three seconds are ArduSub's, to
         # report itself disarmed before the restore asks).
         step "disarmed" rsh '"$B/hangar" call safety.disarm > /dev/null; rc=$?; sleep 3; exit $rc'
@@ -471,13 +526,20 @@ cmd_down() {
         step "ArduSub's parameters as the lab left them (~/$backup)" \
             rsh FILE="$backup" '"$ROV" params restore "$HOME/$FILE" > "$HOME/hangar-rov/restore.log" 2>&1; rc=$?
                 grep -vE "^ {4}|^Set parameter" "$HOME/hangar-rov/restore.log"; exit $rc'
-    else
+    elif [ "$lost" = 0 ]; then
         say "no parameter backup in the session: ArduSub's parameters were not changed by lab.sh"
     fi
     step "hangar and the relay stopped, the roots removed" rsh '"$ROV" reset > /dev/null'
     local services; services=$(sess_get services_stopped)
     if [ -n "$services" ]; then
         step "the lab's $services started again" remote_sudo systemctl start $services
+    fi
+    if [ "$lost" = 1 ]; then
+        down_without_session "$was_up" "${#failed[@]}"
+        return
+    fi
+    if [ "${#failed[@]}" -eq 0 ]; then
+        step "the Pi's copy of the session removed" rsh 'rm -f "$HOME/hangar-rov/lab-session"'
     fi
     is_local || ssh "${SSH_OPTS[@]}" -O exit "$TARGET" 2>/dev/null
 
