@@ -1338,7 +1338,11 @@ static void writer_run(void)
 /* What a peer that holds the key may still not do to this side. A record
  * on the reliable stream larger than any this side takes (the vehicle's
  * bridge sends one, 1 MB and a little, told to by the environment): it is
- * passed over, and the records after it are read. */
+ * passed over, and the records after it are read. A ring for a mirrored
+ * topic as large as the peer says its own is: bounded here. The topside's
+ * bridge runs with its bound at 4 KB (the real one is 32 MB a topic, which
+ * a test should not fill): test.ev, 256 slots on the vehicle, gets the ring
+ * that fits, and is mirrored all the same. */
 static void limits_run(void)
 {
 	const char *mirror = "[Mirror test.ev]\nDirection=up\nDelivery=reliable\n";
@@ -1348,6 +1352,8 @@ static void limits_run(void)
 	manifest("ev", "[Module]\nExec=%s/talker --topic test.ev --rate 20\n"
 		       "[Publish test.ev]\nType=depth\nRate=20\nSlots=256\n", T_toys);
 	setup_side(&T, "lim", mirror);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_RING_MAX=4096 %s %s\n[Bridge]\n", bridge_bin,
+		 T.conf);
 	start(&V);
 	start(&T);
 	struct bridge_link lv, lt;
@@ -1361,6 +1367,13 @@ static void limits_run(void)
 	EXPECT(up && came >= 40 && gaps == 0,
 	       "a record of 1 MB + 4 KB on the stream, then test.ev (reliable): %d messages on the topside, to seq %llu, %llu lost",
 	       came, (unsigned long long)last, (unsigned long long)gaps);
+	struct hg_topic_meta mt, mv;
+	use(&V);
+	hg_sub *lev = hg_sub_open("test.ev", &DEPTH_TYPE);
+	int have = ev && lev && hg_sub_meta(ev, &mt) == 0 && hg_sub_meta(lev, &mv) == 0;
+	EXPECT(have && mv.slot_count == 256 && mt.slot_count >= 2 && mt.slot_count * (mt.payload_bytes + 128) <= 4096,
+	       "test.ev: %u slots on the vehicle, %u in its mirror here under a 4 KB bound (%u bytes a slot)",
+	       have ? mv.slot_count : 0, have ? mt.slot_count : 0, have ? mt.payload_bytes + 128 : 0);
 }
 
 static const struct run {

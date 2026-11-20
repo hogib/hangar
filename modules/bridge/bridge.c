@@ -40,6 +40,14 @@
 #define MAX_TX 256
 #define MAX_RX 256
 #define MSG_MAX (1u << 20)        /* mirrored messages are at most 1 MB */
+/* What the mirrors may hold of /dev/shm here: the peer says how many slots
+ * each of its rings has and how large its messages are, and the manager
+ * reserves that. A ring over RING_MAX gets fewer slots; past RINGS_MAX in all,
+ * a topic is not mirrored. (4096 slots of 1 MB, which a peer could ask for
+ * 256 times, would be a terabyte.) */
+#define RING_MAX (32ull << 20)
+#define RINGS_MAX (256ull << 20)
+#define SLOT_EXTRA 128u           /* a slot's header beside its payload (lib/hg) */
 #define REC_MAX (MSG_MAX + 600)   /* the largest record taken from the stream: a message as build_msg makes it */
 #define SBUF_CAP (4u << 20)       /* the reliable stream's unacknowledged bytes */
 #define WINDOW (64u << 10)        /* bytes in flight */
@@ -88,6 +96,7 @@ struct rx_topic {
 	struct hg_schema *sch;
 	hg_pub *pub;
 	int refused;             /* the manager would not create it: said once */
+	uint64_t ring_bytes;     /* of the file it has here, counted in B.rings */
 	uint64_t last_stamp;     /* translated, for clamping */
 	const struct bc_mirror *mc;
 };
@@ -154,6 +163,7 @@ static struct {
 	struct rx_topic rx[MAX_RX];
 	int nrx;
 	hg_pub *link_pub;
+	uint64_t rings, ring_max; /* the mirrored rings' bytes; the bound on one (RING_MAX) */
 	uint64_t last_ping_ns, last_status_ns;
 	struct bridge_link st;
 } B;
@@ -1099,7 +1109,20 @@ static void on_message(const unsigned char *b, size_t n)
 	if (full != r->sch->type.payload_bytes)
 		return;
 	if (!r->pub) {
-		struct hg_pub_opts o = { .slots = r->slots };
+		uint64_t slot = (uint64_t)full + SLOT_EXTRA;
+		uint32_t slots = r->slots;
+		while (slots > 2 && slots * slot > B.ring_max)
+			slots >>= 1;
+		if (slots != r->slots)
+			mod_log(WHO, "%s: %u slots of %u bytes there; %u here, the most that fit %llu KB", name, r->slots, full,
+				slots, (unsigned long long)(B.ring_max >> 10));
+		if (B.rings - r->ring_bytes + slots * slot > RINGS_MAX) {
+			mod_log(WHO, "%s: not mirrored here: the mirrored topics' rings would pass %llu MB", name,
+				(unsigned long long)(RINGS_MAX >> 20));
+			r->refused = 1;
+			return;
+		}
+		struct hg_pub_opts o = { .slots = slots };
 		r->pub = hg_pub_open_mirror_as(name, &r->sch->type, B.peer_boot, seq, r->writer[0] ? r->writer : NULL,
 					       &o);
 		if (!r->pub) {
@@ -1107,6 +1130,9 @@ static void on_message(const unsigned char *b, size_t n)
 			r->refused = 1;
 			return;
 		}
+		/* The file of before, if any, is replaced by this one. */
+		B.rings = B.rings - r->ring_bytes + slots * slot;
+		r->ring_bytes = slots * slot;
 		B.st.topics_rx++;
 	}
 	uint64_t now = now_ns();
@@ -1586,6 +1612,8 @@ int main(int argc, char **argv)
 	B.vehicle = strcmp(B.role, "vehicle") == 0;
 	const char *fo = getenv("HANGAR_BRIDGE_TEST_OFFSET_NS");
 	B.fake_ns = fo ? strtoll(fo, NULL, 10) : 0;
+	const char *rm = getenv("HANGAR_BRIDGE_TEST_RING_MAX"); /* tests: a bound a test can reach */
+	B.ring_max = rm ? strtoull(rm, NULL, 10) : RING_MAX;
 	random_bytes(&B.id, sizeof B.id);
 	new_nonce();
 	read_boot_id(B.boot);

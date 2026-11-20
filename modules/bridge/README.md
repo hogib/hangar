@@ -134,7 +134,12 @@ and calls to the other side).
 6. **`MsgDir=`** in `[Bridge]` (default `/usr/share/hangar/msg`) and **`DiscoveryPort=`**
    (5613): the module is not handed `HANGAR_ROOT`, and a test needs the port.
 7. **A mirrored topic's ring is the sender's** (`slots=` on the open), not 16: a
-   burst after a resend fits as it did on the sending side.
+   burst after a resend fits as it did on the sending side. Up to 32 MB a topic
+   (slots × (payload + 128)): a larger ring gets the most slots that fit, halved
+   from the sender's, and says so in the log. Past 256 MB for all mirrored topics
+   together a topic is not mirrored (the log says which). The peer names both
+   numbers, and the manager reserves them in `/dev/shm`: unbounded, 4096 slots of
+   1 MB each.
 8. **The release string is `HANGAR_VERSION` at build** (`dev` without it), so two
    development builds of different trees match on the release and differ only by
    their msg/ hashes.

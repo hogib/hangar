@@ -304,7 +304,11 @@ file in either language.
 | `reliable` | acknowledged (cumulative and selective), retransmitted, delivered in order | request and reply topics, files, event topics whose every message matters, dataset rows (a row with a frame spans many datagrams) |
 
 Mirrored messages are at most 1 MB; a `reliable` mirror whose backlog passes its
-topic's slot count drops the oldest and records the gap. The schema of a mirrored
+topic's slot count drops the oldest and records the gap. The receiving side bounds
+what the sender's numbers make it reserve: a mirrored topic's ring is at most 32 MB
+(fewer slots than the sender's when that would be more), and the rings of all
+mirrored topics together at most 256 MB, past which a topic is not mirrored. A record
+on the reliable stream larger than a framed 1 MB message is passed over. The schema of a mirrored
 topic is sent reliably before its first message.
 
 **Priority.** A strict order: `safety`, `command`, `call`, `telemetry`, `dataset`,
