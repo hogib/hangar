@@ -199,6 +199,30 @@ static void test_repeated_stop_keeps_the_deadline(void)
 	end("stub");
 }
 
+/* Cuts a module's registry line back to the eight fields a manager before
+ * this one wrote: name, pid, start time, state, failures, delay, the two
+ * hashes. For a manager killed and not yet replaced. */
+static int registry_as_before(const char *name)
+{
+	char reg[1024], text[4096], out[4096], start[64];
+	tfmt(reg, sizeof reg, "%s/run/hangar/registry", T_root);
+	tfmt(text, sizeof text, "%s", read_file(reg));
+	tfmt(start, sizeof start, "%s ", name);
+	size_t o = 0;
+	for (char *l = strtok(text, "\n"); l; l = strtok(NULL, "\n")) {
+		int sp = 0;
+		size_t len = strlen(l);
+		if (strncmp(l, start, strlen(start)) == 0)
+			for (size_t i = 0; i < len; i++)
+				if (l[i] == ' ' && ++sp == 8) {
+					len = i;
+					break;
+				}
+		o += (size_t)tfmt(out + o, sizeof out - o, "%.*s\n", (int)len, l);
+	}
+	return write_file(reg, out);
+}
+
 static int count(const char *hay, const char *needle)
 {
 	int n = 0;
@@ -306,33 +330,15 @@ static void test_stop_timeout_survives_reexec(void)
 static void test_stop_timeout_survives_crash(void)
 {
 	for (int old = 0; old < 2; old++) {
-		char ran[1024], reg[1024];
+		char ran[1024];
 		tfmt(ran, sizeof ran, "%s/neutral-ran5%d", T_root, old);
-		tfmt(reg, sizeof reg, "%s/run/hangar/registry", T_root);
 		unlink(ran);
 		actuator_manifest("act", "", ran, "[Restart]\nStopTimeout=2s\n");
 		mgr = manager_start();
 		CHECK(wait_state("act", "ready", 5000));
 		manager_kill9(mgr);
-		if (old) {
-			/* The eight fields of the registry before: name, pid, start
-			 * time, state, failures, delay, the two hashes. */
-			char text[4096], out[4096];
-			tfmt(text, sizeof text, "%s", read_file(reg));
-			size_t o = 0;
-			for (char *l = strtok(text, "\n"); l; l = strtok(NULL, "\n")) {
-				int sp = 0;
-				size_t len = strlen(l);
-				if (strncmp(l, "act ", 4) == 0)
-					for (size_t i = 0; i < len; i++)
-						if (l[i] == ' ' && ++sp == 8) {
-							len = i;
-							break;
-						}
-				o += (size_t)tfmt(out + o, sizeof out - o, "%.*s\n", (int)len, l);
-			}
-			CHECK(write_file(reg, out) == 0);
-		}
+		if (old)
+			CHECK(registry_as_before("act") == 0);
 		manifest_remove("act");
 		log_clear();
 		mgr = manager_start();
@@ -350,6 +356,83 @@ static void test_stop_timeout_survives_crash(void)
 	}
 }
 
+/* A manager killed while a module it found unhealthy ignores the SIGTERM:
+ * the one that adopts it finishes the stop at once (StopTimeout is 30 s
+ * here) and restarts it, the failure counted. */
+static void test_adopted_unhealthy_is_stopped(void)
+{
+	manifest("stub", "[Module]\nExec=%s/stubborn --no-ready\n[Health]\nStartGrace=300ms\n"
+			 "[Restart]\nStopTimeout=30s\nBackoff=0.1s..1s\n", T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("stub", "unhealthy", 5000));
+	struct mstat m;
+	module_status("stub", &m);
+	int pid1 = m.pid;
+	manager_kill9(mgr);
+	log_clear();
+	mgr = manager_start();
+	CHECK(wait_file_contains(T_log, "stub: adopted pid", 3000));
+	CHECK(wait_file_contains(T_log, "SIGKILL to its", 2000));
+	CHECK(wait_file_contains(T_log, "(failure 1)", 2000));
+	CHECK(kill(pid1, 0) < 0 || !module_status("stub", &m) || m.pid != pid1);
+	end("stub");
+	kill(pid1, SIGKILL);
+}
+
+/* `hangar stop`, then the manager killed before the module has gone: the
+ * one that adopts it leaves it stopped. Once from the registry as it is
+ * written now and once from one of a manager before this one. */
+static void test_adopted_stop_ends_stopped(void)
+{
+	for (int old = 0; old < 2; old++) {
+		manifest("stub", "[Module]\nExec=%s/stubborn\n[Restart]\nStopTimeout=30s\nBackoff=0.1s..1s\n", T_toys);
+		mgr = manager_start();
+		CHECK(wait_state("stub", "ready", 5000));
+		struct mstat m;
+		module_status("stub", &m);
+		int pid1 = m.pid;
+		CHECK(strncmp(ctl("stop stub"), "ok", 2) == 0);
+		CHECK(wait_state("stub", "stopping", 2000));
+		manager_kill9(mgr);
+		if (old)
+			CHECK(registry_as_before("stub") == 0);
+		log_clear();
+		mgr = manager_start();
+		CHECK(wait_file_contains(T_log, "stub: adopted pid", 3000));
+		CHECK(wait_file_contains(T_log, "stub: pid", 3000));
+		sleep_ms(800);
+		CHECK(module_status("stub", &m));
+		CHECK(strcmp(m.state, "stopped") == 0);
+		CHECK_EQ_INT(m.pid, 0);
+		CHECK(!file_contains(T_log, "stub: started"));
+		end("stub");
+		kill(pid1, SIGKILL);
+	}
+}
+
+/* `hangar restart` interrupted the same way: the registry says what the
+ * stop was for, and the module comes back, no failure counted. */
+static void test_adopted_restart_ends_restarted(void)
+{
+	manifest("stub", "[Module]\nExec=%s/stubborn\n[Restart]\nStopTimeout=30s\nBackoff=0.1s..1s\n", T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("stub", "ready", 5000));
+	struct mstat m;
+	module_status("stub", &m);
+	int pid1 = m.pid;
+	CHECK(strncmp(ctl("restart stub"), "ok", 2) == 0);
+	CHECK(wait_state("stub", "stopping", 2000));
+	manager_kill9(mgr);
+	log_clear();
+	mgr = manager_start();
+	CHECK(wait_file_contains(T_log, "stub: adopted pid", 3000));
+	CHECK(wait_new_pid("stub", pid1, "ready", 5000));
+	module_status("stub", &m);
+	CHECK_EQ_INT(m.failures, 0);
+	end("stub");
+	kill(pid1, SIGKILL);
+}
+
 int main(void)
 {
 	hd_setup("stop", NULL);
@@ -362,6 +445,9 @@ int main(void)
 	HD_RUN(test_neutral_runs_when_manifest_drops_neutral);
 	HD_RUN(test_stop_timeout_survives_reexec);
 	HD_RUN(test_stop_timeout_survives_crash);
+	HD_RUN(test_adopted_unhealthy_is_stopped);
+	HD_RUN(test_adopted_stop_ends_stopped);
+	HD_RUN(test_adopted_restart_ends_restarted);
 	hd_teardown();
 	TEST_MAIN_END();
 }

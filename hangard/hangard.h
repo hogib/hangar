@@ -241,6 +241,7 @@ struct reg_entry {
 	uint64_t delay_ns;
 	uint64_t manifest_hash, wiring_hash;
 	uint64_t stop_timeout_ns; /* 0: a registry written before the field existed */
+	int after_stop;           /* what a stop under way leads to; -1: none, or not recorded */
 };
 /* Reads the registry file. The number of module entries, or -1. */
 int registry_read(const char *path, struct reg_entry *out, int max, enum sys_state *sys,

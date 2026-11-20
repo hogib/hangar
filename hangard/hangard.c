@@ -513,9 +513,19 @@ static void startup_from_registry(int *n_dead, char (*dead)[MF_NAME])
 			m->adopted = 1;
 			m->started_ns = hg_now_ns();
 			m->ready_ns = m->started_ns;
-			if (m->st == ST_STOPPING) {
+			if (m->st == ST_STOPPING || m->st == ST_UNHEALTHY) {
+				/* A stop was under way, since a time nobody knows:
+				 * finish it at once. What it leads to is in the
+				 * registry; one that does not say is read as the
+				 * state alone allows: an unhealthy module restarts
+				 * with the failure counted, a stopping one stays
+				 * down, since it may be the operator who stopped it. */
+				int after = entries[i].after_stop;
 				m->stopping = 1;
-				m->stop_deadline = hg_now_ns(); /* finish the stop at once */
+				m->stop_deadline = hg_now_ns();
+				m->after_stop = after >= 0 ? (enum state)after
+						: m->st == ST_UNHEALTHY ? ST_BACKOFF : ST_STOPPED;
+				m->count_failure = m->after_stop == ST_BACKOFF;
 			}
 			if (page_open_existing(m) < 0)
 				hd_log("%s: adopted without its page: %s", m->name, strerror(errno));

@@ -270,6 +270,8 @@ void module_stop(struct module *m, enum state next, int count_failure, const cha
 	m->stopping = 1;
 	if (m->st != ST_UNHEALTHY)
 		set_state(m, ST_STOPPING, why);
+	else
+		registry_write(); /* what the stop leads to is in it */
 	module_signal_group(m, SIGTERM);
 }
 
