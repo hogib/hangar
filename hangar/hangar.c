@@ -1113,8 +1113,15 @@ static int param_apply(const char *module, char **kv, int nkv, const char *lines
 		if (lines) {
 			struct hg_params_header hdr;
 			char err[160];
-			if (hg_params_file_parse(&mi.req.type, lines, lines_len, body, &hdr, NULL, 0, err, sizeof err) < 0)
+			static unsigned char present[HG_SCHEMA_MAX_FIELDS];
+			if (hg_params_file_parse(&mi.req.type, lines, lines_len, body, &hdr, present, 0, err, sizeof err) < 0)
 				return fail("%s", err);
+			/* The file is parsed against the request type, whose first
+			 * field is base_version: a line setting it would replace the
+			 * version read from the topic above. */
+			const struct hg_field *bv = hg_type_field(&mi.req.type, "base_version");
+			if (bv && present[bv - mi.req.type.fields])
+				return fail("base_version is not a parameter");
 		}
 		struct hg_call_reply_envelope env;
 		int st = do_call(target, &mi, body, mi.req.type.payload_bytes, (long)mi.deadline_ms * 10 + 1000, &env,

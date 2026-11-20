@@ -478,6 +478,37 @@ static void test_long_parameter_file_refused(void)
 	CHECK_EQ_INT(m.version, 9);
 }
 
+/* `hangar param load` parses its file against the set_params request type,
+ * whose first field is base_version: a line `base_version = N` in the file
+ * was taken, over the version just read from the topic. `param set` already
+ * refused it; a file is refused the same way now. */
+static void test_load_refuses_base_version(void)
+{
+	struct params_msg m, after;
+	CHECK_EQ_INT(read_params(&m), 0);
+	char path[600], text[200], out[4096];
+	tfmt(path, sizeof path, "%s/base.params", T_root);
+	tfmt(text, sizeof text, "# hangar parameters: depth_hold_params\nbase_version = %llu\nki = 0.7\n",
+	     (unsigned long long)m.version);
+	write_file(path, text);
+	char *load[] = { (char *)T_hangar, "param", "load", "paramer", path, NULL };
+	int rc = run_hangar(out_path(), 5000, NULL, load);
+	sleep_ms(200);
+	CHECK_EQ_INT(read_params(&after), 0);
+	printf("    a file with base_version = %llu, the version in force: exit %d, ki %g, says: %s",
+	       (unsigned long long)m.version, rc, (double)after.p.ki, read_file(out_path()));
+	CHECK_EQ_INT(rc, 1);
+	CHECK(file_contains(out_path(), "base_version is not a parameter"));
+	CHECK(after.version == m.version && after.p.ki == m.p.ki);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "base_version=1", "ki=0.7", (char *)NULL), 1);
+	/* The same file without the line loads. */
+	write_file(path, "# hangar parameters: depth_hold_params\nki = 0.7\n");
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "load", "paramer", path, (char *)NULL), 0);
+	sleep_ms(200);
+	CHECK_EQ_INT(read_params(&after), 0);
+	CHECK(after.version == m.version + 1 && after.p.ki == 0.7f);
+}
+
 /* D10: `hangar param reset` took the defaults from the schema in the header
  * of <module>.params whenever the module ran. For a type whose text does
  * not fit there beside the topic's own lines the header carries the
@@ -540,6 +571,7 @@ int main(void)
 	RUN_TEST(test_char_field_without_nul_refused);
 	RUN_TEST(test_non_finite_parameters_refused);
 	RUN_TEST(test_long_parameter_file_refused);
+	RUN_TEST(test_load_refuses_base_version);
 	RUN_TEST(test_reset_takes_the_types_defaults);
 	RUN_TEST(test_manager_down);
 	hd_teardown();
