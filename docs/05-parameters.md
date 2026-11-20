@@ -212,6 +212,8 @@ regardless.
 **Loading at start** is strict, like every file hangar reads:
 
 - no file at all is the first start: the defaults are taken and saved (above);
+  they pass the ranges and the module's validator first, as saved values do at every
+  later start, and a module that refuses its own defaults does not start (78);
 - a file without its header line (`# hangar parameters: <type>`, with the module's
   parameter type), an empty file included, stops the start: it is never read as all
   defaults;

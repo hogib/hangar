@@ -794,7 +794,7 @@ static void test_params(void)
 	CHECK_EQ_INT(hg_params_open(DH, &P, validate, (void *)0x7), 0);
 	CHECK(hg_params_ctx() == (void *)0x7);
 	CHECK(P.kp == 1.5f && P.rate_hz == 50 && hg_params_version() == 1 && strcmp(hg_params_changed_by(), "saved") == 0);
-	CHECK_EQ_INT(validator_calls, 0); /* the defaults are not validated: there is no saved file */
+	CHECK_EQ_INT(validator_calls, 1); /* the defaults meet the validator too, as a saved file does at every later start */
 	FILE *f = fopen(path, "r");
 	CHECK(f != NULL);
 	if (f)

@@ -324,9 +324,113 @@ static void test_save_closes_once(void)
 	rmdir(dir);
 }
 
+/* A module started in a child on a wiring written here, with `validate` and
+ * a state directory `dir` (created by the caller): its exit status, and what
+ * it wrote to stderr in said. */
+static int start_module(const struct hg_type *t, const char *reqtext, hg_params_validate validate, const char *dir,
+			char *said, size_t cap)
+{
+	static struct hg_schema req;
+	if (hg_schema_parse(reqtext, strlen(reqtext), &req, NULL, 0) < 0)
+		return -2;
+	char wiring[320], log[320], text[1024];
+	snprintf(wiring, sizeof wiring, "%s/wiring", dir);
+	snprintf(log, sizeof log, "%s/log", dir);
+	snprintf(text, sizeof text,
+		 "hangar-wiring 1\nmodule self\nrole vehicle\n"
+		 "pub self.params type=params:self slots=16 implicit\n"
+		 "pub self.rep type=rep:self slots=16 implicit\n"
+		 "serve set_params req=set_params:p hash=%016llx size=%u rep=set_params_rep hash=d748add7256bbe70 size=16 "
+		 "deadline=100ms allow=*\n",
+		 (unsigned long long)req.type.hash, req.type.payload_bytes);
+	int fd = open(wiring, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0 || write(fd, text, strlen(text)) != (ssize_t)strlen(text))
+		return -2;
+	close(fd);
+	pid_t pid = fork();
+	if (pid == 0) {
+		setenv("HANGAR_WIRING_FILE", wiring, 1);
+		setenv("HANGAR_TOPIC_DIR", dir, 1);
+		setenv("HANGAR_STATE_DIR", dir, 1);
+		unsetenv("HANGAR_CONTROL");
+		unsetenv("HANGAR_WIRING");
+		int lf = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		dup2(lf, 2);
+		static float P[4];
+		int rc = hg_params_open(t, P, validate, NULL);
+		fprintf(stderr, "hg_params_open returned %d (%s), kp %g\n", rc, strerror(errno), (double)P[0]);
+		_exit(rc == 0 ? 0 : 1);
+	}
+	int st = 0;
+	waitpid(pid, &st, 0);
+	fd = open(log, O_RDONLY);
+	ssize_t n = fd >= 0 ? read(fd, said, cap - 1) : 0;
+	if (fd >= 0)
+		close(fd);
+	said[n > 0 ? n : 0] = 0;
+	return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static void rm_dir(const char *dir)
+{
+	DIR *d = opendir(dir);
+	struct dirent *e;
+	while (d && (e = readdir(d))) {
+		char p[600];
+		snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+		unlink(p);
+	}
+	if (d)
+		closedir(d);
+	rmdir(dir);
+}
+
+static int wants_kp_of_two(const void *candidate, const void *current, char reason[64])
+{
+	(void)current;
+	if (*(const float *)candidate < 2.0f) {
+		snprintf(reason, 64, "kp under 2 makes the loop too slow");
+		return -11; /* HG_E_REFUSED, whatever its number: anything but HG_OK refuses */
+	}
+	return 0;
+}
+
+/* The first start saved the type's defaults without the range check or the
+ * module's validator, which every later start runs on the saved file. A
+ * module whose validator refuses its own defaults (kp = 1.5 where it wants 2)
+ * ran once on them, wrote them, and at its second start was refused its own
+ * file: exit 78 the day after it worked. The defaults meet the validator at
+ * the first start now: 78 at once, saying so, and nothing written. */
+static void test_defaults_meet_the_validator(void)
+{
+	const char typetext[] = "f32 kp = 1.5 [0, 10]\n", reqtext[] = "u64 base_version\nf32 kp = 1.5 [0, 10]\n";
+	const struct hg_type *t = type_of(typetext, "p");
+	char dir[300], state[320], said[2048];
+	if (!scratch_dir(dir, sizeof dir)) {
+		CHECK(!"mkdtemp");
+		return;
+	}
+	snprintf(state, sizeof state, "%s/params", dir);
+	int code = start_module(t, reqtext, wants_kp_of_two, dir, said, sizeof said);
+	printf("    first start, defaults the validator refuses: exit %d; it said: %s", code, said[0] ? said : "\n");
+	CHECK_EQ_INT(code, 78);
+	CHECK(strstr(said, "the defaults of p are refused: kp under 2") != NULL);
+	CHECK(access(state, F_OK) < 0); /* nothing saved for a second start to trip over */
+	/* The same at a second start, as before: nothing has changed its answer. */
+	code = start_module(t, reqtext, wants_kp_of_two, dir, said, sizeof said);
+	CHECK_EQ_INT(code, 78);
+	/* With no validator, or one that takes them, the first start is as it was. */
+	code = start_module(t, reqtext, NULL, dir, said, sizeof said);
+	CHECK_EQ_INT(code, 0);
+	CHECK(strstr(said, "first start: defaults written") != NULL && strstr(said, "kp 1.5") != NULL);
+	CHECK(access(state, F_OK) == 0);
+	rm_dir(dir);
+}
+
 int main(void)
 {
 	RUN_TEST(test_save_closes_once);
+	RUN_TEST(test_defaults_meet_the_validator);
 	RUN_TEST(test_floats_are_finite);
 	RUN_TEST(test_long_value_in_the_file);
 	RUN_TEST(test_file_read_whole_or_refused);

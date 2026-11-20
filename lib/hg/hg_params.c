@@ -1018,6 +1018,20 @@ int hg_params_open(const struct hg_type *type, void *P, hg_params_validate valid
 			*slash = 0;
 			mkdir(dirpath, 0750);
 		}
+		/* The defaults meet the same checks as saved values do at every
+		 * later start. Saved unchecked, a module whose validator refuses
+		 * its own type's defaults ran once on them and then, at its second
+		 * start, was refused its saved file: 78, a module that worked
+		 * yesterday. Refused here, it never runs on values it would not
+		 * take, and the fault shows on the first day. */
+		char reason[HG_PARAMS_REASON];
+		if (check_ranges(M.P, reason, sizeof reason) < 0)
+			fail78("the defaults of %s are refused: %s", type->name, reason);
+		if (validate) {
+			reason[0] = 0;
+			if (validate(M.P, M.P, reason) != HG_OK)
+				fail78("the defaults of %s are refused: %s", type->name, reason[0] ? reason : "by the validator");
+		}
 		if (save_file(M.P, &hdr) < 0)
 			fail78("cannot write %s: %s", M.path, strerror(errno));
 		log_line("first start: defaults written to %s", M.path);
