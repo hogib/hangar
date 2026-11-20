@@ -534,7 +534,7 @@ static void startup_from_registry(int *n_dead, char (*dead)[MF_NAME])
 			hd_log("%s: adopted pid %d, %s", m->name, (int)m->pid, state_names[m->st]);
 		} else if (running_state(entries[i].st)) {
 			/* Dead: its readers learn now; its restart comes with the manifests. */
-			topics_mark_writer_died(m->name);
+			topics_mark_writer_died(m->name, entries[i].pid);
 			m->pid = 0;
 			m->st = ST_BACKOFF;
 			m->restart_at = hg_now_ns();

@@ -274,8 +274,12 @@ struct topic_params {
 int topic_create(const struct topic_params *tp, char *err, size_t errlen);
 /* Flag bit 1 on the file, then the wake. 0 or -1. */
 int topic_mark_died(const char *path);
-/* Flags every topic in the directory whose header names writer. */
-void topics_mark_writer_died(const char *writer);
+/* Flags every topic in the directory that the process pid wrote: the one
+ * its header gives as writer_pid. A mirrored topic names the other side's
+ * module as writer and the bridge as writer_pid, so the name would miss the
+ * bridge's topics and hit those of a local module of the same name. With no
+ * pid (0) the local topics that name writer are flagged. */
+void topics_mark_writer_died(const char *writer, pid_t pid);
 /* The wake file (created once per boot) and the directory word. */
 int topic_dir_prepare(void);
 void topic_dir_bump(void);

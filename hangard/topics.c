@@ -359,8 +359,9 @@ unsigned char *topic_map_header(const char *path, ino_t *ino)
 	return h;
 }
 
-void topics_mark_writer_died(const char *writer)
+void topics_mark_writer_died(const char *writer, pid_t pid)
 {
+	static const unsigned char no_boot[16];
 	DIR *d = opendir(G.conf.topic_dir);
 	if (!d)
 		return;
@@ -376,7 +377,8 @@ void topics_mark_writer_died(const char *writer)
 		char w[33];
 		memcpy(w, h + OFF_WRITER, 32);
 		w[32] = 0;
-		int mine = strcmp(w, writer) == 0;
+		int mine = pid > 0 ? (pid_t)hdr_u32(h, OFF_WRITER_PID) == pid
+				   : strcmp(w, writer) == 0 && memcmp(h + OFF_ORIGIN_BOOT, no_boot, 16) == 0;
 		munmap(h, HEADER_BYTES);
 		if (mine && topic_mark_died(path) < 0)
 			hd_log("%s: cannot flag %s: %s", writer, path, strerror(errno));

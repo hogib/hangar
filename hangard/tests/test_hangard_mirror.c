@@ -140,12 +140,65 @@ static void test_topic_id_collision_refused(void)
 	manifest_remove("local");
 }
 
+/* A mirrored topic's header names the module that writes it on the other
+ * side and the pid of the bridge here. The exit of a local module that
+ * happens to have the name leaves it alone; the bridge's exit flags it. */
+static void test_bridge_exit_flags_its_mirrors(void)
+{
+	manifest("pilot", "[Module]\nExec=%s/stubborn --polite\n[Restart]\nPolicy=never\n", T_toys);
+	open_req(1, "pilot.wrench", BOOT, "pilot");
+	bridge_up("[Bridge]\nPair=lab\n[Mirror pilot.wrench]\nDirection=down\n");
+	CHECK(strncmp(reply_of(1), "ok", 2) == 0);
+	CHECK(wait_state("pilot", "ready", 3000));
+	unsigned char h[4096];
+	struct mstat m;
+	CHECK(strncmp(ctl("stop pilot"), "ok", 2) == 0);
+	CHECK(wait_state("pilot", "stopped", 3000));
+	CHECK(topic_header("pilot.wrench", h) == 0);
+	CHECK(module_status("bridge", &m) && m.pid > 0);
+	CHECK_EQ_INT(h32(h, H_WRITER_PID), m.pid);
+	CHECK(strcmp((const char *)h + H_WRITER, "pilot") == 0);
+	CHECK(!(h32(h, H_FLAGS) & HG_FLAG_DIED));
+	kill(m.pid, SIGKILL); /* the bridge: a running module of our manager */
+	CHECK(wait_state("bridge", "stopped", 3000));
+	CHECK(topic_header("pilot.wrench", h) == 0);
+	CHECK(h32(h, H_FLAGS) & HG_FLAG_DIED);
+	bridge_down();
+	manifest_remove("pilot");
+}
+
+/* The same for a bridge that died while no manager ran: start-up step 3
+ * flags what it wrote, by the pid the registry has for it. */
+static void test_bridge_dead_at_startup_flags_its_mirrors(void)
+{
+	open_req(1, "pilot.wrench", BOOT, "pilot");
+	bridge_up("[Bridge]\nPair=lab\n[Mirror pilot.wrench]\nDirection=down\n");
+	CHECK(strncmp(reply_of(1), "ok", 2) == 0);
+	CHECK(wait_state("bridge", "ready", 3000));
+	struct mstat m;
+	CHECK(module_status("bridge", &m) && m.pid > 0);
+	manager_kill9(mgr);
+	kill(m.pid, SIGKILL); /* alive: its manager is gone and nothing reaped it */
+	for (int i = 0; i < 100 && kill(m.pid, 0) == 0; i++)
+		sleep_ms(20);
+	manifest_remove("bridge");
+	log_clear();
+	mgr = manager_start();
+	CHECK(wait_file_contains(T_log, "bridge: pid", 3000));
+	unsigned char h[4096];
+	CHECK(topic_header("pilot.wrench", h) == 0);
+	CHECK(h32(h, H_FLAGS) & HG_FLAG_DIED);
+	bridge_down();
+}
+
 int main(void)
 {
 	hd_setup("mirror", NULL);
 	HD_RUN(test_zero_boot_refused);
 	HD_RUN(test_name_of_an_enabled_module_is_reported);
 	HD_RUN(test_topic_id_collision_refused);
+	HD_RUN(test_bridge_exit_flags_its_mirrors);
+	HD_RUN(test_bridge_dead_at_startup_flags_its_mirrors);
 	hd_teardown();
 	TEST_MAIN_END();
 }

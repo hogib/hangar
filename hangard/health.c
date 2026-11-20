@@ -307,7 +307,7 @@ void on_module_exit(struct module *m)
 	 * module for it). A module started without a Neutral has no record. */
 	neutral_run(m->name);
 	/* Its readers learn that the writer died. */
-	topics_mark_writer_died(m->name);
+	topics_mark_writer_died(m->name, m->pid);
 	/* Anything left in its cgroup or group; the unreaped leader keeps the
 	 * group id from being reused. */
 	module_kill_group(m);
