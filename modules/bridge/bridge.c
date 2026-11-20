@@ -26,6 +26,7 @@
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/timerfd.h>
 
 #define WHO "hangar-bridge"
@@ -203,16 +204,42 @@ static uint64_t get64(const unsigned char *p)
 	return v;
 }
 
+/* Nonces and the id, from the kernel: getrandom, which waits until the
+ * pool is initialised (a Pi just booted), or /dev/urandom on a kernel
+ * without it. There is no third source: a nonce that could be guessed (the
+ * clock, the pid) is one whose session keys could have been recorded before,
+ * so without random bytes the bridge stops and says why. */
 static void random_bytes(void *out, size_t n)
 {
-	int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-	if (fd < 0 || read(fd, out, n) != (ssize_t)n) {
-		uint64_t t = now_ns() ^ (uint64_t)getpid() << 32;
-		for (size_t i = 0; i < n; i++)
-			((unsigned char *)out)[i] = (unsigned char)(t >> (8 * (i % 8)) ^ i * 131);
+	unsigned char *p = out;
+	size_t got = 0;
+	while (got < n) {
+		long r = syscall(SYS_getrandom, p + got, n - got, 0);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r <= 0)
+			break;
+		got += (size_t)r;
 	}
-	if (fd >= 0)
-		close(fd);
+	if (got < n) {
+		int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+		while (fd >= 0 && got < n) {
+			ssize_t r = read(fd, p + got, n - got);
+			if (r < 0 && errno == EINTR)
+				continue;
+			if (r <= 0)
+				break;
+			got += (size_t)r;
+		}
+		if (fd >= 0)
+			close(fd);
+	}
+	if (got < n) {
+		mod_log(WHO, "no random bytes from getrandom or /dev/urandom (%s): stopping, a link needs them",
+			strerror(errno));
+		hg_status("no random bytes: see the log");
+		exit(3);
+	}
 }
 
 static void read_boot_id(unsigned char out[16])
