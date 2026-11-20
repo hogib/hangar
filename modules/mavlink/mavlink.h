@@ -15,14 +15,20 @@
 #include "mav.h"
 #include "mavlink_conf.h"
 
-/* The serial line's transmit queue, in whole frames: a frame partly
- * written stays at the head until the rest goes, so the stream never carries
- * half a frame. See mav_link_send for what happens when it is full. */
+/* The serial line's transmit queue, in whole messages. A message waits as
+ * its payload and becomes a frame when it reaches the head: its sequence
+ * number and, on a signed link, its timestamp and signature are made then,
+ * so the frames leave in the order of both whatever happened in the queue
+ * meanwhile. A frame partly written stays at the head until the rest goes,
+ * so the stream never carries half a frame. See mav_link_send for what
+ * happens when the queue is full. */
 #define MAV_TXQ 32
 struct mav_txframe {
-	uint8_t data[MAV_MAX_FRAME];
-	uint16_t len, off;
+	uint8_t data[MAV_MAX_FRAME]; /* the payload while it waits; the frame once `framed` */
+	uint16_t len, off;           /* waiting: the payload's full length. framed: the frame's, and what went */
 	uint32_t msgid;
+	uint8_t crc_extra;
+	uint8_t framed;
 };
 
 struct mav_link {
@@ -73,8 +79,10 @@ void mav_link_describe(const struct mav_link *l, char *out, size_t len);
 void mav_link_close(struct mav_link *l);
 /* Packs and sends one message to the peer; 0, or -1 (no peer yet, or the
  * socket refused). The frame is also written to the tlog when one is open.
- * Serial: the frame joins the transmit queue and the queue is written as far
- * as the line takes it, never waiting. MANUAL_CONTROL and COMMAND_LONG are
+ * Serial: the message joins the transmit queue and the queue is written as
+ * far as the line takes it, never waiting; it is framed (sequence number,
+ * signature) when its turn comes, and goes to the tlog when its last byte
+ * went. MANUAL_CONTROL and COMMAND_LONG are
  * the control frames: a MANUAL_CONTROL replaces one still unsent in the queue
  * (the newest command is the one that matters), and with the queue full a
  * control frame takes the place of the newest unsent telemetry-side frame

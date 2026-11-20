@@ -10,6 +10,7 @@
 #   make mavlink-all          builddir/hangar-mavlink
 #   make check-mavgen         mavlink_gen.h is what tools/mavgen generates (part of check)
 #   make check-mav_frame      framing, CRC, CRC_EXTRA, signing against known bytes
+#   make check-mav_link       the link by itself: the serial transmit queue on a blocked line
 #   make check-mavlink_vehicle   the vehicle module against the fake ArduSub
 #   make check-mavlink_topside   the topside module against a fake QGroundControl
 #   make check-phase1_chain      two managers, both roles, the whole chain
@@ -24,7 +25,7 @@ MAVLINK_MSG_SRC := msg/wrench.c msg/manual_control.c msg/ardusub_state.c msg/ard
 MAVLINK_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodules/common -Imodules/mavlink -Ihangard/tests
 MAVLINK_BIN := $(BUILDDIR)/hangar-mavlink
 MAVLINK_FAKE := $(TESTDIR)/mavlink-modules/fake_ardusub
-MAVLINK_TESTS := mav_frame mavlink_vehicle mavlink_topside phase1_chain
+MAVLINK_TESTS := mav_frame mav_link mavlink_vehicle mavlink_topside phase1_chain
 MAVLINK_GEN := modules/mavlink/mavlink_gen.h
 
 $(OBJDIR)/modules/mavlink/%.o: EE_CFLAGS := $(HG_CFLAGS)
@@ -59,6 +60,13 @@ $(TESTDIR)/test_mav_frame: $(OBJDIR)/modules/mavlink/tests/test_mav_frame.o $(OB
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(LDLIBS)
 
+# The link's suite compiles mavlink_main.c into itself (to see the queue).
+$(OBJDIR)/modules/mavlink/tests/test_mav_link.o: modules/mavlink/mavlink_main.c
+$(TESTDIR)/test_mav_link: $(OBJDIR)/modules/mavlink/tests/test_mav_link.o $(OBJDIR)/modules/mavlink/mav.o \
+		$(OBJDIR)/modules/mavlink/sha256.o
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(LDLIBS)
+
 define mavlink_test_rule
 $(TESTDIR)/test_$(1): $(OBJDIR)/modules/mavlink/tests/test_$(1).o $(OBJDIR)/modules/mavlink/mav.o \
 		$(OBJDIR)/modules/mavlink/sha256.o $(OBJDIR)/modules/mavlink/mavlink_conf.o $(call obj,$(HG_SRC)) \
@@ -73,7 +81,7 @@ MAVLINK_TEST_ENV := HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(absp
 	MAVLINK_BIN=$(abspath $(MAVLINK_BIN)) FAKE_ARDUSUB_BIN=$(abspath $(MAVLINK_FAKE)) \
 	SAFETY_BIN=$(abspath $(BUILDDIR)/hangar-safety) MUX_BIN=$(abspath $(BUILDDIR)/hangar-mux)
 
-.PHONY: check-mavgen check-mav_frame check-mavlink_vehicle check-mavlink_topside check-phase1_chain check-sitl
+.PHONY: check-mavgen check-mav_frame check-mav_link check-mavlink_vehicle check-mavlink_topside check-phase1_chain check-sitl
 check-mavgen:
 	@if $(PYTHON) -I tools/mavgen/mavgen.py --check $(MAVLINK_GEN) 2>/dev/null; then \
 	  echo "ok    mavgen --check  $(MAVLINK_GEN) is what tools/mavgen generates"; \
@@ -81,6 +89,9 @@ check-mavgen:
 
 check-mav_frame: $(TESTDIR)/test_mav_frame
 	$(call run_suite,mav_frame,60,$<)
+
+check-mav_link: $(TESTDIR)/test_mav_link
+	$(call run_suite,mav_link,60,$<)
 
 check-mavlink_vehicle check-mavlink_topside check-phase1_chain: check-%: $(TESTDIR)/test_% $(MAVLINK_BIN) \
 		$(MAVLINK_FAKE) $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(BUILDDIR)/hangar-safety $(BUILDDIR)/hangar-mux
@@ -102,7 +113,7 @@ check-mavlink_serial: $(TESTDIR)/test_mavlink_vehicle $(MAVLINK_BIN) $(MAVLINK_F
 	fi
 
 .PHONY: check-mavlink
-check-mavlink: check-mavgen check-mav_frame check-mavlink_vehicle check-mavlink_serial check-mavlink_topside check-phase1_chain
+check-mavlink: check-mavgen check-mav_frame check-mav_link check-mavlink_vehicle check-mavlink_serial check-mavlink_topside check-phase1_chain
 
 # The same chain against the real container (tools/sim/SETUP.md): the vehicle
 # module talks to SITL through MAVProxy's second output, 127.0.0.1:14560, which

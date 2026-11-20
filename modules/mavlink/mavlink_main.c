@@ -144,11 +144,34 @@ static int line_gone(int err)
 	return err == EIO || err == ENXIO || err == ENODEV || err == EBADF || err == EPIPE || err == ENOTTY;
 }
 
-/* Writes the queue's head frames as far as the line takes them. */
+static void tlog_write(struct mav_link *l, const uint8_t *frame, size_t n);
+
+/* Writes the queue's head frames as far as the line takes them. A message
+ * is framed here, when it is first at the head and nothing of it has gone:
+ * a MANUAL_CONTROL that replaced a queued one used to be signed when it was
+ * queued, ahead of frames signed earlier, and a receiver that wants rising
+ * timestamps (ArduSub's does) then refused everything queued behind it, a
+ * disarm included. */
 static void serial_flush(struct mav_link *l)
 {
 	while (l->fd >= 0 && l->tx_count > 0) {
 		struct mav_txframe *f = &l->txq[l->tx_head];
+		if (!f->framed) {
+			uint8_t payload[MAV_MAX_PAYLOAD];
+			size_t full_len = f->len;
+			memcpy(payload, f->data, full_len);
+			size_t n = mav_encode(f->data, sizeof f->data, l->seq++, l->sysid, l->compid, f->msgid, payload,
+					      full_len, f->crc_extra, &l->signing);
+			if (!n) { /* refused at mav_link_send already: not reached */
+				l->tx_head = (l->tx_head + 1) % MAV_TXQ;
+				l->tx_count--;
+				l->tx_dropped++;
+				continue;
+			}
+			f->len = (uint16_t)n;
+			f->off = 0;
+			f->framed = 1;
+		}
 		ssize_t w = write(l->fd, f->data + f->off, (size_t)(f->len - f->off));
 		if (w < 0) {
 			if (errno == EINTR)
@@ -165,6 +188,7 @@ static void serial_flush(struct mav_link *l)
 		f->off = (uint16_t)(f->off + (uint16_t)w);
 		if (f->off < f->len)
 			return;
+		tlog_write(l, f->data, f->len); /* what went on the line, when it had gone */
 		l->tx_head = (l->tx_head + 1) % MAV_TXQ;
 		l->tx_count--;
 	}
@@ -175,16 +199,30 @@ static int is_control(uint32_t msgid)
 	return msgid == MAV_MSG_ID_MANUAL_CONTROL || msgid == MAV_MSG_ID_COMMAND_LONG;
 }
 
+/* The message into one slot of the queue, to be framed when its turn comes. */
+static void txframe_set(struct mav_txframe *q, uint32_t msgid, const uint8_t *payload, size_t full_len,
+			uint8_t crc_extra)
+{
+	memcpy(q->data, payload, full_len);
+	q->len = (uint16_t)full_len;
+	q->off = 0;
+	q->msgid = msgid;
+	q->crc_extra = crc_extra;
+	q->framed = 0;
+}
+
 /* The queue's policy (mavlink.h, mav_link_send). Index i counts from the head;
- * the head may be partly written and is never touched. */
-static int serial_enqueue(struct mav_link *l, const uint8_t *frame, size_t n, uint32_t msgid)
+ * a frame of which a byte has gone is never touched. */
+static int serial_enqueue(struct mav_link *l, uint32_t msgid, const uint8_t *payload, size_t full_len,
+			  uint8_t crc_extra)
 {
 	if (msgid == MAV_MSG_ID_MANUAL_CONTROL) {
 		for (int i = l->tx_count - 1; i >= 0; i--) {
 			struct mav_txframe *q = &l->txq[(l->tx_head + i) % MAV_TXQ];
 			if (q->msgid == MAV_MSG_ID_MANUAL_CONTROL && q->off == 0) {
-				memcpy(q->data, frame, n);
-				q->len = (uint16_t)n;
+				/* In its place: it keeps its turn, and takes the sequence
+				 * number and the timestamp of that turn. */
+				txframe_set(q, msgid, payload, full_len, crc_extra);
 				l->tx_superseded++;
 				return 0;
 			}
@@ -209,11 +247,7 @@ static int serial_enqueue(struct mav_link *l, const uint8_t *frame, size_t n, ui
 		l->tx_count--;
 		l->tx_dropped++;
 	}
-	struct mav_txframe *q = &l->txq[(l->tx_head + l->tx_count) % MAV_TXQ];
-	memcpy(q->data, frame, n);
-	q->len = (uint16_t)n;
-	q->off = 0;
-	q->msgid = msgid;
+	txframe_set(&l->txq[(l->tx_head + l->tx_count) % MAV_TXQ], msgid, payload, full_len, crc_extra);
 	l->tx_count++;
 	return 0;
 }
@@ -366,20 +400,23 @@ int mav_link_send(struct mav_link *l, uint32_t msgid, const uint8_t *payload, si
 {
 	if (!l->have_peer || l->fd < 0)
 		return -1;
+	if (l->serial) {
+		/* Framed in serial_flush, when its turn on the line comes. */
+		if (full_len == 0 || full_len > MAV_MAX_PAYLOAD || msgid > 0xffffffu ||
+		    serial_enqueue(l, msgid, payload, full_len, crc_extra) < 0)
+			return -1;
+		l->sent++;
+		serial_flush(l);
+		return 0;
+	}
 	uint8_t frame[MAV_MAX_FRAME];
 	size_t n = mav_encode(frame, sizeof frame, l->seq++, l->sysid, l->compid, msgid, payload, full_len, crc_extra,
 			      &l->signing);
 	if (!n)
 		return -1;
-	if (l->serial) {
-		if (serial_enqueue(l, frame, n, msgid) < 0)
-			return -1;
-		serial_flush(l);
-	} else {
-		ssize_t w = sendto(l->fd, frame, n, MSG_DONTWAIT, (const struct sockaddr *)&l->peer, sizeof l->peer);
-		if (w < 0)
-			return -1;
-	}
+	ssize_t w = sendto(l->fd, frame, n, MSG_DONTWAIT, (const struct sockaddr *)&l->peer, sizeof l->peer);
+	if (w < 0)
+		return -1;
 	l->sent++;
 	tlog_write(l, frame, n);
 	return 0;

@@ -107,8 +107,14 @@ the same on both.
   still found. A frame of an id the module does not know (it cannot check its CRC) is
   taken as a frame only when the next one starts right behind it. MAVLink 2 only, as
   over UDP; signing is checked as over UDP.
-- Writing never blocks. Frames wait in a queue of 32; the kernel's buffer drains it
-  as the line accepts bytes. When it is full: a new `MANUAL_CONTROL` replaces the
+- Writing never blocks. Messages wait in a queue of 32; the kernel's buffer drains it
+  as the line accepts bytes. A message becomes a frame when its turn on the line
+  comes: its sequence number, and with signing its timestamp and signature, are made
+  then, so both leave in rising order whatever was replaced in the queue meanwhile
+  (a frame signed when it was queued, then overtaken by a later-signed
+  `MANUAL_CONTROL` in the place of an older one, is refused by a receiver that wants
+  rising timestamps, and that frame could be the disarm). The tlog gets each frame
+  when its last byte went. When the queue is full: a new `MANUAL_CONTROL` replaces the
   unsent one (only the newest matters); a control frame (`MANUAL_CONTROL`,
   `COMMAND_LONG`: arming, disarming) evicts the newest unsent other frame; anything
   else is dropped, and counted (`tx-dropped` in the status line). A frame partly
@@ -281,6 +287,12 @@ pseudo-terminal.
   truncation, two frames in one datagram, the never-trimmed first byte; SHA-256's
   vectors; a signed packet reproduced bit for bit, verified, replayed (refused), wrong
   key, unsigned on a signed link, a minute behind, the clock following the sender.
+- `make check-mav_link`: the link alone, `mavlink_main.c` compiled into the suite, on
+  a pseudo-terminal whose far end does not read until the test says so, signing on,
+  the receiver the module's own verifier. A `MANUAL_CONTROL` replaced twice in the
+  queue with a disarm and a rate request behind it: everything is accepted, sequence
+  numbers and timestamps in order, the newest manual control once; the tlog holds
+  exactly the frames that went, each one whole and verifiable.
 - `make check-mavlink_vehicle` (20 s): the module against `fake_ardusub` (a UDP client
   like MAVProxy's `--out`, signing, a parameter table, scripted refusals, a control
   port) with the suite as `safety`: 50 Hz signed neutral; the mismatch named and
