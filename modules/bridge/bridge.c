@@ -40,6 +40,7 @@
 #define MAX_TX 256
 #define MAX_RX 256
 #define MSG_MAX (1u << 20)        /* mirrored messages are at most 1 MB */
+#define REC_MAX (MSG_MAX + 600)   /* the largest record taken from the stream: a message as build_msg makes it */
 #define SBUF_CAP (4u << 20)       /* the reliable stream's unacknowledged bytes */
 #define WINDOW (64u << 10)        /* bytes in flight */
 #define LINK_TIMEOUT_NS 3000000000ull
@@ -132,6 +133,7 @@ static struct {
 	int nprec, cap_prec;
 	uint64_t r_expect;
 	size_t rlen;
+	uint64_t r_skip;         /* bytes still to come of a record too large to take */
 	int r_held;              /* a message record waits for the clock's estimate */
 	/* The exchange after the handshake (docs/08 "The link"). */
 	int info_sent, peer_info, mirror_ok, config_match;
@@ -156,7 +158,8 @@ static struct {
 	struct bridge_link st;
 } B;
 
-static unsigned char msgbuf[MSG_MAX + 64], recbuf[MSG_MAX + 1024];
+/* recbuf: at most one record not yet whole, and one datagram more. */
+static unsigned char msgbuf[MSG_MAX + 64], recbuf[5 + REC_MAX + BODY_MAX];
 static unsigned char msg_hash[32]; /* of the .msg files of MsgDir */
 
 /* ---- Small helpers ------------------------------------------------------ */
@@ -654,7 +657,24 @@ static void drain_records(void)
 	B.r_held = 0;
 	while (B.rlen - at >= 5) {
 		uint32_t rl = get32(recbuf + at);
-		if (rl < 1 || B.rlen - at - 4 < rl)
+		if (rl < 1) {
+			at += 4; /* a record of nothing */
+			continue;
+		}
+		if (rl - 1 > REC_MAX) {
+			/* Larger than any record this side takes: passed over whole,
+			 * by its length, so that the records after it are found
+			 * where they start. */
+			size_t have = B.rlen - at - 4;
+			if (have >= rl) {
+				at += 4 + rl;
+				continue;
+			}
+			B.r_skip = rl - have;
+			B.rlen = at;
+			break;
+		}
+		if (B.rlen - at - 4 < rl)
 			break;
 		if (recbuf[at + 4] == R_MSG && !B.have_offset) {
 			B.r_held = 1;
@@ -673,14 +693,17 @@ static void on_data(const unsigned char *b, size_t n)
 		return;
 	uint64_t off = get64(b);
 	size_t len = n - 8;
-	if (off == B.r_expect && !B.r_held) {
-		if (B.rlen + len > sizeof recbuf) {
-			B.rlen = 0; /* a record past 1 MB: not ours to take */
-		} else {
-			memcpy(recbuf + B.rlen, b + 8, len);
-			B.rlen += len;
-		}
+	if (off == B.r_expect && !B.r_held && B.rlen + len <= sizeof recbuf) {
+		const unsigned char *p = b + 8;
 		B.r_expect += len;
+		if (B.r_skip) {
+			size_t k = len < B.r_skip ? len : (size_t)B.r_skip;
+			B.r_skip -= k;
+			p += k;
+			len -= k;
+		}
+		memcpy(recbuf + B.rlen, p, len);
+		B.rlen += len;
 		drain_records();
 	}
 	unsigned char a[8];
@@ -1132,6 +1155,17 @@ static void send_info(void)
 	memcpy(b + 64, B.conf.hash, 32);
 	s_append(R_INFO, b, sizeof b, -1, 0);
 	B.info_sent = 1;
+	/* tests: once, a record larger than any the other side takes, of a type
+	 * it does not know. It must pass over it and keep its place. */
+	static int big_sent;
+	if (!big_sent && getenv("HANGAR_BRIDGE_TEST_BIG_RECORD")) {
+		size_t n = MSG_MAX + 4096;
+		unsigned char *z = calloc(1, n);
+		if (z)
+			s_append(99, z, n, -1, 0);
+		free(z);
+		big_sent = 1;
+	}
 }
 
 static void on_info(const unsigned char *b, size_t n)
@@ -1178,6 +1212,7 @@ static void reset_generation(void)
 	B.nprec = 0;
 	B.r_expect = 0;
 	B.rlen = 0;
+	B.r_skip = 0;
 	B.r_held = 0;
 	B.info_sent = B.peer_info = B.mirror_ok = 0;
 	B.config_match = 0;

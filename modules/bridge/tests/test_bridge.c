@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay, auto, writer).
+ * clocks, hold, replay, auto, writer, limits).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -1335,6 +1335,34 @@ static void writer_run(void)
 	       (unsigned long long)cut + 1, (unsigned long long)last, came, (unsigned long long)gaps);
 }
 
+/* What a peer that holds the key may still not do to this side. A record
+ * on the reliable stream larger than any this side takes (the vehicle's
+ * bridge sends one, 1 MB and a little, told to by the environment): it is
+ * passed over, and the records after it are read. */
+static void limits_run(void)
+{
+	const char *mirror = "[Mirror test.ev]\nDirection=up\nDelivery=reliable\n";
+	setup_side(&V, "lim", mirror);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_BIG_RECORD=1 %s %s\n[Bridge]\n", bridge_bin,
+		 V.conf);
+	manifest("ev", "[Module]\nExec=%s/talker --topic test.ev --rate 20\n"
+		       "[Publish test.ev]\nType=depth\nRate=20\nSlots=256\n", T_toys);
+	setup_side(&T, "lim", mirror);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	use(&T);
+	hg_sub *ev = hg_sub_open_from("test.ev", &DEPTH_TYPE, HG_OLDEST);
+	int came = 0;
+	uint64_t gaps = 0, last = 0;
+	if (up && ev)
+		read_ev(ev, 40, 6000, &came, &gaps, &last);
+	EXPECT(up && came >= 40 && gaps == 0,
+	       "a record of 1 MB + 4 KB on the stream, then test.ev (reliable): %d messages on the topside, to seq %llu, %llu lost",
+	       came, (unsigned long long)last, (unsigned long long)gaps);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -1346,6 +1374,7 @@ static const struct run {
 	{ "replay", replay_run },
 	{ "auto", auto_run },
 	{ "writer", writer_run },
+	{ "limits", limits_run },
 };
 
 int main(int argc, char **argv)
