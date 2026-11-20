@@ -1665,6 +1665,12 @@ static void check_module(struct mf_set *s, struct mf_module *m)
 		if (!in_list(m->excl[i], m->groups, m->n_groups))
 			refuse(m, module_line(m), "ExclusiveGroups: %s is not one of the module's SupplementaryGroups",
 			       m->excl[i]);
+	/* Root is the Privileged module's, which hangard.conf names. Any other
+	 * manifest asking for it by name would get it: the user switch to uid 0
+	 * drops nothing, and the program keeps the manager's capability set. */
+	if (!m->privileged && (strcmp(m->user, "root") == 0 || strcmp(m->group, "root") == 0 ||
+			       in_list("root", m->groups, m->n_groups)))
+		refuse(m, module_line(m), "User, Group or SupplementaryGroups names root: only the Privileged module runs as root");
 	if (m->privileged) {
 		if (strcmp(m->name, s->privileged_module) != 0)
 			refuse(m, module_line(m), "Privileged=yes: only the module PrivilegedModule= names in hangard.conf (%s) may be privileged",

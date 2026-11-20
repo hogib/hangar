@@ -441,6 +441,17 @@ static void test_graph_refusals(void)
 	fresh_set();
 	add("installer", MOD "Privileged=yes\nUser=root\n");
 	expect_graph("installer", 1, "no User, Group");
+	// Root is the Privileged module's alone: not by User=, Group= or a
+	// supplementary group of any other.
+	fresh_set();
+	add("sly", MOD "User=root\n[Publish x.y]\nType=depth\nRate=10\n");
+	expect_graph("sly", 1, "only the Privileged module runs as root");
+	fresh_set();
+	add("sly", MOD "Group=root\n");
+	expect_graph("sly", 1, "only the Privileged module runs as root");
+	fresh_set();
+	add("sly", MOD "SupplementaryGroups=video root\n");
+	expect_graph("sly", 1, "only the Privileged module runs as root");
 	fresh_set();
 	add("installer", MOD "Privileged=yes\n[Publish a.b]\nType=depth\n");
 	expect_graph("installer", 4, "no [Publish]");

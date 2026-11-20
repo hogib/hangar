@@ -159,6 +159,12 @@ static int resolve_ids(const struct module *m, struct child_ctx *c)
 		hd_log("%s: no such group: %s", m->name, mf->group);
 		return -1;
 	}
+	/* The manifest check refuses the name root; a name that /etc/passwd or
+	 * /etc/group maps to id 0 is root all the same. */
+	if (c->uid == 0 || c->gid == 0) {
+		hd_log("%s: user %s or its group is id 0: only the Privileged module runs as root", m->name, mf->user);
+		return -1;
+	}
 	/* Every module is also in hangar, which can read every topic. */
 	if (G.have_gid_hangar && G.gid_hangar != c->gid)
 		c->groups[c->n_groups++] = G.gid_hangar;
@@ -166,6 +172,10 @@ static int resolve_ids(const struct module *m, struct child_ctx *c)
 		gid_t g;
 		if (lookup_group(mf->groups[i], &g) < 0) {
 			hd_log("%s: no such group: %s", m->name, mf->groups[i]);
+			return -1;
+		}
+		if (g == 0) {
+			hd_log("%s: group %s is id 0: only the Privileged module runs as root", m->name, mf->groups[i]);
 			return -1;
 		}
 		c->groups[c->n_groups++] = g;
