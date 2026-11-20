@@ -16,6 +16,12 @@ lost); the model, its label and its training are python/examples/depth_ff2.py's.
   --variant collect   no model: assisted, steps and holds at both buoyancies, for
                       the offline check (tools/sim/depth_ff2_offline.py)
 
+--change supply makes the schedule's change one the policy cannot read from
+its inputs: the thrusters' supply from 16.8 to 12.6 V (the simulator's
+battery_full_v and battery_empty_v) where the buoyancy would go down 4 N, so
+"heavier" in the tables reads "weaker". The thrust curve itself is then
+another, and only rows from after the change can say so.
+
 --analyse <session> runs the analysis alone on a session that holds the run's
 events.json. --summarise <out>... prints the table over several runs' report.json.
 """
@@ -111,6 +117,19 @@ class Trainer(threading.Thread):
         return r
 
 
+def change(log, a, changed, tag, seconds):
+    """The schedule's change at the 3 m hold: the buoyancy 4 N down (or back),
+    or with --change supply the thrusters' supply to 12.6 V (or back)."""
+    if a.change == "buoyancy":
+        E.buoyancy(log, E.NOMINAL_BUOYANCY + (E.HEAVY_DELTA if changed else 0.0), tag, seconds)
+        return
+    E.transient(log, tag, seconds)
+    full, empty = (12.6, 10.0) if changed else (16.8, 13.2)
+    E.hangar("param", "set", "sim_vehicle", "battery_full_v=%g" % full, "battery_empty_v=%g" % empty)
+    log("supply", full_v=full, empty_v=empty, tag=tag)
+    time.sleep(seconds)
+
+
 def excite(log, a, seconds, tag):
     t_end = time.monotonic() + seconds
     k = 0
@@ -134,7 +153,7 @@ def schedule(log, a, trainer):
         log("phase", what="B1 assisted, nominal")
         E.steps_block(log, "B1", a, mux)
         E.call("depth_hold.set", depth_m=E.DEPTH_A)
-        E.buoyancy(log, E.NOMINAL_BUOYANCY + E.HEAVY_DELTA, "T1", a.transient_s)
+        change(log, a, True, "T1", a.transient_s)
         log("phase", what="heavier: the excitation again")
         excite(log, a, a.train_s / 2, "train:heavier")
         log("phase", what="B5 assisted, heavier")
@@ -149,8 +168,8 @@ def schedule(log, a, trainer):
     E.steps_block(log, "B1", a, mux)
     log("phase", what="T1 assisted, 4 N heavier and back")
     E.call("depth_hold.set", depth_m=E.DEPTH_A)
-    E.buoyancy(log, E.NOMINAL_BUOYANCY + E.HEAVY_DELTA, "T1", a.transient_s)
-    E.buoyancy(log, E.NOMINAL_BUOYANCY, "T1:back", a.transient_s)
+    change(log, a, True, "T1", a.transient_s)
+    change(log, a, False, "T1:back", a.transient_s)
 
     log("phase", what="H1 promotion: residual:depth_ff with M1")
     E.transient(log, "H1", a.hold_s)
@@ -160,7 +179,7 @@ def schedule(log, a, trainer):
     E.steps_block(log, "B2", a, mux)
     log("phase", what="T2 residual M1, 4 N heavier")
     E.call("depth_hold.set", depth_m=E.DEPTH_A)
-    E.buoyancy(log, E.NOMINAL_BUOYANCY + E.HEAVY_DELTA, "T2", a.transient_s)
+    change(log, a, True, "T2", a.transient_s)
     log("phase", what="B3 residual M1, heavier")
     E.steps_block(log, "B3", a, mux)
     E.call("depth_hold.set", depth_m=E.DEPTH_A)
@@ -192,7 +211,7 @@ def schedule(log, a, trainer):
     E.steps_block(log, "B5", a, mux)
     log("phase", what="T3 assisted, back to nominal")
     E.call("depth_hold.set", depth_m=E.DEPTH_A)
-    E.buoyancy(log, E.NOMINAL_BUOYANCY, "T3", a.transient_s)
+    change(log, a, False, "T3", a.transient_s)
     trainer.stop = True
     return m1, m2
 
@@ -273,8 +292,8 @@ def policy_output(s, ev, res):
                                                               / max(1e-9, (sp[1] - sp[0]) / 1e9), 2)}
     res["policy_output"] = out
     bat = s.arr("power.battery")
-    if bat is not None and "voltage" in bat.dtype.names:
-        res["battery_v"] = [round(float(bat["voltage"].max()), 2), round(float(bat["voltage"].min()), 2)]
+    if bat is not None and "voltage_v" in bat.dtype.names:
+        res["battery_v"] = [round(float(bat["voltage_v"].max()), 2), round(float(bat["voltage_v"].min()), 2)]
 
 
 def command_activity(s, ev, res):
@@ -294,6 +313,45 @@ def command_activity(s, ev, res):
                              "reversals per second": round(float((numpy.diff(numpy.sign(h)) != 0).sum())
                                                            / max(1e-9, (sp[1] - sp[0]) / 1e9), 2)}
     res["command_activity"] = out
+
+
+def mismatch_split(s, ev, res, limit=6000):
+    """Train against serve for a model without state: the newest model's file,
+    run by python/hangar's reference on the pairer's rows, against what the
+    policy published at the same anchors; apart for the anchors at which the
+    policy read the ctl.depth_hold.target message the pairer joined, and for
+    those at which it read another."""
+    from hangar.nn import hgw, reference
+    pw, ds, tg, ns, act = (s.arr(n) for n in ("policy.depth_ff.wrench", "dataset.depth_ff", "ctl.depth_hold.target",
+                                              "nav.state", "policy.depth_ff.active"))
+    if pw is None or ds is None or act is None or tg is None:
+        return
+    p_a = s.ref("policy.depth_ff.wrench", "policy.depth_ff.active")
+    p_n = s.ref("policy.depth_ff.wrench", "nav.state")
+    p_t = s.ref("policy.depth_ff.wrench", "ctl.depth_hold.target")
+    k = int(p_a.max())
+    path = os.path.join(s.path, "weights", "%016x.hgw" % int(act["hash"][k]))
+    if k < 0 or not os.path.exists(path):
+        return
+    g = hgw.read(path).graph
+    fields = [b.field for b in g.inputs]
+    idx = numpy.nonzero((p_a == k) & (p_n >= 0) & (p_t >= 0))[0]
+    anchor = ns["seq"][p_n[idx]]
+    r = numpy.minimum(numpy.searchsorted(ds["anchor_seq"], anchor), len(ds) - 1)
+    ok = ds["anchor_seq"][r] == anchor
+    idx, r = idx[ok], r[ok]
+    same = tg["seq"][p_t[idx]].astype(numpy.int64) == ds["ctl.depth_hold.target._seq"][r].astype(numpy.int64)
+    # Every anchor read differently, and the newest of the others up to the limit.
+    pick = numpy.concatenate([numpy.nonzero(~same)[0], numpy.nonzero(same)[0][-limit:]])
+    m = reference.Model(g)
+    d = numpy.array([abs(m.step([[float(ds[f][r[i]]) for f in fields]])[0][0] - float(pw["heave"][idx[i]])) for i in pick])
+    sm = same[pick]
+
+    def stats(x):
+        return {"anchors": int(len(x)), "heave difference, max": float(x.max()) if len(x) else None,
+                "over 1e-4": int((x > 1e-4).sum()), "over 1e-6": int((x > 1e-6).sum())}
+    res["mismatch"]["outputs, by the message read"] = {
+        "model": "%016x" % int(act["hash"][k]), "the same message": stats(d[sm]), "another message": stats(d[~sm])}
 
 
 def timing(s, res):
@@ -316,7 +374,8 @@ def analyse(session, ev, trainer=None):
     for f in (E.depth_error, E.trim_split):
         f(s, ev, res)
     E.control_latency(s, res)
-    for f in (E.loop_latency, E.swap_cost, E.mismatch, E.lineage, E.demotions, policy_output, command_activity):
+    for f in (E.loop_latency, E.swap_cost, E.mismatch, mismatch_split, E.lineage, E.demotions, policy_output,
+              command_activity):
         f(s, ev, res)
     timing(s, res)
     rows(s, ev, res, trainer)
@@ -326,11 +385,11 @@ def analyse(session, ev, trainer=None):
 
 # ---- The table over several runs -----------------------------------------------------
 
-def med(xs):
+def med(xs, nd=2):
     xs = [x for x in xs if x is not None]
     if not xs:
         return "-"
-    return "%.2f (%.2f to %.2f)" % (float(numpy.median(xs)), min(xs), max(xs))
+    return "%.*f (%.*f to %.*f)" % (nd, float(numpy.median(xs)), nd, min(xs), nd, max(xs))
 
 
 def summarise(dirs):
@@ -338,7 +397,7 @@ def summarise(dirs):
     runs = {}
     for d in dirs:
         r = json.load(open(os.path.join(d, "report.json")))
-        runs.setdefault(r.get("variant", "?"), []).append(r)
+        runs.setdefault(r.get("variant", "?") + (", the supply changed" if r.get("change") == "supply" else ""), []).append(r)
     L = []
 
     def get(r, *path):
@@ -358,7 +417,10 @@ def summarise(dirs):
                            ("step 3 to 4 m: overshoot (%)", ("down", "overshoot_pct")),
                            ("step 4 to 3 m: IAE (m s)", ("up", "iae_m_s")),
                            ("step 4 to 3 m: overshoot (%)", ("up", "overshoot_pct")),
-                           ("policy at its bound (% of ticks)", "bound")):
+                           ("policy at its bound (% of ticks)", "bound"),
+                           ("heave command: reversals per second", "reversals"),
+                           ("at the hold's end: the integrator", "integral"),
+                           ("at the hold's end: the policy's output", "policy_heave")):
             cells = []
             for _, b in cols:
                 if path is None:
@@ -366,6 +428,10 @@ def summarise(dirs):
                 elif path == "bound":
                     cells.append(med([None if get(r, "policy_output", b) is None else
                                       100 * get(r, "policy_output", b, "at its bound (share of ticks)") for r in rs]))
+                elif path == "reversals":
+                    cells.append(med([get(r, "command_activity", b, "reversals per second") for r in rs]))
+                elif isinstance(path, str):
+                    cells.append(med([get(r, "trim_carried_by", b, path) for r in rs], 3))
                 else:
                     cells.append(med([get(r, "blocks", b, *path) for r in rs]))
             L.append("| %s | %s |" % (name, " | ".join(cells)))
@@ -383,6 +449,26 @@ def summarise(dirs):
             ", ".join(str(len(get(r, "demotions", "demotions") or [])) for r in rs),
             ", ".join(str(get(r, "rows", "the trainer's stream", "lost")) for r in rs),
             ", ".join(str(sum(x.get("over_30ms", 0) for x in (r.get("timing") or {}).values())) for r in rs))]
+        # The first experiment's checks.
+        ll = [m for r in rs for m in (get(r, "loop_latency", "models") or [])]
+        for name in ("M1", "M2"):
+            for key in ("deploy called", "swapped (policy.active)", "first thr.cmd carrying it"):
+                xs = [m.get(key) for m in ll if m.get("model") == name]
+                L.append("%s, newest row trained on to %s (ms): %s." % (name, key, med(xs, 1)))
+        mi = [get(r, "mismatch", "inputs") or {} for r in rs]
+        mo = [get(r, "mismatch", "outputs") or {} for r in rs]
+        L.append("Train/serve: %d anchors with an output and a row, %d with another ctl.depth_hold.target message; "
+                 "outputs against the reference on the rows, largest difference per run: %s." % (
+                     sum(x.get("anchors with an output and a row", 0) for x in mi), sum(x.get("another message", 0) for x in mi),
+                     ", ".join("%.1e" % x["heave difference, max"] if "heave difference, max" in x else "-" for x in mo)))
+        L.append("Lineage complete per run: %s; thr.cmd carrying a residual / leading back to a policy.active: %s." % (
+            ", ".join(str(get(r, "lineage", "one command followed back", "complete")) for r in rs),
+            ", ".join("%s/%s" % (get(r, "lineage", "thr.cmd carrying a residual"),
+                                 get(r, "lineage", "of them leading back to a policy.active")) for r in rs)))
+        L.append("Recorder gaps per run: %s. Anchors without a row: %s. Trainer steps: %s." % (
+            ", ".join(str(sum((r.get("recorder_gaps") or {}).values())) for r in rs),
+            ", ".join(str(get(r, "rows", "anchors without a row")) for r in rs),
+            ", ".join(str(get(r, "rows", "the trainer's stream", "steps")) for r in rs)))
         # Paired: each run's residual block less its own assisted block.
         L += ["", "| The run's own difference, residual less assisted | Median (smallest to largest) | Runs better / worse |",
               "|---|---|---|"]
@@ -418,6 +504,8 @@ def main():
     ap.add_argument("--out", help="where events.log, events.json, report.json and report.md go")
     ap.add_argument("--variant", choices=("learned", "oracle", "collect"), default="learned")
     ap.add_argument("--seed", type=int, default=1, help="the trainer's (the simulator's is the manifest's)")
+    ap.add_argument("--change", choices=("buoyancy", "supply"), default="buoyancy",
+                    help="what changes at T1, T2 and T3: the buoyancy by 4 N, or the thrusters' supply to 12.6 V")
     ap.add_argument("--quick", action="store_true", help="every phase shortened: a smoke run")
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=3e-3)
@@ -446,7 +534,7 @@ def main():
         old = os.path.join(a.out, "report.json")
         old = json.load(open(old)) if os.path.exists(old) else {}
         res = analyse(a.analyse, ev, old.get("rows", {}).get("the trainer's stream"))
-        for k in ("variant", "seed", "deploys"):
+        for k in ("variant", "seed", "change", "deploys"):
             if k in old:
                 res[k] = old[k]
         if "the mux's log" in old.get("demotions", {}):
@@ -455,7 +543,7 @@ def main():
         if not a.root:
             ap.error("--root is needed for a run")
         log = E.Log(os.path.join(a.out, "events.log"))
-        log("start", variant=a.variant, seed=a.seed, quick=a.quick)
+        log("start", variant=a.variant, seed=a.seed, quick=a.quick, change=a.change)
         st = htopic.open_topic("recorder.session", timeout=5.0, start="oldest")
         trainer = Trainer(log, a)
         try:
@@ -488,7 +576,7 @@ def main():
                                     "steps": trainer.steps, "steps_per_s": round(trainer.steps / span, 1) if span else None,
                                     "batch": a.batch, "replay": a.replay, "lag": depth_ff2.LAG,
                                     "bound": depth_ff2.BOUND})
-        res["variant"], res["seed"] = a.variant, a.seed
+        res["variant"], res["seed"], res["change"] = a.variant, a.seed, a.change
         res["deploys"] = {"M1": m1, "M2": m2}
         try:   # why the mux demoted, in its own words
             with open(os.path.join(a.root, "run", "hangar", "log", "mux.log")) as f:

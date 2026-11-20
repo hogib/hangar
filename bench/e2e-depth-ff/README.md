@@ -501,3 +501,15 @@ spread otherwise.
 The schedule is the first experiment's with a shorter training phase: settle 30 s;
 training 120 s (steps of 0.1 to 1.5 m, 10 s each) and 20 s at 3 m; deploy M1; B1; T1
 and back; H1; B2; T2; B3; S2 with M2; B4; H2; B5; T3. 13 min.
+
+**A supplementary run, added after the first learned and oracle runs and before it was
+made.** A buoyancy change turned out to ask nothing new of a model: the trim is one of
+its inputs, and the oracle, which is the same function before and after, does as well
+on the heavier vehicle as on the nominal one. Whether a second model *learns* a changed
+vehicle needs a change the policy cannot read. `--change supply` runs the same schedule
+with the thrusters' supply going from 16.8 to 12.6 V wherever the buoyancy went down
+4 N (and back where it came back): the thrust curve itself is then another. The same
+metrics; B3 is the model from before the change on the weaker thrusters, B4 the model
+trained since (its 3 min buffer holds 2 min of rows from after the change and 1 min
+from before), B5 `assisted`; the oracle variant keeps reading the table at 16.8 V and
+so is stale by construction. Five learned runs, two oracle runs.
