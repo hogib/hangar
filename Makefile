@@ -501,6 +501,11 @@ include bench/bench.mk
 include hangard/hangard.mk
 check: check-hangard
 
+# The hangar command's own suite (hangar/hangar.mk; the command itself is
+# built by hangard.mk's rules).
+include hangar/hangar.mk
+check: check-hangar
+
 # Dawn Patrol, the console module (modules/console/README.md,
 # modules/console/console.mk carries the rules): GPL-3.0-or-later, C11 over lib/hg and lib/net.
 include modules/console/console.mk

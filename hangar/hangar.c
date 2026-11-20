@@ -503,16 +503,30 @@ static int cmd_hz(int argc, char **argv)
 	long windows = 0;
 	uint64_t window_start = hg_now_ns(), last = 0;
 	uint64_t n = 0, min_dt = UINT64_MAX, max_dt = 0, sum_dt = 0;
+	unsigned char *buf = NULL;
+	size_t buflen = 0;
 	while (!stopping && (seconds < 0 || windows < seconds)) {
 		unsigned r = hg_wait(&s, 1, 100);
 		if (r & HG_READY_INTERRUPT)
 			break;
 		struct hg_info info;
-		unsigned char buf[65536];
 		for (;;) {
+			/* A buffer of the topic's own size, as echo has: a fixed one
+			 * left a larger payload (every frame topic) unread, and the
+			 * unread message then woke hg_wait at once, for ever. */
 			uint32_t pl = hg_sub_payload_bytes(s);
-			if (!pl || pl > sizeof buf)
+			if (!pl)
 				break;
+			if (pl > buflen) {
+				unsigned char *nb = realloc(buf, pl);
+				if (!nb) {
+					free(buf);
+					hg_sub_close(s);
+					return fail("hz: out of memory for a payload of %u bytes", pl);
+				}
+				buf = nb;
+				buflen = pl;
+			}
 			if (hg_next(s, buf, pl, &info) != HG_MSG)
 				break;
 			if (last && info.publish_ns > last) {
@@ -543,6 +557,7 @@ static int cmd_hz(int argc, char **argv)
 			max_dt = sum_dt = 0;
 		}
 	}
+	free(buf);
 	hg_sub_close(s);
 	return 0;
 }
