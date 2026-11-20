@@ -817,6 +817,44 @@ static void test_long_allow_list(void)
 	CHECK(hg_wiring_parse(big, (size_t)n, &w, werr, sizeof werr) < 0);
 }
 
+/* The 127 limit holds for the bridge's subscriptions too, which come from
+ * bridge.conf after the manifest's own were counted: 135 topics to send by
+ * name are refused with the reason, 120 make a wiring the library takes. */
+static void test_bridge_subscription_limit(void)
+{
+	char conf[1024], from[1024], to[1024];
+	static char text[65536];
+	const char *src = getenv("HANGAR_MSG_SRC");
+	snprintf(from, sizeof from, "%s/bridge_link.msg", src && *src ? src : "msg");
+	snprintf(to, sizeof to, "%s/bridge_link.msg", T_msg);
+	copy_file(from, to);
+	snprintf(conf, sizeof conf, "%s/bridge.conf", T_root);
+	for (int sections = 9; sections >= 8; sections--) {
+		int n = snprintf(text, sizeof text, "[Bridge]\nPair=lab\n");
+		for (int s = 0; s < sections; s++) {
+			n += snprintf(text + n, sizeof text - (size_t)n, "[Mirror");
+			for (int k = 0; k < 15; k++)
+				n += snprintf(text + n, sizeof text - (size_t)n, " t%d.x%d", s, k);
+			n += snprintf(text + n, sizeof text - (size_t)n, "]\nDirection=up\n");
+		}
+		write_file(conf, text);
+		fresh_set();
+		snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%.*s", (int)sizeof set.bridge_conf_path - 1, conf);
+		struct mf_module *b = add("bridge", MOD "[Bridge]\n");
+		mf_set_check(&set);
+		if (sections == 9) {
+			CHECK(b->refused);
+			CHECK(strstr(b->reason, "subscriptions by name") != NULL);
+			continue;
+		}
+		CHECK(!b->refused);
+		int len = wiring_text(&set, b, text, sizeof text);
+		static struct hg_wiring w;
+		char werr[200] = "";
+		CHECK(len > 0 && hg_wiring_parse(text, (size_t)len, &w, werr, sizeof werr) == 0);
+	}
+}
+
 int main(void)
 {
 	hd_setup("manifest", NULL);
@@ -829,6 +867,7 @@ int main(void)
 	RUN_TEST(test_bridge);
 	RUN_TEST(test_wiring_roundtrip);
 	RUN_TEST(test_long_allow_list);
+	RUN_TEST(test_bridge_subscription_limit);
 	mf_set_free(&set);
 	hd_teardown();
 	TEST_MAIN_END();

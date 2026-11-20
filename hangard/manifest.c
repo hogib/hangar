@@ -1912,6 +1912,19 @@ static void add_mirror(struct mf_module *b, const char *pattern, uint32_t rate_m
 	mm->stale_after_ns = stale_after_ns;
 }
 
+/* The 127 limit, implicit subscriptions counted, globs not: what the library
+ * accepts in a wiring. Asked whenever subscriptions were added to a module. */
+static void check_named_subs(struct mf_module *m)
+{
+	int named = 0;
+	for (int i = 0; i < m->n_subs; i++)
+		if (!m->subs[i].glob)
+			named++;
+	if (named > HG_WIRING_MAX_SUBS && !m->refused)
+		refuse(m, module_line(m), "%d subscriptions by name, the implicit .req and .rep ones and a bridge's topics to send counted; one wait holds %d",
+		       named, HG_WIRING_MAX_SUBS);
+}
+
 /* The bridge's wiring (docs/08 "The bridge module", "Calls across the
  * tether"), from bridge.conf and every other module of this machine, after
  * their own implicit topics: a sub line for each topic it sends, a mirror
@@ -2124,14 +2137,7 @@ static void derive_implicit(struct mf_set *s, struct mf_module *m)
 			}
 		}
 	}
-	/* The 127 limit, implicit subscriptions counted, globs not. */
-	int named = 0;
-	for (int i = 0; i < m->n_subs; i++)
-		if (!m->subs[i].glob)
-			named++;
-	if (named > HG_WIRING_MAX_SUBS)
-		refuse(m, module_line(m), "%d subscriptions by name, the implicit .req and .rep ones counted; one wait holds %d",
-		       named, HG_WIRING_MAX_SUBS);
+	check_named_subs(m);
 }
 
 /* Pass 3: between modules. */
@@ -2299,8 +2305,10 @@ int mf_set_check(struct mf_set *s)
 		if (!s->modules[k]->refused)
 			derive_implicit(s, s->modules[k]);
 	for (int k = 0; k < s->n_modules; k++)
-		if (!s->modules[k]->refused && s->modules[k]->bridge && s->bridge)
+		if (!s->modules[k]->refused && s->modules[k]->bridge && s->bridge) {
 			derive_bridge(s, s->modules[k]);
+			check_named_subs(s->modules[k]);
+		}
 	check_set(s);
 	int ok = 0;
 	for (int k = 0; k < s->n_modules; k++)
