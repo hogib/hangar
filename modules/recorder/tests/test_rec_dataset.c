@@ -392,6 +392,90 @@ static void test_manifest_long_lists(void)
 	CHECK_EQ_INT(hg_ds_check_manifests(&s, mdir, err, sizeof err), 0);
 }
 
+/* A source of one depth message, stamped 1 s, that keeps the time asked for. */
+struct one_msg {
+	uint64_t asked_t;
+	int asked;
+};
+
+static enum hg_result one_read_seq(void *ctx, uint64_t seq, void *buf, size_t len, struct hg_info *info)
+{
+	(void)ctx;
+	(void)seq;
+	(void)buf;
+	(void)len;
+	memset(info, 0, sizeof *info);
+	return HG_GONE;
+}
+
+static enum hg_result one_find_stamp(void *ctx, uint64_t t, void *buf, size_t len, struct hg_info *info)
+{
+	struct one_msg *o = ctx;
+	o->asked_t = t;
+	o->asked++;
+	memset(info, 0, sizeof *info);
+	if (t < 1000000000ull)
+		return HG_GONE;
+	struct depth d = { .depth_m = 7 };
+	memcpy(buf, &d, len < sizeof d ? len : sizeof d);
+	info->result = HG_MSG;
+	info->seq = 1;
+	info->stamp_ns = info->publish_ns = 1000000000ull;
+	return HG_MSG;
+}
+
+/* An asof join looks at anchor time + offset. The sum was taken in uint64:
+ * with an offset further back than the clock has run (asof:-5s for an
+ * anchor stamped 2 s after boot) it wrapped to the far future, and the
+ * newest message of the part was joined as the one of 3 s before boot. A
+ * time before the clock's zero has no message: the part is missing. */
+static void test_asof_before_the_clock_started(void)
+{
+	static const char SPEC[] = "[Dataset]\nAnchor=t.c\n[Input back]\nTopic=t.s\nJoin=asof:-5s\n";
+	static struct hg_ds_spec s;
+	static struct hg_ds_row_type rt;
+	char err[400] = "";
+	CHECK_EQ_INT(hg_ds_parse(SPEC, strlen(SPEC), "back", &s, err, sizeof err), 0);
+	struct hg_ds_topic_info anchor = ti(&WRENCH_TYPE, "t.c", 50000), part[1] = { ti(&DEPTH_TYPE, "t.s", 0) };
+	CHECK_EQ_INT(hg_ds_bind(&s, &anchor, part, &rt, err, sizeof err), 0);
+	unsigned char *row = calloc(1, rt.row_bytes), *scratch = calloc(1, rt.scratch_bytes + 8);
+	static const unsigned char boot[16] = { 1 };
+	struct wrench w;
+	memset(&w, 0, sizeof w);
+	struct one_msg one = { 0, 0 };
+	struct hg_ds_source src = { &one, one_read_seq, one_find_stamp };
+	struct hg_ds_joined jr;
+	/* 8 s after boot: 3 s is asked for, and the message of 1 s is the one. */
+	struct hg_info a = { .result = HG_MSG, .seq = 10, .stamp_ns = 8000000000ull, .publish_ns = 8000000000ull };
+	hg_ds_row_begin(&rt, row, &a, &w, boot);
+	hg_ds_join(&rt, 0, row, &a, &src, scratch, &jr);
+	CHECK_EQ_INT(one.asked, 1);
+	CHECK_EQ_INT(one.asked_t, 3000000000ull);
+	CHECK_EQ_INT(jr.missing, 0);
+	/* 2 s after boot: 3 s before the clock's zero. */
+	a.seq = 11;
+	a.stamp_ns = a.publish_ns = 2000000000ull;
+	one.asked = 0;
+	one.asked_t = 0;
+	hg_ds_row_begin(&rt, row, &a, &w, boot);
+	hg_ds_join(&rt, 0, row, &a, &src, scratch, &jr);
+	printf("    anchor at 2 s, asof:-5s: %s (asked for t = %llu)\n", jr.missing ? "missing" : "joined",
+	       (unsigned long long)one.asked_t);
+	CHECK_EQ_INT(jr.missing, 1);
+	CHECK(!one.asked || one.asked_t == 0);
+	uint32_t missing;
+	memcpy(&missing, row + HG_DS_OFF_MISSING, 4);
+	CHECK_EQ_INT(missing, 1);
+	/* Exactly at zero is a time: asked for, and nothing is stamped then. */
+	a.stamp_ns = a.publish_ns = 5000000000ull;
+	one.asked = 0;
+	hg_ds_row_begin(&rt, row, &a, &w, boot);
+	hg_ds_join(&rt, 0, row, &a, &src, scratch, &jr);
+	CHECK_EQ_INT(jr.missing, 1);
+	free(row);
+	free(scratch);
+}
+
 static void test_where(void)
 {
 	unsigned char row[272];
@@ -989,6 +1073,7 @@ int main(void)
 	RUN_TEST(test_spec_refusals);
 	RUN_TEST(test_row_type);
 	RUN_TEST(test_manifest_long_lists);
+	RUN_TEST(test_asof_before_the_clock_started);
 	RUN_TEST(test_where);
 	RUN_TEST(test_chain_live);
 	RUN_TEST(test_chain_offline_matches);

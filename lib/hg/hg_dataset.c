@@ -1141,7 +1141,20 @@ void hg_ds_join(const struct hg_ds_row_type *rt, int i, unsigned char *row, cons
 	uint32_t ref_flags = 0;
 	enum hg_result r;
 	memset(out, 0, sizeof *out);
-	uint64_t t = hg_ds_anchor_time(anchor) + (uint64_t)p->offset_ns;
+	/* The time an asof join looks at: the anchor's, moved by the offset,
+	 * which may reach further back than the clock has run (asof:-5s for an
+	 * anchor stamped 2 s after boot). Added in uint64 that wrapped to the
+	 * far future and the part's newest message was joined; before the
+	 * clock's zero there is no message. */
+	uint64_t t = hg_ds_anchor_time(anchor);
+	int before_zero = 0;
+	if (p->offset_ns < 0) {
+		uint64_t back = (uint64_t)(-(p->offset_ns + 1)) + 1;
+		before_zero = back > t;
+		t = before_zero ? 0 : t - back;
+	} else {
+		t = t > UINT64_MAX - (uint64_t)p->offset_ns ? UINT64_MAX : t + (uint64_t)p->offset_ns;
+	}
 	if (p->join == HG_DS_PROVENANCE) {
 		int found = -1;
 		for (uint32_t k = 0; k < anchor->n_inputs && k < HG_MAX_REFS; k++)
@@ -1156,6 +1169,8 @@ void hg_ds_join(const struct hg_ds_row_type *rt, int i, unsigned char *row, cons
 		ref_flags = (anchor->inputs[found].flags & 7u) << 8;
 		r = src->read_seq(src->ctx, anchor->inputs[found].seq, scratch, bp->payload_bytes, &info);
 	} else {
+		if (before_zero)
+			goto missing;
 		r = src->find_stamp(src->ctx, t, scratch, bp->payload_bytes, &info);
 	}
 	if (r != HG_MSG)
