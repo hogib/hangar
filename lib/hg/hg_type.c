@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 uint64_t hg_fnv1a64(const void *data, size_t len)
@@ -242,13 +243,17 @@ bad:
 
 size_t hg_schema_canonical(const char *text, size_t len, char *out, size_t outlen)
 {
-	static struct hg_schema s; /* 12 KB: too much for the stack of a small module */
-	if (hg_schema_parse(text, len, &s, NULL, 0) < 0)
+	/* 12 KB: too much for the stack of a small module, and not a static:
+	 * two threads here at once parsed into the same struct. */
+	struct hg_schema *s = malloc(sizeof *s);
+	if (!s || hg_schema_parse(text, len, s, NULL, 0) < 0) {
+		free(s);
 		return (size_t)-1;
+	}
 	size_t n = 0;
-	for (uint32_t i = 0; i < s.type.n_fields; i++) {
+	for (uint32_t i = 0; i < s->type.n_fields; i++) {
 		char cl[HG_FIELD_NAME_MAX + 32];
-		size_t cn = canon_line(&s.fields[i], cl, sizeof cl);
+		size_t cn = canon_line(&s->fields[i], cl, sizeof cl);
 		if (out && n < outlen) {
 			size_t room = outlen - n;
 			memcpy(out + n, cl, cn < room ? cn : room);
@@ -257,6 +262,7 @@ size_t hg_schema_canonical(const char *text, size_t len, char *out, size_t outle
 	}
 	if (out && outlen)
 		out[n < outlen ? n : outlen - 1] = 0;
+	free(s);
 	return n;
 }
 

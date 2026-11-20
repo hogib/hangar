@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -478,9 +479,50 @@ static void test_long_quoted_text(void)
 	CHECK_EQ_INT(strnlen((const char *)P, sizeof P), 8191);
 }
 
+/* hg_schema_canonical parsed into one static struct: two threads calling
+ * it at once (a module with a worker thread, the console beside the
+ * library's helper) wrote each other's fields under the other's loop. Each
+ * thread here asks for its own type's canonical text many times and counts
+ * the answers that are not it; under ThreadSanitizer (make check-tsan) the
+ * first pair of calls is enough. */
+static const char canon_a[] = "u8 a\n", canon_b[] = "f32 x[3]\nu64 when\nchar name[16]\ni16 y\nf64 z[2]\nu32 n\n";
+
+static void *canon_thread(void *arg)
+{
+	const char *want = arg;
+	static _Thread_local char out[512];
+	long wrong = 0;
+	for (int i = 0; i < 20000; i++) {
+		size_t n = hg_schema_canonical(want, strlen(want), out, sizeof out);
+		if (n != strlen(want) || strcmp(out, want) != 0)
+			wrong++;
+	}
+	return (void *)wrong;
+}
+
+static void test_canonical_from_two_threads(void)
+{
+	char out[512];
+	CHECK_EQ_INT(hg_schema_canonical(canon_a, sizeof canon_a - 1, out, sizeof out), sizeof canon_a - 1);
+	CHECK(strcmp(out, canon_a) == 0);
+	CHECK_EQ_INT(hg_schema_canonical(canon_b, sizeof canon_b - 1, out, sizeof out), sizeof canon_b - 1);
+	CHECK(strcmp(out, canon_b) == 0);
+	pthread_t ta, tb;
+	void *wa = NULL, *wb = NULL;
+	CHECK_EQ_INT(pthread_create(&ta, NULL, canon_thread, (void *)canon_a), 0);
+	CHECK_EQ_INT(pthread_create(&tb, NULL, canon_thread, (void *)canon_b), 0);
+	pthread_join(ta, &wa);
+	pthread_join(tb, &wb);
+	CHECK_EQ_INT((long)wa, 0);
+	CHECK_EQ_INT((long)wb, 0);
+	if (wa || wb)
+		printf("    %ld and %ld of 20000 canonical texts were not the caller's\n", (long)wa, (long)wb);
+}
+
 int main(void)
 {
 	RUN_TEST(test_long_quoted_text);
+	RUN_TEST(test_canonical_from_two_threads);
 	RUN_TEST(test_save_closes_once);
 	RUN_TEST(test_defaults_meet_the_validator);
 	RUN_TEST(test_floats_are_finite);
