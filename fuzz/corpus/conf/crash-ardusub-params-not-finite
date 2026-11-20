@@ -1,0 +1,4 @@
+# ardusub.params
+SURFACE_DEPTH -10
+FS_GCS_ENABLE nan
+JS_GAIN_DEFAULT 1e99

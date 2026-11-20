@@ -148,8 +148,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		int n = mavlink_params_load(path, p, MC_MAX_PARAMS, err, sizeof err);
 		FZ_NOTE("ardusub.params: %d %s", n, err);
 		FZ_CHECK(n <= MC_MAX_PARAMS);
-		for (int i = 0; i < n; i++)
+		for (int i = 0; i < n; i++) {
 			FZ_CHECK(strnlen(p[i].id, sizeof p[i].id) < sizeof p[i].id);
+			/* What setup sends and the check compares with: a number. */
+			FZ_CHECK(p[i].value == p[i].value && p[i].value - p[i].value == 0);
+		}
 		break;
 	}
 	case 5: {

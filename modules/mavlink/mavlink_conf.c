@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -338,7 +339,10 @@ int mavlink_params_load(const char *path, struct mc_param *out, int max, char *e
 		}
 		char *end;
 		double v = strtod(val, &end);
-		if (*end) {
+		if (*end || !isfinite((float)v)) {
+			/* strtod takes nan, inf and 1e99. A value that is not a number
+			 * compares equal to nothing, so the check against the
+			 * autopilot would pass it, and setup would send it. */
 			snprintf(err, errlen, "%s:%d: %s: not a number", path, line, val);
 			fclose(f);
 			return -1;
