@@ -282,6 +282,13 @@ static int read_file(const char *path, char *reason, size_t len)
 			fclose(f);
 			return -1;
 		}
+		/* strtod takes nan, inf and 1e99; what is loaded is sent to the
+		 * autopilot as a PARAM_SET. */
+		if (!isfinite((float)v)) {
+			snprintf(reason, len, "%s line %d: %s is not a finite number", path, lineno, id);
+			fclose(f);
+			return -1;
+		}
 		if (pj_self_kept(id))
 			continue;
 		if (n_want == PJ_MAX) {

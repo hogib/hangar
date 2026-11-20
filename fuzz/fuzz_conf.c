@@ -17,7 +17,8 @@
  *   7  an ArduSub parameter dump       hangar/hangar_params.c read_table and compare
  *                                      (`hangar ardusub-params diff|restore <file>`; QGC and MAVROS files)
  *   8  a parameter backup              modules/mavlink/param_backup.c: pj_start_load reads it, then
- *                                      the job runs against an autopilot that answers nothing */
+ *                                      the job runs against an autopilot that reports two parameters
+ *                                      at -10: what differs is sent, and must be a finite number */
 #include "fuzz.h"
 
 #include <fcntl.h>
@@ -75,9 +76,11 @@ static void no_send_read(int index)
 	(void)index;
 }
 
+/* What a load sends to the autopilot: never a value that is not a number. */
 static void no_send_set(const char *id, float value, uint8_t type)
 {
-	(void)id, (void)value, (void)type;
+	(void)id, (void)type;
+	FZ_CHECK(value == value && value - value == 0);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
