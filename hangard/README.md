@@ -26,7 +26,7 @@ and stays LGPL. The plan is `lib/hg/PLAN.md`, "Stage 2 as built".
 | `msg/hangar_system.msg`, `msg/hangar_modules.msg` | the types of `hangar.<role>.system` and `.modules`; `make msg` generates them into `msg/` with the others |
 | `hangard.mk` | the build rules, included by the root Makefile |
 | `hangard.service` | the systemd unit of docs/03 |
-| `tests/` | six suites and the toy modules (below) |
+| `tests/` | eleven suites and the toy modules (below) |
 | `../hangar/hangar.c` | the command |
 | `../lib/hg/hg_control.h/.c` | the control socket's wire format and client |
 | `../lib/hg/hg_call.h/.c`, `hg_params.h/.c` | calls and parameters in the library (2b) |
@@ -83,7 +83,7 @@ are identified by `SO_PEERCRED` and `SO_PEERGROUPS`. The same text is in
 | Request | From | Reply |
 |---|---|---|
 | `page` | a module's main process (`hg_init`) | `ok\n` + the page descriptor (`SCM_RIGHTS`); refused if the pid is not a module's main process, the module is `Legacy`, or `TracerPid` in `/proc/<pid>/status` is not 0 |
-| `open <topic> hash=<16 hex> payload=<bytes> schema=<len>\n<schema bytes>` | a module's main process (`hg_pub_open`) | `ok\n` + the writable topic descriptor. Checked: the topic is one of the module's declared or implicit outputs; the schema parses and hashes to the hash given; the hash is the declared type's (`frame`: any frame schema); no other live process holds the file for writing. Then the file is created by docs/01 "Opening": temporary file, `posix_fallocate`, header, wake file (`O_CREAT`, once per boot), bit 2 and a wake on the old file, rename, directory word bumped and woken. A `boot=<32 hex> first=<seq>` pair (the bridge's mirrored topics) is parsed and refused: no bridge in this stage |
+| `open <topic> hash=<16 hex> payload=<bytes> schema=<len>\n<schema bytes>` | a module's main process (`hg_pub_open`) | `ok\n` + the writable topic descriptor. Checked: the topic is one of the module's declared or implicit outputs; the schema parses and hashes to the hash given; the hash is the declared type's (`frame`: any frame schema); no other live process holds the file for writing. Then the file is created by docs/01 "Opening": temporary file, `posix_fallocate`, header, wake file (`O_CREAT`, once per boot), bit 2 and a wake on the old file, rename, directory word bumped and woken. With `boot=<32 hex> first=<seq> [writer=<module>] [slots=<n>]` it is the bridge's open of a topic of the other side (docs/03 "Opening topics", docs/08): only from the module with `[Bridge]`; any type; the topic must match a `mirror` line of its wiring; refused for this machine's own `hangar.<role>.*` and `bridge.<role>.*`, for the writer `hangar` outside `hangar.<other role>.*`, for a topic a local module declares, for a topic id that a local topic has under another name, and for a boot id of all zeros (which is what marks a local file); the rate and `StaleAfter` are the mirror line's, the header's writer the other side's module, its `writer_pid` the bridge's |
 | `restart-self` | a module's main process | `ok\n`: a stop and a start that counts no failure (a `@restart` parameter changed; the library repeats the request while the manager is not listening) |
 | `call <module>.<method> deadline=<ms> type=<hex> body=<len>\n<body>` | `hangar-admin` | the manager, the one writer of `hangar.<role>.admin.req`, publishes the request envelope with `admin:<user>` in `caller` (the user from `/etc/passwd`, else the uid) and the body after it, and replies `ok <call_id> <caller_id> <module>.rep\n`; the command reads the reply on the server's `.rep` topic. Refused for a method no module here serves (`set_params` of a `[Params]` module counts), for a body larger than the request type, and from outside `hangar-admin`. `type=` is passed through: the server's check is the one that counts (`HG_E_BADTYPE`) |
 | `method <module>.<method>` | group `hangar` | `ok\nreq=<type> hash=<hex> size=<n> rep=<type> hash=<hex> size=<n> deadline=<ms> running=<0\|1> reqschema=<len> repschema=<len>\n` then the two schema texts: what `hangar call` builds a request from by field name |
@@ -101,12 +101,20 @@ are identified by `SO_PEERCRED` and `SO_PEERGROUPS`. The same text is in
 manager run by hand, and the suites, can be driven without the group). Every reply
 starts with `ok` or `err`; a refusal is also logged.
 
+A connection is for one request, sent as it is made. One that has sent nothing for
+2 s is closed, and at most 64 are open at a time: past that, or when the manager is
+out of descriptors, the oldest that has sent nothing makes room. A caller whose
+connection is closed under it asks again (`hg_control_call`).
+
 **Re-exec hand-off.** The state goes to the new image as text in a memfd named by
 `$HANGAR_REEXEC_FD` (`hangar-reexec 1`: the system state, the control socket's
 descriptor number, and per module its pid, pidfd, start time, state, since, failures,
 delay, restart time, instance, ready time, exit, give-up and adoption flags, both
-hashes, the stop deadline and the failure times); the pidfds and the control socket
-have their close-on-exec flag cleared. Modules stay children; the manager's own topics
+hashes, the stop deadline and the failure times; then, per module, a line `also
+<module> key=value ...` for what was added since, today `stop_timeout=<ns>`, which an
+image that does not know a key or the line passes over); the pidfds and the control
+socket have their close-on-exec flag cleared. A stop under way travels as the state:
+a module is `stopping` or `unhealthy` from its SIGTERM to its exit. Modules stay children; the manager's own topics
 are opened again by the new image, which continues their sequence numbers (below).
 
 ## What the library does under a manager
@@ -126,7 +134,7 @@ docs/03 says. Without `HANGAR_CONTROL` nothing changes from stage 1 except the
 
 ## Tests
 
-`make check-hangard` (part of `check`) runs six suites, each under 30 s, as an
+`make check-hangard` (part of `check`) runs eleven suites, each under a minute, as an
 ordinary user under a `$HANGAR_ROOT` of its own on tmpfs
 (`/dev/shm/hangar-test-<uid>/hangard-<suite>-<pid>`, `$HANGAR_TEST_BASE` overrides):
 
@@ -138,12 +146,19 @@ ordinary user under a `$HANGAR_ROOT` of its own on tmpfs
 | `hangard_adopt` | the manager killed with `SIGKILL` under load, adoption, a module killed meanwhile flagged and restarted, a registry pid of another process treated as dead, the system state kept, reload with a changed, a removed and an added manifest and a refused graph, `SIGHUP`, re-exec keeping the modules as children and the manager's sequence numbers, the idle manager's wake-ups |
 | `hangard_calls` | docs/04 under the manager: the toy server and caller, and the suite itself as the wired module `tester` (its wiring fetched with `wiring tester`, written to a file, `HANGAR_WIRING_FILE`), calling in process. A round trip with every reply referencing its request; a request and a data topic ready in one `hg_wait` pass (the lazy server); every status code on purpose: refused with the reason, noroute at once, an undeclared call, a local type mismatch, busy for the sixteenth call with the fifteen then answered, timeout, expired published by the restarted server, the deadline overrun logged, and from a re-executed child as `rawcaller` publishing hand-made envelopes: nomethod, badtype, denied, the `caller` field ignored on a module's topic; the server restarting with requests waiting (served when in time, `HG_E_EXPIRED` when not), a second restart running nothing again; `hangar call` as `admin:<user>` allowed where `Allow` names `admin` and denied elsewhere, refused by the manager for a method nobody serves, JSON, the admin topic's envelopes |
 | `hangard_params` | docs/05 under the manager with the `paramer` toy (`depth_hold_params`): the defaults file written at the first start, the topic's header carrying the attributes; set, stale, range and validator refusals leaving the values in force, every attempt a referenced reply; two clients racing (a re-executed child as `tester2`), one refused as stale and its retry accepted; `@restart`: saved and not applied, `restart_pending` with the old values, the new instance publishing the requester's name, not counted as a failure, the mark cleared; the refusal while pending (the module standalone, with no manager to restart it); exit 78 on an unknown field, a bad value, a value out of range, a validator refusal, a missing header and an empty file, the manager not restarting it; a missing field taking its default, logged; a request queued through a restart applied when in time and expired otherwise; `hangar param get/set/load/reset`, and `set`/`get`/`reset` on a stopped module through `param-write`/`param-read` |
+| `hangard_stop` | stops: a module that ignores SIGTERM stopped and restarted by hand without a failure; the stop kept across a re-exec (the manager started as the successor of a hand-written hand-off state) and across a crash (`stopping` and `unhealthy` adopted, from the registry as written now and from one of eight fields); a repeated stop; `restart-self` during a stop; the Neutral command for a module removed by reload or whose manifest lost it; the instance's `StopTimeout` after a reload, a re-exec and a crash |
+| `hangard_recover` | a module adopted under a refused manifest; a shutdown with a module in back-off (no spin); a refused module whose manifest was corrected while no manager ran; a reload and an exit in one epoll batch |
+| `hangard_spawn` | the manager killed before it releases the child; no module without its Neutral record or its registry entry; no record left behind; the child's environment; exit 78 with an unterminated status line; no wiring descriptor leaked by a re-exec |
+| `hangard_mirror` | the manager's side of mirrored opens, with a stand-in bridge that sends raw requests: a zero boot id and a local topic's id refused, a shared module name reported; the bridge's exit, or its death while no manager ran, flags the topics it wrote and no others |
+| `hangard_control` | connections that never send a request: closed after 2 s, and more of them than the manager has descriptors for leave it answering, idle and able to restart a module |
 
 The toy modules (`tests/modules/`, each a few dozen lines over lib/hg): `talker`
 (a rated depth topic; `--stop-after`, `--exit-after`), `listener` (`hg_ready`,
 `hg_alive`), `crasher`, `neverready`, `eventer` (`--stop-alive-after`, `--exit-78`),
 `actuator` and `neutral` (the Neutral command: appends a line to a file;
-`--fail`, `--hang`); since 2b `server` (serves `echo`, `refuse`, `nap`, `secret`,
+`--fail`, `--hang`), `stubborn` (ignores SIGTERM unless `--polite`; `--no-ready`,
+`--exit N`, `--env FILE`, `--ctl PREFIX` for raw control requests as a module's main
+process, `--restart-self-on-term`, `--fill-page-exit78`); since 2b `server` (serves `echo`, `refuse`, `nap`, `secret`,
 `adminonly` as its wiring lists them; `--data T` a data topic read beside the
 request topics, `--lazy MS`, `--nap-ms`), `caller` (`--call`, `--mode sync|async`,
 `--count`, `--timeout`, `--out FILE` for the outcomes, `--topic` a rated output kept
@@ -185,19 +200,22 @@ under the sanitizers; the call and parameter code runs under them in lib/hg's
   (the topic's header, or `param-read`'s type) to the named fields or all. For a
   module that is not running the same four go through `param-write`.
 
-## What remains for the bridge and later
+## What came after 2b, and what remains
 
-- The bridge (`docs/08`): `bridge.conf`, `mirror` lines, `subglob *.req` for methods
-  the bridge carries, `remote=1` calls, mirrored opens (`boot=`/`first=`). A manifest
-  with `[Bridge]` is refused, saying so.
-- Dataset row types (`Type=dataset:<name>`, `docs/06`): refused, saying so.
-- The policy-module checks (`hangar-policy` under `policy_<Name>`, the three outputs;
-  `docs/09`).
-- `hangar check`, `top`, `graph`, `bench`; `hangar echo` of a `.req`/`.rep` body by its
-  type hash (the envelope decodes like any schema).
-- Mirrored request topics: `hg_pub_open_mirror` and the manager's `open` need the
-  sending module's name for the header's `writer` (`lib/hg/NOTES.md`, "What stage 2b
-  leaves"); the `subglob *.req` line and `*.req` among a server's `Sources`.
+Since this file was first written the manager has got the bridge's part (`bridge.conf`
+read for the module with `[Bridge]`, its `mirror` lines and subscriptions, `subglob
+*.req`, `remote=1` calls, mirrored opens with the sending module as the header's
+writer: `docs/08`, `modules/bridge/README.md`), dataset row types
+(`Type=dataset:<name>`, generated from `DatasetDir`: `docs/06`) and the policy-module
+check (`policy_check.c`: `docs/09`). None of the three is a refusal any more.
+
+What remains:
+
+- `hangar top`, `graph`, `bench`, and the rest of `hangar check` (docs/12);
+  `hangar echo` of a `.req`/`.rep` body by its type hash (the envelope decodes like
+  any schema).
+- The handshake's report of a module enabled on both machines
+  (`modules/bridge/README.md`), and with it the refusal in deviation 25.
 - Running the suites as root (user switching, `SCHED_FIFO`, capabilities, cgroups) on
   a machine or VM; they are skipped and reported here.
 
@@ -206,17 +224,29 @@ under the sanitizers; the call and parameter code runs under them in lib/hg's
 Where the text could not be followed to the letter, or left something the code had
 to decide. Nothing here changes behaviour silently.
 
-1. **The registry's module lines carry two more fields**: the FNV-1a 64 of the
-   manifest's text and of the wiring text the running instance was started with
-   (`<name> <pid> <starttime> <state> <failures> <delay> <manifest> <wiring>`). docs/03
-   gives six fields. A reload after an adoption or a re-exec must know what the running
-   instance was started with to leave an unchanged module untouched and restart a
-   changed one; the format stays text, and a reader of the six fields ignores the rest.
+1. **The registry's module lines carry four more fields**
+   (`<name> <pid> <starttime> <state> <failures> <delay> <manifest> <wiring>
+   <stop_timeout> <after_stop>`); docs/03 gives six. The FNV-1a 64 of the manifest's
+   text and of the wiring text the running instance was started with: a reload after
+   an adoption or a re-exec must know them to leave an unchanged module untouched and
+   restart a changed one. The instance's `StopTimeout` in seconds, 0 when it does not
+   run: a module whose manifest is gone by the time it is stopped is stopped by the
+   timeout it was started with. What a stop under way leads to (a state's name, `-`
+   when there is none): an adopting manager finishes the stop as it was meant, a stop
+   or a restart. The format stays text; a reader of fewer fields ignores the rest, and
+   this manager reads a line of eight or six (the timeout is then the manifest's, or
+   without one 500 ms for a module with a Neutral record and 5 s for any other; an
+   `unhealthy` module is restarted with its failure counted and a `stopping` one
+   stays down).
 2. **A `stopping` state.** docs/03's table has no name for "SIGTERM sent, waiting for
    the exit". A module stopped on request, restarted on request, or stopped at
    shutdown shows `stopping` in `status`, the registry and `hangar.<role>.modules`
    (state 7); an unhealthy module keeps `unhealthy` while it is stopped, as the table
-   says. A `stopping` module adopted from the registry has its stop finished at once.
+   says. A `stopping` or `unhealthy` module adopted from the registry has its stop
+   finished at once (the SIGKILL, then what the registry says the stop was for): how
+   long ago its SIGTERM was sent is not known. `StopTimeout` counts from the first
+   SIGTERM; a stop asked for again does not move it, and `restart-self` from a module
+   that is being stopped changes nothing.
 3. **"Refused graph" on reload means any refused manifest.** docs/02 says a reload
    that produces a refused graph changes nothing, and that at load a refused
    manifest leaves the others loading. Both are kept: at start every accepted module
@@ -245,8 +275,11 @@ to decide. Nothing here changes behaviour silently.
 9. **Allow tokens naming this machine's own role are refused** (`vehicle:safety` on the
    vehicle): docs/04 defines `<role>:<module>` for the other side; a local caller is
    written bare. docs/02's "an unknown token refused" is read to include it.
-10. **`[Bridge]`, `Type=dataset:<name>` and the policy-module checks are refusals**
-    with a reason that names the stage, not silent acceptance; see the list above.
+10. **A module is listed `refused` in two cases docs/03's table does not spell out**:
+    when it was running under a manifest that a restarted manager finds refused (it is
+    stopped, then listed with the reason), and never for the manifests past the 128 a
+    manager holds, which have no entry: those are a warning in the log, with their
+    number and the first name.
 11. **The health tick** runs while any running module is `starting`, has a rated
     output or a `Watchdog`, as docs/03 says; a `Legacy` module is `ready` from its
     start and never ticked. An adopted module's `StartGrace` and `ResetAfter` count
@@ -268,7 +301,10 @@ to decide. Nothing here changes behaviour silently.
     switch will be made (as root). Not root, an unknown `User=` is not an error, so the
     actuator manifests of the suites (which must name a dedicated user) run.
 17. **A module with no manifest left after a reload is dropped from `status` once it
-    has stopped**; docs/02 says only that it is stopped.
+    has stopped**; docs/02 says only that it is stopped. Its Neutral command runs at
+    that exit from its record, and the record goes with the entry. The entry is
+    dropped when the event loop has finished the batch of events the exit came in,
+    never inside a reload.
 18. **`hangar run`** takes `--msgdir` and `--role` beside the module (or a manifest
     path), reads `ModuleDir`/`MsgDir`/`Role` from `hangard.conf` when present, and puts
     the private topic directory under `$XDG_RUNTIME_DIR/hangar-run/<module>`
@@ -293,6 +329,29 @@ to decide. Nothing here changes behaviour silently.
 23. **The admin request's `caller` is `admin:<name>` from `/etc/passwd`**, the uid
     as digits when it has no line (a user namespace, a test), so that the token is
     never empty.
+24. **`Environment=HANGAR_<anything>` is refused**, and so is `User=root`, `Group=root`
+    or `root` among `SupplementaryGroups` on a module that is not `Privileged`.
+    docs/02 says neither in so many words: the `HANGAR_*` variables are the manager's
+    to set (docs/03 "Starting a module"), and root is the Privileged module's
+    (docs/02 `Privileged`). The module's environment is the `HANGAR_*` variables,
+    the manifest's `Environment=`, then the manager's own as far as it fits (295
+    entries, 12 KB), a variable the manifest sets left out of the last.
+25. **A mirrored `.req`, `.rep` or `.params` topic of a module enabled here is opened,
+    with a warning in the log, where docs/03 "Opening topics" refuses it.** A topic
+    the local module declares is refused like any local topic; this is the case of a
+    local module that does not (one without a `[Call]` has no `.req`). The shipped
+    profiles enable `console` on both machines, and the topside's calls `safety.*`
+    on a `console.req` that reaches a vehicle with a console of its own: the refusal
+    would take arm, disarm and estop from the topside's page. The server still reads
+    the caller as `topside:console`, by the file's `origin_boot`. Open until the
+    profiles or the text change.
+26. **The dead-writer flag goes by the header's `writer_pid`**, not by its writer
+    name as docs/03's "each of its topics" might be read: a mirrored topic names the
+    other side's module and the bridge's pid.
+27. **A module that cannot be given its registry entry or its Neutral record is not
+    started**: the child exits unreleased and the start counts as a failure, so an
+    actuator in that state is given up after `Burst` and the system is in failsafe.
+    docs/03 says only that no module runs without them.
 
 ## Phase 1 additions (modules/PHASE1.md)
 
