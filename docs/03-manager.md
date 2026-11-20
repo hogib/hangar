@@ -340,10 +340,14 @@ manager:
    schema hashes to the type the manifest declares or the manager generated (`frame`
    accepts any frame type), and that no other process holds it open for writing. For
    the bridge, a topic matching one of its `mirror` lines is accepted too, with any
-   type, provided no local module declares it, its topic id collides with no local
-   topic's, and it is not the `.req`, `.rep` or `.params` topic of a module enabled on
-   this machine, nor this machine's `hangar.<role>.admin.req`: a request topic the
-   bridge writes always belongs to a module or an operator of the other side;
+   type, provided no local module declares it (its implicit `.req`, `.rep` and
+   `.params` topics included), its topic id collides with no local topic's, and it is
+   not this machine's `hangar.<role>.admin.req`, nor carries an all-zero boot id: a
+   topic the bridge writes always belongs to a module or an operator of the other
+   side. A module of the same name may be enabled on both machines (the console is):
+   the `.req` of the other side's is then accepted where the local one declares none,
+   with a line in the log, because a server knows that caller as `<role>:<module>`
+   from the file's `origin_boot` and never as the local module;
 3. creates the topic file ([01-topics](01-topics.md#writing)), continuing the
    sequence numbers of any file it replaces. A mirrored topic continues them only
    within one boot of the sender: when there is no file, or the existing file's
@@ -631,9 +635,10 @@ by the manager, on its own topic, and never by the process that asks.
   `.dir` and the wake files keep their inodes across a manager restart and a topic
   replacement.
 - Bridge topics: a received topic of any type accepted; refused when a local module
-  declares it or its topic id collides with a local one; refused for the `.req`,
-  `.rep` or `.params` topic of a module enabled here and for this machine's
-  `hangar.<role>.admin.req`; a new sender boot id gives a new file with `first_seq`
+  declares it (implicit `.req`, `.rep`, `.params` included) or its topic id collides
+  with a local one, for this machine's `hangar.<role>.admin.req`, and for an all-zero
+  boot id; the `.req`, `.rep` or `.params` name of a module enabled here that does not
+  declare that topic is accepted with a line in the log; a new sender boot id gives a new file with `first_seq`
   one below the bridge's first seq; the same boot id continues the old file.
 - Admin calls: `call` on the control socket from `hangar-admin` publishes one request
   on `hangar.<role>.admin.req` with `caller` `admin:<user>` and answers with its

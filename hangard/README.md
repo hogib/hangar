@@ -336,15 +336,10 @@ to decide. Nothing here changes behaviour silently.
     (docs/02 `Privileged`). The module's environment is the `HANGAR_*` variables,
     the manifest's `Environment=`, then the manager's own as far as it fits (295
     entries, 12 KB), a variable the manifest sets left out of the last.
-25. **A mirrored `.req`, `.rep` or `.params` topic of a module enabled here is opened,
-    with a warning in the log, where docs/03 "Opening topics" refuses it.** A topic
-    the local module declares is refused like any local topic; this is the case of a
-    local module that does not (one without a `[Call]` has no `.req`). The shipped
-    profiles enable `console` on both machines, and the topside's calls `safety.*`
-    on a `console.req` that reaches a vehicle with a console of its own: the refusal
-    would take arm, disarm and estop from the topside's page. The server still reads
-    the caller as `topside:console`, by the file's `origin_boot`. Open until the
-    profiles or the text change.
+25. *(Closed 2026-11-20: docs/03 "Opening topics" now states what the code does. A
+    mirrored `.req`, `.rep` or `.params` named after a module enabled here is refused
+    when that module declares the topic and accepted with a log line when it does
+    not; the caller is `<role>:<module>` by the file's `origin_boot` either way.)*
 26. **The dead-writer flag goes by the header's `writer_pid`**, not by its writer
     name as docs/03's "each of its topics" might be read: a mirrored topic names the
     other side's module and the bridge's pid.
