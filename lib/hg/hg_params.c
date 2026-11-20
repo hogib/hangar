@@ -603,9 +603,14 @@ int hg_params_file_format(const struct hg_type *t, const unsigned char *src, con
 	PUT("# version %llu, set by %s, %s%s\n", (unsigned long long)hdr->version, hdr->changed_by, when,
 	    hdr->restart_pending ? ", restart" : "");
 	for (uint32_t i = 0; i < t->n_fields; i++) {
-		char val[HG_SCHEMA_MAX];
-		hg_param_format(&t->fields[i], src, val, sizeof val);
-		PUT("%s = %s\n", t->fields[i].name, val);
+		/* The value straight into the file's text: through a buffer of
+		 * its own it was cut at that buffer's size and the file, written
+		 * all the same, no longer loaded. */
+		PUT("%s = ", t->fields[i].name);
+		int w = hg_param_format(&t->fields[i], src, out + (n < outlen ? n : outlen), n < outlen ? outlen - n : 0);
+		if (w > 0)
+			n += (size_t)w;
+		PUT("\n");
 	}
 #undef PUT
 	return (int)n;

@@ -226,7 +226,7 @@ PROC_TESTS := child_proc
 NET_TESTS := http
 EEYE_TESTS := config ring_buffer health recorder fbus
 HELLION_TESTS := hellion
-HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd hg_call hg_gate
+HG_TESTS := hg_layout hg_pubsub hg_wait hg_torn hg_replace hg_prov hg_wiring hg_waitfd hg_call hg_gate hg_params
 TESTS := $(VISION_TESTS) $(COMMON_TESTS) $(CAMERA_TESTS) $(PROC_TESTS) $(NET_TESTS) \
 	$(EEYE_TESTS) $(HELLION_TESTS) $(HG_TESTS)
 
