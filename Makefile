@@ -277,8 +277,11 @@ $(foreach t,$(HG_TESTS),$(eval test_$(t)_SRC := $(HG_SRC) lib/hg/hg_manager_stub
 define hg_test_rule
 $(TESTDIR)/test_$(1): $(OBJDIR)/lib/hg/tests/test_$(1).o $(call obj,$(test_$(1)_SRC))
 	@mkdir -p $$(dir $$@)
-	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(HG_LDLIBS) $$(LDLIBS)
+	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(ALL_LDFLAGS) $$(test_$(1)_LDFLAGS) -o $$@ $$^ $$(HG_LDLIBS) $$(LDLIBS)
 endef
+# The gate's suite stands in for hg_latest where the gate calls it, to hand it
+# the HG_BUSY of a read overtaken eight times, which no test can time.
+test_hg_gate_LDFLAGS := -Wl,--wrap=hg_latest
 $(foreach t,$(HG_TESTS),$(eval $(call hg_test_rule,$(t))))
 
 # $(1): suite name, $(2): the directory whose tests/ holds its source.

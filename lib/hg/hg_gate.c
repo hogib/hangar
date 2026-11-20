@@ -80,9 +80,16 @@ void hg_gate_close(hg_gate *g)
  * message, HG_NONE when the old copy stands, or the condition reported. */
 static enum hg_result newest(hg_sub *s, void *buf, size_t len, struct hg_info *info, int *have)
 {
+	/* Read beside the copy the gate holds: a read that gives up (HG_BUSY,
+	 * overtaken by the writer eight times) leaves the bytes of its last
+	 * attempt, a mix of two messages, in the buffer it was given. */
+	unsigned char scratch[HG_GATE_COMMAND_MAX];
 	struct hg_info i;
-	enum hg_result r = hg_latest(s, buf, len, &i);
+	if (len > sizeof scratch)
+		len = sizeof scratch;
+	enum hg_result r = hg_latest(s, scratch, len, &i);
 	if (r == HG_MSG) {
+		memcpy(buf, scratch, len);
 		*info = i;
 		*have = 1;
 	} else if (r == HG_ABSENT || r == HG_CLOSED || r == HG_ERROR) {

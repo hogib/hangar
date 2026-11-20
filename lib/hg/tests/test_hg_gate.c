@@ -238,6 +238,61 @@ static void test_closed_gate_sleeps(void)
 	hg_pub_close(big);
 }
 
+/* The suite is linked with --wrap=hg_latest: the gate's reads come through
+ * here. busy_for names a topic whose next read is the one hg_latest gives up
+ * on after eight overtaken copies: HG_BUSY, with the bytes of the last
+ * attempt, a mix of two messages, left in the caller's buffer. */
+enum hg_result __real_hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info);
+enum hg_result __wrap_hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info);
+static const char *busy_for;
+
+enum hg_result __wrap_hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
+{
+	if (!busy_for || strcmp(hg_sub_name(s), busy_for) != 0)
+		return __real_hg_latest(s, buf, buf_len, info);
+	busy_for = NULL;
+	uint32_t n = hg_sub_payload_bytes(s);
+	memset(buf, 0xee, n < buf_len ? n : buf_len);
+	memset(info, 0, sizeof *info);
+	info->result = HG_BUSY;
+	return HG_BUSY;
+}
+
+/* A read that ends in HG_BUSY changes nothing the gate holds: the command
+ * it returned before stands whole, and so does the safety state it judged. */
+static void test_busy_read_keeps_the_last(void)
+{
+	hg_gate *g = hg_gate_open();
+	CHECK(g != NULL);
+	const char *why = NULL;
+	pub_safety(1, 1);
+	pub_cmd(0.5f);
+	const float *w = hg_gate_check(g, &why);
+	CHECK(w && w[0] == 0.5f);
+	float want[6] = { 0.5f, 0, 0, 0, 0, 0 };
+	busy_for = "ctl.wrench";
+	w = hg_gate_check(g, &why);
+	CHECK(busy_for == NULL); /* the gate did read */
+	CHECK(w != NULL);
+	if (w && memcmp(w, want, sizeof want) != 0)
+		printf("    after HG_BUSY the gate returns surge %g: the bytes of an abandoned read\n", (double)w[0]);
+	CHECK(w && memcmp(w, want, sizeof want) == 0);
+	/* Disarmed, then a busy read of safety.state: still disarmed, not
+	 * whatever the abandoned copy left in the byte the gate reads as
+	 * outputs_enabled. */
+	pub_safety(0, 0);
+	CHECK(hg_gate_check(g, &why) == NULL);
+	pub_cmd(0.5f);
+	busy_for = "safety.state";
+	w = hg_gate_check(g, &why);
+	CHECK(busy_for == NULL);
+	if (w)
+		printf("    after HG_BUSY on safety.state the gate is open: '%s'\n", why);
+	CHECK(w == NULL);
+	CHECK(why && strcmp(why, "disarmed") == 0);
+	hg_gate_close(g);
+}
+
 static void test_flagged_command(void)
 {
 	hg_gate *g = hg_gate_open();
@@ -330,6 +385,7 @@ int main(void)
 	RUN_TEST(test_open_and_absent);
 	RUN_TEST(test_open_closed_stale);
 	RUN_TEST(test_closed_gate_sleeps);
+	RUN_TEST(test_busy_read_keeps_the_last);
 	RUN_TEST(test_flagged_command);
 	RUN_TEST(test_closed_writer);
 	RUN_TEST(test_standalone_open);
