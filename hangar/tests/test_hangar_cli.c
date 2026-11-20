@@ -278,9 +278,32 @@ static void test_manager_up(void)
 {
 	manifest("paramer", "[Module]\nExec=%s/paramer\n[Params]\nType=depth_hold_params\n[Health]\nWatchdog=2s\n", T_toys);
 	manifest("tester", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
-			   "[Call paramer.set_params]\n[Subscribe paramer.params]\n");
+			   "[Call paramer.set_params]\n[Subscribe paramer.params]\n"
+			   /* the hangar commands this suite runs inherit its wiring */
+			   "[Subscribe big.params]\n[Subscribe paramer.rep]\n[Subscribe big.rep]\n");
 	tfmt(params_file, sizeof params_file, "%s/var/lib/hangar/paramer/params", T_root);
+	/* big: a parameter type whose text, with the topic's own lines before
+	 * it, passes the 3584 bytes of a topic header's schema. */
+	static char big[HG_SCHEMA_MAX], msg[600];
+	size_t bn = (size_t)tfmt(big, sizeof big, "# msg/bigparams.msg: written by hangar's suite\n"
+						 "f32  kp = 1.5 [0, 10]   # N/m\n"
+						 "u32  n = 7 [1, 100]\n"
+						 "char label[8] = \"abc\"\n"
+						 "f32  free_gain = 2.5    # no range\n");
+	while (bn < 3450) {
+		memset(big + bn, '#', 68); /* comment lines */
+		big[bn + 1] = ' ';
+		big[bn + 68] = '\n';
+		bn += 69;
+	}
+	big[bn] = 0;
+	tfmt(msg, sizeof msg, "%s/bigparams.msg", T_msg);
+	CHECK_EQ_INT(write_file(msg, big), 0);
+	const char *toys = getenv("HANGAR_TOYS");
+	CHECK(toys != NULL);
+	manifest("big", "[Module]\nExec=%s/bigparams\n[Params]\nType=bigparams\n[Health]\nWatchdog=2s\n", toys ? toys : "");
 	mgr = manager_start();
+	CHECK(wait_state("big", "ready", 5000));
 	CHECK(wait_state("paramer", "ready", 5000));
 	CHECK(wait_state("tester", "stopped", 5000));
 	char path[600];
@@ -412,6 +435,51 @@ static void test_long_parameter_file_refused(void)
 	CHECK_EQ_INT(m.version, 9);
 }
 
+/* D10: `hangar param reset` took the defaults from the schema in the header
+ * of <module>.params whenever the module ran. For a type whose text does
+ * not fit there beside the topic's own lines the header carries the
+ * canonical lines, without attributes, and reset sent 0 for every field:
+ * zeros, not the defaults. The attributes come from the manager's
+ * param-read now, which has the type's text whole. */
+static void test_reset_takes_the_types_defaults(void)
+{
+	char out[4096];
+	/* The premise: this topic's header has no attributes. */
+	unsigned char h[4096];
+	CHECK_EQ_INT(topic_header("big.params", h), 0);
+	CHECK(memmem(h + 512, 3584, "f32 kp\n", 7) != NULL);
+	CHECK(memmem(h + 512, 3584, "1.5", 3) == NULL);
+	char *set[] = { (char *)T_hangar, "param", "set", "big", "kp=3", "n=50", "label=xyz", "free_gain=9", NULL };
+	int rc = run_hangar(out_path(), 5000, NULL, set);
+	if (rc)
+		printf("    param set big: exit %d: %s\n", rc, read_file(out_path()));
+	CHECK_EQ_INT(rc, 0);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "big", (char *)NULL), 0);
+	CHECK(strcmp(cli_field(out, "kp"), "3") == 0);
+	CHECK(strcmp(cli_field(out, "n"), "50") == 0);
+	/* One field, then all of them. */
+	rc = run_cli(out, sizeof out, 5000, "param", "reset", "big", "kp", (char *)NULL);
+	CHECK_EQ_INT(rc, 0);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "big", (char *)NULL), 0);
+	printf("    after `param reset big kp` (default 1.5): kp %s\n", cli_field(out, "kp"));
+	CHECK(strcmp(cli_field(out, "kp"), "1.5") == 0);
+	CHECK(strcmp(cli_field(out, "n"), "50") == 0);
+	rc = run_cli(out, sizeof out, 5000, "param", "reset", "big", (char *)NULL);
+	CHECK_EQ_INT(rc, 0);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "big", (char *)NULL), 0);
+	CHECK(strcmp(cli_field(out, "kp"), "1.5") == 0);
+	CHECK(strcmp(cli_field(out, "n"), "7") == 0);
+	CHECK(strcmp(cli_field(out, "label"), "\"abc\"") == 0);
+	CHECK(strcmp(cli_field(out, "free_gain"), "2.5") == 0);
+	/* A field the type does not have. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "reset", "big", "nosuch", (char *)NULL), 1);
+	/* paramer's type fits its header: reset as before. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "paramer", "ki=0.5", (char *)NULL), 0);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "reset", "paramer", "ki", (char *)NULL), 0);
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "get", "paramer", "ki", (char *)NULL), 0);
+	CHECK(strcmp(cli_field(out, "ki"), "0.1") == 0);
+}
+
 static void test_manager_down(void)
 {
 	if (params_sub)
@@ -428,6 +496,7 @@ int main(void)
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
 	RUN_TEST(test_long_parameter_file_refused);
+	RUN_TEST(test_reset_takes_the_types_defaults);
 	RUN_TEST(test_manager_down);
 	hd_teardown();
 	TEST_MAIN_END();

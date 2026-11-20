@@ -1143,20 +1143,17 @@ static int param_apply(const char *module, char **kv, int nkv, const char *lines
 /* The defaults of the named fields (all when none), as field=value text. */
 static int param_reset(const char *module, int argc, char **argv, int json)
 {
-	static struct hg_schema tschema;
-	static unsigned char topic[64 + HG_SCHEMA_MAX * 8];
 	static struct saved_params sp;
 	static struct hg_param_attr attrs[HG_SCHEMA_MAX_FIELDS];
-	const struct hg_type *t;
-	uint32_t from = 0, payload;
-	if (params_topic(module, &tschema, topic, sizeof topic, &payload) == 0) {
-		t = &tschema.type;
-		from = 4; /* version, changed_by, restart_pending, reserved */
-	} else {
-		if (params_saved(module, &sp) < 0)
-			return 1;
-		t = &sp.schema.type;
-	}
+	/* The defaults are in the type's text, which the manager has whole
+	 * (param-read). The schema in the header of <module>.params is not the
+	 * place to look: for a type too long to fit there beside the topic's
+	 * own lines it is the canonical form, without attributes, and every
+	 * field would be reset to 0. */
+	if (params_saved(module, &sp) < 0)
+		return 1;
+	const struct hg_type *t = &sp.schema.type;
+	uint32_t from = 0;
 	char err[160];
 	if (hg_params_attrs(t, attrs, err, sizeof err) < 0)
 		return fail("%s", err);
