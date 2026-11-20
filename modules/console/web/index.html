@@ -228,13 +228,13 @@
       <button id="fly-record" title="start or stop the recorder's session"><kbd>R</kbd>Record</button>
       <button id="fly-snapshot" disabled title="no snapshot call in hangar yet"><kbd>S</kbd>Snap</button>
     </div>
-    <h3>View <span class="muted" style="text-transform:none;letter-spacing:0">needs vision (B3)</span></h3>
+    <h3>View <span class="muted" id="view-note" style="text-transform:none;letter-spacing:0">no vision module</span></h3>
     <div class="presets" id="presets">
-      <button disabled data-preset="1"><kbd>1</kbd>Normal</button>
-      <button disabled data-preset="2"><kbd>2</kbd>Auto visibility</button>
-      <button disabled data-preset="3"><kbd>3</kbd>Edges</button>
-      <button disabled data-preset="4"><kbd>4</kbd>Sharpen</button>
-      <button disabled data-preset="5"><kbd>5</kbd>Low light</button>
+      <button disabled data-preset="normal"><kbd>1</kbd>Normal</button>
+      <button disabled data-preset="auto"><kbd>2</kbd>Auto visibility</button>
+      <button disabled data-preset="edges"><kbd>3</kbd>Edges</button>
+      <button disabled data-preset="sharpen"><kbd>4</kbd>Sharpen</button>
+      <button disabled data-preset="lowlight"><kbd>5</kbd>Low light</button>
     </div>
     <div id="fly-keys"><kbd>1</kbd>–<kbd>5</kbd>view &nbsp; <kbd>R</kbd>record &nbsp; <kbd>S</kbd>snapshot<br>
       E-stop and disarm act at once; arm and stopping a recording ask once.</div>
@@ -555,12 +555,27 @@
     if (ap && ap.v.arm_reason) lines.push(esc('ArduSub: ' + ap.v.arm_reason));
     if (ap && ap.v.failsafe) lines.push('<span class="err">' + esc('ArduSub failsafe: ' + ap.v.failsafe) + '</span>');
     $('fly-msgs').innerHTML = lines.join(' &nbsp;·&nbsp; ') || '<span class="muted">no messages</span>';
+    // The view: vision's preset, from its parameters; the buttons only while
+    // there is a vision module to set.
+    var vp = topic(d, 'vision.params'), cur = vp && vp.v.preset != null ? vp.v.preset : null;
+    var pb = $('presets').querySelectorAll('button[data-preset]');
+    for (var i = 0; i < pb.length; i++) {
+      pb[i].disabled = !vp;
+      pb[i].className = cur === pb[i].getAttribute('data-preset') ? 'active' : '';
+    }
+    $('view-note').textContent = !vp ? 'no vision module' : cur === 'custom' ? 'custom chain' :
+      PRESETS.indexOf(cur) < 0 ? 'preset ' + cur : '';
+  }
+
+  var PRESETS = ['normal', 'auto', 'edges', 'sharpen', 'lowlight'];
+  function setPreset(name) {
+    call('vision.set_params', 'view ' + name, JSON.stringify({ preset: name }));
   }
 
   /* A call through the console: its outcome, ok or the refusal verbatim. */
-  function call(target, label) {
+  function call(target, label, body) {
     flyMsg = { ok: true, text: label + ': sent' };
-    return fetch('/api/call/' + target, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    return fetch('/api/call/' + target, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body || '{}' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         flyMsg = { ok: j.ok, text: label + ': ' + (j.ok ? 'ok' : j.status + (j.reason ? ', ' + j.reason : '') + (j.error ? ' ' + j.error : '')) };
@@ -574,9 +589,10 @@
       call('recorder.start', 'record');
     }
   }
-  function noVision(n) {
-    flyMsg = { ok: false, text: 'view ' + n + ': needs the vision module (docs/11, stage B3)' };
-  }
+  $('presets').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-preset]');
+    if (b && !b.disabled) setPreset(b.getAttribute('data-preset'));
+  });
 
   $('views').addEventListener('click', function (ev) {
     var b = ev.target.closest('button[data-view]');
@@ -597,7 +613,11 @@
     var t = ev.target.tagName;
     if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
     var k = ev.key.toLowerCase();
-    if (k >= '1' && k <= '5') noVision(k);
+    if (k >= '1' && k <= '5') {
+      var pbtn = $('presets').querySelector('button[data-preset="' + PRESETS[k - 1] + '"]');
+      if (pbtn && !pbtn.disabled) setPreset(PRESETS[k - 1]);
+      else flyMsg = { ok: false, text: 'view ' + k + ': no vision module' };
+    }
     else if (k === 'r') toggleRecord();
     else if (k === 's') flyMsg = { ok: false, text: 'snapshot: no snapshot call in hangar yet' };
     else return;

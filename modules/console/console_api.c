@@ -586,7 +586,7 @@ int api_topic_json(struct console *c, const char *name, struct cbuf *b)
  * that is never read cannot make the loop spin (hangar#1). Through the
  * same-host shim a vehicle topic opens from the topside's console too. */
 static const char *const fly_names[] = { "safety.state",  "ardusub.state",   "nav.depth",  "nav.attitude",
-					 "power.battery", "recorder.status", "video.index" };
+					 "power.battery", "recorder.status", "video.index", "vision.params" };
 #define FLY_N (sizeof fly_names / sizeof fly_names[0])
 
 struct flyrec {
@@ -597,6 +597,8 @@ struct flyrec {
 	struct hg_schema schema;
 	unsigned char *buf;
 	uint32_t buf_len;
+	int have; /* buf holds the last message read, info its details */
+	struct hg_info info;
 };
 static struct flyrec fly[FLY_N];
 
@@ -643,12 +645,23 @@ static void fly_topic_json(struct console *c, struct cbuf *b, unsigned i, uint64
 		}
 		f->buf = nb;
 		f->buf_len = pl;
+		f->have = 0;
 	}
-	struct hg_info info;
-	if (hg_latest(f->s, f->buf, pl, &info) != HG_MSG) {
+	/* hg_latest returns a message once: with nothing newer (HG_NONE), the
+	 * one read before stands, as it does for a topic published on change
+	 * (vision.params) between its changes. */
+	struct hg_info got;
+	enum hg_result r = hg_latest(f->s, f->buf, pl, &got);
+	if (r == HG_MSG) {
+		f->have = 1;
+		f->info = got;
+	} else if (r != HG_NONE)
+		f->have = 0;
+	if (!f->have) {
 		cbuf_printf(b, "\"present\":false}");
 		return;
 	}
+	const struct hg_info info = f->info;
 	cbuf_printf(b, "\"present\":true,\"age_ms\":%.0f,\"stale\":%s,\"v\":{", secs_since(info.publish_ns, now) * 1e3,
 		    info.flags & HG_SLOT_STALE ? "true" : "false");
 	if (f->parsed)

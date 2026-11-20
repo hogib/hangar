@@ -32,10 +32,11 @@
  *                                  page, the Fly view's picture (--preview, "" without)
  *   GET  /api/fly                  the Fly view's readings: safety.state, ardusub.state,
  *                                  nav.depth, nav.attitude, power.battery, recorder.status,
- *                                  video.index (issue #2)
+ *                                  video.index, vision.params (issue #2)
  *   POST /api/module/<name>/start|stop|restart
  *   POST /api/reload               through the control socket, as this process's user
- *   POST /api/call/<module>.<method>  safety.arm|disarm|estop|clear, recorder.start|stop
+ *   POST /api/call/<module>.<method>  safety.arm|disarm|estop|clear, recorder.start|stop,
+ *                                  vision.set_params with {"preset":"<name>"} alone,
  *                                  and no other: a call through the manager, as `hangar
  *                                  call` makes it, answered when the reply comes (a
  *                                  20 ms timer while one is in flight; nothing blocks)
@@ -374,7 +375,8 @@ static void control_post(struct conn *c, const char *req)
  * server's Allow list and checks (safety's checklist for an arm) decide, as
  * for any caller. */
 static const char *const allowed_calls[] = { "safety.arm",   "safety.disarm",  "safety.estop",
-					     "safety.clear", "recorder.start", "recorder.stop" };
+					     "safety.clear", "recorder.start", "recorder.stop",
+					     "vision.set_params" };
 #define CALL_TIMEOUT_MS 1500
 #define CALL_POLL_NS 20000000u /* the reply topics are read every 20 ms, while a call is in flight */
 #define CON_MAX_CALLS 8
@@ -447,9 +449,58 @@ static void call_refused(struct conn *c, const char *target, int http, const cha
 	respond_json(c, http, &b);
 }
 
+/* vision.set_params with one value changed, the preset: the values in force
+ * read from vision.params and sent back with it, base_version first, as
+ * `hangar param set` does (hangar/hangar.c param_apply), so a change made
+ * meanwhile by someone else is refused as stale, never overwritten. The
+ * request's layout comes from the schema the manager's method reply carries.
+ * 0, or -1 with the reason. */
+static int preset_body(const char *schema, size_t slen, const char *preset, unsigned char *body, size_t size,
+		       char *why, size_t whylen)
+{
+	static struct hg_schema req;
+	char err[128];
+	if (hg_schema_parse(schema, slen, &req, err, sizeof err) < 0) {
+		snprintf(why, whylen, "vision.set_params: its request schema: %.100s", err);
+		return -1;
+	}
+	const struct hg_field *f = hg_type_field(&req.type, "preset");
+	if (!f || f->kind != HG_CHAR || strlen(preset) >= f->count || f->offset + f->count > size) {
+		snprintf(why, whylen, "vision.set_params has no preset field this console can set");
+		return -1;
+	}
+	static hg_sub *params;
+	static unsigned char buf[64 + HG_CALL_MAX_PAYLOAD];
+	static int have; /* buf holds the newest: hg_latest returns a message once */
+	if (!params)
+		params = hg_sub_open("vision.params", NULL);
+	struct hg_info info;
+	enum hg_result r = params ? hg_latest(params, buf, sizeof buf, &info) : HG_ERROR;
+	if (r == HG_MSG)
+		have = 1;
+	else if (r != HG_NONE)
+		have = 0;
+	if (!have) {
+		snprintf(why, whylen, "no vision.params: is vision running?");
+		return -1;
+	}
+	uint32_t pl = hg_sub_payload_bytes(params);
+	if (pl < 64 || pl - 64 + 8 > size) {
+		snprintf(why, whylen, "vision.params does not match vision.set_params");
+		return -1;
+	}
+	memset(body, 0, size);
+	memcpy(body, buf, 8);
+	memcpy(body + 8, buf + 64, pl - 64);
+	memset(body + f->offset, 0, f->count);
+	memcpy(body + f->offset, preset, strlen(preset));
+	return 0;
+}
+
 /* method, then call, on the control socket; the reply topic opened before the
- * call goes out, so its answer cannot be missed (hangar/hangar.c do_call). */
-static void call_start(struct conn *c, const char *target)
+ * call goes out, so its answer cannot be missed (hangar/hangar.c do_call).
+ * preset: vision.set_params's one value, else NULL (every other body is zeros). */
+static void call_start(struct conn *c, const char *target, const char *preset)
 {
 	if (n_calls == CON_MAX_CALLS) {
 		call_refused(c, target, 409, "too many calls in flight");
@@ -480,6 +531,21 @@ static void call_start(struct conn *c, const char *target)
 		call_refused(c, target, 502, "method: a reply the console does not read");
 		return;
 	}
+	static unsigned char pbody[HG_CALL_MAX_PAYLOAD];
+	if (preset) {
+		const char *rs = strstr(line + 1, "reqschema=");
+		char *end = strchr(line + 1, '\n');
+		unsigned slen = 0;
+		char why[160];
+		if (!rs || !end || sscanf(rs, "reqschema=%u", &slen) != 1 || end + 1 + slen > reply + n) {
+			call_refused(c, target, 502, "method: no request schema in the reply");
+			return;
+		}
+		if (preset_body(end + 1, slen, preset, pbody, req_size, why, sizeof why) < 0) {
+			call_refused(c, target, 409, why);
+			return;
+		}
+	}
 	char rep_topic[64];
 	const char *dot = strchr(target, '.');
 	snprintf(rep_topic, sizeof rep_topic, "%.*s.rep", (int)(dot - target), target);
@@ -490,12 +556,15 @@ static void call_start(struct conn *c, const char *target)
 		call_refused(c, target, 500, msg);
 		return;
 	}
-	/* The bodies of these calls are all zeros: empty for safety's, an empty
-	 * note for recorder.start. */
+	/* The bodies of the other calls are all zeros: empty for safety's, an
+	 * empty note for recorder.start. */
 	static unsigned char creq[HG_CONTROL_MAX];
 	int h = snprintf((char *)creq, sizeof creq, "call %s deadline=%d type=%016llx body=%u\n", target, CALL_TIMEOUT_MS,
 			 req_hash, req_size);
-	memset(creq + h, 0, req_size);
+	if (preset)
+		memcpy(creq + h, pbody, req_size);
+	else
+		memset(creq + h, 0, req_size);
 	n = hg_control_call(G.control_path, creq, (size_t)h + req_size, reply, sizeof reply, NULL, 0);
 	unsigned long long call_id;
 	unsigned caller_id;
@@ -633,10 +702,29 @@ static void route(struct conn *c, const HttpRequest *req)
 		const char *target = p + 10;
 		if (!allowed_call(target)) {
 			respond_error(c, 404, "not a call the console makes: safety.arm, safety.disarm, safety.estop, "
-					      "safety.clear, recorder.start, recorder.stop");
+					      "safety.clear, recorder.start, recorder.stop, vision.set_params");
 			return;
 		}
-		call_start(c, target);
+		int is_preset = strcmp(target, "vision.set_params") == 0;
+		char preset[16];
+		if (is_preset) {
+			/* The preset alone: {"preset":"<name>"}, a-z 0-9 _ -, under 16. */
+			const char *body = c->in + req->head_len;
+			const char *k = strstr(body, "\"preset\"");
+			const char *q = k ? strchr(k + 8, '"') : NULL;
+			size_t n = 0;
+			while (q && n < sizeof preset - 1 &&
+			       ((q[1 + n] >= 'a' && q[1 + n] <= 'z') || (q[1 + n] >= '0' && q[1 + n] <= '9') ||
+				q[1 + n] == '_' || q[1 + n] == '-'))
+				n++;
+			if (!q || !n || q[1 + n] != '"') {
+				respond_error(c, 400, "vision.set_params takes {\"preset\":\"<name>\"} and nothing else");
+				return;
+			}
+			memcpy(preset, q + 1, n);
+			preset[n] = 0;
+		}
+		call_start(c, target, is_preset ? preset : NULL);
 		return;
 	}
 	if (post && strncmp(p, "/api/module/", 12) == 0) {

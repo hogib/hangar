@@ -46,10 +46,11 @@ $(CONSOLE_TEST): $(OBJDIR)/modules/console/tests/test_console.o $(call obj,$(HG_
 
 .PHONY: check-console
 check-console: $(CONSOLE_TEST) $(CONSOLE_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(HANGARD_TOYDIR)/talker \
-		$(BUILDDIR)/hangar-safety
+		$(BUILDDIR)/hangar-safety $(BUILDDIR)/hangar-vision
 	@if HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(abspath $(BUILDDIR)/hangar) \
 	    HANGARD_TOYS=$(abspath $(HANGARD_TOYDIR)) HANGAR_MSG_SRC=$(abspath msg) \
 	    DAWN_PATROLD_BIN=$(abspath $(CONSOLE_BIN)) SAFETY_BIN=$(abspath $(BUILDDIR)/hangar-safety) \
+	    VISION_BIN=$(abspath $(BUILDDIR)/hangar-vision) \
 	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/console.log 2>&1; then \
 	  echo "ok    console"; \
 	else \

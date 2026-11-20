@@ -17,7 +17,11 @@
  * checklist with its reason verbatim, an e-stop that puts safety in
  * failsafe; a call the console does not make is refused, one to a module
  * that is not there is the manager's refusal; the console idles at under 5 %
- * of a core once its calls are done. Under 30 s. */
+ * of a core once its calls are done. The view presets (#2, docs/11 B3): with
+ * the real hangar-vision running, /api/fly reads vision.params and
+ * vision.set_params {"preset":"edges"} changes it, an unknown preset is
+ * vision's refusal verbatim, a body other than one preset is refused by the
+ * console. Under 30 s. */
 #include "hd_test.h"
 #include "http.h"
 
@@ -26,7 +30,7 @@
 static pid_t mgr;
 static int port;
 static char hostport[64];
-static const char *T_console, *T_safety;
+static const char *T_console, *T_safety, *T_vision;
 
 #define HELLION_TEST_URL "http://127.0.0.1:9/" /* nothing listens there; the console only passes it on */
 #define PREVIEW_TEST_URL "http://127.0.0.1:9/stream?src=pilot"
@@ -47,17 +51,25 @@ static int free_port(void)
 	return ntohs(sa.sin_port);
 }
 
-/* One request; the status, the body in out. POSTs carry "{}" as JSON. */
-static int api(const char *method, const char *path, char *out, size_t cap)
+/* One request; the status, the body in out. POSTs carry `json` ("{}" when
+ * NULL) as JSON. */
+static int api_json(const char *method, const char *path, const char *json, char *out, size_t cap)
 {
 	size_t len = 0;
 	char err[200] = "";
 	int post = strcmp(method, "POST") == 0;
-	int st = http_call(hostport, method, path, post ? "{}" : NULL, post ? 2 : 0, out, cap, &len, 5000, err,
-			   sizeof err);
+	if (post && !json)
+		json = "{}";
+	int st = http_call(hostport, method, path, post ? json : NULL, post ? strlen(json) : 0, out, cap, &len, 5000,
+			   err, sizeof err);
 	if (st < 0)
 		printf("    %s %s: %s\n", method, path, err);
 	return st;
+}
+
+static int api(const char *method, const char *path, char *out, size_t cap)
+{
+	return api_json(method, path, NULL, out, cap);
 }
 
 /* The number after `key` in the object that starts at the first `anchor`
@@ -127,8 +139,9 @@ static void test_start(void)
 {
 	T_console = getenv("DAWN_PATROLD_BIN");
 	T_safety = getenv("SAFETY_BIN");
-	if (!T_console || !T_safety) {
-		printf("    DAWN_PATROLD_BIN and SAFETY_BIN must be set\n");
+	T_vision = getenv("VISION_BIN");
+	if (!T_console || !T_safety || !T_vision) {
+		printf("    DAWN_PATROLD_BIN, SAFETY_BIN and VISION_BIN must be set\n");
 		exit(2);
 	}
 	port = free_port();
@@ -136,7 +149,7 @@ static void test_start(void)
 	tfmt(hostport, sizeof hostport, "127.0.0.1:%d", port);
 	/* The types the real safety module needs beyond the harness's own. */
 	const char *src = getenv("HANGAR_MSG_SRC");
-	const char *more[] = { "safety_params", "check_rep", NULL };
+	const char *more[] = { "safety_params", "check_rep", "vision_params", NULL };
 	for (int i = 0; more[i]; i++) {
 		char from[1024], to[1024];
 		tfmt(from, sizeof from, "%s/%s.msg", src ? src : "msg", more[i]);
@@ -161,9 +174,15 @@ static void test_start(void)
 			   "[Serve clear]\nRequest=empty\nReply=empty\nAllow=admin\n"
 			   "[Serve check]\nRequest=empty\nReply=check_rep\nAllow=* admin\n",
 		 T_safety);
+	/* The real vision module, with no frames: its parameters are what the
+	 * Fly view's presets set (vision.set_params). */
+	manifest("vision", "[Module]\nDescription=The pilot's picture\nExec=%s\n[Subscribe cam.decoded]\n"
+			   "[Publish cam.pilot]\nType=frame\nSlots=4\nInputs=cam.decoded\n"
+			   "[Params]\nType=vision_params\nAllow=admin\n",
+		 T_vision);
 	manifest("console", "[Module]\nDescription=Dawn Patrol: the operator's page\n"
 			    "Exec=%s --listen 127.0.0.1:%d --hellion " HELLION_TEST_URL " --preview " PREVIEW_TEST_URL "\n"
-			    "[Subscribe hangar.vehicle.system]\n[Subscribe hangar.vehicle.modules]\n[Subscribe *]\n"
+			    "[Subscribe hangar.vehicle.system]\n[Subscribe hangar.vehicle.modules]\n[Subscribe *]\n[Subscribe vision.params]\n"
 			    "[Health]\nWatchdog=10s\n", T_console, port);
 	mgr = manager_start();
 	CHECK(wait_state("talker", "ready", 5000));
@@ -390,13 +409,13 @@ static void test_hellion_default(void)
 static void test_fly(void)
 {
 	// The page: the Setup/Fly switch (Setup the default), the controls, the
-	// presets present but disabled until vision exists, the key legend.
+	// presets disabled in the page as served (the script enables them while vision.params is there), the key legend.
 	CHECK_EQ_INT(api("GET", "/", body, sizeof body), 200);
 	CHECK(strstr(body, "data-view=\"setup\"") != NULL && strstr(body, "data-view=\"fly\"") != NULL);
 	CHECK(strstr(body, "storedView() || 'setup'") != NULL);
 	CHECK(strstr(body, "id=\"fly-estop\"") != NULL && strstr(body, "id=\"fly-arm\"") != NULL);
 	CHECK(strstr(body, "id=\"fly-disarm\"") != NULL && strstr(body, "id=\"fly-record\"") != NULL);
-	CHECK(strstr(body, "<button disabled data-preset=\"3\"><kbd>3</kbd>Edges</button>") != NULL);
+	CHECK(strstr(body, "<button disabled data-preset=\"edges\"><kbd>3</kbd>Edges</button>") != NULL);
 	CHECK(strstr(body, "/api/fly") != NULL && strstr(body, "/api/call/") != NULL);
 	// The readings: safety.state from the real module, nav.depth from the
 	// talker, a topic nobody publishes here as not present.
@@ -443,6 +462,31 @@ static void test_fly(void)
 	CHECK(module_status("safety", &m) && strcmp(m.state, "ready") == 0);
 }
 
+/* The Fly view's presets: vision.set_params with the preset alone. */
+static void test_presets(void)
+{
+	CHECK(wait_state("vision", "ready", 5000));
+	CHECK(wait_api("/api/fly", "\"preset\":\"normal\"", 5000, body, sizeof body));
+	const char *v = strstr(body, "\"vision.params\":{");
+	CHECK(v && strstr(v, "\"present\":true") != NULL);
+	CHECK_EQ_INT(api_json("POST", "/api/call/vision.set_params", "{\"preset\":\"edges\"}", body, sizeof body), 200);
+	CHECK(strstr(body, "\"ok\":true,\"call\":\"vision.set_params\",\"status\":\"HG_OK\"") != NULL);
+	if (!strstr(body, "\"ok\":true"))
+		printf("    %s", body);
+	CHECK(wait_api("/api/fly", "\"preset\":\"edges\"", 3000, body, sizeof body));
+	// vision's own refusal, verbatim; the preset in force unchanged.
+	CHECK_EQ_INT(api_json("POST", "/api/call/vision.set_params", "{\"preset\":\"nosuch\"}", body, sizeof body),
+		     409);
+	CHECK(strstr(body, "no preset nosuch") != NULL);
+	CHECK(wait_api("/api/fly", "\"preset\":\"edges\"", 3000, body, sizeof body));
+	// The console sets the preset and nothing else.
+	CHECK_EQ_INT(api("POST", "/api/call/vision.set_params", body, sizeof body), 400);
+	CHECK_EQ_INT(api_json("POST", "/api/call/vision.set_params", "{\"preset\":\"Edges!\"}", body, sizeof body), 400);
+	CHECK_EQ_INT(api_json("POST", "/api/call/vision.set_params", "{\"stage_count\":3}", body, sizeof body), 400);
+	CHECK_EQ_INT(api_json("POST", "/api/call/vision.set_params", "{\"preset\":\"auto\"}", body, sizeof body), 200);
+	CHECK(wait_api("/api/fly", "\"preset\":\"auto\"", 3000, body, sizeof body));
+}
+
 static void test_log(void)
 {
 	// No journald socket under this root: the manager writes the fallback
@@ -486,6 +530,7 @@ int main(void)
 	RUN_TEST(test_restart_stop_start);
 	RUN_TEST(test_hellion_default);
 	RUN_TEST(test_fly);
+	RUN_TEST(test_presets);
 	RUN_TEST(test_log);
 	RUN_TEST(test_shutdown);
 	hd_teardown();

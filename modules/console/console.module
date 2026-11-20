@@ -21,6 +21,9 @@ SupplementaryGroups=hangar-admin
 # `hangar echo` does; the glob lets the wiring allow that (docs/02, glob
 # subscriptions). Nothing is waited on through it.
 [Subscribe *]
+# vision's parameters, by name (the glob leaves out .params topics): the Fly
+# view shows the preset in force and builds vision.set_params from them.
+[Subscribe vision.params]
 
 # No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s tick.
 [Health]
