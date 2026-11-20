@@ -22,7 +22,8 @@
 #   share/hangar/msg/                            the message types
 #   share/hangar/profiles/rov-*, rov.sh          the lab vehicle's profiles and script (tools/rov)
 #   share/doc/                                   PI-TEST.md, ROV.md, LICENSE, LICENSING.md
-#   MANIFEST    version, target, commit, the SHA-256 of every file (no signature yet)
+#   MANIFEST    version, target, commit, whether the codecs have their assembly,
+#               the SHA-256 of every file (no signature yet)
 #
 # libjpeg-turbo 3.2.0 (eeye and hellion link it) is built once for the target
 # under <work>/ljt per tools/cross/README.md and reused afterwards; --ljt
@@ -357,6 +358,17 @@ chmod 755 "$stage/share/hangar/rov.sh"
 cp "$ROOT/tools/rov/README.md" "$stage/share/doc/ROV.md"
 
 # ---- MANIFEST ---------------------------------------------------------------
+# x86-64's JPEG and video codecs take their assembly through nasm; without it they
+# are built in C alone (measured: x264 5.6 times slower, decoding 1.7 times). Said
+# here and recorded, not refused: a rehearsal on a laptop without nasm is still wanted.
+asm=yes
+case "$target" in
+x86_64*)
+	if ! command -v nasm >/dev/null 2>&1; then
+		asm="no (nasm not found: C-only libjpeg-turbo, and x264 and libavcodec where built)"
+		echo "release.sh: WARNING: nasm not found; this x86-64 release has no codec assembly" >&2
+	fi ;;
+esac
 {
 	echo "hangar-release 1"
 	echo "version $version"
@@ -367,6 +379,7 @@ cp "$ROOT/tools/rov/README.md" "$stage/share/doc/ROV.md"
 	echo "binaries$built"
 	echo "skipped$skipped"
 	echo "failed$failed"
+	echo "asm $asm"
 	echo
 	(cd "$stage" && find . -type f ! -name MANIFEST | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum)
 } > "$stage/MANIFEST"

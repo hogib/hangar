@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bench/procbench.py: what hangar, electric-eye and the MAVLink relay cost on a
 running vehicle, measured from outside: CPU per process (percent of one core,
-from /proc/<pid>/stat) and memory (PSS, from /proc/<pid>/smaps_rollup), sampled
+from /proc/<pid>/stat), wake-ups (voluntary context switches of every thread, from
+/proc/<pid>/task/*/status) and memory (PSS, from /proc/<pid>/smaps_rollup), sampled
 once a second, with the machine's total load and its temperature.
 
     sudo python3 -I bench/procbench.py [seconds]      # default 30
@@ -51,6 +52,20 @@ def procs():
         if g:
             out[int(p)] = (g, comm, ticks, cmd)
     return out
+
+
+def wakeups(pid):
+    """Voluntary context switches of every thread of pid: each is one sleep ended,
+    by a timer, a futex wake or a readable descriptor. None if it cannot be read."""
+    n = 0
+    try:
+        for t in os.listdir(f'/proc/{pid}/task'):
+            for line in open(f'/proc/{pid}/task/{t}/status'):
+                if line.startswith('voluntary_ctxt_switches:'):
+                    n += int(line.split()[1])
+    except OSError:
+        return None
+    return n
 
 
 def pss_kb(pid):
@@ -105,6 +120,7 @@ def main():
     secs = int(sys.argv[1]) if len(sys.argv) > 1 else 30
     hz = os.sysconf('SC_CLK_TCK')
     before, c0, t0 = procs(), cpu_total(), time.monotonic()
+    w0 = {pid: wakeups(pid) for pid in before}
     temps, pss = [], {}
     for _ in range(secs):
         time.sleep(1)
@@ -123,17 +139,23 @@ def main():
             continue  # started during the run: no whole window to measure
         cpu = 100.0 * (ticks - before[pid][2]) / hz / dt
         m = pss.get(pid)
-        rows.append((g, label(pid, comm, cmd), cpu, sum(m) / len(m) / 1024 if m else None, pid))
+        w1 = wakeups(pid)
+        # A thread that ended during the run took its count with it: a floor.
+        wk = max(0, w1 - w0[pid]) / dt if w1 is not None and w0.get(pid) is not None else None
+        rows.append((g, label(pid, comm, cmd), cpu, sum(m) / len(m) / 1024 if m else None, pid, wk))
     for g, _ in GROUPS:
         rs = sorted((r for r in rows if r[0] == g), key=lambda r: -r[2])
         if not rs:
             continue
         print(f'\n{g}')
-        for _, name, cpu, mb, pid in rs:
+        for _, name, cpu, mb, pid, wk in rs:
             mem = f'{mb:7.2f} MB' if mb is not None else '      - MB'
-            print(f'  {name:28s} {cpu:6.2f} % CPU  {mem} PSS   (pid {pid})')
+            wake = f'{wk:8.1f}' if wk is not None else '       -'
+            print(f'  {name:28s} {cpu:6.2f} % CPU  {mem} PSS  {wake} wake-ups/s   (pid {pid})')
         known = [r[3] for r in rs if r[3] is not None]
-        print(f'  {"total":28s} {sum(r[2] for r in rs):6.2f} % CPU  {sum(known):7.2f} MB PSS   ({len(rs)} processes)')
+        wks = sum(r[5] for r in rs if r[5] is not None)
+        print(f'  {"total":28s} {sum(r[2] for r in rs):6.2f} % CPU  {sum(known):7.2f} MB PSS  {wks:8.1f} wake-ups/s'
+              f'   ({len(rs)} processes)')
 
 
 if __name__ == '__main__':
