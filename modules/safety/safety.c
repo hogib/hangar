@@ -148,12 +148,32 @@ static void latch_remove(void)
 		mod_log(WHO, "cannot remove the latch %s: %s", latch_path, strerror(errno));
 }
 
-/* 1 if a latch was read: S holds its state. */
+/* The start with a latch file that is there and does not say what it latched:
+ * empty or cut short (a power cut between the write and the disk; nothing here
+ * waits for an fsync before it publishes a failsafe), unreadable, or not this
+ * module's text. The file exists only between entering failsafe and `clear`,
+ * so its presence is the fact: failsafe, neutral, and the reason says so.
+ * Starting disarmed here would undo a failsafe without a word. */
+static int latch_unreadable(const char *why)
+{
+	S.state = ST_FAILSAFE;
+	S.action = ACT_NEUTRAL;
+	S.outputs_enabled = 0;
+	S.triggers = 0;
+	F.latched = 0;
+	F.entered_ns = hg_now_ns();
+	mod_fmt(S.by, sizeof S.by, "latch");
+	mod_fmt(S.reason, sizeof S.reason, "latch unreadable (%s): failsafe assumed", why);
+	mod_log(WHO, "the latch %s is there but %s: starting in failsafe, neutral; `clear` leaves it", latch_path, why);
+	return 1;
+}
+
+/* 1 if a latch is there: S holds its state. */
 static int latch_read(void)
 {
 	FILE *f = fopen(latch_path, "r");
 	if (!f)
-		return 0;
+		return errno == ENOENT ? 0 : latch_unreadable(strerror(errno));
 	char line[256];
 	unsigned action = 0, triggers = 0, latched = 0, disarmed = 0, hold_expired = 0;
 	char reason[64] = "";
@@ -181,7 +201,7 @@ static int latch_read(void)
 	}
 	fclose(f);
 	if (!seen)
-		return 0;
+		return latch_unreadable("it has no `state 2` line");
 	S.state = ST_FAILSAFE;
 	F.disarmed_in_failsafe = disarmed != 0;
 	F.hold_expired = hold_expired != 0;

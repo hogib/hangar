@@ -6,7 +6,8 @@
 // toy crasher for a module given up with OnGiveUp=failsafe. Every state
 // transition and refused transition, each trigger and the combination rule,
 // the latch across a restart, clear against the manager, and the Allow
-// lists through a raw caller. Under 30 s.
+// lists through a raw caller; readings that are not numbers, a latch that
+// cannot be read. About 35 s.
 #include "hd_test.h"
 
 #include <math.h>
@@ -79,7 +80,7 @@ static void write_manifests(void)
 			   "[Serve estop]\nRequest=empty\nReply=empty\nAllow=* topside:* admin topside:admin\n"
 			   "[Serve clear]\nRequest=empty\nReply=empty\nAllow=topside:pilot_console topside:topside_mavlink admin topside:admin\n"
 			   "[Serve check]\nRequest=empty\nReply=check_rep\nAllow=* topside:* admin topside:admin\n"
-			   "[Call mavlink.arm]\n[Restart]\nPolicy=always\nBackoff=0.1s..0.2s\n", T_safety);
+			   "[Call mavlink.arm]\n[Restart]\nPolicy=always\nBackoff=0.1s..0.2s\nBurst=30/60s\n", T_safety);
 	manifest("mux", "[Module]\nExec=%s\n[Params]\nType=mux_params\nAllow=* admin\n[Health]\nWatchdog=5s\n", T_fake_mux);
 	manifest("depth_hold", "[Module]\nExec=%s/talker --topic ctl.depth_hold --rate 50\n"
 			       "[Publish ctl.depth_hold]\nType=depth\nRate=50\n", T_toys);
@@ -755,6 +756,92 @@ static void test_latch(void)
 	CHECK(strcmp(last_state.reason, "start") == 0);
 }
 
+/* The safety module killed (a crash) and started again by the manager, with
+ * the inputs flowing meanwhile so that none goes stale: 1 once the new
+ * process is ready. With latch != NULL the latch file holds that text when
+ * the new process reads it: the old one is stopped first, so that no tick of
+ * its own writes the file again after the test did. */
+static int crash_and_restart(const char *latch)
+{
+	struct mstat before, m;
+	if (!module_status("safety", &before) || before.pid <= 0)
+		return 0;
+	if (latch) {
+		char path[700];
+		tfmt(path, sizeof path, "%s/var/lib/hangar/safety/failsafe", T_root);
+		kill(before.pid, SIGSTOP);
+		FILE *f = fopen(path, "w");
+		if (!f)
+			return 0;
+		fputs(latch, f);
+		fclose(f);
+	}
+	kill(before.pid, SIGKILL);
+	uint64_t t0 = now_ms();
+	do {
+		pump(20);
+		if (module_status("safety", &m) && m.pid > 0 && m.pid != before.pid && strcmp(m.state, "ready") == 0)
+			return 1;
+	} while (now_ms() - t0 < 15000);
+	return 0;
+}
+
+/* Pumps until safety.state is a failsafe that came from the latch (`by`
+ * says so: the process before the restart never does), with this action
+ * when action >= 0. */
+static int wait_latched(int action, long timeout_ms)
+{
+	uint64_t t0 = now_ms();
+	do {
+		pump(10);
+		if (have_state && last_state.state == 2 && strcmp(last_state.by, "latch") == 0 &&
+		    (action < 0 || last_state.action == action))
+			return 1;
+	} while (now_ms() - t0 < (uint64_t)timeout_ms);
+	printf("    safety.state is %d by '%s' (action %d, reason '%s'), wanted a failsafe by latch\n", last_state.state,
+	       last_state.by, last_state.action, last_state.reason);
+	return 0;
+}
+
+/* A latch file that is there and does not say what it latched: empty (a
+ * power cut between the write and the disk), or not the module's text. It
+ * was read as "no latch" and the module started disarmed, reason `start`,
+ * out of a failsafe nobody had cleared. The file exists only between
+ * entering failsafe and `clear`: its presence is a failsafe, neutral. */
+static void test_latch_unreadable(void)
+{
+	char path[700];
+	tfmt(path, sizeof path, "%s/var/lib/hangar/safety/failsafe", T_root);
+	const char *const contents[] = { "", "# hangar safety failsafe latch\nsta\x7f\x45LF\x02\nstate two\n" };
+	for (int i = 0; i < 2; i++) {
+		CHECK_EQ_INT(last_state.state, 0);
+		CHECK_EQ_INT(call("estop"), 0);
+		CHECK(wait_safety(2, 0, 2000));
+		CHECK(file_contains(path, "state 2"));
+		/* The calls made so far expire (2 s for `hangar call` here) before
+		 * the crash: a server restarted twice within a request's deadline
+		 * serves it again (docs/04 "While the server restarts": only its
+		 * direct predecessor's replies are known to it), and the `clear`
+		 * of the round before would undo what this one looks at. */
+		pump(2300);
+		CHECK(crash_and_restart(contents[i]));
+		CHECK(wait_latched(0, 5000));
+		CHECK(!last_state.outputs_enabled);
+		CHECK(strstr(last_state.reason, "latch unreadable") != NULL);
+		if (!strstr(last_state.reason, "latch unreadable"))
+			printf("    content %d: state %d, reason '%s'\n", i, last_state.state, last_state.reason);
+		CHECK(strncmp(safety_status(), "failsafe (neutral)", 18) == 0);
+		CHECK_EQ_INT(call("arm"), 1);
+		CHECK(strstr(cli_out, "clear first") != NULL);
+		pump(300);
+		clear_ok();
+		CHECK(access(path, F_OK) < 0);
+	}
+	char log[1024];
+	tfmt(log, sizeof log, "%s/run/hangar/log/safety.log", T_root);
+	CHECK(file_contains(log, "is there but it has no `state 2` line: starting in failsafe"));
+}
+
 static void test_module_trigger(void)
 {
 	/* A module given up with OnGiveUp=failsafe: the system's failsafe is the
@@ -855,6 +942,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_triggers_and_actions);
 	RUN_TEST(test_latch);
 	RUN_TEST(test_not_a_number);
+	RUN_TEST(test_latch_unreadable);
 	RUN_TEST(test_module_trigger);
 	RUN_TEST(test_allow);
 	RUN_TEST(test_shutdown);

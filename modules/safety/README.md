@@ -48,7 +48,16 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   entering failsafe and on every change of its triggers or action, removed by `clear`;
   a start with the file present starts in failsafe with its action and triggers,
   `by` `latch`. The file also records a disarm given in failsafe and an ended hold, so
-  that a restart keeps the outputs off rather than surfacing or holding again.
+  that a restart keeps the outputs off rather than surfacing or holding again. A
+  latch file that is there and cannot be read as one (empty or cut short after a power
+  cut, not this module's text, an open that fails for another reason than "no such
+  file") is a failsafe too: neutral, `by` `latch`, reason `latch unreadable (...):
+  failsafe assumed`, and a log line that names the file. The file exists only between
+  entering failsafe and `clear`, so its presence is the fact. The write is not
+  followed by an `fsync`: the docs want the latch renamed into place before the
+  failsafe is published, and a storage flush in front of that message would delay
+  the failsafe itself by as long as an SD card takes; the unreadable-latch rule is
+  what makes the missing flush safe.
 
 ## Deviations from docs/07, and why
 
@@ -119,4 +128,9 @@ infinite depth, `check` and `arm` refuse by name; armed, each becomes the `input
 trigger (neutral) with `clear` refused while it lasts; forty depth messages of which
 every other one is NaN fire nothing; with `battery_required = 0` NaN volts arm and
 stay armed. Before the rule the NaN voltage passed the checklist and armed, and the
-NaN depth left an armed vehicle armed with no trigger.
+NaN depth left an armed vehicle armed with no trigger. `test_latch_unreadable`: in
+failsafe by e-stop, the module is stopped, its latch file emptied (then, a second
+time, filled with a cut header and garbage) and the module killed: the manager's
+restart comes back in failsafe by `latch`, neutral, `latch unreadable` in the reason
+and the log, `arm` refused until `clear`, which removes the file. It started
+`disarmed`, reason `start`, before.
