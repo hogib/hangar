@@ -507,7 +507,7 @@ static int cmd_hz(int argc, char **argv)
 	signal(SIGTERM, on_int);
 	long windows = 0;
 	uint64_t window_start = hg_now_ns(), last = 0;
-	uint64_t n = 0, min_dt = UINT64_MAX, max_dt = 0, sum_dt = 0;
+	uint64_t n = 0, n_dt = 0, min_dt = UINT64_MAX, max_dt = 0, sum_dt = 0;
 	unsigned char *buf = NULL;
 	size_t buflen = 0;
 	while (!stopping && (seconds < 0 || windows < seconds)) {
@@ -541,6 +541,7 @@ static int cmd_hz(int argc, char **argv)
 				if (dt > max_dt)
 					max_dt = dt;
 				sum_dt += dt;
+				n_dt++;
 			}
 			last = info.publish_ns;
 			n++;
@@ -548,16 +549,20 @@ static int cmd_hz(int argc, char **argv)
 		uint64_t now = hg_now_ns();
 		if (now - window_start >= 1000000000ull) {
 			double secs = (double)(now - window_start) / 1e9;
-			if (n > 1)
+			/* The mean over the intervals measured, which are not the
+			 * window's messages less one: the interval to a window's first
+			 * message is measured too, from the last one of the window
+			 * before. */
+			if (n_dt)
 				printf("%s: %.2f Hz  interval mean %.2f ms  min %.2f  max %.2f  jitter ±%.2f ms  (%llu messages)\n",
-				       topic, (double)n / secs, (double)sum_dt / (double)(n - 1) / 1e6, (double)min_dt / 1e6,
+				       topic, (double)n / secs, (double)sum_dt / (double)n_dt / 1e6, (double)min_dt / 1e6,
 				       (double)max_dt / 1e6, (double)(max_dt - min_dt) / 2e6, (unsigned long long)n);
 			else
 				printf("%s: %.2f Hz  (%llu messages)\n", topic, (double)n / secs, (unsigned long long)n);
 			fflush(stdout);
 			windows++;
 			window_start = now;
-			n = 0;
+			n = n_dt = 0;
 			min_dt = UINT64_MAX;
 			max_dt = sum_dt = 0;
 		}

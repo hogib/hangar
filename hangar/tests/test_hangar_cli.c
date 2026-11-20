@@ -115,6 +115,28 @@ static void test_hz_large_payload(void)
 	CHECK_EQ_INT(lines, 3);
 }
 
+/* hz divided the sum of a window's intervals by messages - 1, but from the
+ * second window on the interval to the window's first message is in the sum
+ * too (the last stamp carries over): a 2 Hz topic showed a mean interval of
+ * 1000 ms, a 4 Hz one 333 ms. The intervals are counted now. */
+static void test_hz_mean_interval(void)
+{
+	pid_t pub = publisher("slow.t", "u32 n\n", 2000, 20, 500); /* 2 Hz for 10 s */
+	sleep_ms(700);
+	char *argv[] = { (char *)T_hangar, "hz", "slow.t", "--seconds", "4", NULL };
+	int rc = run_hangar(out_path(), 10000, NULL, argv);
+	reap(pub);
+	const char *o = read_file(out_path());
+	printf("%s", o);
+	CHECK_EQ_INT(rc, 0);
+	int with_mean = 0;
+	for (const char *l = o; (l = strstr(l, "interval mean ")); l += 14, with_mean++) {
+		double ms = atof(l + 14);
+		CHECK(ms > 400 && ms < 700); /* 500 ms; 1000 was the fault */
+	}
+	CHECK(with_mean >= 3);
+}
+
 /* `hangar echo` parsed the header's schema again only when its length
  * changed. A topic replaced by a writer with another type of the same
  * length (a renamed field, two fields swapped, a frame of another size with
@@ -611,6 +633,7 @@ int main(void)
 	hd_setup("cli", NULL);
 	mkdir_p(T_topics);
 	RUN_TEST(test_hz_large_payload);
+	RUN_TEST(test_hz_mean_interval);
 	RUN_TEST(test_echo_follows_a_replaced_schema);
 	RUN_TEST(test_malformed_reply_stops_the_command);
 	RUN_TEST(test_manager_up);
