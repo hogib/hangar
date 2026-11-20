@@ -96,9 +96,10 @@ opt-in; [tools/rov/README.md](../../tools/rov/README.md) has the session, with
 - ffmpeg, where it is installed with libx264: a real stream (three slices a frame)
   whose parameter sets are kept only at the first IDR, ffmpeg joining after that IDR
   has gone by, from the SDP `hellion` writes: it decodes from the IDR at frame 30, 23 or
-  24 of frames 30 to 59 here (the rest go while ffmpeg probes its input); 0 with the
-  insertion taken out. One that listens from the start decodes 59 of 60 whether the
-  parameter sets are added or not.
+  24 of frames 30 to 59 with ffmpeg 9.0 and 12 with 6.1 (Ubuntu 24.04, as in CI; the
+  rest go while ffmpeg probes its input), and 0 with the insertion taken out, on both.
+  The test asks for at least 6. One that listens from the start decodes 59 of 60
+  whether the parameter sets are added or not, so it proves nothing about them.
 
 ## Unverified
 

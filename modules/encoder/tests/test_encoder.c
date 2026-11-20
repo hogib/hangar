@@ -556,12 +556,13 @@ static void test_ffmpeg_decodes(void)
 	struct stat sb;
 	long frames = stat(raw, &sb) == 0 ? (long)(sb.st_size / (320 * 240)) : 0;
 	printf("    ffmpeg, joining late, decoded %ld of frames 30 to 59 from the module's RTP\n", frames);
-	/* From the IDR the encoder put the parameter sets in front of: 23 or 24
-	 * of frames 30 to 59 here, and 0 with the insertion taken out (measured
-	 * 2026-11-20). The rest go while ffmpeg is still probing its input, on a
-	 * socket it does not read meanwhile: ffmpeg's, not the packets'. */
-	CHECK(frames >= 15 && frames <= 30);
-	if (frames < 15) {
+	/* From the IDR the encoder put the parameter sets in front of; 0 with
+	 * the insertion taken out. How many of frames 30 to 59 depends on the
+	 * ffmpeg: 23 or 24 with 9.0 (Arch), 12 with 6.1 (Ubuntu 24.04, CI),
+	 * measured 2026-11-20; the rest go while it still probes its input, on a
+	 * socket it does not read meanwhile. Half the fewest seen is the bar. */
+	CHECK(frames >= 6 && frames <= 30);
+	if (frames < 6) {
 		snprintf(cmd, sizeof cmd, "tail -5 %s", log);
 		run(cmd);
 	}
