@@ -561,8 +561,21 @@ int main(int argc, char **argv)
 			struct dataset *d = &D[k];
 			if (!d->bound) {
 				try_bind(d);
-				if (!d->bound)
+				if (!d->bound) {
+					/* Not bound: one of its topics does not exist yet. Its
+					 * anchor and the parts that do exist are in the wait set
+					 * all the same, and nothing below reads them: unread, each
+					 * stayed news, hg_wait returned at once every time, and the
+					 * pairer took a full core for as long as the last topic
+					 * stayed away (hangar#1's pattern, a third time). Skipped,
+					 * they wake the loop once per message, which is when a bind
+					 * is worth trying again. No row is lost: without the bind
+					 * there is no row type to make one of. */
+					(void)hg_skip(d->anchor);
+					for (int i = 0; i < d->spec.n_parts; i++)
+						(void)hg_skip(d->parts[i]);
 					continue;
+				}
 			}
 			read_anchor(d);
 			flush(d, hg_now_ns(), 0);

@@ -113,6 +113,39 @@ static void check_cpu(const char *name, pid_t pid, double limit)
 	CHECK(pct >= 0 && pct < limit);
 }
 
+/* A dataset that cannot bind yet: its anchor is published (a chain of its
+ * own, c at 100 Hz) and one of its parts' topics does not exist. The pairer waited on
+ * the anchor without ever reading it while unbound, so the wait returned at
+ * once, always: 96 % of a core measured, for as long as the topic stayed
+ * away (on the vehicle: until the topside is up). The limit is far from both
+ * numbers: under 1 % now. */
+static void test_unbound_does_not_spin(void)
+{
+	char path[700], text[1024];
+	rfmt(path, sizeof path, "%s/etc/hangar/datasets/waiting.dataset", R_root);
+	CHECK_EQ_INT(write_file(path, "[Dataset]\nAnchor=wait.c\nAnchorRole=label\nFields=surge heave\nLateness=0\n\n"
+				      "[Input wait.a]\nJoin=provenance\n\n"
+				      "[Input never.published]\nJoin=asof:0\n"), 0);
+	char toy[700], topic[700];
+	rfmt(toy, sizeof toy, "%s/prov_chain", R_toys);
+	pid_t chain = spawn("chain-waiting", NULL, toy, "--rate", "100", "--slots", "64", "--prefix", "wait", (char *)NULL);
+	rfmt(topic, sizeof topic, "%s/wait.c", R_topics);
+	CHECK(chain > 0 && wait_exists(topic, 5000));
+	rfmt(path, sizeof path, "%s/etc/hangar/pairer-waiting.conf", R_root);
+	rfmt(text, sizeof text, "[Pairer]\nDatasets=waiting\nDatasetDir=%s/etc/hangar/datasets\n", R_root);
+	CHECK_EQ_INT(write_file(path, text), 0);
+	pid_t pid = spawn("pairer-waiting", NULL, R_pairer, path, (char *)NULL);
+	CHECK(pid > 0);
+	CHECK(wait_file_contains(log_path("pairer-waiting"), "1 datasets", 5000));
+	sleep_ms(300);
+	check_cpu("pairer with a dataset whose part is absent, the anchor at 100 Hz", pid, 30.0);
+	CHECK_EQ_INT(wait_pid_ms(pid, 0), -1); /* still running, waiting for the topic */
+	/* The library's own spin detector said so in the log. */
+	CHECK(!file_contains(log_path("pairer-waiting"), "returned as news"));
+	CHECK_EQ_INT(stop_child(pid), 0);
+	stop_child(chain);
+}
+
 static void test_live_rows_and_status(void)
 {
 	rows_sub = hg_sub_open("dataset.chain_ds", NULL);
@@ -529,6 +562,7 @@ int main(void)
 	RUN_TEST(test_refusals);
 	RUN_TEST(test_pairs_long_inputs);
 	RUN_TEST(test_damaged_recordings);
+	RUN_TEST(test_unbound_does_not_spin); /* last: its pairer publishes pairer.status too */
 	if (rows_sub)
 		hg_sub_close(rows_sub);
 	if (status_sub)
