@@ -89,6 +89,15 @@ ssize_t hg_control_request(int sock, const void *req, size_t len, char *reply, s
 		errno = EPROTO;
 		return -1;
 	}
+	/* A reply cut to the buffer (or a descriptor that did not fit) is not
+	 * the reply: what fitted stays in reply[] for a message, the
+	 * descriptor is closed, and the caller is told. */
+	if (mh.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
+		if (fd >= 0)
+			close(fd);
+		errno = EMSGSIZE;
+		return -1;
+	}
 	if (fd_out)
 		*fd_out = fd;
 	else if (fd >= 0)

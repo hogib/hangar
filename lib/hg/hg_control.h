@@ -71,7 +71,9 @@ int hg_control_connect(const char *path);
 /* Sends one request and waits for its reply. The reply is NUL-terminated in
  * reply[]; a descriptor passed with it goes to *fd_out (-1 if none; fd_out
  * may be NULL, then it is closed). Returns the reply's length, or -1 with
- * errno (EPROTO: the manager closed without answering). */
+ * errno (EPROTO: the manager closed without answering; EMSGSIZE: the reply
+ * is longer than replylen - 1 bytes: what fitted is in reply[], and a
+ * descriptor that came with it is closed). */
 ssize_t hg_control_request(int sock, const void *req, size_t len, char *reply, size_t replylen,
 			   int *fd_out);
 
