@@ -62,7 +62,11 @@ A manager with the policy, the real mux and the real pairer (`Type=dataset:toy`,
 hangard now accepts, see below); the tester drives `toy.anchor` and `toy.target` at
 50 Hz. Neutral and flagged with no model; runtime_info; a load with no output missed and
 its active message referencing the request; checks 1, 2, 4, 5 and 6 failing in turn
-with the running model untouched and named by the outputs; a second load refused; a
+with the running model untouched and named by the outputs, check 4 also for a model
+trained at another tick period than the anchor's (`slow10hz`); a recurrent model
+(one LSTM layer) refused by check 4 on a spec without `Filter=mask`, `Missing=flag`
+and `Rate=every:1`, and loaded on the same spec with them (`test_recurrent_spec`, two
+more policy modules); a second load refused; a
 warm-up overrun (check 8); the features and the stale flag, then against the pairer's
 rows; revert; a restart's reload of both files and revert after it; a non-finite output
 unpublished and counted; Allow, and the manager's refusals of a misnamed policy and of
@@ -88,6 +92,16 @@ hash a model was trained on with the one it builds the same way.
   the L2 estimator, and closed-loop runs for sim_vehicle.
 
 ## Deviations from docs/09
+
+- "For a recurrent model, the spec has `Filter=mask`, `Missing=flag` and
+  `Rate=every:1`" (check 4) is implemented as written, with "recurrent" meaning any
+  op that keeps state between ticks (`state_bytes` > 0; today that is `lstm`). The
+  other half of docs/09's sentence, "and `hangar dataset check` says so", is not:
+  the command sees a spec, not the model that will run on it.
+- The "spec hash" check 4 compares is the hash of the row type, which the three
+  settings above are not part of: two specs that differ only in them have the same
+  hash, and a recurrent model trained on one is told apart from the other only by
+  the rule above, at the policy.
 
 - Check 1 is skipped for `current.hgw` and `previous.hgw` at start: no request names
   their hash (the file was checked when it came).

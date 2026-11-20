@@ -700,6 +700,23 @@ static void load_start(int cause, const char *path, const uint8_t *digest, const
 	pthread_mutex_unlock(&wl);
 }
 
+/* Check 4's last clause (docs/09 "State resets"): a recurrent model, one
+ * whose ops keep state between ticks, steps through every tick of the
+ * anchor, so the rows it was trained on must be every tick too: the spec
+ * has Filter=mask (a filtered row is kept and marked, not dropped),
+ * Missing=flag (the same for a missing part) and Rate=every:1. On any other
+ * spec the trainer saw a sequence with ticks cut out of it, and the state
+ * the network learned to carry is not the state it will have here. */
+static int recurrent_spec_ok(const nn_model *m, char *reason, size_t rlen)
+{
+	if (!m->total_state_bytes)
+		return 1;
+	if (DS.filter == HG_DS_MASK && !DS.missing_drop && DS.rate_kind == HG_DS_EVERY && DS.rate_every == 1)
+		return 1;
+	mod_fmt(reason, rlen, "recurrent: %s needs Filter=mask Missing=flag Rate=every:1", DS.name);
+	return 0;
+}
+
 /* The worker's verdict on checks 1 to 7, taken on the tick thread. */
 static void load_poll(void)
 {
@@ -726,7 +743,7 @@ static void load_poll(void)
 	cand.hash = digest_hash(L.digest);
 	cand.version = L.version;
 	char why[128];
-	if (model_bind(&cand, why, sizeof why) < 0) {
+	if (!recurrent_spec_ok(m, why, sizeof why) || model_bind(&cand, why, sizeof why) < 0) {
 		load_reject(4, why);
 		return;
 	}
@@ -991,7 +1008,7 @@ static void reload_at_start(void)
 			prev.hash = digest_hash(prev.digest);
 			prev.version = next_version++;
 			char why[128];
-			if (model_bind(&prev, why, sizeof why) == 0)
+			if (recurrent_spec_ok(m, why, sizeof why) && model_bind(&prev, why, sizeof why) == 0)
 				have_prev = 1;
 			else
 				model_free(&prev);

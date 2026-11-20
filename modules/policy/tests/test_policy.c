@@ -79,7 +79,7 @@ static void copy_types(void)
 	}
 }
 
-static char arch[32];
+static char arch[32], arch_rnn[32];
 
 static void write_files(void)
 {
@@ -108,6 +108,27 @@ static void write_files(void)
 	char text[256];
 	tfmt(text, sizeof text, "[Policy]\nName=toy\nDataset=toy\nArch=%s\nTickBudget=50%%\n", arch);
 	tfmt(path, sizeof path, "%s/etc/hangar/policies/toy.policy", T_root);
+	write_file(path, text);
+	/* Two policies for a recurrent model (test_recurrent_spec): on toy, whose
+	 * spec drops filtered rows, and on rnnok, the same spec with the three
+	 * settings docs/09 asks of a recurrent policy's dataset. */
+	tfmt(cmd, sizeof cmd, "POLICY_PYTHON=%s python3 %s/../modules/policy/tests/make_models.py arch_rnn", T_python, T_python);
+	p = popen(cmd, "r");
+	if (!p || !fgets(arch_rnn, sizeof arch_rnn, p)) {
+		fprintf(stderr, "make_models.py arch_rnn failed\n");
+		exit(2);
+	}
+	pclose(p);
+	arch_rnn[strcspn(arch_rnn, "\n")] = 0;
+	tfmt(path, sizeof path, "%s/etc/hangar/datasets/rnnok.dataset", T_root);
+	write_file(path, "[Dataset]\nAnchor=toy.anchor\nAnchorRole=input\nFields=depth_m\nLateness=0\nResetAfter=200ms\n"
+			 "Filter=mask\nMissing=flag\nRate=every:1\n\n"
+			 "[Input toy.target]\nJoin=asof:0\nFields=depth_m\n");
+	tfmt(text, sizeof text, "[Policy]\nName=rnn\nDataset=toy\nArch=%s\n", arch_rnn);
+	tfmt(path, sizeof path, "%s/etc/hangar/policies/rnn.policy", T_root);
+	write_file(path, text);
+	tfmt(text, sizeof text, "[Policy]\nName=rnnok\nDataset=rnnok\nArch=%s\n", arch_rnn);
+	tfmt(path, sizeof path, "%s/etc/hangar/policies/rnnok.policy", T_root);
 	write_file(path, text);
 	tfmt(text, sizeof text, "[Policy]\nName=late\nDataset=late\nArch=%s\nTickBudget=50%%\n", arch);
 	tfmt(path, sizeof path, "%s/etc/hangar/policies/late.policy", T_root);
@@ -161,7 +182,9 @@ static void write_manifests(void)
 			   "[Publish toy.late]\nType=depth\nRate=50\n"
 			   "[Publish recorder.session]\nType=recorder_session\n"
 			   "[Call policy_toy.load_weights]\n[Call policy_toy.revert]\n[Call policy_toy.reset_state]\n"
-			   "[Call policy_toy.runtime_info]\n[Call mux.set_mode]\n");
+			   "[Call policy_toy.runtime_info]\n[Call mux.set_mode]\n"
+			   "[Subscribe policy.rnn.load]\n[Subscribe policy.rnnok.load]\n"
+			   "[Call policy_rnn.load_weights]\n[Call policy_rnnok.load_weights]\n[Call policy_rnnok.runtime_info]\n");
 	/* The manager's check: hangar-policy under another name, and without
 	 * its .load output. */
 	manifest("misnamed", "[Module]\nExec=%s %s/etc/hangar/policies/toy.policy\n[Restart]\nPolicy=never\n"
@@ -180,6 +203,19 @@ static void write_manifests(void)
 				"[Serve reset_state]\nRequest=empty\nReply=empty\nAllow=tester admin\n"
 				"[Serve runtime_info]\nRequest=empty\nReply=runtime_info\nAllow=tester admin\n",
 		 T_policy, T_root);
+	static const char *const two[] = { "rnn", "rnnok" };
+	for (int i = 0; i < 2; i++) {
+		char mod[32];
+		tfmt(mod, sizeof mod, "policy_%s", two[i]);
+		manifest(mod, "[Module]\nExec=%s %s/etc/hangar/policies/%s.policy\n[Restart]\nPolicy=never\n"
+			      "[Subscribe toy.anchor]\n[Subscribe toy.target]\n"
+			      "[Publish policy.%s.wrench]\nType=wrench\nRate=50\nInputs=toy.anchor toy.target policy.%s.active\n"
+			      "[Publish policy.%s.active]\nType=policy_active\n[Publish policy.%s.load]\nType=policy_load\n"
+			      "[Serve load_weights]\nRequest=load_weights_req\nReply=load_weights_rep\nAllow=tester admin\n"
+			      "[Serve revert]\nRequest=empty\nReply=policy_version\nAllow=tester admin\n"
+			      "[Serve runtime_info]\nRequest=empty\nReply=runtime_info\nAllow=tester admin\n",
+			 T_policy, T_root, two[i], two[i], two[i], two[i], two[i]);
+	}
 	manifest("policy_lacking", "[Module]\nExec=%s %s/etc/hangar/policies/lacking.policy\n[Restart]\nPolicy=never\n"
 				   "[Publish policy.lacking.wrench]\nType=wrench\nRate=50\n"
 				   "[Publish policy.lacking.active]\nType=policy_active\n",
@@ -598,6 +634,75 @@ static void test_checks_fail(void)
 	CHECK(in_session(hash_b));
 }
 
+/* A load on another policy than policy_toy: the file into its incoming
+ * directory, the call, and the load's last message (done or rejected) from
+ * its .load topic. 0 if nothing came. */
+static int load_on(const char *policy, const char *model, hg_sub *loads, struct policy_load *last)
+{
+	char from[800], to[800], target[64];
+	tfmt(from, sizeof from, "%s/%s.hgw", models, model);
+	tfmt(to, sizeof to, "%s/var/lib/hangar/policy_%s/incoming/%s.hgw", T_root, policy, model);
+	if (bin_copy(from, to) < 0)
+		return 0;
+	load_weights_req req;
+	memset(&req, 0, sizeof req);
+	tfmt(req.name, sizeof req.name, "%s.hgw", model);
+	digest_hex(to, req.blake2s, NULL);
+	load_weights_rep rep;
+	memset(&rep, 0, sizeof rep);
+	tfmt(target, sizeof target, "policy_%s.load_weights", policy);
+	hg_call_result r = call(target, &LOAD_WEIGHTS_REQ_TYPE, &req, &LOAD_WEIGHTS_REP_TYPE, &rep);
+	if (r.status != HG_OK) {
+		printf("    %s %s: %s %s\n", target, model, hg_status_name(r.status), r.reason);
+		return 0;
+	}
+	uint64_t t0 = now_ms();
+	while (now_ms() - t0 < 10000) {
+		pump(10);
+		struct hg_info info;
+		while (hg_next(loads, last, sizeof *last, &info) == HG_MSG)
+			if (last->version == rep.version && (last->state == 3 || last->state == 4))
+				return last->state;
+	}
+	return 0;
+}
+
+/* docs/09, check 4: "for a recurrent model, the spec has Filter=mask,
+ * Missing=flag and Rate=every:1". Nothing looked: a model with an lstm op
+ * loaded on any spec, and stepped through every tick a state it had learned
+ * on rows with ticks cut out. The same model is refused on toy (Filter=drop,
+ * the default) and loads on rnnok, toy's spec with the three settings. */
+static void test_recurrent_spec(void)
+{
+	CHECK(wait_state("policy_rnn", "ready", 5000));
+	CHECK(wait_state("policy_rnnok", "ready", 5000));
+	runtime_info ri;
+	memset(&ri, 0, sizeof ri);
+	empty e = { 0 };
+	CHECK_EQ_INT(call("policy_rnnok.runtime_info", &EMPTY_TYPE, &e, &RUNTIME_INFO_TYPE, &ri).status, HG_OK);
+	CHECK(ri.dataset_hash != 0); /* the row type's hash: the three settings are not part of it */
+	char cmd[2048];
+	tfmt(cmd, sizeof cmd, "POLICY_PYTHON=%s python3 %s/../modules/policy/tests/make_models.py rnn %s %016llx %016llx",
+	     T_python, T_python, models, (unsigned long long)ds_hash, (unsigned long long)ri.dataset_hash);
+	CHECK_EQ_INT(system(cmd), 0);
+	hg_sub *l1 = hg_sub_open("policy.rnn.load", &POLICY_LOAD_TYPE);
+	hg_sub *l2 = hg_sub_open("policy.rnnok.load", &POLICY_LOAD_TYPE);
+	CHECK(l1 && l2);
+	struct policy_load pl;
+	memset(&pl, 0, sizeof pl);
+	CHECK_EQ_INT(load_on("rnn", "rnn_toy", l1, &pl), 4);
+	CHECK_EQ_INT(pl.check, 4);
+	CHECK(strstr(pl.reason, "recurrent") != NULL && strstr(pl.reason, "Filter=mask Missing=flag Rate=every:1") != NULL);
+	if (pl.state != 4)
+		printf("    rnn_toy on toy: state %u check %u '%s'\n", pl.state, pl.check, pl.reason);
+	memset(&pl, 0, sizeof pl);
+	CHECK_EQ_INT(load_on("rnnok", "rnn_ok", l2, &pl), 3);
+	if (pl.state != 3)
+		printf("    rnn_ok on rnnok: state %u check %u '%s'\n", pl.state, pl.check, pl.reason);
+	hg_sub_close(l1);
+	hg_sub_close(l2);
+}
+
 static void test_warmup_overrun(void)
 {
 	char path[700];
@@ -917,6 +1022,7 @@ int main(void)
 	RUN_TEST(test_runtime_info_and_models);
 	RUN_TEST(test_load_swap);
 	RUN_TEST(test_checks_fail);
+	RUN_TEST(test_recurrent_spec);
 	RUN_TEST(test_warmup_overrun);
 	RUN_TEST(test_features);
 	RUN_TEST(test_features_vs_pairer);

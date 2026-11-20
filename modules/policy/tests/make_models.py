@@ -6,6 +6,11 @@ dataset's two input fields to the wrench's heave and surge.
 
     make_models.py arch                      the architecture hash, 16 hex digits
     make_models.py models <outdir> <dataset hash, hex>
+    make_models.py arch_rnn                  the recurrent toy's architecture hash
+    make_models.py rnn <outdir> <hash of toy> <hash of rnnok>
+                                             rnn_toy.hgw and rnn_ok.hgw: one LSTM layer
+                                             from the two inputs to heave and surge,
+                                             for the datasets toy and rnnok
 
 The models (same architecture unless named bad_arch):
   good_a    heave = 0.5 a + 0.25 t + 0.1, surge = a - t
@@ -43,6 +48,20 @@ def dense(W, b, outputs):
 OUT = ["heave", "surge"]
 
 
+def lstm():
+    """One LSTM layer, I = 2, H = 2: the hidden state is the output."""
+    H = 2
+    w = [0.1 * ((i % 5) - 2) for i in range(4 * H * 2)]
+    return hgw.Graph(
+        buffers=[hgw.Buffer("in", "f32", [2]), hgw.Buffer("h", "f32", [H])],
+        tensors=[hgw.Tensor("W_ih", "f32", [4 * H, 2], w), hgw.Tensor("W_hh", "f32", [4 * H, H], w),
+                 hgw.Tensor("b_ih", "f32", [4 * H], [0.0] * (4 * H)), hgw.Tensor("b_hh", "f32", [4 * H], [0.1] * (4 * H))],
+        ops=[hgw.Op("lstm", 1, [2, H, 1], [0], 1, [0, 1, 2, 3])],
+        inputs=[hgw.Binding(0, e, f) for e, f in enumerate(IN)],
+        outputs=[hgw.Binding(1, e, f) for e, f in enumerate(OUT)],
+    )
+
+
 def write(outdir, name, g, dataset_hash, probe_inputs, warmup=3, tamper=False, nan=False, tick_ns=20_000_000,
           dataset="toy", **header):
     hdr = hgw.Header(name="toy", tick_period_ns=tick_ns, warmup_ticks=warmup, dataset=dataset,
@@ -57,6 +76,16 @@ def write(outdir, name, g, dataset_hash, probe_inputs, warmup=3, tamper=False, n
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "arch":
         print("%016x" % hgw.arch_hash(dense([0, 0, 0, 0], [0, 0], OUT)))
+        return 0
+    if len(sys.argv) >= 2 and sys.argv[1] == "arch_rnn":
+        print("%016x" % hgw.arch_hash(lstm()))
+        return 0
+    if len(sys.argv) == 5 and sys.argv[1] == "rnn":
+        outdir = sys.argv[2]
+        os.makedirs(outdir, exist_ok=True)
+        seq = [(0.0, 0.0), (1.0, 2.0), (3.5, -1.0), (0.5, 0.5)]
+        write(outdir, "rnn_toy", lstm(), int(sys.argv[3], 16), seq)
+        write(outdir, "rnn_ok", lstm(), int(sys.argv[4], 16), seq, dataset="rnnok")
         return 0
     if len(sys.argv) != 4 or sys.argv[1] != "models":
         print(__doc__, file=sys.stderr)
