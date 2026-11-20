@@ -496,6 +496,8 @@ static int key_module(struct parser *p, const char *k, const char *v)
 		for (const char *c = v; c < eq; c++)
 			if (!(isalnum((unsigned char)*c) || *c == '_'))
 				return fail(p, "Environment: '%.*s' is not a variable name", (int)(eq - v), v);
+		if (strncmp(v, "HANGAR_", 7) == 0)
+			return fail(p, "Environment: HANGAR_* names are the manager's to set");
 		mf_fmt(m->env[m->n_env++], sizeof m->env[0], "%s", v);
 		return 0;
 	}

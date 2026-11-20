@@ -46,6 +46,7 @@ struct child_ctx {
 	int use_journal;
 	char *envp[MF_MAX_ENV + 8 + 256];
 	char env_buf[MF_MAX_ENV * 256 + 4096];
+	int wiring_env;          /* the index of HANGAR_WIRING in envp, or -1 */
 	uint32_t caps;           /* bit per capability number */
 };
 
@@ -635,57 +636,85 @@ static _Noreturn void child_main(struct child_ctx *c)
 		int wfd = dup(m->wiring_fd);
 		if (wfd < 0)
 			fail_exec(c->err_fd, 10, errno);
-		for (int i = 0; c->envp[i]; i++)
-			if (strncmp(c->envp[i], "HANGAR_WIRING=", 14) == 0)
-				mf_fmt(c->envp[i], 32, "HANGAR_WIRING=%d", wfd);
+		if (c->wiring_env >= 0) /* the entry build_env made 32 bytes long */
+			mf_fmt(c->envp[c->wiring_env], 32, "HANGAR_WIRING=%d", wfd);
 	}
 	umask(0022);
 	execve(mf->exec.argv[0], mf->exec.argv, c->envp);
 	fail_exec(c->err_fd, 10, errno);
 }
 
-/* The child's environment: ours without HANGAR_*, then the module's. */
-static void build_env(struct child_ctx *c, const struct module *m)
+/* One more entry of the child's environment; -1 when it does not fit. */
+static int env_add(struct child_ctx *c, int *n, size_t *used, const char *fmt, ...)
+	__attribute__((format(printf, 4, 5)));
+static int env_add(struct child_ctx *c, int *n, size_t *used, const char *fmt, ...)
+{
+	size_t cap = sizeof c->env_buf - *used;
+	va_list ap;
+	va_start(ap, fmt);
+	int w = vsnprintf(c->env_buf + *used, cap, fmt, ap);
+	va_end(ap);
+	if (w < 0 || (size_t)w + 1 > cap || *n >= (int)(sizeof c->envp / sizeof c->envp[0]) - 1)
+		return -1;
+	c->envp[(*n)++] = c->env_buf + *used;
+	*used += (size_t)w + 1;
+	return 0;
+}
+
+/* The child's environment. What the module cannot run without comes first
+ * and must fit, or the module is not started: the manager's HANGAR_*
+ * variables (without them the library would take the module for a
+ * standalone one and go by the fixed paths), then the manifest's
+ * Environment=. The manager's own environment fills what room is left,
+ * without HANGAR_*, the socket-activation variables and the names the
+ * manifest sets; what does not fit is left out, and the log says so. */
+static int build_env(struct child_ctx *c, const struct module *m)
 {
 	const struct mf_module *mf = m->mf;
-	int n = 0;
+	int n = 0, bad = 0, left_out = 0;
 	size_t used = 0;
-	char *buf = c->env_buf;
-	size_t cap = sizeof c->env_buf;
-#define ADD(...)                                                                                     \
-	do {                                                                                         \
-		int w_ = mf_fmt(buf + used, cap - used, __VA_ARGS__);                              \
-		if (w_ > 0 && used + (size_t)w_ + 1 < cap && n < (int)(sizeof c->envp / sizeof c->envp[0]) - 1) { \
-			c->envp[n++] = buf + used;                                                   \
-			used += (size_t)w_ + 1;                                                      \
-		}                                                                                    \
-	} while (0)
-	for (char **e = environ; *e; e++) {
-		if (strncmp(*e, "HANGAR_", 7) == 0 || strncmp(*e, "NOTIFY_SOCKET=", 14) == 0 ||
-		    strncmp(*e, "LISTEN_", 7) == 0)
-			continue;
-		ADD("%s", *e);
-	}
-	ADD("HANGAR_MODULE=%s", m->name);
-	ADD("HANGAR_TOPIC_DIR=%s", G.conf.topic_dir);
+	c->wiring_env = -1;
+	bad |= env_add(c, &n, &used, "HANGAR_MODULE=%s", m->name);
+	bad |= env_add(c, &n, &used, "HANGAR_TOPIC_DIR=%s", G.conf.topic_dir);
 	if (!mf->legacy) {
-		ADD("HANGAR_CONTROL=%s", G.paths.control);
+		bad |= env_add(c, &n, &used, "HANGAR_CONTROL=%s", G.paths.control);
 		/* Room for the number the child fills in after its dup. */
-		ADD("HANGAR_WIRING=%-16d", 0);
+		c->wiring_env = n;
+		bad |= env_add(c, &n, &used, "HANGAR_WIRING=%-16d", 0);
 	}
 	if (G.paths.root[0])
-		ADD("HANGAR_ROOT=%s", G.paths.root);
+		bad |= env_add(c, &n, &used, "HANGAR_ROOT=%s", G.paths.root);
 	/* until the bridge: the same-host shim (modules/PHASE1.md). A manager
 	 * started with HANGAR_PEER_TOPIC_DIR passes it on, with the flag that
 	 * tells the library the manager meant it. */
 	if (getenv("HANGAR_PEER_TOPIC_DIR") && !mf->legacy) {
-		ADD("HANGAR_PEER_TOPIC_DIR=%s", getenv("HANGAR_PEER_TOPIC_DIR"));
-		ADD("HANGAR_PEER_SHIM=1");
+		bad |= env_add(c, &n, &used, "HANGAR_PEER_TOPIC_DIR=%s", getenv("HANGAR_PEER_TOPIC_DIR"));
+		bad |= env_add(c, &n, &used, "HANGAR_PEER_SHIM=1");
 	}
 	for (int i = 0; i < mf->n_env; i++)
-		ADD("%s", mf->env[i]);
-#undef ADD
+		bad |= env_add(c, &n, &used, "%s", mf->env[i]);
+	if (bad) {
+		hd_log("%s: cannot start: its HANGAR_* variables and Environment= do not fit the environment", m->name);
+		return -1;
+	}
+	for (char **e = environ; *e; e++) {
+		if (strncmp(*e, "HANGAR_", 7) == 0 || strncmp(*e, "NOTIFY_SOCKET=", 14) == 0 ||
+		    strncmp(*e, "LISTEN_", 7) == 0)
+			continue;
+		const char *eq = strchr(*e, '=');
+		size_t nl = eq ? (size_t)(eq - *e) + 1 : 0; /* the name with its '=' */
+		int set = !nl;
+		for (int i = 0; i < mf->n_env && !set; i++)
+			set = strncmp(mf->env[i], *e, nl) == 0;
+		if (set)
+			continue; /* the manifest's value is the one the module sees */
+		if (env_add(c, &n, &used, "%s", *e) < 0)
+			left_out++;
+	}
+	if (left_out)
+		hd_log("%s: the environment does not fit: %d of the manager's own variables left out", m->name, left_out);
 	c->envp[n] = NULL;
+	return 0;
 }
 
 int module_spawn(struct module *m)
@@ -739,7 +768,8 @@ int module_spawn(struct module *m)
 		cut_log(c.log_file, G.conf.log_cap);
 		hd_log("%s: no journald at %s: logging to %s", m->name, G.paths.journal, c.log_file);
 	}
-	build_env(&c, m);
+	if (build_env(&c, m) < 0)
+		return -1;
 
 	int release[2], errp[2];
 	if (pipe2(release, O_CLOEXEC) < 0)

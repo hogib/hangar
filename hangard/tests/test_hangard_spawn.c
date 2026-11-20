@@ -153,12 +153,51 @@ static void test_no_record_outlives_its_instance(void)
 	unlink(T_log);
 }
 
+/* The module's environment: the manager's HANGAR_* variables whatever the
+ * manager's own environment holds (300 variables of 50 bytes here, more than
+ * the child's is built for), the manifest's Environment= over an inherited
+ * variable of the same name, and no HANGAR_* name from a manifest. */
+static void test_environment(void)
+{
+	char envf[1024], name[32];
+	tfmt(envf, sizeof envf, "%s/env-out", T_root);
+	static char big[40];
+	memset(big, 'x', sizeof big - 1);
+	for (int i = 0; i < 300; i++) {
+		tfmt(name, sizeof name, "HD_TEST_PAD_%d", i);
+		setenv(name, big, 1);
+	}
+	setenv("FOO", "inherited", 1);
+	manifest("stub", "[Module]\nExec=%s/stubborn --polite --env %s\nEnvironment=FOO=bar\n", T_toys, envf);
+	manifest("bad", "[Module]\nExec=%s/stubborn --polite\nEnvironment=HANGAR_WIRING=\nEnvironment=FOO=bar\n", T_toys);
+	mgr = manager_start();
+	for (int i = 0; i < 300; i++) {
+		tfmt(name, sizeof name, "HD_TEST_PAD_%d", i);
+		unsetenv(name);
+	}
+	unsetenv("FOO");
+	CHECK(wait_state("stub", "ready", 3000));
+	CHECK(file_contains(envf, "MODULE=stub CONTROL=set"));
+	CHECK(file_contains(envf, "FOO=bar"));
+	CHECK(!file_contains(envf, "WIRING=(unset)"));
+	CHECK(file_contains(T_log, "stub: the environment does not fit"));
+	struct mstat m;
+	CHECK(module_status("bad", &m));
+	CHECK(strcmp(m.state, "refused") == 0);
+	CHECK(strstr(m.status, "HANGAR_") != NULL);
+	manager_stop(mgr);
+	manifest_remove("stub");
+	manifest_remove("bad");
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("spawn", NULL);
 	HD_RUN(test_manager_killed_before_the_release);
 	HD_RUN(test_no_module_without_its_neutral_record);
 	HD_RUN(test_no_record_outlives_its_instance);
+	HD_RUN(test_environment);
 	hd_teardown();
 	TEST_MAIN_END();
 }
