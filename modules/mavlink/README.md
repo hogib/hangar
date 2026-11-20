@@ -70,6 +70,86 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   rejected frames are counted in the status line. `Signing=no` for a SITL set up
   without a key.
 
+## A serial line
+
+The vehicle's module can have the autopilot on a serial line instead of UDP: the
+Pixhawk's USB serial (`/dev/ttyACM0`) or a telemetry UART, without MAVROS or
+MAVProxy between them. UDP stays for SITL and for a Navigator's `mavlink-routerd`.
+
+```ini
+[Link]
+Serial=/dev/ttyACM0        # an absolute path; /dev/serial/by-id/usb-... survives a renumbering
+Baud=115200                # 9600 .. 2000000; ignored by a USB CDC device, not by a UART
+FlowControl=none           # or rtscts, for a UART wired for it
+```
+
+`Serial=` and `Bind=`/`Peer=` together are refused at start: the autopilot is on one
+or the other. Signing, the system and component ids, `Tlog=` and everything else are
+the same on both.
+
+- The line: raw (8N1, no echo, no translation), `O_NONBLOCK`, `VMIN=0 VTIME=0`, read
+  from the module's epoll like the socket; nothing polls it. It is opened exclusively
+  (`TIOCEXCL`): a MAVROS or MAVProxy left running gets `EBUSY` instead of reading half
+  the frames (root is exempt from that, so stop them anyway). The flag is cleared
+  before the close, so the `Neutral` command can open the line after the module.
+- The stream: frames are found by their 0xFD start byte, length and CRC, across reads;
+  noise between frames is skipped and counted (`resync` in the log), a frame failing
+  its CRC is stepped over one byte at a time, so a real frame starting inside it is
+  still found. A frame of an id the module does not know (it cannot check its CRC) is
+  taken as a frame only when the next one starts right behind it. MAVLink 2 only, as
+  over UDP; signing is checked as over UDP.
+- Writing never blocks. Frames wait in a queue of 32; the kernel's buffer drains it
+  as the line accepts bytes. When it is full: a new `MANUAL_CONTROL` replaces the
+  unsent one (only the newest matters); a control frame (`MANUAL_CONTROL`,
+  `COMMAND_LONG`: arming, disarming) evicts the newest unsent other frame; anything
+  else is dropped, and counted (`tx-dropped` in the status line). A frame partly
+  written is always finished, so the stream stays framed. A reader that stops for
+  1.5 s leaves the module running, publishing, and sending the current manual control
+  the moment it reads again (`test_serial_backpressure`).
+- The line going away (USB unplugged, the Pixhawk rebooting, `EIO` or a hang-up): the
+  module closes it at once, the status line says `serial down (...)`, and it reopens
+  after 0.5 s, doubling to 5 s while it stays away; it does not exit. ArduSub falls
+  silent as it would over UDP: `ardusub.state.last_rx_ns` stops, the safety module's
+  autopilot trigger fires after its 3 s, and an outage longer than the telemetry's
+  `StaleAfter` + `StaleGrace` has the manager restart the module (with its `Neutral`
+  command), whose new instance opens the line when it is back. No restart storm: each
+  start finds the line or retries it in the background, and the manager's back-off
+  applies.
+- `--neutral` opens the line (not exclusively), sends neutral and a disarm three
+  times, waits up to 300 ms for the kernel to have written them out (`TIOCOUTQ`), and
+  closes it. The manager runs it after the module has exited, so they never hold the
+  line together; a line that cannot be opened is said and the command exits 0, as
+  with no UDP peer. The module, on `SIGTERM`, drains the same way before it exits.
+- The status line starts `serial open; ` (or `serial down (why); `, with `tx-dropped N`
+  when anything was dropped); the log says the device, the baud rate, each close and
+  reopen, and the counters at exit.
+
+### Instead of MAVROS on the lab's BlueROV2
+
+MAVROS relaying the Pixhawk cost 28 % of a core and 128 MB on the Pi (2026-11-20);
+the module over the serial line costs what it does over UDP (0.5 % of a core here
+with telemetry and manual control at 50 Hz, `test_cpu`). The opt-in files are
+`profiles/rov-vehicle/mavlink.conf.serial` (`Serial=/dev/ttyACM0` instead of
+`Bind=`) and `mavlink.module.serial` (the module's user also in `dialout`, the group
+of `/dev/ttyACM0` on Raspberry Pi OS). With `tools/rov` (which runs the modules as
+the Pi's user, already in `dialout`):
+
+```sh
+tools/rov/rov.sh down                       # stops MAVROS: it must not hold the port
+RELAY=0 tools/rov/rov.sh up                 # no relay; lays out /dev/shm/hangar-vehicle
+sed -i 's|^Bind=127\.0\.0\.1:14560$|Serial=/dev/ttyACM0|' /dev/shm/hangar-vehicle/etc/hangar/mavlink.conf
+HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar stop mavlink
+HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar start mavlink
+```
+
+The edited conf stays until `rov.sh reset`; after a reset, the same three lines
+again. `RELAY=0` also means no `rov.sh params save/restore`, which go through MAVROS:
+save the parameters before switching. On an installed vehicle: copy
+`mavlink.conf.serial` to `/etc/hangar/mavlink.conf` and `mavlink.module.serial` to
+`/etc/hangar/modules/mavlink.module`, and do not start MAVROS. **Not yet tried on
+the real Pixhawk**: everything above is tested against the fake ArduSub on a
+pseudo-terminal.
+
 ## The topside's module
 
 - To QGroundControl: system 1, `MAV_TYPE_SUBMARINE`, `MAV_AUTOPILOT_GENERIC`
@@ -194,6 +274,14 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   disarmed at once; a `PreArm:` refusal with both texts; stamps across a restart,
   rates and parameters asked again; silence; unsigned and wrongly signed frames
   refused by both ends; `--neutral` by the manager and by hand.
+- `make check-mavlink_serial` (19 s): the same suite with the fake ArduSub at the far
+  end of a pseudo-terminal (`fake_ardusub --pty`) and `Serial=` naming it, all but the
+  two tests that inject UDP datagrams; and the line's own: noise with 0xFD bytes in it
+  and a frame written in two halves 30 ms apart, found; the reader stopping for 1.5 s
+  (no stall, `ardusub.state` on, the current manual control at once after); the line
+  vanishing and coming back on a new pseudo-terminal (closed, `serial down`, reopened,
+  the same process); a second open refused (`EBUSY`); `--neutral` by the manager and by
+  hand after the module. Both suites end with the module's CPU (`test_cpu`).
 - `make check-mavlink_topside` (12 s): the module against the suite as QGroundControl
   and as `safety`: everything under "The topside's module" above, the link down and up.
 - `make check-phase1_chain` (15 s): two managers, both roles, the shim, every real
