@@ -656,6 +656,7 @@ struct hg_sub {
 	uint64_t stride;
 	uint64_t reopens;
 	uint64_t reopen_since;      /* replaced, but no new file at the path since then; 0 if not */
+	int fd_dir;                 /* the same, for the hg_wait_fd helper: written under FD.lock */
 	uint32_t reopen_word;       /* the old file's futex_word as of reopen_since */
 	uint32_t mask;
 	uint32_t payload_bytes;
@@ -1565,6 +1566,7 @@ static void use_mapping(hg_sub *s, const struct mapping *m)
 	memcpy(s->origin, m->l.origin_boot, 16);
 	s->seen_flags = 0;
 	s->reopen_since = 0;
+	s->fd_dir = 0;
 	s->type_bad = s->has_expect && m->l.type_hash != s->expect_hash;
 	s->type_bad_reported = 0;
 	s->attach_err = 0;
@@ -1653,6 +1655,15 @@ static int reopen(hg_sub *s, uint32_t flags)
 	if (!s->reopen_since) {
 		s->reopen_since = hg_now_ns();
 		s->reopen_word = atomic_load_explicit(&s->h->futex_word, memory_order_acquire);
+		if (s->in_fd_set) {
+			/* The rename bumps the directory word and no word of the old
+			 * file: the helper takes a new snapshot with that word in
+			 * it, and signals after it, so the module reads again. */
+			fd_lock(s);
+			s->fd_dir = 1;
+			fd_unlock(s);
+			fd_set_changed();
+		}
 	}
 	s->seen_flags = flags;
 	return 0;
@@ -1740,6 +1751,11 @@ static enum hg_result at_end(hg_sub *s, uint32_t flags, int *switched)
 		return hg_now_ns() - s->reopen_since >= REOPEN_GIVE_UP_NS ? HG_CLOSED : HG_NONE;
 	}
 	s->reopen_since = 0;
+	if (s->fd_dir) {
+		fd_lock(s); /* the replacing writer backed out */
+		s->fd_dir = 0;
+		fd_unlock(s);
+	}
 	s->seen_flags = flags;
 	return flags ? HG_CLOSED : HG_NONE;
 }
@@ -2464,6 +2480,8 @@ static void *fd_helper(void *arg)
 				need_dir = 1;
 				continue;
 			}
+			if (s->fd_dir)
+				need_dir = 1; /* replaced, the new file not yet at the path */
 			/* The snapshot: taken before the eventfd is signalled, so a
 			 * message published while the module reads changes a word
 			 * the next sleep compares against. */

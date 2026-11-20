@@ -184,6 +184,60 @@ static void test_set_follows_attach_and_reopen(void)
 	hg_pub_close(other);
 }
 
+/* The manager flags the old file and wakes its readers, then renames the new
+ * one into place and bumps the directory word (hangard/topics.c). A module
+ * woken by the flag that reads before the rename finds nothing at the path
+ * yet; the helper must then wait on the directory word too, or the rename
+ * and every publish to the new file signal nothing. The window is a few
+ * microseconds wide; here it is held open: the flag, the read, the rename. */
+static void test_reads_before_the_rename(void)
+{
+	char a[700], b[700];
+	hg_pub *p = open_words("fd.win", 16);
+	hg_sub *s = hg_sub_open("fd.win", WORDS_TYPE);
+	pub_one(p);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	int efd = hg_wait_fd(&s, 1);
+	CHECK(efd >= 0);
+	while (signalled(efd, 100))
+		;
+	CHECK_EQ_INT(hg_stub_mark_replaced("fd.win"), 0);
+	CHECK_EQ_INT(signalled(efd, 1000), 1);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_NONE); /* before the rename */
+	while (signalled(efd, 50))
+		;
+	/* The new file: made under another name, with the old topic's wake file
+	 * (the manager keeps one per name), renamed over the old one. */
+	snprintf(a, sizeof a, "%s/.fd.win.wake", topic_dir);
+	snprintf(b, sizeof b, "%s/.fd.winnew.wake", topic_dir);
+	CHECK_EQ_INT(link(a, b), 0);
+	hg_pub *q = open_words("fd.winnew", 16);
+	pub_one(q); /* seq 1, which the reader has had: a replacement carries the seqs on */
+	snprintf(a, sizeof a, "%s/fd.winnew", topic_dir);
+	snprintf(b, sizeof b, "%s/fd.win", topic_dir);
+	CHECK_EQ_INT(rename(a, b), 0);
+	CHECK_EQ_INT(hg_stub_bump_dir(), 0);
+	/* The rename alone is news: the module reads and follows. */
+	int woke = signalled(efd, 1000);
+	CHECK_EQ_INT(woke, 1);
+	if (woke)
+		CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_NONE);
+	while (signalled(efd, 50))
+		;
+	/* And a publish to the new file signals. */
+	pub_one(q);
+	woke = signalled(efd, 1000);
+	if (!woke)
+		printf("    a publish to the new file after the rename: not signalled\n");
+	CHECK_EQ_INT(woke, 1);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(hg_sub_reopens(s), 1);
+	hg_wait_fd_close();
+	hg_sub_close(s);
+	hg_pub_close(p);
+	hg_pub_close(q);
+}
+
 static void test_limits(void)
 {
 	static hg_sub *subs[127];
@@ -209,6 +263,7 @@ int main(void)
 	RUN_TEST(test_signalled_on_news);
 	RUN_TEST(test_no_missed_message);
 	RUN_TEST(test_set_follows_attach_and_reopen);
+	RUN_TEST(test_reads_before_the_rename);
 	RUN_TEST(test_limits);
 	hg_test_teardown();
 	TEST_MAIN_END();
