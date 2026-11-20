@@ -784,8 +784,22 @@ int module_spawn(struct module *m)
 	m->starttime = proc_starttime(m->pid);
 	m->exit_known = 0;
 	registry_write();
-	if (neutral_record_write(m) < 0)
-		hd_log("%s: cannot write the Neutral record: %s", m->name, strerror(errno));
+	if (neutral_record_write(m) < 0) {
+		/* No module runs without its record: with none, nothing would put
+		 * the hardware to neutral when it dies. The child is not released;
+		 * it sees the pipe close and exits without having run anything. */
+		hd_log("%s: cannot write the Neutral record: %s: not started", m->name, strerror(errno));
+		close(release[1]);
+		close(errp[0]);
+		siginfo_t si;
+		while (syscall(SYS_waitid, HD_P_PIDFD, pidfd, &si, WEXITED, NULL) < 0 && errno == EINTR)
+			;
+		close(pidfd);
+		m->pid = 0;
+		m->pidfd = -1;
+		registry_write();
+		return -1;
+	}
 	ssize_t w;
 	while ((w = write(release[1], "g", 1)) < 0 && errno == EINTR)
 		;

@@ -80,10 +80,46 @@ static void test_manager_killed_before_the_release(void)
 	unlink(reg);
 }
 
+/* docs/03 "Neutral commands": the record is written before the child is
+ * released, so a module never runs without one. The record's directory is
+ * made read-only (a full /run does the same): the actuator is not started,
+ * each attempt is a failure, and after Burst it is given up, which for an
+ * actuator is failsafe. */
+static void test_no_module_without_its_neutral_record(void)
+{
+	char ran[1024], dir[1024];
+	tfmt(ran, sizeof ran, "%s/neutral-ran", T_root);
+	tfmt(dir, sizeof dir, "%s/run/hangar/neutral", T_root);
+	mgr = manager_start();
+	CHECK(chmod(dir, 0555) == 0);
+	manifest("act", "[Module]\nExec=%s/actuator --rate 50\nUser=hg-thrusters\n"
+			"[Subscribe ctl.cmd]\n[Subscribe safety.state]\n"
+			"[Publish thr.cmd]\nType=depth\nRate=50\nActuator=yes\nInputs=ctl.cmd\n"
+			"[Actuator]\nCommand=ctl.cmd\nNeutral=%s/neutral %s\n", T_toys, T_toys, ran);
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	CHECK(wait_file_contains(T_log, "act: cannot write the Neutral record", 2000));
+	struct mstat m;
+	int ran_ever = 0;
+	for (int i = 0; i < 25; i++) {
+		if (module_status("act", &m) && (m.pid > 0 || strcmp(m.state, "ready") == 0 || strcmp(m.state, "starting") == 0))
+			ran_ever = 1;
+		sleep_ms(20);
+	}
+	CHECK(!ran_ever);
+	CHECK(!file_contains(T_log, "act: started"));
+	CHECK(wait_state("act", "failed", 8000));
+	CHECK(strcmp(system_state(), "failsafe") == 0);
+	chmod(dir, 0755);
+	manager_stop(mgr);
+	manifest_remove("act");
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("spawn", NULL);
 	HD_RUN(test_manager_killed_before_the_release);
+	HD_RUN(test_no_module_without_its_neutral_record);
 	hd_teardown();
 	TEST_MAIN_END();
 }
