@@ -1,5 +1,7 @@
 # hangar
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24084277.svg)](https://doi.org/10.5281/zenodo.24084277)
+
 A lightweight module system for small remotely operated underwater vehicles, native
 to Linux and small enough for the vehicle's own Raspberry Pi. Every function of the
 vehicle is its own process; one manager, `hangard`, starts, watches and restarts them;
@@ -93,7 +95,10 @@ the equivalence check, and the cross builds.
 
 If you use hangar in your research, please cite it. The metadata is in
 [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" gives it as APA and
-BibTeX), and each release is archived on Zenodo with a DOI.
+BibTeX). Each release is archived on Zenodo:
+[10.5281/zenodo.24084277](https://doi.org/10.5281/zenodo.24084277) names all versions
+and resolves to the latest; version 0.1.2 is
+[10.5281/zenodo.24395921](https://doi.org/10.5281/zenodo.24395921).
 
 > H. Oğuz Bolat (Department of Geomatics Engineering, Yıldız Technical University;
 > ORCID [0009-0000-8522-7746](https://orcid.org/0009-0000-8522-7746)) and Hakan Ersoy
@@ -101,7 +106,7 @@ BibTeX), and each release is archived on Zenodo with a DOI.
 > University; ORCID [0009-0006-0495-6589](https://orcid.org/0009-0006-0495-6589)).
 > *hangar: a lightweight module system for small underwater vehicles, with a
 > provenance-recorded learning loop.* Software, version 0.1.2, 2026.
-> https://github.com/hogib/hangar
+> https://doi.org/10.5281/zenodo.24395921
 
 ```bibtex
 @software{bolat_ersoy_hangar_2026,
@@ -110,6 +115,7 @@ BibTeX), and each release is archived on Zenodo with a DOI.
              with a provenance-recorded learning loop},
   version = {0.1.2},
   year    = {2026},
+  doi     = {10.5281/zenodo.24395921},
   url     = {https://github.com/hogib/hangar},
   license = {GPL-3.0-or-later}
 }

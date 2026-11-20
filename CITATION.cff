@@ -24,6 +24,14 @@ repository-code: "https://github.com/hogib/hangar"
 license: GPL-3.0-or-later
 version: "0.1.2"
 date-released: "2026-11-20"
+doi: 10.5281/zenodo.24395921
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24395921
+    description: "Version 0.1.2, archived on Zenodo"
+  - type: doi
+    value: 10.5281/zenodo.24084277
+    description: "All versions (resolves to the latest)"
 keywords:
   - underwater vehicles
   - ROV
