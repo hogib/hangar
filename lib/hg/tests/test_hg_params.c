@@ -3,11 +3,13 @@
 // back, the saved file written and parsed. (set_params and the loading at
 // start need a manager: hangard's params suite and hangar's own.)
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -15,6 +17,20 @@
 #include "test_harness.h"
 
 static struct hg_schema S;
+
+/* A directory of this test's own under the suites' base, on tmpfs. */
+static char *scratch_dir(char *out, size_t len)
+{
+	const char *base = getenv("HANGAR_TEST_BASE");
+	char b[200];
+	if (base && *base)
+		snprintf(b, sizeof b, "%s", base);
+	else
+		snprintf(b, sizeof b, "/dev/shm/hangar-test-%ld", (long)getuid());
+	mkdir(b, 0755);
+	snprintf(out, len, "%s/hg-params-XXXXXX", b);
+	return mkdtemp(out);
+}
 
 static const struct hg_type *type_of(const char *text, const char *name)
 {
@@ -77,8 +93,8 @@ static void test_long_value_in_the_file(void)
  * 1.25" cut after the 1). */
 static void test_file_read_whole_or_refused(void)
 {
-	char dir[] = "/tmp/hg-params-XXXXXX", path[64], fifo[64];
-	if (!mkdtemp(dir)) {
+	char dir[300], path[320], fifo[320];
+	if (!scratch_dir(dir, sizeof dir)) {
 		CHECK(!"mkdtemp");
 		return;
 	}
@@ -202,8 +218,115 @@ static void test_floats_are_finite(void)
 	CHECK(strstr(err, "line 2") != NULL);
 }
 
+/* close() for this suite's own process, lib/hg's objects included: when
+ * told to, it fails the close of a parameter file's temporary (as a quota
+ * or a network file system does at close: the descriptor is released all
+ * the same), and exits 99 if that descriptor is then closed again. */
+static int fail_tmp_close;
+
+int close(int fd)
+{
+	static int failed_fd = -1;
+	if (fd >= 0 && fd == failed_fd)
+		_exit(99);
+	if (fail_tmp_close) {
+		char link[64], target[700];
+		snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+		ssize_t n = readlink(link, target, sizeof target - 1);
+		if (n > 0) {
+			target[n] = 0;
+			if (strstr(target, "/params.tmp.")) {
+				syscall(SYS_close, fd);
+				failed_fd = fd;
+				errno = EDQUOT;
+				return -1;
+			}
+		}
+	}
+	return (int)syscall(SYS_close, fd);
+}
+
+/* save_file, on a close that fails: `w != n || close(fd) < 0` and then
+ * close(fd) again in the error path closed the descriptor twice (whatever
+ * had been opened on that number in between, in a module with threads),
+ * and reported EIO in place of the close's errno. The first start of a
+ * module here, with nowhere to write: exit 78 with the reason, no file,
+ * no temporary left, one close. */
+static void test_save_closes_once(void)
+{
+	const struct hg_type *t = type_of("f32 kp = 1.5 [0, 10]\n", "p");
+	static struct hg_schema req;
+	const char reqtext[] = "u64 base_version\nf32 kp = 1.5 [0, 10]\n";
+	CHECK_EQ_INT(hg_schema_parse(reqtext, sizeof reqtext - 1, &req, NULL, 0), 0);
+	char dir[300], wiring[320], state[320], log[320], text[1024];
+	if (!scratch_dir(dir, sizeof dir)) {
+		CHECK(!"mkdtemp");
+		return;
+	}
+	snprintf(wiring, sizeof wiring, "%s/wiring", dir);
+	snprintf(state, sizeof state, "%s/params", dir);
+	snprintf(log, sizeof log, "%s/log", dir);
+	snprintf(text, sizeof text,
+		 "hangar-wiring 1\nmodule self\nrole vehicle\n"
+		 "pub self.params type=params:self slots=16 implicit\n"
+		 "serve set_params req=set_params:p hash=%016llx size=%u rep=set_params_rep hash=d748add7256bbe70 size=16 "
+		 "deadline=100ms allow=*\n",
+		 (unsigned long long)req.type.hash, req.type.payload_bytes);
+	int fd = open(wiring, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	CHECK(write(fd, text, strlen(text)) == (ssize_t)strlen(text));
+	close(fd);
+	pid_t pid = fork();
+	if (pid == 0) {
+		setenv("HANGAR_WIRING_FILE", wiring, 1);
+		setenv("HANGAR_TOPIC_DIR", dir, 1);
+		setenv("HANGAR_STATE_DIR", dir, 1);
+		unsetenv("HANGAR_CONTROL");
+		unsetenv("HANGAR_WIRING");
+		int lf = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		dup2(lf, 2);
+		static float P[2];
+		fail_tmp_close = 1;
+		int rc = hg_params_open(t, P, NULL, NULL);
+		fprintf(stderr, "hg_params_open returned %d (%s)\n", rc, strerror(errno));
+		_exit(rc == 0 ? 0 : 1);
+	}
+	int st = 0;
+	waitpid(pid, &st, 0);
+	static char said[2048];
+	fd = open(log, O_RDONLY);
+	ssize_t n = fd >= 0 ? read(fd, said, sizeof said - 1) : 0;
+	if (fd >= 0)
+		close(fd);
+	said[n > 0 ? n : 0] = 0;
+	int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+	printf("    first start with a failing close: exit %d%s; it said: %s", code,
+	       code == 99 ? " (the descriptor was closed twice)" : "", said[0] ? said : "\n");
+	CHECK_EQ_INT(code, 78);
+	CHECK(strstr(said, "cannot write") && strstr(said, strerror(EDQUOT)));
+	CHECK(access(state, F_OK) < 0);
+	/* Nothing left behind but the wiring, the log and what lib/hg keeps
+	 * in a topic directory. */
+	int temporaries = 0;
+	DIR *d = opendir(dir);
+	struct dirent *e;
+	while (d && (e = readdir(d))) {
+		if (e->d_name[0] == '.' && (!e->d_name[1] || e->d_name[1] == '.'))
+			continue;
+		if (strstr(e->d_name, ".tmp."))
+			temporaries++;
+		char p[600];
+		snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+		unlink(p);
+	}
+	if (d)
+		closedir(d);
+	CHECK_EQ_INT(temporaries, 0);
+	rmdir(dir);
+}
+
 int main(void)
 {
+	RUN_TEST(test_save_closes_once);
 	RUN_TEST(test_floats_are_finite);
 	RUN_TEST(test_long_value_in_the_file);
 	RUN_TEST(test_file_read_whole_or_refused);

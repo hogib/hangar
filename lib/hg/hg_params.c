@@ -744,10 +744,21 @@ static int save_file(const unsigned char *values, const struct hg_params_header 
 	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
 	if (fd < 0)
 		return -1;
-	ssize_t w = write(fd, text, (size_t)n);
-	if (w != n || close(fd) < 0) {
-		int e = w < 0 ? errno : EIO;
-		close(fd);
+	int e = 0;
+	for (size_t done = 0; done < (size_t)n && !e;) {
+		ssize_t w = write(fd, text + done, (size_t)n - done);
+		if (w < 0 && errno == EINTR)
+			continue;
+		if (w <= 0)
+			e = w < 0 ? errno : EIO;
+		else
+			done += (size_t)w;
+	}
+	/* One close, whatever it returns: the descriptor is gone after it, and
+	 * its failure (a quota, a network file system) is the save's. */
+	if (close(fd) < 0 && !e)
+		e = errno;
+	if (e) {
 		unlink(tmp);
 		errno = e;
 		return -1;
