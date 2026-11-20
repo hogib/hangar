@@ -269,6 +269,31 @@ class Example(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout.decode())
         self.assertTrue(os.path.getsize(out) > 4096)
 
+    @unittest.skipUnless(HAVE_TORCH, "PyTorch is not installed")
+    def test_bounded_model(self):
+        # --bound: a tanh before the last affine, another architecture, and an
+        # output the reference keeps within the bound whatever the input.
+        import subprocess
+        import tempfile
+        from hangar.nn import hgw, reference
+        d = tempfile.mkdtemp()
+        graphs = {}
+        for name, extra in (("plain", []), ("bounded", ["--bound", "0.15"])):
+            out = os.path.join(d, name + ".hgw")
+            p = subprocess.run([sys.executable, EXAMPLE, "--synthetic", "--steps", "20", "--out", out] + extra,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(p.returncode, 0, p.stdout.decode())
+            graphs[name] = hgw.read(out).graph
+        self.assertEqual([o.type for o in graphs["plain"].ops], ["affine", "lstm", "dense", "affine"])
+        self.assertEqual([o.type for o in graphs["bounded"].ops], ["affine", "lstm", "dense", "tanh", "affine"])
+        self.assertNotEqual(hgw.arch_hash(graphs["plain"]), hgw.arch_hash(graphs["bounded"]))
+        m = reference.Model(graphs["bounded"])
+        m.reset()
+        for x in ([1e3, -1e3, 50.0, -50.0, 1e3], [-1e3, 1e3, -50.0, 50.0, -1e3], [0.0] * 5):
+            for _ in range(20):
+                y = m.step([x])[0][0]
+                self.assertLessEqual(abs(y), 0.15 + 1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

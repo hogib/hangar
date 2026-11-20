@@ -122,7 +122,11 @@ def synthetic(batch, seq_len, minutes=5.0, seed=0):
 
 # ---- The model -------------------------------------------------------------------
 
-def make_model(n_in, mean, std):
+def make_model(n_in, mean, std, bound=None):
+    """docs/09's model. With `bound`, a tanh before the last affine, which
+    then scales by `bound`: an output that cannot leave +-bound, for a
+    residual that stays inside the mux's envelope whatever it has learned
+    (another architecture: the policy spec's Arch must be this one's)."""
     import torch
     from hangar.nn.export_torch import Affine
 
@@ -132,11 +136,14 @@ def make_model(n_in, mean, std):
             self.norm = Affine([1.0 / max(s, 1e-6) for s in std], [-m / max(s, 1e-6) for m, s in zip(mean, std)])
             self.lstm = torch.nn.LSTM(n_in, 16, batch_first=True)
             self.head = torch.nn.Linear(16, 1)
-            self.scale = Affine([0.2], [0.0])  # the residual envelope's order of magnitude
+            if bound:
+                self.squash = torch.nn.Tanh()
+            self.scale = Affine([bound or 0.2], [0.0])  # the residual envelope's order of magnitude
 
         def forward(self, x, h=None):
             y, h = self.lstm(self.norm(x), h)
-            return self.scale(self.head(y)), h
+            y = self.head(y)
+            return self.scale(self.squash(y) if bound else y), h
 
     return DepthFF()
 
@@ -165,6 +172,8 @@ def main():
                     help="shortfall: applied less the controller's heave (docs/09); trim: applied less "
                          "the controller's feedback, which is not zero where nothing but the "
                          "controller drives")
+    ap.add_argument("--bound", type=float, default=None,
+                    help="the output held within +-BOUND by a tanh (another architecture than docs/09's)")
     a = ap.parse_args()
 
     inputs = a.inputs.split(",") if a.inputs else INPUTS
@@ -192,7 +201,7 @@ def main():
 
     import torch
     mean, std = stats(stream)
-    model = make_model(len(stream.input_fields), mean, std)
+    model = make_model(len(stream.input_fields), mean, std, a.bound)
     opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=3e-3)
     h = None
     deployed = time.monotonic()
