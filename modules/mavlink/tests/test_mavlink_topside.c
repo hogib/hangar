@@ -499,18 +499,55 @@ static void test_manual_control(void)
 	CHECK_EQ_INT(T.state, 0);
 	gcs_manual_control(0, 0, 500, 0, 0);
 	pump(50);
+	/* An arm button found held when the manual control begins (QGroundControl
+	 * reconnects with a button down, a joystick replugged with one stuck) is
+	 * how the button is, not a press: it counted as one, since the state
+	 * before the gap said released, and the vehicle was asked to arm. The
+	 * stream begins after more than InputTimeout (500 ms) of silence. */
+	int arms = T.arms, disarms = T.disarms;
+	pump(700);
+	for (int i = 0; i < 5; i++) {
+		gcs_manual_control(0, 0, 500, 0, 1u << 2);
+		pump(20);
+	}
+	pump(200);
+	CHECK_EQ_INT(T.arms, arms);
+	CHECK_EQ_INT(T.state, 0);
+	/* Released and pressed, it is a press. */
+	gcs_manual_control(0, 0, 500, 0, 0);
+	pump(50);
+	for (int i = 0; i < 5; i++) {
+		gcs_manual_control(0, 0, 500, 0, 1u << 2);
+		pump(20);
+	}
+	pump(200);
+	CHECK_EQ_INT(T.arms, arms + 1);
+	T.state = 1;
+	T.enabled = 1;
+	/* A disarm button found held at a stream's start is taken: the safe direction. */
+	pump(700);
+	for (int i = 0; i < 5; i++) {
+		gcs_manual_control(0, 0, 500, 0, 1u << 3);
+		pump(20);
+	}
+	pump(200);
+	CHECK_EQ_INT(T.disarms, disarms + 1);
+	CHECK_EQ_INT(T.state, 0);
+	gcs_manual_control(0, 0, 500, 0, 0);
+	pump(50);
 }
 
 static void test_commands(void)
 {
 	/* An arm command: ACCEPTED when safety.arm accepts. */
+	int arms = T.arms, disarms = T.disarms;
 	R.acks = 0;
 	gcs_command(MAV_CMD_COMPONENT_ARM_DISARM, 1, 0);
 	pump(300);
 	CHECK_EQ_INT(R.acks, 1);
 	CHECK_EQ_INT(R.ack.command, MAV_CMD_COMPONENT_ARM_DISARM);
 	CHECK_EQ_INT(R.ack.result, MAV_RESULT_ACCEPTED);
-	CHECK_EQ_INT(T.arms, 2);
+	CHECK_EQ_INT(T.arms, arms + 1);
 	T.state = 0;
 	/* Refused: DENIED, and the reason in a STATUSTEXT. */
 	T.refuse = 1;
@@ -533,7 +570,7 @@ static void test_commands(void)
 	pump(300);
 	CHECK_EQ_INT(R.acks, 1);
 	CHECK_EQ_INT(R.ack.result, MAV_RESULT_ACCEPTED);
-	CHECK_EQ_INT(T.disarms, 2);
+	CHECK_EQ_INT(T.disarms, disarms + 1);
 	/* A mode request: DENIED, "hangar owns modes". */
 	R.acks = 0;
 	gcs_command(MAV_CMD_DO_SET_MODE, 1, 2);

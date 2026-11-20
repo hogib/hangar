@@ -207,7 +207,9 @@ pseudo-terminal.
 - From QGroundControl: `MANUAL_CONTROL` → `pilot.wrench` (normalized, `z` as
   `(z − 500) / 500`, `s`/`t` when their extension bits are set) and `pilot.buttons` at
   50 Hz from the module's own clock, zero when the last input is older than
-  `InputTimeout`; buttons by `topside_mavlink.conf` (`arm`, `disarm` once per press,
+  `InputTimeout`; buttons by `topside_mavlink.conf` (`arm`, `disarm` once per press; an arm button
+  found held in the first `MANUAL_CONTROL` of a stream, the first ever or the first
+  after `InputTimeout` of silence, is not a press, a disarm button found held is;
   `pass` as a bit while held, unmarked ignored); `MAV_CMD_COMPONENT_ARM_DISARM`
   (`COMMAND_LONG` or `COMMAND_INT`) → `safety.arm`/`safety.disarm` with
   `hg_call_start`, `COMMAND_ACK` `ACCEPTED` or `DENIED` with the reason in a

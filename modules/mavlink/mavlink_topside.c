@@ -205,15 +205,25 @@ static void on_frame(void *ctx, const struct mav_frame *f)
 		mav_unpack_manual_control(f->payload, f->len, &m);
 		if (m.target != C.sysid && m.target != 0)
 			break;
+		/* The first message of a stream: the first ever, or the first after
+		 * InputTimeout without one (QGroundControl restarted, the joystick
+		 * replugged). What its buttons say is how they are, not what was
+		 * just done: nothing before it showed them released. */
+		int stream_start = !T.mc_ns || now > T.mc_ns + C.input_timeout_ns;
 		T.mc = m;
 		T.mc_ns = now;
 		T.mc_count++;
-		/* Buttons: an arm or a disarm once per press, pass bits in pilot.buttons. */
+		/* Buttons: an arm or a disarm once per press, pass bits in pilot.buttons.
+		 * An arm button found held at a stream's start is not a press (it armed
+		 * the vehicle the moment QGroundControl connected with a button down);
+		 * a disarm button found held is taken, as the safe direction always is. */
 		uint32_t b = (uint32_t)m.buttons | (uint32_t)m.buttons2 << 16;
 		uint32_t pressed = b & ~T.buttons_last;
 		for (int i = 0; i < MC_BUTTONS; i++)
 			if ((pressed >> i) & 1) {
-				if (C.buttons[i] == MC_BTN_ARM)
+				if (C.buttons[i] == MC_BTN_ARM && stream_start)
+					mod_log(WHO, "arm button %d held when the manual control began: not a press", i);
+				else if (C.buttons[i] == MC_BTN_ARM)
 					start_call(1, 0, "button");
 				else if (C.buttons[i] == MC_BTN_DISARM)
 					start_call(0, 0, "button");
