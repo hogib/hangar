@@ -23,6 +23,7 @@
 #include "load_weights_req.h"
 #include "mux_state.h"
 #include "policy_active.h"
+#include "recorder_session.h"
 #include "policy_load.h"
 #include "policy_version.h"
 #include "runtime_info.h"
@@ -34,7 +35,8 @@
 static pid_t mgr;
 static const char *T_policy, *T_mux, *T_python, *T_pairer;
 static char models[600], incoming[600], state[600];
-static hg_pub *P_anchor, *P_target, *P_pilot, *P_ctl, *P_depth, *P_safety, *P_late;
+static hg_pub *P_anchor, *P_target, *P_pilot, *P_ctl, *P_depth, *P_safety, *P_late, *P_session;
+static char session[600];
 static hg_sub *S_out, *S_active, *S_load, *S_cmd, *S_mux, *S_rows;
 
 static struct {
@@ -121,7 +123,7 @@ static void write_files(void)
 static void write_manifests(void)
 {
 	manifest("policy_toy", "[Module]\nExec=%s %s/etc/hangar/policies/toy.policy\n"
-			       "[Subscribe toy.anchor]\n[Subscribe toy.target]\n"
+			       "[Subscribe toy.anchor]\n[Subscribe toy.target]\n[Subscribe recorder.session]\n"
 			       "[Publish policy.toy.wrench]\nType=wrench\nRate=50\nInputs=toy.anchor toy.target policy.toy.active\n"
 			       "[Publish policy.toy.active]\nType=policy_active\n"
 			       "[Publish policy.toy.load]\nType=policy_load\n"
@@ -157,6 +159,7 @@ static void write_manifests(void)
 			   "[Publish nav.depth]\nType=depth\nRate=50\n"
 			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
 			   "[Publish toy.late]\nType=depth\nRate=50\n"
+			   "[Publish recorder.session]\nType=recorder_session\n"
 			   "[Call policy_toy.load_weights]\n[Call policy_toy.revert]\n[Call policy_toy.reset_state]\n"
 			   "[Call policy_toy.runtime_info]\n[Call mux.set_mode]\n");
 	/* The manager's check: hangar-policy under another name, and without
@@ -408,6 +411,19 @@ static void test_start_neutral(void)
 	P_ctl = hg_pub_open("ctl.depth_hold", &WRENCH_TYPE, NULL);
 	P_depth = hg_pub_open("nav.depth", &DEPTH_TYPE, NULL);
 	P_safety = hg_pub_open("safety.state", &SAFETY_STATE_TYPE, NULL);
+	/* A recorder's session, announced once as the recorder does: every model
+	 * that swaps in while it is open is copied into its weights/. */
+	P_session = hg_pub_open("recorder.session", &RECORDER_SESSION_TYPE, NULL);
+	CHECK(P_session != NULL);
+	tfmt(session, sizeof session, "%s/session", T_root);
+	mkdir(session, 0770);
+	struct recorder_session rs;
+	memset(&rs, 0, sizeof rs);
+	rs.active = 1;
+	tfmt(rs.id, sizeof rs.id, "test");
+	tfmt(rs.path, sizeof rs.path, "%s", session);
+	rs.started_ns = hg_now_ns();
+	CHECK_EQ_INT(hg_publish(P_session, &rs, sizeof rs, hg_now_ns()), HG_OK);
 	S_out = hg_sub_open("policy.toy.wrench", &WRENCH_TYPE);
 	S_active = hg_sub_open("policy.toy.active", &POLICY_ACTIVE_TYPE);
 	S_load = hg_sub_open("policy.toy.load", &POLICY_LOAD_TYPE);
@@ -470,6 +486,15 @@ static void test_runtime_info_and_models(void)
 
 static uint64_t hash_a, hash_b;
 
+/* Whether <session>/weights/<hash>.hgw is there and is that file. */
+static int in_session(uint64_t hash)
+{
+	char path[800], hex[65];
+	uint64_t h = 0;
+	tfmt(path, sizeof path, "%s/weights/%016llx.hgw", session, (unsigned long long)hash);
+	return digest_hex(path, hex, &h) == 0 && h == hash;
+}
+
 static void test_load_swap(void)
 {
 	O.lat_max_ns = 0;
@@ -518,6 +543,8 @@ static void test_load_swap(void)
 	pump(200);
 	uint64_t h = 0;
 	CHECK(digest_hex(cur, hex, &h) == 0 && h == hash_a);
+	/* And a copy in the recorder's session. */
+	CHECK(in_session(hash_a));
 }
 
 static void test_checks_fail(void)
@@ -562,6 +589,8 @@ static void test_checks_fail(void)
 	pump(200);
 	digest_hex(cur, hex, &hash_b);
 	CHECK(O.active.hash == hash_b);
+	/* The second model of the same session is copied into it too. */
+	CHECK(in_session(hash_b));
 }
 
 static void test_warmup_overrun(void)

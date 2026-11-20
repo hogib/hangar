@@ -733,14 +733,17 @@ static void load_poll(void)
 	publish_load(LOAD_WARMING, 0, NULL);
 }
 
+/* The open session's directory, "" with none. hg_latest gives a message once:
+ * the last one is kept, so a second load in the same session finds it too. */
 static void session_path(char *out, size_t len)
 {
+	static struct recorder_session s;
+	static struct hg_info info;
+	static int have;
 	out[0] = 0;
 	if (!sub_session)
 		return;
-	struct recorder_session s;
-	struct hg_info info;
-	if (hg_latest(sub_session, &s, sizeof s, &info) == HG_MSG && s.active)
+	if (mod_latest(sub_session, &s, sizeof s, &info, &have) && s.active)
 		mod_fmt(out, len, "%s", s.path);
 }
 

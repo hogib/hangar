@@ -32,7 +32,8 @@ lib/nn only.
   the reason; `policy.<name>.active` the new model, referencing the request.
 - Keeping: after a swap the worker renames `current.hgw` to `previous.hgw` and the new
   file to `current.hgw` in the state directory, and copies it into the recorder's
-  session (`<session>/weights/<hash>.hgw`) when `recorder.session` says one is open.
+  session (`<session>/weights/<hash>.hgw`) when `recorder.session` says one is open,
+  every model that swaps in during it.
 - `revert`: the previous model back at once, its state reset, announced with cause 2
   and referencing the request; the two files exchanged. `reset_state`: the running
   model's state (and a warming one's) reset. `runtime_info`: format version, ops and
