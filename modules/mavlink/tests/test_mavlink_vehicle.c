@@ -589,8 +589,11 @@ static void test_params_backup(void)
 	CHECK_EQ_INT(file_get(saved, "ATC_RAT_X05", &atc5, &t, NULL), 0);
 	CHECK_EQ_INT(file_get(saved, "SERVO_X10", &servo10, &t, NULL), 0);
 	CHECK_EQ_INT(t, MAV_PARAM_TYPE_INT16);
-	/* Two changed behind the file's back: named, and nothing else (STAT_RUNTIME
-	 * and BARO1_GND_PRESS moved since, by themselves). */
+	/* Nothing differs from the file just saved (STAT_RUNTIME and
+	 * BARO1_GND_PRESS moved since, by themselves: not compared). */
+	CHECK_EQ_INT(cli_pumping(20000, NULL, "diff", saved), 0);
+	CHECK(strstr(cli_out, "every parameter as in") != NULL);
+	/* Two changed behind the file's back: named, and nothing else. */
 	fake_cmd("set ATC_RAT_X05 9.5");
 	fake_cmd("set SERVO_X10 1234");
 	CHECK_EQ_INT(cli_pumping(20000, NULL, "diff", saved), 1);
@@ -644,6 +647,8 @@ static void test_params_backup(void)
 	/* And back as saved. */
 	CHECK_EQ_INT(cli_pumping(20000, NULL, "restore", saved), 0);
 	CHECK(strstr(cli_out, "1 parameter set and confirmed") != NULL);
+	CHECK_EQ_INT(cli_pumping(20000, NULL, "diff", saved), 0);
+	CHECK(strstr(cli_out, "every parameter as in") != NULL);
 }
 
 static void arm_ok(void)
