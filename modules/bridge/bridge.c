@@ -560,10 +560,20 @@ static void on_pong(const unsigned char *b, size_t n)
 	for (int i = 0; i < 16 && i < B.npings; i++)
 		if (B.pings[i] == t1)
 			mine = 1;
-	int64_t rtt = (int64_t)(t4 - t1) - (int64_t)(t3 - t2);
-	if (!mine || rtt <= 0)
+	/* t1 and t4 are this side's; t2 and t3 are whatever the peer wrote. The
+	 * round trip is ours less the time the peer says it held the ping, and
+	 * the offset the mean of two differences: both are taken only from times
+	 * that leave them inside 63 bits (a peer's clock is not 146 years from
+	 * ours), so that no pong makes the arithmetic overflow. */
+	uint64_t trip = t4 - t1, held = t3 - t2;
+	if (!mine || t4 <= t1 || held >= trip)
 		return; /* a pong for no ping of ours, or a round trip that is not positive */
-	int64_t off = ((int64_t)(t2 - t1) + (int64_t)(t3 - t4)) / 2;
+	int64_t rtt = (int64_t)(trip - held);
+	int64_t d21 = (int64_t)(t2 - t1), d34 = (int64_t)(t3 - t4);
+	const int64_t far = INT64_MAX / 2;
+	if (d21 > far || d21 < -far || d34 > far || d34 < -far)
+		return;
+	int64_t off = (d21 + d34) / 2;
 	if (B.nsamp == (int)(sizeof B.samp / sizeof B.samp[0]))
 		memmove(B.samp, B.samp + 1, sizeof B.samp - sizeof B.samp[0]), B.nsamp--;
 	B.samp[B.nsamp++] = (struct sample){ .at = now_ns(), .off = off, .rtt = (uint64_t)rtt };
@@ -580,7 +590,9 @@ static uint64_t to_local(uint64_t peer_t)
 {
 	if (!peer_t)
 		return 0;
-	int64_t t = (int64_t)peer_t - B.offset - B.fake_ns;
+	/* Unsigned, so that a time the peer made up cannot overflow the
+	 * subtraction; one that lands before this clock's start reads as 1. */
+	int64_t t = (int64_t)(peer_t - (uint64_t)B.offset - (uint64_t)B.fake_ns);
 	return t > 0 ? (uint64_t)t : 1;
 }
 
