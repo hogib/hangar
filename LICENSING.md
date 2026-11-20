@@ -32,7 +32,7 @@ where that differs from the repository's.
 | electric-eye (`eeye`, `hellion`; Oğuz Bolat) | MIT | camera, vision, encoder, video relay, console; its notices are kept |
 | musl | MIT | every static binary |
 | libjpeg-turbo | BSD-3 / IJG / zlib | camera, vision |
-| libx264 | GPL-2.0-or-later | encoder only |
+| libx264 | GPL-2.0-or-later (combined with hangar's GPL-3.0-or-later under the "or later") | `topside_encoder` (topside), statically: x264's library alone, 8-bit, 4:2:0, built by `tools/cross/x264.sh` from the stable branch's commit `b35605ace3ddf7c1a5d67a2eb553f034aef41d55` (fetched by that commit, which names its content) with `--enable-static --disable-cli --disable-opencl --disable-lavf --disable-swscale --disable-ffms --disable-gpac --disable-lsmash --disable-avs --bit-depth=8 --chroma-format=420`; the corresponding source is that commit and hangar's own source, released with each binary |
 | FFmpeg / libavcodec, libavutil | LGPL-2.1-or-later (no GPL or nonfree part configured) | `video_relay` (topside), statically: FFmpeg 7.1.1's H.264 decoder and parser alone, built by `tools/cross/avcodec.sh` with `--disable-everything --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc --disable-programs --disable-doc --disable-network --disable-autodetect --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample --disable-swscale --enable-static --disable-shared`; the source is the pinned release tarball named there, and hangar's own source, released with each binary, is what relinking against a modified libavcodec needs |
 | BLAKE2 reference implementation | CC0 | bridge |
 | minisign verification (monocypher) | BSD-2 / CC0 | installer, manager |
