@@ -9,6 +9,8 @@
 // lists through a raw caller. Under 30 s.
 #include "hd_test.h"
 
+#include <math.h>
+
 #include "ardusub_state.h"
 #include "arm_rep.h"
 #include "arm_req.h"
@@ -625,6 +627,101 @@ static void test_triggers_and_actions(void)
 	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "safety", "action_leak=1", (char *)NULL), 0);
 }
 
+/* A reading that is not a number. Every comparison with NaN is false, so a
+ * NaN voltage was never below battery_min and a NaN depth never beyond the
+ * band: `check` said ok, `arm` armed, and while armed neither trigger ever
+ * fired, with the topics fresh so that `input` did not either. Now such a
+ * message is a message that did not come: the checklist refuses by name, and
+ * while armed the input goes missing after its staleness bound, which is the
+ * `input` trigger (neutral). An input the parameters do not require is not
+ * judged, as when it is absent. */
+static void test_not_a_number(void)
+{
+	CHECK_EQ_INT(last_state.state, 0);
+	pump(300);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
+	/* The checklist: NaN volts, then an infinite depth, each named. */
+	T.batt_v = NAN;
+	pump(600); /* past power.battery's 300 ms */
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "0") == 0);
+	CHECK(strstr(cli_out, "power.battery voltage not a number") != NULL);
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "HG_E_REFUSED") != NULL && strstr(cli_out, "power.battery voltage not a number") != NULL);
+	pump(100);
+	CHECK_EQ_INT(last_state.state, 0);
+	T.batt_v = 16.0f;
+	T.depth_m = INFINITY;
+	pump(600);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "0") == 0);
+	CHECK(strstr(cli_out, "nav.depth depth not a number") != NULL);
+	CHECK(strstr(cli_out, "power.battery") == NULL);
+	CHECK_EQ_INT(call("arm"), 1);
+	T.depth_m = 1.0f;
+	pump(300);
+	/* Armed, the battery's voltage becomes NaN: input, neutral, by name. The
+	 * battery trigger's own time (0.5 s here) plays no part. */
+	arm_ok();
+	T.batt_v = NAN;
+	CHECK(wait_safety(2, 0, 5000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 7);
+	CHECK(!last_state.outputs_enabled);
+	CHECK(strstr(last_state.reason, "input: power.battery voltage not a number") != NULL);
+	if (!strstr(last_state.reason, "not a number"))
+		printf("    reason: %s\n", last_state.reason);
+	/* clear is refused while it lasts, and passes with a number again. */
+	T.ap_armed = 0;
+	pump(200);
+	CHECK_EQ_INT(call("clear"), 1);
+	CHECK(strstr(cli_out, "active: input") != NULL);
+	T.batt_v = 16.0f;
+	pump(300);
+	clear_ok();
+	/* Armed, the depth becomes NaN (the live path: a float off the wire). */
+	arm_ok();
+	T.depth_m = NAN;
+	CHECK(wait_safety(2, 0, 5000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 7);
+	CHECK(strstr(last_state.reason, "input: nav.depth depth not a number") != NULL);
+	T.ap_armed = 0;
+	T.depth_m = 1.0f;
+	pump(300);
+	clear_ok();
+	/* One NaN among numbers is not a fault: the last number stands while it
+	 * is fresh. 40 messages, every other one NaN, 20 ms apart. */
+	arm_ok();
+	for (int i = 0; i < 40; i++) {
+		T.depth_m = i % 2 ? NAN : 1.0f;
+		T.next_sensor_ns = 0;
+		pump(20);
+	}
+	T.depth_m = 1.0f;
+	pump(100);
+	CHECK_EQ_INT(last_state.state, 1);
+	CHECK_EQ_INT(call("disarm"), 0);
+	CHECK(wait_safety(0, -1, 1000));
+	T.ap_armed = 0;
+	pump(200);
+	/* A bench that does not require the battery: NaN volts is no reading,
+	 * as an absent topic is none, and the vehicle arms. */
+	CHECK_EQ_INT(param_set("safety", "battery_required=0", NULL, NULL, NULL), 0);
+	T.batt_v = NAN;
+	pump(600);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
+	arm_ok();
+	pump(1000); /* twice battery_time */
+	CHECK_EQ_INT(last_state.state, 1);
+	CHECK_EQ_INT(call("disarm"), 0);
+	CHECK(wait_safety(0, -1, 1000));
+	T.ap_armed = 0;
+	T.batt_v = 16.0f;
+	CHECK_EQ_INT(param_set("safety", "battery_required=1", NULL, NULL, NULL), 0);
+	pump(300);
+}
+
 static void test_latch(void)
 {
 	/* Still in failsafe from the hold test. A restart comes back in it. */
@@ -757,6 +854,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_autopilot_trigger);
 	RUN_TEST(test_triggers_and_actions);
 	RUN_TEST(test_latch);
+	RUN_TEST(test_not_a_number);
 	RUN_TEST(test_module_trigger);
 	RUN_TEST(test_allow);
 	RUN_TEST(test_shutdown);

@@ -292,6 +292,12 @@ module:
 | 6 | `estop` | `safety.estop` | `neutral` |
 | 7 | `input` | a topic the safety module needs (`vehicle.leak`, `power.battery`, `nav.depth`, `bridge.vehicle.link`) stale | `neutral` |
 
+A message whose reading is not a number (a NaN or infinite voltage or depth) carries
+no reading and counts as a message that did not come: the last reading that was a
+number stands until it is stale, and then the input is missing, which is `input`
+while armed and a refusal at the checklist. Without this rule a NaN is the one value
+no comparison ever catches.
+
 `vehicle.leak` is published at 10 Hz by the `leak` module, which reads the leak probe's
 GPIO line itself, through a device granted to it alone
 ([10-mavlink](10-mavlink.md#telemetry)), so a dry probe is a fresh

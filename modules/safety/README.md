@@ -33,7 +33,15 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   the mux's band, read from `mux.params`, by `depth_margin`), `autopilot` (the armed
   agreement judged against the `safety.state` each `ardusub.state` references, a
   self-disarm while armed, a mode other than MANUAL, silence for
-  `autopilot_silence`), `estop`, `input` (a required input stale or absent). Several at
+  `autopilot_silence`), `estop`, `input` (a required input stale or absent). A
+  message whose voltage or depth is not a number (NaN, an infinity) is a message that
+  did not come: the last reading that was a number is judged while it is fresh by the
+  topic's own rule, and after that the input is missing, named `power.battery voltage
+  not a number` or `nav.depth depth not a number` in the checklist's refusal and in
+  the `input` trigger's reason. `nav.depth` is a float off the wire, and the mavlink
+  module publishes a NaN voltage when the autopilot reports that it measures none.
+  With `battery_required = 0` such a battery is not judged, as an absent one is not.
+  Several at
   once: `neutral` over `hold` over `surface`; `hold` falls to `neutral` when
   `depth_hold` is not ready and after `hold_time`.
 - The latch: `<state dir>/failsafe`, written through a temporary name and a rename on
@@ -106,4 +114,9 @@ input's staleness (≈300 ms), hold to neutral with the controller stopped and a
 `hold_time`; the latch across `hangar restart` with `arm` refused until `clear`; the
 `module` trigger through a crasher, `clear` refused by the manager while it is failed
 and accepted once it runs; `arm`/`clear`/`set_params` denied to an unlisted module,
-`disarm`/`estop`/`check` open to any.
+`disarm`/`estop`/`check` open to any. `test_not_a_number`: with NaN volts, then an
+infinite depth, `check` and `arm` refuse by name; armed, each becomes the `input`
+trigger (neutral) with `clear` refused while it lasts; forty depth messages of which
+every other one is NaN fire nothing; with `battery_required = 0` NaN volts arm and
+stay armed. Before the rule the NaN voltage passed the checklist and armed, and the
+NaN depth left an armed vehicle armed with no trigger.

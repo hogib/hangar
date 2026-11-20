@@ -12,6 +12,7 @@
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <math.h>
 
 #include "ardusub_state.h"
 #include "arm_rep.h"
@@ -67,6 +68,11 @@ static struct {
 	struct depth depth;
 	struct hg_info depth_info;
 	int have_depth;
+	/* The last reading that was a number (below, read_inputs): what the
+	 * triggers and the checklist judge, and whose age is the input's. */
+	float bat_v, depth_m;
+	struct hg_info bat_good, depth_good;
+	int have_bat_v, have_depth_m;
 	struct ardusub_state ap;
 	struct hg_info ap_info;
 	int have_ap;
@@ -295,6 +301,30 @@ static void read_inputs(uint64_t now)
 	mod_latest(sub_leak, &IN.leak, sizeof IN.leak, &IN.leak_info, &IN.have_leak);
 	mod_latest(sub_battery, &IN.bat, sizeof IN.bat, &IN.bat_info, &IN.have_bat);
 	mod_latest(sub_depth, &IN.depth, sizeof IN.depth, &IN.depth_info, &IN.have_depth);
+	/* A message whose reading is not a number (NaN, an infinity) carries no
+	 * reading: it counts as a message that did not come. Every comparison
+	 * with NaN is false, so a NaN voltage was never "below battery_min" and
+	 * a NaN depth never "beyond the band": the checklist passed and the
+	 * triggers stayed silent for as long as the sensor said nothing. Now the
+	 * last reading that was a number stands until it is stale by the topic's
+	 * own rule, and then the input is missing like any other (the `input`
+	 * trigger, the checklist's refusal). nav.depth's depth is a float off
+	 * the wire (the mavlink module, from SCALED_PRESSURE2); power.battery's
+	 * voltage is NaN when the autopilot says it does not measure one. */
+	if (!IN.have_bat)
+		IN.have_bat_v = 0;
+	else if (isfinite(IN.bat.voltage_v)) {
+		IN.bat_v = IN.bat.voltage_v;
+		IN.bat_good = IN.bat_info;
+		IN.have_bat_v = 1;
+	}
+	if (!IN.have_depth)
+		IN.have_depth_m = 0;
+	else if (isfinite(IN.depth.depth_m)) {
+		IN.depth_m = IN.depth.depth_m;
+		IN.depth_good = IN.depth_info;
+		IN.have_depth_m = 1;
+	}
 	mod_latest(sub_mux_params, IN.mux_params_buf, sizeof IN.mux_params_buf, &IN.mux_info, &IN.have_mux);
 	/* ardusub.state: every message is judged, not only the newest, since a
 	 * disagreement is "the first such message" (docs/10). */
@@ -338,6 +368,29 @@ static const mux_params *mux_p(void)
 	return IN.have_mux ? (const mux_params *)(IN.mux_params_buf + 64) : NULL;
 }
 
+/* Whether a reading of each input is there to judge, and when not, why:
+ * the topic absent, its newest message not a number, or the last reading
+ * stale. */
+static int bat_usable(uint64_t now)
+{
+	return IN.have_bat_v && mod_fresh(sub_battery, &IN.bat_good, now);
+}
+
+static int depth_usable(uint64_t now)
+{
+	return IN.have_depth_m && mod_fresh(sub_depth, &IN.depth_good, now);
+}
+
+static const char *bat_missing(void)
+{
+	return !IN.have_bat ? "absent" : !isfinite(IN.bat.voltage_v) ? "voltage not a number" : "stale";
+}
+
+static const char *depth_missing(void)
+{
+	return !IN.have_depth ? "absent" : !isfinite(IN.depth.depth_m) ? "depth not a number" : "stale";
+}
+
 /* ---- The triggers (docs/07 "Failsafe") ----------------------------------------- */
 
 /* The triggers active now, with one reason per bit in reasons[8]. The
@@ -369,18 +422,18 @@ static uint32_t active_triggers(uint64_t now, char reasons[8][64], int all)
 		mod_fmt(reasons[1], 64, "tether: no bridge.vehicle.link (until the bridge)");
 	}
 	int leak_fresh = IN.have_leak && mod_fresh(sub_leak, &IN.leak_info, now);
-	int bat_fresh = IN.have_bat && mod_fresh(sub_battery, &IN.bat_info, now);
-	int depth_fresh = IN.have_depth && mod_fresh(sub_depth, &IN.depth_info, now);
+	int bat_fresh = bat_usable(now);
+	int depth_fresh = depth_usable(now);
 	if (leak_fresh && IN.leak.wet) {
 		t |= TRG_LEAK;
 		mod_fmt(reasons[2], 64, "leak: water at the probe");
 	}
-	if (bat_fresh && IN.bat.voltage_v < P.battery_min) {
+	if (bat_fresh && !(IN.bat_v >= P.battery_min)) {
 		if (!F.battery_low_since)
 			F.battery_low_since = now;
 		if (now >= F.battery_low_since + mod_s_to_ns(P.battery_time)) {
 			t |= TRG_BATTERY;
-			mod_fmt(reasons[3], 64, "battery: %.2f V below %.2f V for %.1f s", (double)IN.bat.voltage_v,
+			mod_fmt(reasons[3], 64, "battery: %.2f V below %.2f V for %.1f s", (double)IN.bat_v,
 				(double)P.battery_min, (double)P.battery_time);
 		}
 	} else {
@@ -388,13 +441,15 @@ static uint32_t active_triggers(uint64_t now, char reasons[8][64], int all)
 	}
 	const mux_params *mp = mux_p();
 	if (depth_fresh && mp) {
-		if (IN.depth.depth_m > mp->depth_max + P.depth_margin) {
+		/* Written so that a band or a margin that is not a number fires
+		 * rather than passes. */
+		if (!(IN.depth_m <= mp->depth_max + P.depth_margin)) {
 			t |= TRG_DEPTH;
-			mod_fmt(reasons[4], 64, "depth: %.2f m beyond %.2f m + %.2f", (double)IN.depth.depth_m,
+			mod_fmt(reasons[4], 64, "depth: %.2f m beyond %.2f m + %.2f", (double)IN.depth_m,
 				(double)mp->depth_max, (double)P.depth_margin);
-		} else if (IN.depth.depth_m < mp->depth_min - P.depth_margin) {
+		} else if (!(IN.depth_m >= mp->depth_min - P.depth_margin)) {
 			t |= TRG_DEPTH;
-			mod_fmt(reasons[4], 64, "depth: %.2f m above %.2f m - %.2f", (double)IN.depth.depth_m,
+			mod_fmt(reasons[4], 64, "depth: %.2f m above %.2f m - %.2f", (double)IN.depth_m,
 				(double)mp->depth_min, (double)P.depth_margin);
 		}
 	}
@@ -424,12 +479,12 @@ static uint32_t active_triggers(uint64_t now, char reasons[8][64], int all)
 	if (P.battery_required && !bat_fresh) {
 		input = 1;
 		if (!r[0])
-			mod_fmt(r, 64, "input: power.battery %s", IN.have_bat ? "stale" : "absent");
+			mod_fmt(r, 64, "input: power.battery %s", bat_missing());
 	}
 	if (P.depth_required && !depth_fresh) {
 		input = 1;
 		if (!r[0])
-			mod_fmt(r, 64, "input: nav.depth %s", IN.have_depth ? "stale" : "absent");
+			mod_fmt(r, 64, "input: nav.depth %s", depth_missing());
 	}
 	if (input)
 		t |= TRG_INPUT;
@@ -536,13 +591,13 @@ static int checklist(uint64_t now, char *detail, size_t len)
 			FAIL("vehicle.leak wet");
 	}
 	if (P.battery_required) {
-		if (!IN.have_bat || !mod_fresh(sub_battery, &IN.bat_info, now))
-			FAIL("power.battery %s", IN.have_bat ? "stale" : "absent");
-		else if (IN.bat.voltage_v < P.battery_min)
-			FAIL("power.battery %.2f V below %.2f V", (double)IN.bat.voltage_v, (double)P.battery_min);
+		if (!bat_usable(now))
+			FAIL("power.battery %s", bat_missing());
+		else if (!(IN.bat_v >= P.battery_min))
+			FAIL("power.battery %.2f V below %.2f V", (double)IN.bat_v, (double)P.battery_min);
 	}
-	if (P.depth_required && (!IN.have_depth || !mod_fresh(sub_depth, &IN.depth_info, now)))
-		FAIL("nav.depth %s", IN.have_depth ? "stale" : "absent");
+	if (P.depth_required && !depth_usable(now))
+		FAIL("nav.depth %s", depth_missing());
 	/* until the bridge: bridge.vehicle.link up is not checked; there is none. */
 	if (have_autopilot) {
 		if (!IN.have_ap)
