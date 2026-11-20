@@ -22,8 +22,8 @@ authors:
     orcid: "https://orcid.org/0009-0006-0495-6589"
 repository-code: "https://github.com/hogib/hangar"
 license: GPL-3.0-or-later
-version: "0.1.1"
-date-released: "2026-11-09"
+version: "0.1.2"
+date-released: "2026-11-20"
 keywords:
   - underwater vehicles
   - ROV

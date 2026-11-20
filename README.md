@@ -73,7 +73,7 @@ BibTeX), and each release is archived on Zenodo with a DOI.
 > (Department of Electronics and Communications Engineering, Yıldız Technical
 > University; ORCID [0009-0006-0495-6589](https://orcid.org/0009-0006-0495-6589)).
 > *hangar: a lightweight module system for small underwater vehicles, with a
-> provenance-recorded learning loop.* Software, version 0.1.1, 2026.
+> provenance-recorded learning loop.* Software, version 0.1.2, 2026.
 > https://github.com/hogib/hangar
 
 ```bibtex
@@ -81,7 +81,7 @@ BibTeX), and each release is archived on Zenodo with a DOI.
   author  = {Bolat, H. O{\u{g}}uz and Ersoy, Hakan},
   title   = {hangar: a lightweight module system for small underwater vehicles,
              with a provenance-recorded learning loop},
-  version = {0.1.1},
+  version = {0.1.2},
   year    = {2026},
   url     = {https://github.com/hogib/hangar},
   license = {GPL-3.0-or-later}
