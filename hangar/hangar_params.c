@@ -435,6 +435,13 @@ static int cmd_restore(const char *file)
 		return fail("cannot write %s: %s (is this user in the module's group, hangar?)", path, strerror(errno));
 	}
 	FILE *f = fdopen(fd, "w");
+	if (!f) {
+		int e = errno;
+		close(fd);
+		unlink(path);
+		hg_sub_close(jobs);
+		return fail("cannot write %s: %s", path, strerror(e));
+	}
 	fprintf(f, "# hangar ardusub-params restore: from %s\n", file);
 	int n = 0;
 	for (int i = 0; i < want.n; i++) {
