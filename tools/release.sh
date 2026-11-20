@@ -233,6 +233,8 @@ want hangar-nav "$builddir/hangar-nav"
 want hangar-depth-hold "$builddir/hangar-depth-hold"
 want hangar-joystick "$builddir/hangar-joystick"
 want hangar-bridge "$builddir/hangar-bridge"
+want hangar-vision "$builddir/hangar-vision"
+want hangar-policy "$builddir/hangar-policy"
 if [ "$avcodec_ok" = yes ]; then
 	want hangar-video-relay "$builddir/hangar-video-relay"
 else
