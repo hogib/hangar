@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <libgen.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,9 +78,15 @@ static int int_type(unsigned t)
 	return t >= 1 && t <= 8;
 }
 
-/* Without libm, which the command does not otherwise link. */
+/* Without libm, which the command does not otherwise link. A value past what
+ * a long holds (an integer parameter written as 6.6e25 in a file) has no
+ * conversion C defines: the end of the range stands for it. */
 static long round_l(float v)
 {
+	if (v >= (float)LONG_MAX)
+		return LONG_MAX;
+	if (v <= (float)LONG_MIN)
+		return LONG_MIN;
 	return (long)(v < 0 ? v - 0.5f : v + 0.5f);
 }
 
@@ -157,6 +164,13 @@ static int read_table(const char *path, struct table *t)
 		if (end == rest) {
 			fclose(f);
 			return fail("%s line %d: no value", path, lineno);
+		}
+		/* strtod takes nan, inf and 1e99: none is a parameter's value, and
+		 * none would compare or be restored as one. */
+		float fv = (float)v;
+		if (fv != fv || fv - fv != 0) {
+			fclose(f);
+			return fail("%s line %d: the value is not a finite number", path, lineno);
 		}
 		if (!yaml) {
 			char *e2;
