@@ -21,7 +21,7 @@ HANGARD_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ihangard -Imsg -Ilib/common
 HANGARD_TOYS := talker listener crasher neverready eventer actuator neutral server caller paramer stubborn
 HANGARD_TOYDIR := $(TESTDIR)/hangard-modules
 HANGARD_TESTS := hangard_manifest hangard_run hangard_health hangard_adopt hangard_calls hangard_params \
-	hangard_stop hangard_recover
+	hangard_stop hangard_recover hangard_spawn
 HANGARD_LIB_TESTS := hangard_manifest
 
 # Everything under hangard/, hangar/ and msg/ takes lib/hg's flags.

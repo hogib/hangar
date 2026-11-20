@@ -33,6 +33,7 @@ extern char **environ;
 struct child_ctx {
 	const struct module *m;
 	int release_fd;          /* read until a byte or EOF */
+	int release_wfd;         /* the manager's end, which the child's copy must not keep open */
 	int err_fd;              /* errno on exec failure */
 	int do_cgroup, do_sched, do_user, do_caps, do_rlimit;
 	char cgroup[HD_PATH];
@@ -522,7 +523,10 @@ static _Noreturn void child_main(struct child_ctx *c)
 	sigemptyset(&none);
 	sigprocmask(SIG_SETMASK, &none, NULL);
 
-	/* 1. Wait until the registry entry and the Neutral record exist. */
+	/* 1. Wait until the registry entry and the Neutral record exist. Our
+	 * own copy of the writing end goes first: held, it would keep the end
+	 * of file from ever coming when the manager dies. */
+	close(c->release_wfd);
 	char byte;
 	ssize_t r;
 	while ((r = read(c->release_fd, &byte, 1)) < 0 && errno == EINTR)
@@ -742,6 +746,7 @@ int module_spawn(struct module *m)
 		return -1;
 	}
 	c.release_fd = release[0];
+	c.release_wfd = release[1];
 	c.err_fd = errp[1];
 
 	uint64_t instance = hg_now_ns();
