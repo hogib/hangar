@@ -340,6 +340,9 @@ void recompute_sys_state(void);
 /* ---- control.c ----------------------------------------------------------- */
 
 int control_open(void);
+/* The module's status line as text: at most the 127 bytes the page gives
+ * it, whether or not the module ended it, anything unprintable a blank. */
+void page_status(const struct module *m, char *out, size_t len);
 void control_accept(void);
 /* Readable connection fds are tracked by control.c; tag >= TAG_CONN. */
 void control_handle(int fd);

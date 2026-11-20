@@ -378,8 +378,10 @@ void on_module_exit(struct module *m)
 	}
 	/* An exit of its own. */
 	if (known && si.si_code == CLD_EXITED && si.si_status == 78) {
-		char r[256];
-		mf_fmt(r, sizeof r, "exit status 78: refused its configuration: %s", m->page ? (char *)m->page + 64 : "");
+		/* The status line is the module's to write, NUL or not. */
+		char r[256], status[128];
+		page_status(m, status, sizeof status);
+		mf_fmt(r, sizeof r, "exit status 78: refused its configuration: %s", status);
 		apply_giveup(m, r);
 		return;
 	}

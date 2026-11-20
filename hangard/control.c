@@ -428,7 +428,7 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 	hd_log("%s: opened %s (%s, %u slots)", m->name, topic, t->name, pub->slots);
 }
 
-static void page_status(const struct module *m, char *out, size_t len)
+void page_status(const struct module *m, char *out, size_t len)
 {
 	out[0] = 0;
 	if (!m->page)

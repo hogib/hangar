@@ -191,6 +191,28 @@ static void test_environment(void)
 	unlink(T_log);
 }
 
+/* Exit status 78 with the page's status line, and everything after it to
+ * the end of the page, filled without a NUL: the reason holds the 127 bytes
+ * a status line has, and the manager lives. */
+static void test_exit_78_with_an_unterminated_status(void)
+{
+	char page[1024];
+	tfmt(page, sizeof page, "%s/run/hangar/modules/bad", T_root);
+	manifest("bad", "[Module]\nExec=%s/stubborn --fill-page-exit78 --page %s\n", T_toys, page);
+	mgr = manager_start();
+	CHECK(wait_state("bad", "failed", 3000));
+	const char *l = strstr(read_file(T_log), "bad: failed: exit status 78");
+	CHECK(l != NULL);
+	int as = 0;
+	for (const char *p = l ? strstr(l, "configuration: ") : NULL; p && *p && *p != '\n'; p++)
+		as += *p == 'A';
+	CHECK_EQ_INT(as, 127);
+	CHECK(strncmp(ctl("status"), "ok", 2) == 0);
+	manager_stop(mgr);
+	manifest_remove("bad");
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("spawn", NULL);
@@ -198,6 +220,7 @@ int main(void)
 	HD_RUN(test_no_module_without_its_neutral_record);
 	HD_RUN(test_no_record_outlives_its_instance);
 	HD_RUN(test_environment);
+	HD_RUN(test_exit_78_with_an_unterminated_status);
 	hd_teardown();
 	TEST_MAIN_END();
 }
