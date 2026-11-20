@@ -547,3 +547,8 @@ check: check-video_relay
 # lib/vision's visibility correction and effect chain as a module (docs/11 B3).
 include modules/vision/vision.mk
 check: check-vision
+
+# topside_encoder (modules/topside_encoder/README.md, .mk carries the rules): the
+# pilot's picture to QGroundControl, encoded in process with libx264.
+include modules/topside_encoder/topside_encoder.mk
+check: check-topside_encoder

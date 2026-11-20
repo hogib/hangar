@@ -1,0 +1,20 @@
+# /usr/share/hangar/modules/topside_encoder.module: the pilot's picture to
+# QGroundControl, encoded in process with libx264 (modules/topside_encoder/README.md;
+# docs/11-electric-eye.md "encoder", placement A's topside_encoder).
+[Module]
+Description=The pilot's picture to QGroundControl, H.264 over RTP
+Exec=/usr/lib/hangar/hangar-topside-encoder /etc/hangar/topside_encoder.conf
+User=hg-video
+
+# The frame topic encoded (topside_encoder.conf's Source=).
+[Subscribe cam.pilot]
+Type=frame
+
+[Publish topside_video.index]
+Type=video_index
+Slots=64
+Inputs=cam.pilot
+
+[Params]
+Type=topside_encoder_params
+Allow=topside:pilot_console pilot_console admin topside:admin
