@@ -213,6 +213,14 @@ wait_ardusub() {
     die "the vehicle's mavlink module has not heard ArduSub in 60 s (rov.sh status)"
 }
 
+# A backup with no parameter in it restores nothing and compares equal to nothing: it
+# is not kept, and the save fails.
+some_params() { # file count
+    [ "${2:-0}" -gt 0 ] && return 0
+    rm -f "$1"
+    die "the dump has no parameters in it: nothing saved (ArduSub answered with none?)"
+}
+
 no_way() { die "neither hangar (rov.sh up) nor MAVROS (rov.sh relay up) runs: no way to the Pixhawk"; }
 
 params_save() {
@@ -222,6 +230,7 @@ params_save() {
             local f=${1:-$STATE/pixhawk-$(date +%Y%m%d-%H%M%S).params}
             wait_ardusub
             hg_vehicle ardusub-params save "$f" || die "hangar could not save the parameters"
+            some_params "$f" "$(grep -cE '^[A-Z][A-Z0-9_]* ' "$f" || true)"
             say "saved through hangar to $f" ;;
         mavros) mavros_params_save "${1:-}" ;;
         *) no_way ;;
@@ -277,7 +286,9 @@ mavros_params_save() {
     mkdir -p "$STATE"
     local f=${1:-$STATE/pixhawk-$(date +%Y%m%d-%H%M%S).yaml}
     mavros_params_dump "$f"
-    say "$(flatten "$f" | wc -l) parameters saved to $f"
+    local n; n=$(flatten "$f" | wc -l)
+    some_params "$f" "$n"
+    say "$n parameters saved to $f"
 }
 
 mavros_params_diff() { # file; exit status 1 when something differs
