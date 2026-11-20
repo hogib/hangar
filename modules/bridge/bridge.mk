@@ -23,7 +23,8 @@ all: $(BRIDGE_BIN)
 # The suite: two managers in two roots on loopback, with the toy modules of
 # hangard/tests/modules on either side, and a UDP forwarder in the test
 # process between the two bridges (loss, replay, a changed byte, a forged
-# hello). About 20 s.
+# hello, a recorded session sent again). About 45 s; one run alone with
+# test_bridge --only <run> (modules/bridge/README.md "Tests").
 $(BRIDGE_TEST): $(OBJDIR)/modules/bridge/tests/test_bridge.o $(OBJDIR)/modules/bridge/blake2s.o \
 		$(OBJDIR)/msg/bridge_link.o $(OBJDIR)/msg/depth.o $(call obj,$(HG_SRC))
 	@mkdir -p $(dir $@)
@@ -34,7 +35,7 @@ check-bridge: $(BRIDGE_TEST) $(BRIDGE_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hanga
 		$(addprefix $(HANGARD_TOYDIR)/,$(HANGARD_TOYS))
 	@if HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(abspath $(BUILDDIR)/hangar) \
 	    HANGARD_TOYS=$(abspath $(HANGARD_TOYDIR)) HANGAR_MSG_SRC=$(abspath msg) BRIDGE_BIN=$(abspath $(BRIDGE_BIN)) \
-	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/bridge.log 2>&1; then \
+	    $(if $(TIMEOUT),$(TIMEOUT) 240) $(abspath $<) > $(TESTDIR)/bridge.log 2>&1; then \
 	  echo "ok    bridge"; \
 	else \
 	  echo "FAIL  bridge"; cat $(TESTDIR)/bridge.log; exit 1; \

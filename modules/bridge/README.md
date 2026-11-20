@@ -165,13 +165,17 @@ bridge's line: `up <peer>, rtt …, offset …, N topics in, …`. On the lab's 
 `BRIDGE=1 rov.sh up` on the Pi and `BRIDGE=1 tools/rov/rov.sh topside up` on the
 laptop (`tools/rov/README.md`).
 
-## Tests (`make check-bridge`, about 17 s)
+## Tests (`make check-bridge`, about 45 s)
 
 Two managers, a vehicle and a topside, in two roots with two topic directories, each
 with a bridge, and no `HANGAR_PEER_TOPIC_DIR`; between the bridges a UDP forwarder in
-the test process that drops, replays, changes and forges datagrams on demand. The
-topside's bridge runs with a fake 5 s clock offset on the wire. Checked, as one run
-printed them (2026-11-20, loopback, this laptop):
+the test process that drops, replays, changes and forges datagrams on demand, holds
+back one kind of datagram, and records what the topside sends so that a run can send
+it again. Eight runs, each with managers of its own; `test_bridge --only <run>` runs
+one (`main`, `mismatch`, `clocks`, `hold`, `replay`, `auto`, `writer`, `limits`).
+
+`main`: the topside's bridge runs with a fake 5 s clock offset on the wire. Checked,
+as one run printed them (2026-11-20, loopback, this laptop):
 
 - the link up and `config_match` on both sides within 140 ms of the managers' start;
 - `test.depth` mirrored up with the sender's seq (167 there, 167 here), writer
@@ -187,16 +191,49 @@ printed them (2026-11-20, loopback, this laptop):
   glob is polled every 10 ms, lib/hg's `GLOB_POLL_NS`; the bridge adds about 0.1 ms);
   `Allow=admin topside:admin` refuses it as `topside:tester`, and `hangar call` on the
   topside gets through as `topside:admin:<user>`;
-- a replayed datagram, one with a byte changed and a hello under the wrong key:
-  each rejected and counted, the link up;
+- a replayed datagram, one with a byte changed, a hello under the wrong key, and a
+  new datagram whose tag is wrong in its last byte only, or its first: each rejected
+  and counted, the link up;
 - 20 % loss each way for 3 s: the reliable `test.log` (200 Hz) arrives whole, 882
   messages with no gap, 67 resends; the latest `test.depth` shows 62 losses as gaps;
 - CPU: 1.5 % and 1.0 % of a core with about 400 messages/s, 0.5 % and 0 % idle;
 - the topside rebooted (its manager stopped, its topics gone, a new boot id):
   `pilot.depth` on the vehicle comes back on the new boot id, its readers' epoch 0 → 1,
   the seqs from 1 again;
-- a topside whose msg/ tree differs (one comment line): `config_match` false,
-  `msg/ trees differ`, nothing mirrored.
+- `mismatch`: a topside whose msg/ tree differs (one comment line): `config_match`
+  false, `msg/ trees differ`, nothing mirrored.
+
+The other runs, each written for a review finding and seen to fail before its fix:
+
+- `clocks`: two clock bases. The topside's manager, its modules and its caller run
+  in a time namespace three days ahead (skipped, and said so, where a user and time
+  namespace cannot be made). The vehicle measures +259200.000 s; `pilot.depth`'s
+  stamps come out in the vehicle's clock; a call whose OK reply is all zeros, as every
+  `Reply=empty` method's is, is answered (0 of 5 before);
+- `hold`: no clock estimate, nothing translated. The forwarder holds back the
+  vehicle's pongs: for 1.2 s no `pilot.depth` is published there (62 counted in
+  `dropped_late`) and a call's request is not handed to its server; with the pongs
+  through, every stamp is right, none clamped, and the call is answered, 1.3 s after
+  it was made. The same after the topside reboots onto another clock (before: 66
+  messages stamped 5 s ahead, and 90 of the next 100 clamped);
+- `replay`: someone with no key sends the topside's recorded datagrams again, from
+  its address, hello first: into their own session (115 of 117 rejected, the link
+  up), after the topside rebooted (the link and `pilot.depth` stay with the real
+  topside, 76 messages in 1.5 s, none lost; before, the link went over to the
+  recording), with the topside gone (no link; before, a link up with nobody there),
+  and after the vehicle's bridge restarted (no link);
+- `auto`: the vehicle with `Peer=auto`. A recorded hello sent 200 times in a second
+  from another socket, the session's own and then an earlier one: nothing is sent to
+  that socket and nothing of `test.depth` is lost on its way up (before: 312
+  datagrams sent there, 102 of 131 messages lost). The topside's bridge restarted
+  under 1 000 old hellos a second links again in 0.02 s;
+- `writer`: a reliable topic at 20 Hz, the tether cut, its writer restarted twice,
+  the tether mended: all 102 messages published meanwhile arrive, in order (before:
+  28 lost);
+- `limits`: a record of 1 MB + 4 KB on the reliable stream is passed over and the
+  messages after it arrive (before: none did); under a 4 KB bound on a mirrored ring
+  (the environment sets it; the real one is 32 MB) a topic of 256 slots is mirrored
+  with 16.
 
 The manifest suite (`check-hangard_manifest`) covers the manager's side: no
 `BridgeConf`, a bad one, a second `[Bridge]`, the wiring derived from a conf, and the
@@ -206,10 +243,21 @@ shipped example on both roles.
 
 - **The lab's tether.** Run on loopback only; not between the Pi and the laptop.
   `tools/rov/README.md` says how to try it.
-- **`Peer=auto`.** Discovery's beacons are written and parsed, but the suite fixes the
-  peer: broadcast on loopback does not reach a second socket.
-- **A reconnect with reliable topics resuming** from the oldest unacknowledged message
-  still in the sender's ring: written, not exercised by the suite (the loss test keeps
-  the link up).
+- **`Peer=auto`'s discovery.** The beacons are written and parsed, but no run has
+  two bridges find each other by them: broadcast on loopback does not reach a second
+  socket. The `auto` run has `Peer=auto` on one side only, which learns its peer from
+  the other's hello. A replayed beacon can still make a second candidate
+  (`ambiguous`, no hello sent while the link is down): the candidate table is not
+  aged or bounded by anything but its 8 entries.
+- **A new link with reliable topics resuming** from the oldest unacknowledged
+  message: the `writer` run takes the link down and back on the same keys, and the
+  restarts of the other runs make new links, but no run checks a reliable topic
+  across a new handshake message by message.
+- **The clock on a real tether.** How long the wait for the first estimate is there
+  (one round trip on loopback), and whether a modem that delays pongs behind other
+  traffic ever lets the estimate lapse (10 s without a pong), are not measured.
+- **A flood of datagrams with wrong tags.** The socket is read until empty on each
+  wake and the watchdog is fed on the 100 ms tick: at a rate high enough to keep the
+  socket readable the tick could starve. Not reproduced, not bounded.
 - **The aarch64 static build** links (`make` with the release's cross toolchain);
   not run on the Pi.
