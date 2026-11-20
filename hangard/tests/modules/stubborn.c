@@ -7,6 +7,8 @@
  * requests, as this module's main process, and writes each reply to
  * PREFIX.<n>.reply (a mirrored open by hand); a descriptor that comes with
  * a reply stays open, as a writer's would.
+ * --restart-self-on-term: answers the first SIGTERM with a `restart-self`
+ * request, and stays.
  * --fill-page-exit78 --page FILE: fills the module page's status line and
  * everything after it with 'A' and exits 78. */
 #include "toy.h"
@@ -32,8 +34,8 @@ int main(int argc, char **argv)
 			return 9;
 	}
 	toy_init("stubborn");
-	if (!toy_flag(argc, argv, "--polite"))
-		signal(SIGTERM, SIG_IGN);
+	if (!toy_flag(argc, argv, "--polite") && !toy_flag(argc, argv, "--restart-self-on-term"))
+		signal(SIGTERM, SIG_IGN); /* else toy.h's handler notes it, and the loop goes on */
 	if (toy_flag(argc, argv, "--fill-page-exit78")) {
 		/* The page is the module's own file: write it through the path. */
 		const char *path = toy_arg(argc, argv, "--page", NULL);
@@ -73,7 +75,14 @@ int main(int argc, char **argv)
 	if (!toy_flag(argc, argv, "--no-ready"))
 		hg_ready();
 	hg_status("stubborn: running");
-	while (!toy_stop || !toy_flag(argc, argv, "--polite"))
+	int asked = !toy_flag(argc, argv, "--restart-self-on-term");
+	while (!toy_stop || !toy_flag(argc, argv, "--polite")) {
+		if (toy_stop && !asked) {
+			char rep[128];
+			asked = 1;
+			hg_control_call(NULL, "restart-self", 12, rep, sizeof rep, NULL, 1);
+		}
 		toy_sleep_ms(50);
+	}
 	return 0;
 }

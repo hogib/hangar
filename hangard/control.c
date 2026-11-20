@@ -1115,7 +1115,11 @@ void control_handle(int fd)
 		if (!m)
 			err_reply(fd, "pid %d is not a module's main process", (int)p.pid);
 		else {
-			module_stop(m, ST_STARTING, 0, "restart requested by the module");
+			/* A stop already under way stands, with what it leads to: a
+			 * module the operator is stopping does not turn that into a
+			 * restart by asking, and one being restarted will be. */
+			if (!m->stopping)
+				module_stop(m, ST_STARTING, 0, "restart requested by the module");
 			ok_reply(fd);
 		}
 	} else if (strcmp(word, "status") == 0) {

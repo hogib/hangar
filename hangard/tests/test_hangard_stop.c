@@ -427,6 +427,25 @@ static void test_adopted_restart_ends_restarted(void)
 	end("stub");
 }
 
+/* A module that is being stopped and asks for its own restart (a @restart
+ * parameter set a moment before, or a module that will not go): the stop
+ * under way stands. */
+static void test_restart_self_does_not_undo_a_stop(void)
+{
+	manifest("stub", "[Module]\nExec=%s/stubborn --restart-self-on-term\n[Restart]\nBackoff=0.1s..1s\nStopTimeout=1s\n",
+		 T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("stub", "ready", 5000));
+	CHECK(strncmp(ctl("stop stub"), "ok", 2) == 0);
+	CHECK(wait_file_contains(T_log, "SIGKILL to its", 3000));
+	sleep_ms(800);
+	struct mstat m;
+	CHECK(module_status("stub", &m));
+	CHECK(strcmp(m.state, "stopped") == 0);
+	CHECK_EQ_INT(m.pid, 0);
+	end("stub");
+}
+
 int main(void)
 {
 	hd_setup("stop", NULL);
@@ -442,6 +461,7 @@ int main(void)
 	HD_RUN(test_adopted_unhealthy_is_stopped);
 	HD_RUN(test_adopted_stop_ends_stopped);
 	HD_RUN(test_adopted_restart_ends_restarted);
+	HD_RUN(test_restart_self_does_not_undo_a_stop);
 	hd_teardown();
 	TEST_MAIN_END();
 }
