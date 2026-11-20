@@ -183,6 +183,9 @@ void arm_timer(void)
 	} else {
 		G.next_tick_ns = 0;
 	}
+	uint64_t ctl = control_next_deadline();
+	if (ctl && (!at || ctl < at))
+		at = ctl;
 	uint64_t pub = G.publish_now ? now : G.next_publish_ns;
 	if (!at || pub < at)
 		at = pub;
@@ -1115,6 +1118,7 @@ int main(int argc, char **argv)
 					;
 				now = hg_now_ns();
 				health_tick(now);
+				control_tick(now);
 				if (G.next_tick_ns && now >= G.next_tick_ns)
 					G.next_tick_ns = now + G.conf.health_tick_ns;
 				if (G.publish_now || now >= G.next_publish_ns)

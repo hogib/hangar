@@ -51,14 +51,111 @@ int control_open(void)
 	return s;
 }
 
+/* ---- Connections ---------------------------------------------------------
+ * A caller connects, sends its one request and is answered at once, so a
+ * connection is in this table for the moment between the two. One that
+ * sends nothing must not stay: any process in group hangar can open them,
+ * and each is a descriptor of the manager's. So a connection is closed when
+ * no request has come within CONN_IDLE_NS, and there are never more than
+ * HD_MAX_CONNS: the oldest that has sent nothing makes room. Nothing of
+ * this crosses a re-exec: the connections are close-on-exec, and a caller
+ * whose connection closes asks again (lib/hg/hg_control.c). */
+#define HD_MAX_CONNS 64
+#define CONN_IDLE_NS 2000000000ull
+#define ACCEPT_PAUSE_NS 100000000ull
+
+static struct {
+	int fd;
+	uint64_t at; /* accepted */
+} conns[HD_MAX_CONNS];
+static int n_conns;
+static uint64_t accept_paused_until; /* not 0: the listening socket is out of epoll */
+
+static void conn_close(int fd)
+{
+	for (int i = 0; i < n_conns; i++)
+		if (conns[i].fd == fd) {
+			conns[i] = conns[--n_conns];
+			break;
+		}
+	epoll_del(fd);
+	close(fd);
+}
+
+static int conn_has_request(int fd)
+{
+	char b;
+	return recv(fd, &b, 1, MSG_PEEK | MSG_DONTWAIT) >= 0; /* a packet, or the end of file its handler closes on */
+}
+
+/* Closes the oldest connection that has sent nothing; 0 if there is none. */
+static int conn_shed(void)
+{
+	int oldest = -1;
+	for (int i = 0; i < n_conns; i++)
+		if ((oldest < 0 || conns[i].at < conns[oldest].at) && !conn_has_request(conns[i].fd))
+			oldest = i;
+	if (oldest < 0)
+		return 0;
+	conn_close(conns[oldest].fd);
+	return 1;
+}
+
 void control_accept(void)
 {
 	for (;;) {
-		int c = accept4(G.ctlfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
-		if (c < 0)
+		/* Full of connections whose requests wait: they are handled in
+		 * this pass of the loop, and the socket is still readable in the
+		 * next. */
+		if (n_conns == HD_MAX_CONNS && !conn_shed())
 			return;
-		if (epoll_add(c, TAG_CONN | (uint64_t)c) < 0)
+		int c = accept4(G.ctlfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+		if (c < 0) {
+			if (errno == EINTR || errno == ECONNABORTED)
+				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return;
+			/* Out of descriptors or memory. The connection stays queued
+			 * and the socket readable: make room and try again, or, with
+			 * nothing to give up, stop listening for a moment instead of
+			 * coming straight back here for ever. */
+			if (conn_shed())
+				continue;
+			hd_log("control: cannot accept: %s: not listening for %d ms", strerror(errno),
+			       (int)(ACCEPT_PAUSE_NS / 1000000u));
+			epoll_del(G.ctlfd);
+			accept_paused_until = hg_now_ns() + ACCEPT_PAUSE_NS;
+			return;
+		}
+		if (epoll_add(c, TAG_CONN | (uint64_t)c) < 0) {
 			close(c);
+			continue;
+		}
+		conns[n_conns].fd = c;
+		conns[n_conns].at = hg_now_ns();
+		n_conns++;
+	}
+}
+
+uint64_t control_next_deadline(void)
+{
+	uint64_t at = accept_paused_until;
+	for (int i = 0; i < n_conns; i++)
+		if (!at || conns[i].at + CONN_IDLE_NS < at)
+			at = conns[i].at + CONN_IDLE_NS;
+	return at;
+}
+
+void control_tick(uint64_t now)
+{
+	for (int i = n_conns - 1; i >= 0; i--)
+		/* Not one whose request has come and waits for its turn. */
+		if (now >= conns[i].at + CONN_IDLE_NS && !conn_has_request(conns[i].fd))
+			conn_close(conns[i].fd);
+	if (accept_paused_until && now >= accept_paused_until) {
+		accept_paused_until = 0;
+		if (epoll_add(G.ctlfd, TAG_CONTROL) < 0)
+			hd_die("epoll_ctl: %s", strerror(errno));
 	}
 }
 
@@ -987,8 +1084,7 @@ void control_handle(int fd)
 	if (n <= 0) {
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 			return;
-		epoll_del(fd);
-		close(fd);
+		conn_close(fd);
 		return;
 	}
 	req[n] = 0;
@@ -1076,8 +1172,7 @@ void control_handle(int fd)
 	} else if (strcmp(word, "reexec") == 0) {
 		char err[MF_ERR];
 		ok_reply(fd);
-		epoll_del(fd);
-		close(fd);
+		conn_close(fd);
 		if (do_reexec(err, sizeof err) < 0)
 			hd_log("reexec failed: %s", err);
 		return;
@@ -1087,6 +1182,5 @@ void control_handle(int fd)
 		err_reply(fd, "unknown request %s", word);
 	}
 done:
-	epoll_del(fd);
-	close(fd);
+	conn_close(fd);
 }

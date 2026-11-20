@@ -350,6 +350,10 @@ void page_status(const struct module *m, char *out, size_t len);
 void control_accept(void);
 /* Readable connection fds are tracked by control.c; tag >= TAG_CONN. */
 void control_handle(int fd);
+/* Connections that sent no request are closed by the timer: the earliest
+ * time control.c needs the loop awake, or 0, and what it does then. */
+uint64_t control_next_deadline(void);
+void control_tick(uint64_t now);
 
 /* ---- hangard.c ------------------------------------------------------------ */
 
