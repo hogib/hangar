@@ -101,7 +101,9 @@ static void switch_target(Recorder *r, const char *path, RecordFormat format) {
   snprintf(r->status.path, sizeof r->status.path, "%s", path);
   r->status.error[0] = '\0';
   r->status.bytes = 0;
-  r->status.dropped_frames = 0;
+  // dropped_frames is zeroed in recorder_set_target, when the target is set:
+  // here, on the writer thread, it erased the drops counted between that call
+  // and this one (a stalled disk, the frames refused meanwhile).
   r->status.state = RECORDING_OFF;
   pthread_mutex_unlock(&r->lock);
   if (path[0] == '\0')
@@ -286,6 +288,7 @@ void recorder_set_target(Recorder *r, const char *path, RecordFormat format) {
   snprintf(e->path, sizeof e->path, "%s", path);
   e->format = format;
   r->accepting = path[0] != '\0';
+  r->status.dropped_frames = 0; // the new target's drops count from here
   pthread_cond_signal(&r->wake);
   pthread_mutex_unlock(&r->lock);
 }
