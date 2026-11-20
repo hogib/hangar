@@ -305,6 +305,53 @@ static void test_a_disarm_is_never_dropped(void)
 	close_line();
 }
 
+/* An arm is for the moment it was asked in. On a blocked line it waited in
+ * the queue for as long as the block lasted and was delivered when the line
+ * drained, whatever had happened meanwhile: the safety module's arm_timeout
+ * (2 s) long over, or a disarm queued right behind it. A disarm now takes
+ * every arm still waiting out of the queue, and so does mav_link_cancel_arm,
+ * which the vehicle's module calls while no arming window is open. */
+static void test_a_queued_arm_does_not_outlive_its_window(void)
+{
+	/* A disarm behind it. */
+	open_line(0);
+	block_line();
+	CHECK_EQ_INT(send_arm(), 0);
+	CHECK_EQ_INT(send_arm(), 0); /* asked twice: one waits */
+	CHECK_EQ_INT(queued_of(MAV_TX_ARM), 1);
+	CHECK_EQ_INT(send_mc(1), 0);
+	CHECK_EQ_INT(send_disarm(), 0);
+	CHECK_EQ_INT(queued_of(MAV_TX_ARM), 0);
+	CHECK_EQ_INT(queued_of(MAV_TX_DISARM), 1);
+	drain_and_decode();
+	CHECK_EQ_INT(R.arms, 0);
+	CHECK_EQ_INT(R.disarms, 1);
+	CHECK_EQ_INT(R.mc, 1);
+	CHECK_EQ_INT(R.refused, 0);
+	close_line();
+	/* The window closed with no disarm to send (ArduSub never armed). */
+	open_line(0);
+	block_line();
+	CHECK_EQ_INT(send_arm(), 0);
+	CHECK_EQ_INT(send_mc(2), 0);
+	CHECK_EQ_INT(mav_link_cancel_arm(&L), 1);
+	CHECK_EQ_INT(mav_link_cancel_arm(&L), 0);
+	CHECK_EQ_INT(queued_of(MAV_TX_ARM), 0);
+	drain_and_decode();
+	CHECK_EQ_INT(R.arms, 0);
+	CHECK_EQ_INT(R.mc, 1);
+	CHECK_EQ_INT(R.refused, 0);
+	close_line();
+	/* A line that takes it: the arm goes at once, and there is nothing to cancel. */
+	open_line(0);
+	CHECK_EQ_INT(send_arm(), 0);
+	CHECK_EQ_INT(L.tx_count, 0);
+	CHECK_EQ_INT(mav_link_cancel_arm(&L), 0);
+	drain_and_decode();
+	CHECK_EQ_INT(R.arms, 1);
+	close_line();
+}
+
 /* The tlog holds what went on the line, whole signed frames in the order
  * they went: a reader of it (pymavlink) must find every frame well formed. */
 static void test_tlog_is_what_went(void)
@@ -363,6 +410,7 @@ int main(void)
 	snprintf(tlogfile, sizeof tlogfile, "%s.tlog", keyfile);
 	RUN_TEST(test_signed_in_the_order_written);
 	RUN_TEST(test_a_disarm_is_never_dropped);
+	RUN_TEST(test_a_queued_arm_does_not_outlive_its_window);
 	RUN_TEST(test_tlog_is_what_went);
 	unlink(keyfile);
 	unlink(tlogfile);

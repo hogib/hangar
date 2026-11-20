@@ -225,13 +225,41 @@ static void txframe_set(struct mav_txframe *q, uint32_t msgid, const uint8_t *pa
 	q->kind = (uint8_t)tx_kind(msgid, payload, full_len);
 }
 
+/* Takes the i-th message (from the head) out of the queue. */
+static void tx_remove(struct mav_link *l, int i)
+{
+	for (; i < l->tx_count - 1; i++)
+		l->txq[(l->tx_head + i) % MAV_TXQ] = l->txq[(l->tx_head + i + 1) % MAV_TXQ];
+	l->tx_count--;
+}
+
+int mav_link_cancel_arm(struct mav_link *l)
+{
+	int n = 0;
+	if (!l->serial)
+		return 0;
+	for (int i = l->tx_count - 1; i >= 0; i--) {
+		struct mav_txframe *q = &l->txq[(l->tx_head + i) % MAV_TXQ];
+		if (q->kind == MAV_TX_ARM && q->off == 0) {
+			tx_remove(l, i);
+			n++;
+		}
+	}
+	l->tx_dropped += (uint64_t)n;
+	return n;
+}
+
 /* The queue's policy (mavlink.h, mav_link_send). Index i counts from the head;
  * a frame of which a byte has gone is never touched. */
 static int serial_enqueue(struct mav_link *l, uint32_t msgid, const uint8_t *payload, size_t full_len,
 			  uint8_t crc_extra)
 {
 	int kind = tx_kind(msgid, payload, full_len);
-	if (kind == MAV_TX_MANUAL_CONTROL || kind == MAV_TX_DISARM) {
+	/* A disarm overtakes nothing, but an arm still waiting ahead of it would
+	 * go out first and be undone a frame later: it does not go out at all. */
+	if (kind == MAV_TX_DISARM)
+		mav_link_cancel_arm(l);
+	if (kind != MAV_TX_OTHER) {
 		for (int i = l->tx_count - 1; i >= 0; i--) {
 			struct mav_txframe *q = &l->txq[(l->tx_head + i) % MAV_TXQ];
 			if (q->kind == kind && q->off == 0) {
@@ -260,9 +288,7 @@ static int serial_enqueue(struct mav_link *l, uint32_t msgid, const uint8_t *pay
 			l->tx_dropped++;
 			return -1;
 		}
-		for (int i = victim; i < l->tx_count - 1; i++)
-			l->txq[(l->tx_head + i) % MAV_TXQ] = l->txq[(l->tx_head + i + 1) % MAV_TXQ];
-		l->tx_count--;
+		tx_remove(l, victim);
 		l->tx_dropped++;
 	}
 	txframe_set(&l->txq[(l->tx_head + l->tx_count) % MAV_TXQ], msgid, payload, full_len, crc_extra);

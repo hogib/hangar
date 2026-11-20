@@ -122,7 +122,10 @@ the same on both.
   a disarm is never the frame dropped. The rate requests are `COMMAND_LONG`s too
   (`MAV_CMD_SET_MESSAGE_INTERVAL`) and are not control frames: they are evicted like
   parameter traffic. Anything else that finds the queue full is dropped, and counted
-  (`tx-dropped` in the status line). A frame partly
+  (`tx-dropped` in the status line). An arm is for the moment it was asked in: a
+  disarm takes an arm still waiting out of the queue, and so does the module on
+  every tick in which no arming window is open (the log says so), so a line that
+  drains seconds later does not deliver an arm the safety module has given up. A frame partly
   written is always finished, so the stream stays framed. A reader that stops for
   1.5 s leaves the module running, publishing, and sending the current manual control
   the moment it reads again (`test_serial_backpressure`).
@@ -299,7 +302,9 @@ pseudo-terminal.
   numbers and timestamps in order, the newest manual control once; a minute of the module's traffic into a blocked line
   (rate requests, manual control, a disarm's repeats), then a disarm: queued, the
   queue holding one disarm and one manual control among evictable frames, and a
-  queue of nothing but rate requests gives one up for it; the tlog holds
+  queue of nothing but rate requests gives one up for it; an arm waiting on the blocked
+  line is gone after a disarm, and after `mav_link_cancel_arm`, and is not delivered
+  when the line drains; the tlog holds
   exactly the frames that went, each one whole and verifiable.
 - `make check-mavlink_vehicle` (20 s): the module against `fake_ardusub` (a UDP client
   like MAVProxy's `--out`, signing, a parameter table, scripted refusals, a control

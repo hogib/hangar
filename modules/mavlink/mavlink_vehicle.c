@@ -786,6 +786,15 @@ static void tick(uint64_t now)
 	if (A.in_window && !window && A.seen && A.armed != 0 && !A.disarm_pending)
 		start_disarm(now, 0); /* the window closed: hangar's own disarm, `disarming` meanwhile */
 	A.in_window = window;
+	if (!window) {
+		/* An arm that never got onto a blocked serial line is not sent after
+		 * the window it was asked in: the safety module has given that arm
+		 * up (arm_timeout) or been disarmed, and nobody is asking any more. */
+		int late = mav_link_cancel_arm(&L);
+		if (late)
+			mod_log(WHO, "the arming window closed with %d arm command%s still unsent on the serial line: not sent",
+				late, late == 1 ? "" : "s");
+	}
 	if (!window && A.seen && A.armed == 1 && !A.disarm_pending) {
 		if (!A.ever_disarmed) {
 			/* Armed before this instance saw it (a restart of this module, a

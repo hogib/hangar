@@ -92,8 +92,16 @@ void mav_link_close(struct mav_link *l);
  * takes the place of the newest unsent telemetry-side frame (rate requests,
  * which are COMMAND_LONGs too, and parameter traffic): there is always one,
  * so a disarm is never the frame dropped. Any other frame that finds the
- * queue full is dropped and counted. */
+ * queue full is dropped and counted. An arm is for the moment it was asked
+ * in: a disarm takes every arm still waiting out of the queue, and so does
+ * mav_link_cancel_arm. */
 int mav_link_send(struct mav_link *l, uint32_t msgid, const uint8_t *payload, size_t full_len, uint8_t crc_extra);
+/* Serial: takes every arm command not yet on the line out of the queue, and
+ * returns how many there were. For the caller whose arming window closed
+ * while the line was blocked: an arm delivered when the line drains, seconds
+ * later, is an arm nobody is asking for any more. 0 on UDP, where nothing
+ * waits. */
+int mav_link_cancel_arm(struct mav_link *l);
 /* Receives every datagram waiting, decoding each frame and calling fn with
  * it; frames that fail their checks are counted, not delivered. The sender
  * of the first valid frame becomes the peer when none is configured. Returns
