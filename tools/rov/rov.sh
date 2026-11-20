@@ -19,7 +19,8 @@
 # HANGAR_SESSIONS (~/hangar-sessions), where the recorder writes; HANGAR_ROV_STATE
 # (~/hangar-rov), the relay's log and the parameter files; HANGAR_BIN, the binaries;
 # ROS_SETUP (/opt/ros/jazzy/setup.bash); RELAY=0 starts no relay (a test without a Pixhawk);
-# ENCODER=1 lays out the encoder too (the camera's own H.264 to the laptop; README).
+# ENCODER=1 lays out the encoder too (the camera's own H.264 to the laptop; README);
+# ENCODER_SOURCE (uvc:/dev/video2 on the lab's camera) its Source=, set at lay-out.
 set -euo pipefail
 
 here=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
@@ -41,8 +42,9 @@ STATE=${HANGAR_ROV_STATE:-$HOME/hangar-rov}
 ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 RELAY=${RELAY:-1}
 ENCODER=${ENCODER:-0}
+ENCODER_SOURCE=${ENCODER_SOURCE:-}
 
-usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
 die() { echo "rov: $*" >&2; exit 1; }
 
@@ -79,6 +81,9 @@ lay_out() { # root profile
                    -e "s|^Peer=192\.168\.2\.1:|Peer=$GCS_IP:|" "$f" > "$root/etc/hangar/$b" ;;
         esac
     done
+    if [ -n "$ENCODER_SOURCE" ] && [ -e "$root/etc/hangar/encoder.conf" ]; then
+        sed -i "s|^Source=.*|Source=$ENCODER_SOURCE|" "$root/etc/hangar/encoder.conf"
+    fi
 }
 
 running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
