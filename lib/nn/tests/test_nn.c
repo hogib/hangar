@@ -780,6 +780,38 @@ static void test_load_checks(void) {
 }
 
 /* nn_load over a path maps the file, and the model reads it in place. */
+/* Check 6's tolerance came from the file with no upper limit: a header that
+ * said 1e30 made any probe "reproduced". The runtime has its own limit now. */
+static void test_probe_tolerance_bounded(void) {
+  golden g, c;
+  nn_load_req req;
+  nn_model *m = NULL;
+  nn_report rep;
+  if (!load_golden("depth_ff", &g)) {
+    CHECK(false);
+    return;
+  }
+  memset(&req, 0, sizeof req);
+  /* at the limit: loads */
+  copy_golden(&g, &c);
+  ((nn_hgw_header *)c.data)->probe_abs_tol = NN_PROBE_ABS_TOL_MAX;
+  ((nn_hgw_header *)c.data)->probe_rel_tol = NN_PROBE_REL_TOL_MAX;
+  CHECK_EQ_INT(nn_load_mem(c.data, c.size, &req, &m, &rep), 0);
+  if (m)
+    nn_free(m);
+  free_golden(&c);
+  /* over it, either one: check 6, before a probe is run */
+  copy_golden(&g, &c);
+  ((nn_hgw_header *)c.data)->probe_abs_tol = 1e30f;
+  expect_refused(&c, &req, 6, "probe tolerance", "abs tolerance 1e30");
+  free_golden(&c);
+  copy_golden(&g, &c);
+  ((nn_hgw_header *)c.data)->probe_rel_tol = 0.5f;
+  expect_refused(&c, &req, 6, "probe tolerance", "rel tolerance 0.5");
+  free_golden(&c);
+  free_golden(&g);
+}
+
 static void test_load_path(void) {
   char path[512];
   nn_model *m = NULL;
@@ -876,6 +908,7 @@ int main(void) {
   RUN_TEST(test_nonfinite);
   RUN_TEST(test_unknown_op_refused);
   RUN_TEST(test_load_checks);
+  RUN_TEST(test_probe_tolerance_bounded);
   RUN_TEST(test_load_path);
   RUN_TEST(test_timing);
   TEST_MAIN_END();

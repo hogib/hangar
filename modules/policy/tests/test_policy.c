@@ -598,6 +598,9 @@ static void test_checks_fail(void)
 		{ "slow10hz", NULL, 4 },
 		{ "bad_nan", NULL, 5 },
 		{ "bad_probe", NULL, 6 },
+		/* The same wrong probe with a tolerance of 1e30 in the file's header:
+		 * it used to pass, since the tolerance was the file's alone. */
+		{ "loose_tol", NULL, 6 },
 	};
 	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
 		uint32_t v = 0;

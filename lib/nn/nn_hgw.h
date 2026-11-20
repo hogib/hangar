@@ -91,6 +91,11 @@
 #define NN_HGW_NAME_LEN 32u
 #define NN_HGW_FIELD_LEN 56u
 #define NN_HGW_SECTION_NAME_LEN 16u
+/* The loosest probe tolerances the runtime takes from a file (check 6): the
+ * file says how closely its probes must be reproduced, f32 against f32
+ * across processors, but not that they need not be reproduced at all. */
+#define NN_PROBE_REL_TOL_MAX 1e-2f
+#define NN_PROBE_ABS_TOL_MAX 1e-2f
 
 typedef struct nn_hgw_session {
   uint8_t boot[16];

@@ -707,7 +707,15 @@ static int load_impl(const void *data, size_t size, bool owns_map,
       fail_check(rep, 5, "tensor %u (%s) has a non-finite value", i, f.tensors[i].name);
       goto fail;
     }
-  /* 6. the probes from zero state, and the activation bound */
+  /* 6. the probes from zero state, and the activation bound. The tolerance
+   * is the file's, within the runtime's own limit: a file whose header says
+   * 1e30 would pass check 6 whatever its graph computes. */
+  if (f.hdr->probe_rel_tol > NN_PROBE_REL_TOL_MAX || f.hdr->probe_abs_tol > NN_PROBE_ABS_TOL_MAX) {
+    fail_check(rep, 6, "probe tolerance rel %g abs %g: the runtime takes at most %g and %g",
+               (double)f.hdr->probe_rel_tol, (double)f.hdr->probe_abs_tol,
+               (double)NN_PROBE_REL_TOL_MAX, (double)NN_PROBE_ABS_TOL_MAX);
+    goto fail;
+  }
   if (run_probes(m, &f, rep) < 0)
     goto fail;
   /* 7. the step time */

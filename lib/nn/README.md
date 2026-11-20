@@ -175,7 +175,9 @@ allocated and naming the check (1 to 7) and the reason:
    every element of every input buffer bound exactly once;
 5. **tensors**: every f32/f64 tensor value finite;
 6. **probes**: each probe from zero state reproduces its expected outputs within the
-   header's tolerance; with `activation_bound > 0`, every op output and the state stay
+   header's tolerance, which may be at most `NN_PROBE_REL_TOL_MAX` and
+   `NN_PROBE_ABS_TOL_MAX` (1e-2 each; a looser one is refused here, since a file
+   could otherwise declare its own probes reproduced whatever its graph computes); with `activation_bound > 0`, every op output and the state stay
    under it on every step, and with a `ranges` section also on constant inputs at the
    corners and middle of the ranges and at each element's extremes (16 steps each);
 7. **step time**: the mean step time over the probe steps is under `req.step_budget_ns`.
