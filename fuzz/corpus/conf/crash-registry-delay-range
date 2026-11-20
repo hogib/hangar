@@ -1,0 +1,5 @@
+hangar-registry 2
+system: nominal 1 
+mux 1240 5700 backoff 3 2.2e10 1a 2b 2.000 -
+nav 1241 5701 stopping 0 nan 1a 2b inf stopped
+old 1242 5702 backoff 1 -5 1a 2b -1 -

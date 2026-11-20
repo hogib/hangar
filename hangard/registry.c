@@ -95,6 +95,14 @@ int registry_write(void)
 	return 0;
 }
 
+/* Seconds as the registry has them, in nanoseconds; 0 for what is not a time
+ * (negative, nan, or past 63 bits of nanoseconds: a damaged line, and a
+ * conversion that is not defined). */
+static uint64_t secs_ns(double s)
+{
+	return s > 0 && s < 9e9 ? (uint64_t)(s * 1e9) : 0;
+}
+
 int registry_read(const char *path, struct reg_entry *out, int max, enum sys_state *sys,
 		  uint64_t *since, char *reason, size_t reasonlen)
 {
@@ -153,10 +161,10 @@ int registry_read(const char *path, struct reg_entry *out, int max, enum sys_sta
 		e->starttime = start;
 		e->st = (enum state)si;
 		e->failures = fails;
-		e->delay_ns = (uint64_t)(delay * 1e9);
+		e->delay_ns = secs_ns(delay);
 		e->manifest_hash = mh;
 		e->wiring_hash = wh;
-		e->stop_timeout_ns = stop_timeout > 0 ? (uint64_t)(stop_timeout * 1e9) : 0;
+		e->stop_timeout_ns = secs_ns(stop_timeout);
 		e->after_stop = state_from_name(after);
 		n++;
 	}
