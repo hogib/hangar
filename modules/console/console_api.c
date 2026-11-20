@@ -661,9 +661,18 @@ static void fly_topic_json(struct console *c, struct cbuf *b, unsigned i, uint64
 		cbuf_printf(b, "\"present\":false}");
 		return;
 	}
+	/* The last message read stands, however old: `overdue` says when it is
+	 * older than the topic's own staleness bound (three periods of its
+	 * declared rate unless the manifest says otherwise; none for a topic
+	 * published on change), so that the page does not show the past as the
+	 * present. A writer that hangs keeps its topic open and unflagged: only
+	 * the age tells. */
 	const struct hg_info info = f->info;
-	cbuf_printf(b, "\"present\":true,\"age_ms\":%.0f,\"stale\":%s,\"v\":{", secs_since(info.publish_ns, now) * 1e3,
-		    info.flags & HG_SLOT_STALE ? "true" : "false");
+	uint64_t age_ns = info.publish_ns && now > info.publish_ns ? now - info.publish_ns : 0;
+	int overdue = meta.rate_mhz && meta.stale_after_ns && age_ns > meta.stale_after_ns;
+	cbuf_printf(b, "\"present\":true,\"age_ms\":%.0f,\"stale_after_ms\":%.0f,\"overdue\":%s,\"stale\":%s,\"v\":{",
+		    (double)age_ns / 1e6, meta.rate_mhz ? (double)meta.stale_after_ns / 1e6 : 0.0,
+		    overdue ? "true" : "false", info.flags & HG_SLOT_STALE ? "true" : "false");
 	if (f->parsed)
 		for (uint32_t k = 0; k < f->schema.type.n_fields; k++) {
 			const struct hg_field *fd = &f->schema.fields[k];

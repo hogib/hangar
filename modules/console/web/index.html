@@ -221,7 +221,7 @@
   <div id="fly-right">
     <button id="fly-estop" title="e-stop: neutral and disarmed at once, no question asked">E-STOP</button>
     <div class="row">
-      <button id="fly-arm" title="arm: through safety's checklist, as any call">Arm</button>
+      <button id="fly-arm" disabled title="arm: through safety's checklist, as any call; disabled while the vehicle's state is not known">Arm</button>
       <button id="fly-disarm" title="disarm, at once">Disarm</button>
     </div>
     <div class="row">
@@ -512,12 +512,37 @@
   function deg(rad) { var d = rad * 180 / Math.PI; return ((d % 360) + 360) % 360; }
   function topic(d, name) { return d.topics && d.topics[name] && d.topics[name].present ? d.topics[name] : null; }
 
+  /* A reading older than its topic's staleness bound is the past, not the
+     present: the server says `overdue` (age_ms over the three periods of the
+     declared rate, stale_after_ms). fresh() is a topic that is there and is
+     not overdue. */
+  function fresh(d, name) { var t = topic(d, name); return t && !t.overdue ? t : null; }
+  /* safety.state, the one reading the pilot acts on: also 2 s where its topic
+     declares no rate. */
+  function stateOverdue(s) { return !!s && (s.overdue || (!s.stale_after_ms && s.age_ms > 2000)); }
+  var STATE_NAMES = ['DISARMED', 'ARMED', 'FAILSAFE', 'ARMING'];
+
+  /* The state nobody knows: no safety.state, one too old, or no answer from
+     the console. Never the last state as if it were current; Arm is disabled
+     (nothing says the vehicle is disarmed and checked), Disarm and E-STOP
+     stay: they are the safe direction and must work on a doubt. */
+  function stateUnknown(why) {
+    var st = $('hud-state');
+    st.textContent = why; st.className = 'big warn';
+    $('fly-arm').disabled = true;
+  }
+
   function renderFly(d) {
     var st = $('hud-state'), s = topic(d, 'safety.state');
-    var names = ['DISARMED', 'ARMED', 'FAILSAFE', 'ARMING'], cls = ['disarmed', 'armed', 'failsafe', 'failsafe'];
-    if (s) { st.textContent = names[s.v.state] || '?'; st.className = 'big ' + (cls[s.v.state] || ''); }
-    else { st.textContent = 'no safety.state'; st.className = 'big warn'; }
-    var dep = topic(d, 'nav.depth'), att = topic(d, 'nav.attitude'), bat = topic(d, 'power.battery');
+    var names = STATE_NAMES, cls = ['disarmed', 'armed', 'failsafe', 'failsafe'];
+    if (s && stateOverdue(s)) {
+      stateUnknown('STATE UNKNOWN (' + (names[s.v.state] || '?') + ' ' + fmtAge(s.age_ms) + ' ago)');
+      s = null;
+    } else if (s) {
+      st.textContent = names[s.v.state] || '?'; st.className = 'big ' + (cls[s.v.state] || '');
+      $('fly-arm').disabled = false;
+    } else stateUnknown('no safety.state');
+    var dep = fresh(d, 'nav.depth'), att = fresh(d, 'nav.attitude'), bat = fresh(d, 'power.battery');
     $('hud-depth').textContent = dep && dep.v.depth_m != null ? 'depth ' + dep.v.depth_m.toFixed(2) + ' m' : 'depth -';
     $('hud-heading').textContent = att && att.v.yaw != null ? 'heading ' + deg(att.v.yaw).toFixed(0) + '°' : 'heading -';
     var bt = 'battery -';
@@ -545,7 +570,7 @@
     $('hud-rec').className = recording ? 'rec' : '';
     $('fly-record').className = recording ? 'on' : '';
     $('fly-record').lastChild.textContent = recording ? 'Stop rec' : 'Record';
-    var ap = topic(d, 'ardusub.state');
+    var ap = fresh(d, 'ardusub.state');
     $('hud-mode').textContent = ap ? 'ArduSub ' + (ap.v.mode === 19 ? 'MANUAL' : 'mode ' + ap.v.mode) +
       (ap.v.armed === 1 ? ', armed' : ap.v.armed === 2 ? ', disarming' : '') : '';
     // The messages: the last call's outcome, then safety's and ArduSub's.
@@ -601,7 +626,7 @@
   $('fly-estop').addEventListener('click', function () { call('safety.estop', 'E-STOP'); });
   $('fly-disarm').addEventListener('click', function () { call('safety.disarm', 'disarm'); });
   $('fly-arm').addEventListener('click', function () {
-    if (window.confirm('Arm the vehicle?')) call('safety.arm', 'arm');
+    if (!this.disabled && window.confirm('Arm the vehicle?')) call('safety.arm', 'arm');
   });
   $('fly-record').addEventListener('click', toggleRecord);
   $('fly-img').addEventListener('error', function () {
@@ -642,7 +667,11 @@
       if (selected && tab === 'topics') jobs.push(getJSON('/api/topic/' + encodeURIComponent(selected)).then(renderDetail));
       if (cycle++ % 2 === 0 && tab === 'log') jobs.push(getJSON('/api/log?lines=200').then(renderLog));
     }
-    Promise.all(jobs).then(function () { setConn(true); }, function (e) { setConn(false, e.message); })
+    Promise.all(jobs).then(function () { setConn(true); }, function (e) {
+      setConn(false, e.message);
+      // No answer: what the Fly view shows is the last poll's, not the vehicle's.
+      if (view === 'fly') stateUnknown('STATE UNKNOWN (console unreachable)');
+    })
       .then(function () { setTimeout(poll, 1000); });
   }
 

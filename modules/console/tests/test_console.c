@@ -585,6 +585,84 @@ static void test_fly(void)
 	CHECK(module_status("safety", &m) && strcmp(m.state, "ready") == 0);
 }
 
+/* `"overdue":` of one topic's object in /api/fly's body: 1, 0, or -1 when the
+ * topic is not present. */
+static int fly_overdue(const char *text, const char *name)
+{
+	char key[64];
+	tfmt(key, sizeof key, "\"%s\":{", name);
+	const char *s = strstr(text, key);
+	const char *end = s ? strchr(s, '}') : NULL; /* of {"present":false}, or of its "v" */
+	const char *o = s ? strstr(s, "\"overdue\":") : NULL;
+	if (!o || !end || o > end)
+		return -1;
+	return strncmp(o + 10, "true", 4) == 0;
+}
+
+/* A safety.state older than its staleness bound is not the vehicle's state.
+ * A writer that hangs keeps its topic open and unflagged, and the console
+ * keeps the last message it read: /api/fly went on saying present, state 1,
+ * and the page went on saying ARMED. The API now says `overdue` from the
+ * message's age against the topic's stale_after, and the page shows such a
+ * state as unknown with Arm disabled (Disarm and E-STOP are never disabled). */
+static void test_fly_stale_state(void)
+{
+	struct mstat m;
+	CHECK(module_status("safety", &m) && m.pid > 0);
+	CHECK_EQ_INT(api("GET", "/api/fly", body, sizeof body), 200);
+	const char *s = strstr(body, "\"safety.state\":{");
+	CHECK(s && strstr(s, "\"stale_after_ms\":300,") != NULL); /* Rate=10: three periods */
+	// Fresh while safety publishes (a loaded machine may need a second look).
+	uint64_t t0 = now_ms();
+	int od = -1;
+	do {
+		if (api("GET", "/api/fly", body, sizeof body) == 200)
+			od = fly_overdue(body, "safety.state");
+		if (od == 0)
+			break;
+		sleep_ms(50);
+	} while (now_ms() - t0 < 5000);
+	CHECK_EQ_INT(od, 0);
+	CHECK_EQ_INT(fly_overdue(body, "ardusub.state"), -1);
+	// safety hangs: within its bound (plus the poll) the reading is overdue,
+	// still present, still carrying the last state for the page to name.
+	kill(m.pid, SIGSTOP);
+	t0 = now_ms();
+	do {
+		sleep_ms(100);
+		if (api("GET", "/api/fly", body, sizeof body) == 200)
+			od = fly_overdue(body, "safety.state");
+	} while (od != 1 && now_ms() - t0 < 5000);
+	kill(m.pid, SIGCONT);
+	CHECK_EQ_INT(od, 1);
+	s = strstr(body, "\"safety.state\":{");
+	CHECK(s && strstr(s, "\"present\":true") != NULL && strstr(s, "\"v\":{\"state\":2,") != NULL);
+	double age = 0;
+	CHECK(json_num(body, "\"safety.state\":{", "\"age_ms\":", &age) == 0 && age > 300);
+	// The talker beside it was never overdue; a topic published on change has no bound.
+	CHECK_EQ_INT(fly_overdue(body, "nav.depth"), 0);
+	// Continued (or restarted by the manager, had the stop been long): fresh again.
+	t0 = now_ms();
+	do {
+		sleep_ms(100);
+		if (api("GET", "/api/fly", body, sizeof body) == 200)
+			od = fly_overdue(body, "safety.state");
+	} while (od != 0 && now_ms() - t0 < 15000);
+	CHECK_EQ_INT(od, 0);
+	CHECK(wait_state("safety", "ready", 15000));
+	// The page: the state is shown only when it is not overdue, Arm is
+	// disabled as served and whenever the state is unknown, Disarm and
+	// E-STOP are not.
+	CHECK_EQ_INT(api("GET", "/", body, sizeof body), 200);
+	CHECK(strstr(body, "function stateOverdue(s) { return !!s && (s.overdue ||") != NULL);
+	CHECK(strstr(body, "if (s && stateOverdue(s)) {") != NULL);
+	CHECK(strstr(body, "stateUnknown('STATE UNKNOWN (console unreachable)')") != NULL);
+	CHECK(strstr(body, "<button id=\"fly-arm\" disabled ") != NULL);
+	CHECK(strstr(body, "$('fly-arm').disabled = true;") != NULL);
+	CHECK(strstr(body, "<button id=\"fly-disarm\" title=") != NULL);
+	CHECK(strstr(body, "$('fly-disarm').disabled") == NULL && strstr(body, "$('fly-estop').disabled") == NULL);
+}
+
 /* The Fly view's presets: vision.set_params with the preset alone. */
 static void test_presets(void)
 {
@@ -655,6 +733,7 @@ int main(void)
 	RUN_TEST(test_hellion_default);
 	RUN_TEST(test_close_and_event_in_one_batch);
 	RUN_TEST(test_fly);
+	RUN_TEST(test_fly_stale_state);
 	RUN_TEST(test_presets);
 	RUN_TEST(test_log);
 	RUN_TEST(test_shutdown);

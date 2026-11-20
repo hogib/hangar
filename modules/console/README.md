@@ -96,7 +96,10 @@ like the tab, and a first visit opens **Setup**.
     `/stream?src=pilot` until hangar's own video modules), loaded only while Fly is
     shown, and greyed with a notice when `video.index` stops (2 s);
   - **an overlay**: the vehicle's state (`DISARMED`, `ARMED`, `FAILSAFE`, `ARMING`,
-    coloured), depth, heading, battery (volts and the fraction left), the video's
+    coloured; `STATE UNKNOWN (ARMED 6s ago)` in the warning colour when
+    `safety.state` is `overdue`, older than its staleness bound, or 2 s where its
+    topic declares no rate; `STATE UNKNOWN (console unreachable)` when the poll
+    itself fails; `no safety.state` when there is none), depth, heading, battery (volts and the fraction left), the video's
     frame rate, the recording dot with the session and its size, ArduSub's mode;
   - **a messages strip**: the last button's outcome (`ok`, or the server's status
     and reason verbatim), then `safety.state`'s `by` and `reason` and ArduSub's
@@ -111,7 +114,12 @@ like the tab, and a first visit opens **Setup**.
   - **keys**: `1`–`5` the presets, `R` record, `S` snapshot; a legend sits under
     the buttons.
 
-  E-stop and disarm act at once; arm and stopping a recording ask once. **No stick
+  E-stop and disarm act at once; arm and stopping a recording ask once. **Arm is
+  disabled whenever the state is not known** (as served, with no `safety.state`,
+  with an overdue one, with the console unreachable): nothing then says the vehicle
+  is disarmed. Disarm and E-STOP are never disabled: they are the safe direction
+  and must work on a doubt. Depth, heading, battery and ArduSub's mode read `-`
+  when their topic is overdue. **No stick
   input passes through the page:** the sticks are the controller's own path
   (QGroundControl today, the `joystick` module of #3 later), never a browser tab
   that can be paused. Fly reads `/api/system` and `/api/fly` once a second and
@@ -132,7 +140,7 @@ converted to ages by the console on the same machine.
 | `GET /api/topic/<name>` | the newest message: `topic`, `type_hash`, `writer`, `payload_bytes`, `present`; with a message `seq`, `stamp_ns`, `publish_ns`, `age_ms`, `stale` (computed from stale inputs), `gap`, and `fields`, an array of `{"name","type","count","comment","value"}` in schema order. `char[N]` is a string; an array of up to 64 elements is an array; a longer one (a frame's pixels) is its size as a string, `"u8[1382400]: 1382400 bytes"`; a float that is not finite is `null`. Without a message, `result` says `no message yet`, `closed` or `absent`. 404 for a name that is not a topic or has no file |
 | `GET /api/log[?lines=N]` | `{"journald","dir","note","files":[{"name","tail","bytes"}]}`: the last N lines (default 100, at most 1000, within the last 16 KB) of each `<dir>/<module>.log`; `journald` true and no files when the journald socket is there |
 | `GET /api/links` | `{"hellion":"<url>","preview":"<url>"}`: the URL the Hellion tab frames, as `--hellion` gave it (default `http://127.0.0.1:8091/`), and the Fly view's picture, as `--preview` gave it (`""` without) |
-| `GET /api/fly` | `{"role","topics":{...}}`: for each of `safety.state`, `ardusub.state`, `nav.depth`, `nav.attitude`, `power.battery`, `recorder.status`, `video.index`, `vision.params` (the last message read stands until a newer one), `{"present":false}` or `{"rate_hz" (measured, when the tick has it),"present":true,"age_ms","stale","v":{field: value, ...}}`, the fields by name as `/api/topic` decodes them |
+| `GET /api/fly` | `{"role","topics":{...}}`: for each of `safety.state`, `ardusub.state`, `nav.depth`, `nav.attitude`, `power.battery`, `recorder.status`, `video.index`, `vision.params` (the last message read stands until a newer one), `{"present":false}` or `{"rate_hz" (measured, when the tick has it),"present":true,"age_ms","stale_after_ms","overdue","stale","v":{field: value, ...}}`, the fields by name as `/api/topic` decodes them. `stale_after_ms` is the topic's own bound (three periods of its declared rate; 0 for a topic published on change) and `overdue` is `age_ms` over it: the last message of a writer that hangs stays `present`, and only its age says that it is the past (`stale` is the slot's flag, "computed from stale inputs", another matter) |
 | `POST /api/call/<module>.<method>` | only `safety.arm`, `safety.disarm`, `safety.estop`, `safety.clear`, `recorder.start`, `recorder.stop`, and `vision.set_params` with the body `{"preset":"<name>"}` and nothing else (404 otherwise; 400 for another body; the values in force read from `vision.params` with the preset changed and `base_version` first, as `hangar param set` sends them, so a change made meanwhile is refused as stale): `method`, then `call` on the control socket, as `hangar call` does (all-zero bodies: `empty`, an empty note), answered when the server's reply comes: `{"ok","call","status","reason"}`, 200 for `HG_OK`, 409 for a refusal (`HG_E_REFUSED` with the server's reason, `HG_E_DENIED`, ...), 504 after 1.5 s without a reply; `"status":"refused by the manager"` (409, 502) when the call could not be made (no such module or method, the manager unreachable) |
 | `POST /api/module/<name>/start`, `/stop`, `/restart` | `start <name>` etc. on the control socket. `{"ok":true,"request","reply"}` (200); `{"ok":false,"request","error"}` with the manager's reason: 403 for `permission denied: hangar-admin required for restart`, 409 for any other refusal (`no module nobody`), 502 when the manager cannot be reached |
 | `POST /api/reload` | `reload` on the control socket, the same replies |
@@ -306,7 +314,14 @@ ready; vehicle.leak absent; ...`); an e-stop is `HG_OK` and `/api/fly` then show
 failsafe; `talker.echo`, `safety.check` and a GET are refused, `recorder.start`
 with no recorder is the manager's refusal, a call without the JSON content type is
 403; the console then idles at under 5 % of a core (0.0 % measured): the call
-timer stops with the last call. The presets (`test_presets`) run the real
+timer stops with the last call. `test_fly_stale_state` stops the safety process
+(SIGSTOP: a writer that hangs, its topic open and unflagged): `/api/fly` says
+`safety.state` is `overdue` within its 300 ms bound plus a poll, still `present`
+with the last state; continued, it is fresh again; the page as served has Arm
+disabled, the rule that shows an overdue state as unknown, and no line that
+disables Disarm or E-STOP. What the page does with it was run once by hand under
+node with a stub DOM (fresh, overdue, no rate, absent, poll failed), not in a
+browser. The presets (`test_presets`) run the real
 `hangar-vision` with no frames: `/api/fly` shows `vision.params` with `normal`,
 `{"preset":"edges"}` is `HG_OK` and `/api/fly` then shows `edges`, `nosuch` is
 vision's refusal verbatim (`no preset nosuch; ...`) with `edges` still in force,
