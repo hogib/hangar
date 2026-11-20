@@ -168,7 +168,8 @@ allocated and naming the check (1 to 7) and the reason:
    checked it);
 2. **format**: magic, version, structure; the header's `arch_hash` equals the hash of
    the graph; both equal `req.arch`;
-3. **ops**: every op known (`op conv2d v1 not supported`), every `check` passing, buffers
+3. **ops**: every op known (`op conv2d v1 not supported`), every `check` passing, every
+   output binding on an f32 buffer, buffers
    written once and read after they are written; the arena is allocated here;
 4. **bindings**: `tick_period_ns`, `dataset`, `dataset_hash` as the caller gives them;
    every input field in `req.input_fields`, every output field in `req.output_fields`;

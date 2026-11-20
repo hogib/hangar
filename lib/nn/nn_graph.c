@@ -160,12 +160,24 @@ int nn_graph_build(const nn_hgw_file *f, const void *map, size_t map_size,
                  f->inputs[i].buffer, f->n_buffers);
       return -1;
     }
-  for (i = 0; i < f->n_outputs; i++)
+  for (i = 0; i < f->n_outputs; i++) {
     if (f->outputs[i].buffer >= f->n_buffers) {
       set_reason(r, rl, "output binding %u names buffer %u of %u", i,
                  f->outputs[i].buffer, f->n_buffers);
       return -1;
     }
+    /* A model's outputs are f32: nn_step's caller gives it float buffers of
+     * the output's element count, and the probe records hold four bytes an
+     * element. An output bound to a buffer of another type (an f64 input
+     * buffer passed through) was copied out at that type's size, eight
+     * bytes an element into room for four. */
+    if (f->buffers[f->outputs[i].buffer].dtype != NN_F32) {
+      set_reason(r, rl, "output binding %u: buffer %u (%.*s) is not f32", i,
+                 f->outputs[i].buffer, (int)NN_HGW_NAME_LEN,
+                 f->buffers[f->outputs[i].buffer].name);
+      return -1;
+    }
+  }
   n_in = distinct_buffers(f->inputs, f->n_inputs, NULL);
   n_out = distinct_buffers(f->outputs, f->n_outputs, NULL);
   if (n_in == 0 || n_out == 0) {

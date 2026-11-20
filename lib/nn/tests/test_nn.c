@@ -780,6 +780,33 @@ static void test_load_checks(void) {
 }
 
 /* nn_load over a path maps the file, and the model reads it in place. */
+/* An output binding on a buffer that is not f32. nn_graph_build looked at
+ * the binding's buffer index and nothing else; nn_step and the probes then
+ * copied the buffer out at its own element size into f32-sized room (the
+ * policy allocates count + 1 floats per output). casts.hgw has an f64 input
+ * buffer, raw_f64 (6): its last two outputs are bound there instead of to
+ * f_f64. Refused at check 3, before anything is allocated for it. */
+static void test_output_binding_must_be_f32(void) {
+  golden g, c;
+  nn_load_req req;
+  nn_hgw_file f;
+  if (!load_golden("casts", &g)) {
+    CHECK(false);
+    return;
+  }
+  memset(&req, 0, sizeof req);
+  copy_golden(&g, &c);
+  nn_hgw_parse(c.data, c.size, &f, NULL, 0);
+  CHECK_EQ_INT(f.n_outputs, 14);
+  CHECK_EQ_INT(f.buffers[6].dtype, NN_F64);
+  ((nn_hgw_binding *)&f.outputs[12])->buffer = 6;
+  ((nn_hgw_binding *)&f.outputs[13])->buffer = 6;
+  resign(&c);
+  expect_refused(&c, &req, 3, "is not f32", "an output bound to an f64 buffer");
+  free_golden(&c);
+  free_golden(&g);
+}
+
 /* Check 6's tolerance came from the file with no upper limit: a header that
  * said 1e30 made any probe "reproduced". The runtime has its own limit now. */
 static void test_probe_tolerance_bounded(void) {
@@ -909,6 +936,7 @@ int main(void) {
   RUN_TEST(test_unknown_op_refused);
   RUN_TEST(test_load_checks);
   RUN_TEST(test_probe_tolerance_bounded);
+  RUN_TEST(test_output_binding_must_be_f32);
   RUN_TEST(test_load_path);
   RUN_TEST(test_timing);
   TEST_MAIN_END();
