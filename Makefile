@@ -537,3 +537,8 @@ check: check-encoder
 # read natively, pilot.wrench and pilot.buttons without QGroundControl (hangar#3).
 include modules/joystick/joystick.mk
 check: check-joystick
+
+# video_relay (modules/video_relay/README.md, .mk carries the rules): the
+# topside's end of the vehicle's video, decoded in process with libavcodec.
+include modules/video_relay/video_relay.mk
+check: check-video_relay
