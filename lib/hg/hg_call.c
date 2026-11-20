@@ -773,6 +773,14 @@ static void serve_one(hg_sub *s, const struct hg_info *info)
 		rep.status = HG_E_BADTYPE;
 		bfmt(rep.reason, sizeof rep.reason, "request type %016llx; %s takes %s",
 			 (unsigned long long)env.request_type, method, line->m.req_type);
+	} else if (hg_sub_payload_bytes(s) < HG_CALL_REQ_ENVELOPE + line->m.req_size) {
+		/* The topic's payload ends before the request does: what follows
+		 * it in the buffer is an earlier caller's request. A caller built
+		 * on the library cannot send this (its topic holds its largest
+		 * request); one that writes its topic's bytes itself can. */
+		rep.status = HG_E_BADTYPE;
+		bfmt(rep.reason, sizeof rep.reason, "request of %u bytes; %s takes %u",
+			 hg_sub_payload_bytes(s) - HG_CALL_REQ_ENVELOPE, method, line->m.req_size);
 	} else {
 		hg_call_ctx c = { .caller = token,
 				  .method = method,

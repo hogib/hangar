@@ -40,6 +40,7 @@ struct dh {
 static struct hg_schema dh_parsed, sp_parsed, spr_parsed, req_parsed, rep_parsed, adm_parsed;
 static const struct hg_type *DH, *SP;
 static char wiring_self[600], wiring_hangar[600], wiring_pilot[600], wiring_act[600], state_dir[600];
+static char wiring_tiny[600];
 static char self_dir[600];
 
 /* The parent writes the wiring files once; a re-executed child runs build()
@@ -145,6 +146,8 @@ static void build(void)
 	write_text(wiring_hangar, full);
 	snprintf(wiring_pilot, sizeof wiring_pilot, "%s/pilot.wiring", topic_dir);
 	write_text(wiring_pilot, "hangar-wiring 1\nmodule pilot\nrole topside\nmirror pilot.req type=any\n");
+	snprintf(wiring_tiny, sizeof wiring_tiny, "%s/tiny.wiring", topic_dir);
+	write_text(wiring_tiny, "hangar-wiring 1\nmodule tiny\nrole topside\nmirror tiny.req type=any\n");
 	snprintf(state_dir, sizeof state_dir, "%s/state", topic_dir);
 	mkdir(state_dir, 0755);
 	snprintf(self_dir, sizeof self_dir, "%s", topic_dir);
@@ -424,6 +427,78 @@ static int child_pilot(void)
 	sleep_ms(300);
 	hg_pub_close(pilot);
 	return 0;
+}
+
+/* A child as a topside module whose request topic holds the envelope and
+ * nothing after it, publishing a request that claims the type depth all the
+ * same: no caller built on the library can, one that writes its topic's
+ * bytes itself can. */
+static int child_tiny(void)
+{
+	setenv("HANGAR_WIRING_FILE", wiring_tiny, 1);
+	if (hg_init() < 0)
+		return 3;
+	struct hg_schema sch;
+	if (hg_schema_parse("u8 b[112]\n", 10, &sch, NULL, 0) < 0)
+		return 5;
+	unsigned char boot[16];
+	memset(boot, 0x5a, sizeof boot);
+	hg_pub *tiny = hg_pub_open_mirror("tiny.req", &sch.type, boot, 1, NULL);
+	if (!tiny) {
+		fprintf(stderr, "child: open: %s\n", strerror(errno));
+		return 4;
+	}
+	struct hg_call_request_envelope env;
+	envelope(&env, 9, "topside", "");
+	hg_publish_seq(tiny, 1, 0, &env, sizeof env, hg_now_ns(), NULL, 0);
+	sleep_ms(400);
+	hg_pub_close(tiny);
+	return 0;
+}
+
+/* A request shorter than its method's request type is not served with what
+ * the request before it left behind. */
+static void test_short_request(void)
+{
+	struct depth d = { .depth_m = 77.0f, .temp_c = 78, .pressure_mbar = 79 }, r = { 0 };
+	int st;
+	hg_call_result res = self_call("self.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &r, 500, &st);
+	CHECK_EQ_INT(res.status, HG_OK); /* the server's buffer now holds 77, 78, 79 */
+	pid_t pid = fork();
+	if (pid == 0) {
+		execl("/proc/self/exe", "test_hg_call", "--tiny", (char *)NULL);
+		_exit(127);
+	}
+	hg_sub *subs[16];
+	int n = hg_call_subs(subs, 16);
+	hg_sub *rep = hg_sub_open_own("self.rep", NULL, HG_NEWEST);
+	int served = 0;
+	uint64_t t0 = hg_now_ns();
+	while (served < 1 && ms_since(t0) < 2000) {
+		hg_wait(subs, n, 50);
+		served += hg_serve();
+	}
+	CHECK_EQ_INT(served, 1);
+	CHECK_EQ_INT(wait_child(pid), 0);
+	unsigned char buf[96 + 256];
+	struct hg_info info;
+	int seen = 0;
+	while (hg_next(rep, buf, sizeof buf, &info) == HG_MSG) {
+		struct hg_call_reply_envelope env;
+		struct depth got;
+		memcpy(&env, buf, sizeof env);
+		memcpy(&got, buf + 96, sizeof got);
+		if (env.caller_id != hg_topic_id("tiny.req"))
+			continue;
+		seen++;
+		printf("    a 112-byte request for a method that takes depth: %s '%s', reply body %g %g %g\n",
+		       hg_status_name(env.status), env.reason, (double)got.depth_m, (double)got.temp_c,
+		       (double)got.pressure_mbar);
+		CHECK_EQ_INT(env.status, HG_E_BADTYPE);
+		CHECK(got.depth_m == 0 && got.temp_c == 0 && got.pressure_mbar == 0);
+	}
+	CHECK_EQ_INT(seen, 1);
+	hg_sub_close(rep);
 }
 
 static void test_caller_tokens(void)
@@ -851,6 +926,8 @@ int main(int argc, char **argv)
 			return child_hangar();
 		if (strcmp(argv[1], "--pilot") == 0)
 			return child_pilot();
+		if (strcmp(argv[1], "--tiny") == 0)
+			return child_tiny();
 		if (strcmp(argv[1], "--actuator") == 0)
 			return child_actuator();
 		if (strcmp(argv[1], "--params") == 0 && argc > 2)
@@ -864,6 +941,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_status_codes);
 	RUN_TEST(test_caller_tokens);
 	RUN_TEST(test_idle_server_sleeps);
+	RUN_TEST(test_short_request);
 	RUN_TEST(test_actuator_refuses_hg_call);
 	RUN_TEST(test_param_grammar);
 	RUN_TEST(test_params);
