@@ -235,6 +235,16 @@ static void tag_of(const unsigned char *key, const unsigned char *d, size_t len,
 	blake2s(out, TAG, key, 32, d, len);
 }
 
+/* Whether two tags are the same, in a time that does not say where they
+ * first differ (memcmp stops there). */
+static int tag_eq(const unsigned char *a, const unsigned char *b, size_t n)
+{
+	unsigned char x = 0;
+	for (size_t i = 0; i < n; i++)
+		x |= (unsigned char)(a[i] ^ b[i]);
+	return x == 0;
+}
+
 /* To the peer; or to the address given, for the answers of a handshake with
  * someone who is not the peer yet. */
 static int send_raw(const unsigned char *d, size_t len, const struct sockaddr_in *to)
@@ -1236,7 +1246,7 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 	const unsigned char *body = d + HDR;
 	if (kind == K_HELLO) {
 		tag_of(B.key, d, HDR + blen, t);
-		if (memcmp(t, d + HDR + blen, TAG) != 0) {
+		if (!tag_eq(t, d + HDR + blen, TAG)) {
 			B.st.rejected++;
 			return;
 		}
@@ -1246,7 +1256,7 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 	int under_pending = 0;
 	if (B.keyed) {
 		tag_of(B.k_rx, d, HDR + blen, t);
-		if (memcmp(t, d + HDR + blen, TAG) != 0)
+		if (!tag_eq(t, d + HDR + blen, TAG))
 			under_pending = 1;
 	} else {
 		under_pending = 1;
@@ -1257,7 +1267,7 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 			return;
 		}
 		tag_of(B.p_rx, d, HDR + blen, t);
-		if (memcmp(t, d + HDR + blen, TAG) != 0) {
+		if (!tag_eq(t, d + HDR + blen, TAG)) {
 			B.st.rejected++; /* a wrong key, a changed byte, our own datagram sent back */
 			return;
 		}
@@ -1360,7 +1370,8 @@ static void on_beacon(const char *line, size_t n, const struct sockaddr_in *from
 	char want[40];
 	for (int i = 0; i < 16; i++)
 		snprintf(want + 2 * i, 3, "%02x", tg[i]);
-	if (strcmp(want, tagx) != 0 || strcmp(pair, B.conf.pair) != 0 || strcmp(role, B.role) == 0 || id == B.id)
+	if (strlen(tagx) != 32 || !tag_eq((const unsigned char *)want, (const unsigned char *)tagx, 32) ||
+	    strcmp(pair, B.conf.pair) != 0 || strcmp(role, B.role) == 0 || id == B.id)
 		return;
 	struct sockaddr_in a = *from;
 	a.sin_port = htons((uint16_t)port);

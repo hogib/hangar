@@ -63,7 +63,7 @@ static void use(const struct side *s)
 
 static int fwd_sock, fwd_port;
 static struct sockaddr_in fwd_v, fwd_t;
-static atomic_int fwd_drop_pct, fwd_stop, fwd_tamper; /* tamper: 1 replay, 2 modify, 3 forge */
+static atomic_int fwd_drop_pct, fwd_stop, fwd_tamper; /* tamper: 1 replay, 2 modify, 3 forge, 4 and 5 the tag */
 static atomic_long fwd_count;
 static atomic_int fwd_drop_kind_v; /* a datagram kind (4 pong) not passed on to the vehicle; 0 none */
 
@@ -102,8 +102,17 @@ static void *forwarder(void *arg)
 		rng = rng * 1103515245u + 12345u;
 		if ((int)((rng >> 16) % 100) < atomic_load(&fwd_drop_pct))
 			continue;
+		int t = atomic_load(&fwd_tamper);
+		if ((t == 4 || t == 5) && to == &fwd_v) {
+			/* Passed on in place of the datagram itself, so that only its
+			 * tag can refuse it: right in every byte but the last (4) or
+			 * the first (5). */
+			d[t == 4 ? n - 1 : n - 16] ^= 0x80;
+			atomic_store(&fwd_tamper, 0);
+		}
 		sendto(fwd_sock, d, (size_t)n, 0, (const struct sockaddr *)to, sizeof *to);
-		int t = atomic_exchange(&fwd_tamper, 0);
+		if (t >= 1 && t <= 3)
+			atomic_store(&fwd_tamper, 0);
 		if (t == 1) {
 			sendto(fwd_sock, d, (size_t)n, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
 		} else if (t == 2) {
@@ -649,8 +658,9 @@ static void main_run(void)
 	read_link(&V, &lv);
 	uint64_t r0 = lv.rejected;
 	const char *names[] = { "", "a replayed datagram", "a datagram with one byte changed",
-				"a hello under the wrong key" };
-	for (int t = 1; t <= 3; t++) {
+				"a hello under the wrong key", "a new datagram, its tag wrong in the last byte only",
+				"a new datagram, its tag wrong in the first byte only" };
+	for (int t = 1; t <= 5; t++) {
 		atomic_store(&fwd_tamper, t);
 		sleep_ms(300);
 		read_link(&V, &lv);
