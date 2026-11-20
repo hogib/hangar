@@ -138,7 +138,9 @@ any call (a request past its deadline is dropped unexecuted,
    [Restart-only fields](#restart-only-fields));
 3. refuses a stale request: `base_version` is not the current version
    (`HG_E_REFUSED`, "stale: version is 18");
-4. checks every field against its range (`HG_E_REFUSED`, "kp 12 above 10");
+4. checks every field against its range (`HG_E_REFUSED`, "kp 12 above 10"), and
+   every `char` field for its terminating NUL: text that fills the field to its last
+   byte is refused, since the saved file could not be loaded again;
 5. calls the module's validator with the candidate and the current values;
 6. on acceptance of a change that touches no `@restart` field: copies the candidate into the module's struct, increments the
    version, saves the file, publishes `<module>.params`, and replies `HG_OK`.

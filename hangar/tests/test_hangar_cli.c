@@ -9,8 +9,11 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
+#include "depth_hold_params.h"
+#include "hg_call.h"
 #include "hg_params.h"
 #include "hg_type.h"
+#include "set_params_rep.h"
 
 /* Runs hangar with stdout and stderr in a file; the exit status (128 + n
  * for signal n, -1 for a timeout, after SIGKILL) and the CPU seconds used. */
@@ -222,12 +225,134 @@ static void test_malformed_reply_stops_the_command(void)
 	stand_in_stop(mgr);
 }
 
+/* ---- Under the manager --------------------------------------------------------
+ * paramer (hangard's toy, depth_hold_params) and this process wired as the
+ * module `tester`, which may call paramer.set_params: the requests
+ * `hangar param` cannot build are made by hand here. From test_manager_up
+ * on this process is a wired module: the tests that publish topics of their
+ * own run before it. */
+
+static pid_t mgr;
+static struct hg_schema SP; /* set_params:depth_hold_params */
+static char params_file[600];
+
+struct set_req {
+	uint64_t base_version;
+	depth_hold_params p;
+};
+struct params_msg {
+	uint64_t version;
+	char changed_by[48];
+	uint8_t restart_pending;
+	uint8_t reserved[7];
+	depth_hold_params p;
+};
+static hg_sub *params_sub;
+
+/* The newest paramer.params message. */
+static int read_params(struct params_msg *out)
+{
+	if (!params_sub)
+		params_sub = hg_sub_open("paramer.params", NULL);
+	struct hg_info info;
+	static struct params_msg last;
+	for (int i = 0; i < 100; i++) {
+		enum hg_result r = hg_latest(params_sub, &last, sizeof last, &info);
+		if (r == HG_MSG || (r == HG_NONE && last.version)) {
+			*out = last;
+			return 0;
+		}
+		sleep_ms(20);
+	}
+	return -1;
+}
+
+static hg_call_result set_params(const struct set_req *req)
+{
+	set_params_rep rep;
+	memset(&rep, 0, sizeof rep);
+	return hg_call("paramer.set_params", &SP.type, req, &SET_PARAMS_REP_TYPE, &rep, 1000);
+}
+
+static void test_manager_up(void)
+{
+	manifest("paramer", "[Module]\nExec=%s/paramer\n[Params]\nType=depth_hold_params\n[Health]\nWatchdog=2s\n", T_toys);
+	manifest("tester", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
+			   "[Call paramer.set_params]\n[Subscribe paramer.params]\n");
+	tfmt(params_file, sizeof params_file, "%s/var/lib/hangar/paramer/params", T_root);
+	mgr = manager_start();
+	CHECK(wait_state("paramer", "ready", 5000));
+	CHECK(wait_state("tester", "stopped", 5000));
+	char path[600];
+	if (wiring_to_file("tester", path, sizeof path) < 0) {
+		printf("    no wiring for tester\n");
+		exit(2);
+	}
+	setenv("HANGAR_WIRING_FILE", path, 1);
+	setenv("HANGAR_MODULE", "tester", 1);
+	unsetenv("HANGAR_CONTROL");
+	if (hg_init() < 0) {
+		printf("    hg_init: %s\n", hg_init_error());
+		exit(2);
+	}
+	static char text[HG_SCHEMA_MAX];
+	int n = tfmt(text, sizeof text, "u64 base_version\n%.*s", (int)DEPTH_HOLD_PARAMS_TYPE.schema_bytes,
+		     DEPTH_HOLD_PARAMS_TYPE.schema);
+	CHECK_EQ_INT(hg_schema_parse(text, (size_t)n, &SP, NULL, 0), 0);
+	SP.type.name = "set_params:depth_hold_params";
+	struct params_msg m;
+	CHECK_EQ_INT(read_params(&m), 0);
+	CHECK_EQ_INT(m.version, 1);
+}
+
+/* D5: set_params took a char field filled to its last byte, with no NUL.
+ * It was saved as 16 characters, and the saved file is then refused at the
+ * next start ("text of 16 bytes; at most 15"): exit 78, failed until
+ * someone edits the file. `hangar param set` cannot build such a request;
+ * any caller the Allow list admits can. */
+static void test_char_field_without_nul_refused(void)
+{
+	struct params_msg m;
+	CHECK_EQ_INT(read_params(&m), 0);
+	struct set_req req = { .base_version = m.version, .p = m.p };
+	memset(req.p.frame, 'X', sizeof req.p.frame);
+	hg_call_result r = set_params(&req);
+	printf("    frame = 16 x 'X', no NUL: %s (%s)\n", hg_status_name(r.status), r.reason);
+	CHECK_EQ_INT(r.status, HG_E_REFUSED);
+	CHECK(strstr(r.reason, "frame") != NULL);
+	CHECK(!file_contains(params_file, "XXXX"));
+	struct params_msg after;
+	CHECK_EQ_INT(read_params(&after), 0);
+	CHECK_EQ_INT(after.version, m.version);
+	/* 15 characters and the NUL are the most the field holds. */
+	memset(req.p.frame, 'Y', sizeof req.p.frame - 1);
+	req.p.frame[sizeof req.p.frame - 1] = 0;
+	r = set_params(&req);
+	CHECK_EQ_INT(r.status, HG_OK);
+	CHECK(file_contains(params_file, "frame = \"YYYYYYYYYYYYYYY\"\n"));
+	/* And the module starts again from what it saved. */
+	struct mstat st;
+	CHECK(module_status("paramer", &st));
+	CHECK(strncmp(ctl("restart paramer"), "ok", 2) == 0);
+	CHECK(wait_new_pid("paramer", st.pid, "ready", 5000));
+}
+
+static void test_manager_down(void)
+{
+	if (params_sub)
+		hg_sub_close(params_sub);
+	CHECK_EQ_INT(manager_stop(mgr), 0);
+}
+
 int main(void)
 {
 	hd_setup("cli", NULL);
 	mkdir_p(T_topics);
 	RUN_TEST(test_hz_large_payload);
 	RUN_TEST(test_malformed_reply_stops_the_command);
+	RUN_TEST(test_manager_up);
+	RUN_TEST(test_char_field_without_nul_refused);
+	RUN_TEST(test_manager_down);
 	hd_teardown();
 	TEST_MAIN_END();
 }

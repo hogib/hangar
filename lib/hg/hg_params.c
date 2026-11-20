@@ -713,6 +713,29 @@ static int check_ranges(const unsigned char *values, char *reason, size_t rlen)
 	return 0;
 }
 
+/* A candidate's char fields, which come as bytes in a request: text of at
+ * most count - 1 bytes and its NUL, as the saved file can hold and
+ * hg_param_parse accepts. Without the NUL the save would write count
+ * characters and the next start would refuse its own file (exit 78). What
+ * follows the NUL is zeroed, so the struct in force is the one the file
+ * loads. */
+static int check_text(unsigned char *values, char *reason, size_t rlen)
+{
+	for (uint32_t i = 0; i < M.type->n_fields; i++) {
+		const struct hg_field *f = &M.type->fields[i];
+		if (f->kind != HG_CHAR)
+			continue;
+		unsigned char *p = values + f->offset;
+		unsigned char *nul = memchr(p, 0, f->count);
+		if (!nul) {
+			bfmt(reason, rlen, "%s: text of %u bytes without its NUL; at most %u", f->name, f->count, f->count - 1);
+			return -1;
+		}
+		memset(nul, 0, (size_t)(p + f->count - nul));
+	}
+	return 0;
+}
+
 /* set_params, inside hg_serve(): docs/05 "Setting parameters", steps 2 to
  * 6 (the Allow check is hg_serve's). */
 static int on_set_params(const hg_call_ctx *c, const void *req, void *rep, char *reason)
@@ -728,7 +751,7 @@ static int on_set_params(const hg_call_ctx *c, const void *req, void *rep, char 
 		return HG_E_REFUSED;
 	}
 	memcpy(M.cand, (const unsigned char *)req + 8, M.type->payload_bytes);
-	if (check_ranges(M.cand, reason, HG_CALL_REASON) < 0)
+	if (check_ranges(M.cand, reason, HG_CALL_REASON) < 0 || check_text(M.cand, reason, HG_CALL_REASON) < 0)
 		return HG_E_REFUSED;
 	if (M.validate) {
 		reason[0] = 0;
