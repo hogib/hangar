@@ -1046,6 +1046,61 @@ static void test_serial_backpressure(void)
 	CHECK(c2 - c1 >= 18 && c2 - c1 <= 32);
 }
 
+/* The 1.5 s above never reach the module's own queue: a pseudo-terminal's
+ * buffer takes some 20 KB first, ten seconds of what the module sends. This
+ * one waits until the queue holds frames (the status line says `tx-blocked`),
+ * then has hangar disarm an armed ArduSub: the disarm's three sends are
+ * queued behind a MANUAL_CONTROL that is replaced every 20 ms. When the far
+ * end reads again, the fake, which checks signatures and wants rising
+ * timestamps as ArduSub does, must have refused nothing and must have the
+ * disarm. (A frame signed when it was queued was refused behind the newer
+ * MANUAL_CONTROL: ArduSub stayed armed until a later repeat found the queue
+ * empty.) The wait for the buffer to fill is bounded generously and is not a
+ * measurement. */
+static void test_serial_queue_under_backpressure(void)
+{
+	arm_ok();
+	T.cmd = (struct wrench){ .surge = 0.4f };
+	pump(200);
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "armed"), 1);
+	long long r0 = fake_num(fake_cmd("status"), "rejected");
+	long long d0 = fake_num(fake_cmd("status"), "disarms");
+	struct mstat m0;
+	CHECK(module_status("mavlink", &m0));
+	CHECK(strstr(m0.status, "tx-blocked") == NULL);
+	CHECK(strncmp(fake_cmd("stopread on"), "ok", 2) == 0);
+	uint64_t t0 = now_ms();
+	while (!strstr(module_status_line(), "tx-blocked") && now_ms() - t0 < 90000)
+		pump(100);
+	uint64_t filled = now_ms() - t0;
+	CHECK(strstr(module_status_line(), "tx-blocked") != NULL);
+	/* hangar disarms into the blocked line: `disarming`, the sends queued. */
+	set_safety(0, 0);
+	pump(600); /* the three sends, 100 ms apart, each behind a newer MANUAL_CONTROL */
+	CHECK(last_ap.armed != 0); /* no answer can have come */
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "disarms"), d0);
+	struct mstat m1;
+	CHECK(module_status("mavlink", &m1) && strcmp(m1.state, "ready") == 0 && m1.pid == m0.pid);
+	/* The far end reads again. */
+	CHECK(strncmp(fake_cmd("stopread off"), "ok", 2) == 0);
+	CHECK(wait_ap(0, 5000));
+	long long d1 = fake_num(fake_cmd("status"), "disarms");
+	long long r1 = fake_num(fake_cmd("status"), "rejected");
+	CHECK(d1 >= d0 + 1);
+	CHECK_EQ_INT(r1, r0); /* nothing the module sent was refused: order kept, signatures good */
+	CHECK_EQ_INT(fake_num(fake_cmd("status"), "armed"), 0);
+	t0 = now_ms();
+	while (strstr(module_status_line(), "tx-blocked") && now_ms() - t0 < 5000)
+		pump(50);
+	CHECK(strstr(module_status_line(), "tx-blocked") == NULL);
+	int mc[8];
+	CHECK_EQ_INT(fake_mc(fake_cmd("status"), mc), 0);
+	CHECK(mc[0] == 0 && mc[2] == 500); /* and the manual control arriving is the current one: neutral */
+	printf("    the queue held frames after %llu ms of a blocked line; %lld disarm(s) delivered, %lld frames refused\n",
+	       (unsigned long long)filled, d1 - d0, r1 - r0);
+	T.cmd = (struct wrench){ 0 };
+}
+
 static void test_serial_vanish(void)
 {
 	/* The line goes away for 0.3 s (a USB glitch) and comes back on a new
@@ -1183,6 +1238,7 @@ int main(void)
 	if (serial_mode) {
 		RUN_TEST(test_serial_noise);
 		RUN_TEST(test_serial_backpressure);
+		RUN_TEST(test_serial_queue_under_backpressure);
 		RUN_TEST(test_serial_vanish);
 		RUN_TEST(test_serial_exclusive);
 	} else {

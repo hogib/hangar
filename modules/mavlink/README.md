@@ -139,7 +139,13 @@ the same on both.
   drains seconds later does not deliver an arm the safety module has given up. A frame partly
   written is always finished, so the stream stays framed. A reader that stops for
   1.5 s leaves the module running, publishing, and sending the current manual control
-  the moment it reads again (`test_serial_backpressure`).
+  the moment it reads again (`test_serial_backpressure`); that second and a half
+  never reaches the queue, since a pseudo-terminal buffers some ten seconds of the
+  module's traffic first. `test_serial_queue_under_backpressure` waits for the
+  queue to hold frames (`tx-blocked` in the status line), has hangar disarm an armed
+  ArduSub into the blocked line, and lets the far end read again: the fake, which
+  verifies signatures and wants rising timestamps, has the disarm and has refused
+  nothing.
 - The line going away (USB unplugged, the Pixhawk rebooting, `EIO` or a hang-up): the
   module closes it at once, the status line says `serial down (...)`, and it reopens
   after 0.5 s, doubling to 5 s while it stays away; it does not exit. ArduSub falls
@@ -154,8 +160,9 @@ the same on both.
   closes it. The manager runs it after the module has exited, so they never hold the
   line together; a line that cannot be opened is said and the command exits 0, as
   with no UDP peer. The module, on `SIGTERM`, drains the same way before it exits.
-- The status line starts `serial open; ` (or `serial down (why); `, with `tx-dropped N`
-  when anything was dropped); the log says the device, the baud rate, each close and
+- The status line starts `serial open; ` (or `serial down (why); `, with `tx-blocked`
+  while the queue holds frames the line is not taking, and `tx-dropped N` when
+  anything was dropped); the log says the device, the baud rate, each close and
   reopen, and the counters at exit.
 
 ### Instead of MAVROS on the lab's BlueROV2
@@ -331,11 +338,13 @@ pseudo-terminal.
   disarmed at once; a `PreArm:` refusal with both texts; stamps across a restart,
   rates and parameters asked again; silence; unsigned and wrongly signed frames
   refused by both ends; `--neutral` by the manager and by hand.
-- `make check-mavlink_serial` (19 s): the same suite with the fake ArduSub at the far
+- `make check-mavlink_serial` (40 s): the same suite with the fake ArduSub at the far
   end of a pseudo-terminal (`fake_ardusub --pty`) and `Serial=` naming it, all but the
   two tests that inject UDP datagrams; and the line's own: noise with 0xFD bytes in it
   and a frame written in two halves 30 ms apart, found; the reader stopping for 1.5 s
-  (no stall, `ardusub.state` on, the current manual control at once after); the line
+  (no stall, `ardusub.state` on, the current manual control at once after); the reader
+  stopping until the module's own queue holds frames (about 10 s), a disarm queued
+  behind the manual control, and nothing refused by the fake when it reads again; the line
   vanishing and coming back on a new pseudo-terminal (closed, `serial down`, reopened,
   the same process); a second open refused (`EBUSY`); `--neutral` by the manager and by
   hand after the module. Both suites end with the module's CPU (`test_cpu`).

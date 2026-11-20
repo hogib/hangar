@@ -263,6 +263,10 @@ static void publish_state(uint64_t now)
 		/* Short: a status line keeps 127 characters, and the rest of this one
 		 * matters more. The device and the counters are in the log. */
 		mod_fmt(link, sizeof link, "serial %s", L.line_state);
+		/* The line is not taking what the module sends: said while it lasts
+		 * (a blocked line, not a count that changes with every frame). */
+		if (L.tx_count)
+			mod_fmt(link + strlen(link), sizeof link - strlen(link), " tx-blocked");
 		if (L.tx_dropped)
 			mod_fmt(link + strlen(link), sizeof link - strlen(link), " tx-dropped %llu",
 				(unsigned long long)L.tx_dropped);
