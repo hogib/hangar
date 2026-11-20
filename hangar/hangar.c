@@ -504,7 +504,15 @@ static int cmd_echo(int argc, char **argv)
 			if (!pl)
 				break;
 			if (pl > buflen) {
-				buf = realloc(buf, pl);
+				/* The size is the topic header's: up to 4 GB if the file
+				 * says so. */
+				unsigned char *nb = realloc(buf, pl);
+				if (!nb) {
+					fail("%s: no memory for a payload of %u bytes", topic, pl);
+					free(buf);
+					return 1;
+				}
+				buf = nb;
 				buflen = pl;
 			}
 			enum hg_result res = hg_next(s, buf, buflen, &info);
