@@ -2,13 +2,13 @@
 # bench/ros2/run.sh: hangar against a ROS 2 talker/listener pair, on this machine.
 #
 #   bench/ros2/run.sh [--work DIR] [--out DIR] [--hg-bench PATH] [--jobs N]
-#                     [--build-only | --no-build]
+#                     [--build-only | --no-build] [--no-colcon]
 #                     [--docker] [--image NAME] [--docker-cpus LIST]
 #                     [what matrix.py takes: --quick, --reps N, --seconds N, --idle-seconds N,
 #                      --cpus W,R, --configs a,b, --label TEXT, --max-temp C, ...]
 #
 # Builds bench/ros2/hangar_ros2_bench against the ROS 2 that is installed (colcon if
-# there is one, cmake alone if not) into --work (~/hangar-ros2-bench unless given),
+# there is one, cmake alone if not or with --no-colcon) into --work (~/hangar-ros2-bench unless given),
 # then runs matrix.py: hg_bench and every ROS 2 middleware configuration found, the
 # same sizes and rates on the same two CPUs, and writes results.json and results.md
 # into --out (<work>/results/<UTC time>). README.md beside this file has the rest.
@@ -39,6 +39,7 @@ jobs=2
 build=yes
 run=yes
 docker=no
+colcon=yes
 image=ros:jazzy-ros-base
 docker_cpus=
 commit=${HANGAR_COMMIT:-}
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
     --build-only) run=no ;;
     --no-build) build=no ;;
     --docker) docker=yes ;;
+    --no-colcon) colcon=no ;;
     *) pass+=("$1") ;;
     esac
     shift
@@ -79,6 +81,7 @@ if [ "$docker" = yes ]; then
     args=(--work /work --jobs "$jobs")
     [ "$build" = yes ] || args+=(--no-build)
     [ "$run" = yes ] || args+=(--build-only)
+    [ "$colcon" = yes ] || args+=(--no-colcon)
     mounts=(-v "$repo:/src:ro" -v "$work:/work")
     if [ -n "$hg_bench" ]; then
         [ -x "$hg_bench" ] || die "--hg-bench $hg_bench: not an executable"
@@ -131,13 +134,13 @@ if [ "$build" = yes ]; then
             die "$tool is not installed (sudo apt install build-essential cmake); nothing was changed"
     done
     say "building $src with ROS 2 $ROS_DISTRO into $work"
-    if command -v colcon > /dev/null 2>&1; then
+    if [ "$colcon" = yes ] && command -v colcon > /dev/null 2>&1; then
         (cd "$work" && MAKEFLAGS="-j$jobs" colcon --log-base "$work/log" build \
             --base-paths "$src" --build-base "$work/build" --install-base "$work/install" \
             --event-handlers console_cohesion+ --cmake-args -DCMAKE_BUILD_TYPE=Release) > "$work/build.log" 2>&1 ||
             { tail -40 "$work/build.log" >&2; die "the build failed: $work/build.log"; }
     else
-        say "no colcon: cmake alone (the same package, the same prefix)"
+        say "without colcon: cmake alone (the same package, the same prefix)"
         { cmake -S "$src" -B "$work/build/hangar_ros2_bench" -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$prefix" -DBUILD_TESTING=OFF &&
           cmake --build "$work/build/hangar_ros2_bench" -j "$jobs" &&

@@ -144,7 +144,17 @@ def state(cpus):
             freq[str(c)] = [int(x) for x in v]
     counts = [read(p) for p in glob.glob('/sys/devices/system/cpu/cpu[0-9]*/thermal_throttle/*_throttle_count')]
     temp = procbench.temperature()
+    # Jiffies so far, busy and all, of the CPUs the pair is NOT pinned to: what
+    # they do during a run is somebody else's load (an apt run, another job).
+    busy = total = 0
+    for line in (read('/proc/stat') or '').splitlines():
+        f = line.split()
+        if f and f[0][:3] == 'cpu' and f[0][3:].isdigit() and int(f[0][3:]) not in cpus:
+            v = [int(x) for x in f[1:9]]
+            total += sum(v)
+            busy += sum(v) - v[3] - v[4]
     return {
+        'other_cpus_jiffies': [busy, total],
         'time': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'temp_c': None if temp != temp else round(temp, 1),
         'governor': govs or ['none'],
@@ -155,8 +165,16 @@ def state(cpus):
     }
 
 
-def flags(before, after, hot):
+def other_load(before, after):
+    """How busy the CPUs beside the pair's were between two states, in percent."""
+    (b0, t0), (b1, t1) = before['other_cpus_jiffies'], after['other_cpus_jiffies']
+    return round(100.0 * (b1 - b0) / (t1 - t0), 1) if t1 > t0 else 0.0
+
+
+def flags(before, after, hot, busy=25.0):
     f = []
+    if other_load(before, after) >= busy:
+        f.append('other-load')
     tb, ta = before['throttled'], after['throttled']
     if (tb or 0) & 0xF or (ta or 0) & 0xF:
         f.append('throttled')
@@ -545,8 +563,6 @@ def num(v):
     if v == 0:
         return '0'
     a = abs(v)
-    if v == int(v) and a < 100:
-        return str(int(v))
     if a >= 100:
         return f'{v:,.0f}'.replace(',', ' ')
     if a >= 10:
@@ -613,10 +629,12 @@ def report(doc):
             f'bench/ros2 at {env["commit"]}.',
             f'{a["reps"]} repetition(s); each rate run {a["seconds"]} s after {a["warmup"]} s of warm-up (ROS 2), idle {a["idle_seconds"]} s; '
             f'writer on CPU {env["writer_cpu"]}, reader on CPU {env["reader_cpu"]}, the same two for both systems.',
+            f'Load average at the start {env.get("loadavg1", "?")}; running beside the benchmark: '
+            + (', '.join(env.get('running_beside') or []) or 'nothing procbench.py knows') + '.',
             '',
             'A cell is the median over the repetitions, (min–max) when there are several, and **×N**: how many '
             'times hangar\'s figure the ROS 2 one is. † marks a figure with a run in it during which the machine '
-            'was hot, throttled or frequency-capped (listed below).', '']
+            'was hot, throttled, frequency-capped or busy with something else (listed below).', '']
     out.append('| | hangar | ' + ' | '.join(f'`{c}`' for c in cfgs) + ' |')
     out.append('|---|---|' + '---|' * len(cfgs))
     S, F = doc['summary'], doc['factors']
@@ -633,8 +651,8 @@ def report(doc):
             if not s:
                 cells.append('–')
                 continue
-            cell = num(s['median'])
-            if s['n'] > 1:
+            cell = f'{s["median"]:.0f}' if key == 'threads' else num(s['median'])
+            if s['n'] > 1 and key != 'threads':
                 cell += f' ({num(s["min"])}–{num(s["max"])})'
             if s['flagged']:
                 cell += ' †'
@@ -659,13 +677,15 @@ def report(doc):
     out += ['## Thermal state', '',
             f'At the start: {state_line(doc["state_start"])}. At the end: {state_line(doc["state_end"])}.', '']
     if bad:
-        out += ['Runs flagged or failed:', '', '| rep | column | run | flags | before → after |', '|---|---|---|---|---|']
+        out += ['Runs flagged or failed:', '', '| rep | column | run | flags | before → after | other CPUs busy |',
+                '|---|---|---|---|---|---|']
         for r in bad:
             errs = [str(v['error']) for v in [r['result']] + list(r['result'].values()) if isinstance(v, dict) and 'error' in v]
             out.append(f'| {r["rep"]} | `{r["config"]}` | {r["case"]} | {", ".join(r["flags"] + ["FAILED: " + e for e in errs])} | '
-                       f'{state_line(r["before"])} → {state_line(r["after"])} |')
+                       f'{state_line(r["before"])} → {state_line(r["after"])} | {r.get("other_load_pct", "?")} % |')
     else:
-        out.append('No run was flagged: never hot, throttled or frequency-capped between a run\'s start and its end.')
+        out.append('No run was flagged: never hot, throttled, frequency-capped or with other load beside it '
+                   'between a run\'s start and its end.')
     return '\n'.join(out) + '\n'
 
 
@@ -716,6 +736,8 @@ def main():
     ap.add_argument('--max-temp', type=float, default=75.0, help='wait before a run while the machine is hotter (°C)')
     ap.add_argument('--cool-wait', type=float, default=180.0, help='... but no longer than this (s)')
     ap.add_argument('--hot', type=float, default=80.0, help='flag a run that began or ended this hot (°C)')
+    ap.add_argument('--busy', type=float, default=25.0,
+                    help='flag a run during which the CPUs beside the pair\'s were this busy (%%)')
     ap.add_argument('--commit', default='unknown')
     ap.add_argument('--smoke-reason', default='')
     args = ap.parse_args()
@@ -858,9 +880,10 @@ def main():
         except (OSError, RuntimeError) as e:
             result = {'error': str(e)}
         after = state([writer, reader])
-        f = flags(before, after, args.hot)
+        f = flags(before, after, args.hot, args.busy)
         doc['runs'].append({'rep': rep, 'config': config, 'case': case, 'cooled_s': waited, 'before': before,
-                            'after': after, 'flags': f, 'result': result})
+                            'after': after, 'other_load_pct': other_load(before, after), 'flags': f,
+                            'result': result})
         failed = 'error' in result or any(isinstance(v, dict) and 'error' in v for v in result.values())
         say(f'  rep {rep} {config:20s} {case:28s} {after["temp_c"]} °C'
             + (f'  (waited {waited:.0f} s for {args.max_temp} °C)' if waited >= 2 else '')
