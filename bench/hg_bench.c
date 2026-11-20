@@ -11,8 +11,10 @@
  * given with -D at build). Options: --runs N (5), --count N (1000000
  * publishes per run), --seconds N (20, the wake runs), --idle-seconds N
  * (30), --torn-seconds N (3), --lost-msgs N (20000), --no-pin (leave the
- * wake pair's placement to the scheduler), --quick (short runs of
- * everything, for a smoke test of the harness itself).
+ * wake pair's placement to the scheduler), --wake-bytes N (256: the wake
+ * pair's payload, one of publish's sizes), --wake-rate HZ (one rate for
+ * wake in place of its three), --quick (short runs of everything, for a
+ * smoke test of the harness itself).
  *
  * The topic directory is $HANGAR_TOPIC_DIR if set, else a fresh
  * /dev/shm/hg-bench-<uid>-<pid>, removed at exit. The library runs in its
@@ -59,6 +61,8 @@ static unsigned long long count = 1000000;
 static int wake_seconds = 20, idle_seconds = 30, torn_seconds = 3;
 static unsigned long long lost_msgs = 20000;
 static int no_pin;
+static uint32_t wake_bytes = 256; /* the wake pair's payload: one of sizes[] */
+static unsigned wake_rate;        /* 0: 100 Hz, 1 kHz and 10 kHz */
 static const char *json_path;
 static const char *bins[64];
 static int n_bins;
@@ -234,6 +238,7 @@ static struct size_type sizes[] = {
 };
 #define N_SIZES 4
 static const struct hg_type *WORDS_TYPE; /* the 256-byte one */
+static const struct hg_type *WAKE_TYPE;  /* the wake pair's: wake_bytes */
 
 static char topic_dir[256];
 static int made_topic_dir;
@@ -250,6 +255,13 @@ static void setup_types(void)
 			die("payload %u, wanted %u", sizes[i].type->payload_bytes, sizes[i].bytes);
 	}
 	WORDS_TYPE = sizes[1].type;
+	for (int i = 0; i < N_SIZES; i++)
+		if (sizes[i].bytes == wake_bytes)
+			WAKE_TYPE = sizes[i].type;
+	if (!WAKE_TYPE) {
+		errno = 0;
+		die("--wake-bytes %u: not one of 16, 256, 4096, 1048576", wake_bytes);
+	}
 }
 
 static void remove_topic_dir(void)
@@ -473,8 +485,13 @@ static void bench_latest(void)
  * after hg_wait returned and publish_ns is the slot's, written by the
  * library at the start of the publish. So a message found in a batch after
  * the one that woke the reader carries its queueing time too. The run is
- * `seconds` long at 100 Hz, 1 kHz and 10 kHz; p50, p99 and max are over
- * all samples of the run. The reader's wake count (hg_wait returns with
+ * `seconds` long at 100 Hz, 1 kHz and 10 kHz (or at --wake-rate alone);
+ * p50, p99, p99.9 and max are over all samples of the run. A second clock
+ * read, taken when hg_next has copied the message out of the ring, gives
+ * the "copied" percentiles beside them: publish to the message in the
+ * reader's hands, which is what a callback of another middleware is handed
+ * and what bench/ros2 compares against. At 256 bytes the two differ by the
+ * cost of `latest`; at 1 MB (--wake-bytes) by the copy of a megabyte. The reader's wake count (hg_wait returns with
  * news) and both processes' CPU time (rusage) and context switches go
  * beside them; the kernel-side count of futex wake calls is not exposed by
  * the library and is left out. "kept_up" is false when the reader lost
@@ -501,7 +518,7 @@ struct pair_shared {
 	struct mem_sample mem[2];
 	unsigned long long msgs, gaps, torn, wakes, timeouts, late, published;
 	uint32_t cap, n;          /* samples: latency in ns, capped at UINT32_MAX */
-	uint32_t lat[];
+	uint32_t lat[];           /* [0, cap): at the wake-up; [cap, 2 cap): the message copied out */
 };
 
 /* The child's side of a memory sample: once per run, when asked. */
@@ -515,13 +532,14 @@ static void sample_if_asked(struct pair_shared *sh, int who)
 
 static void pair_reader(struct pair_shared *sh, int cpu)
 {
-	static uint64_t buf[WORDS];
+	const uint32_t words = wake_bytes / 8;
+	uint64_t *buf = calloc(words, 8);
 	pin_to_cpu(cpu);
-	hg_sub *s = hg_sub_open("bench.wake", WORDS_TYPE);
-	if (!s)
+	hg_sub *s = hg_sub_open("bench.wake", WAKE_TYPE);
+	if (!s || !buf)
 		_exit(1);
 	struct hg_info info;
-	while (hg_next(s, buf, sizeof buf, &info) == HG_MSG) /* nothing published before ready counts */
+	while (hg_next(s, buf, wake_bytes, &info) == HG_MSG) /* nothing published before ready counts */
 		;
 	atomic_store(&sh->ready, 1);
 	for (int done = 0; !done;) {
@@ -536,18 +554,21 @@ static void pair_reader(struct pair_shared *sh, int cpu)
 		sh->wakes++;
 		sample_if_asked(sh, 1);
 		for (;;) {
-			enum hg_result res = hg_next(s, buf, sizeof buf, &info);
+			enum hg_result res = hg_next(s, buf, wake_bytes, &info);
 			if (res == HG_CLOSED) {
 				done = 1;
 				break;
 			}
 			if (res != HG_MSG)
 				break;
+			uint64_t copied = hg_now_ns();
 			sh->msgs++;
 			sh->gaps += info.gap;
-			sh->torn += !intact(buf, WORDS, info.seq);
+			sh->torn += !intact(buf, words, info.seq);
 			if (sh->n < sh->cap) {
 				uint64_t d = now > info.publish_ns ? now - info.publish_ns : 0;
+				uint64_t c = copied > info.publish_ns ? copied - info.publish_ns : 0;
+				sh->lat[sh->cap + sh->n] = c > UINT32_MAX ? UINT32_MAX : (uint32_t)c;
 				sh->lat[sh->n++] = d > UINT32_MAX ? UINT32_MAX : (uint32_t)d;
 			}
 		}
@@ -558,10 +579,13 @@ static void pair_reader(struct pair_shared *sh, int cpu)
 
 static void pair_writer(struct pair_shared *sh, int cpu, unsigned rate_hz, int seconds)
 {
-	static uint64_t buf[WORDS];
+	const uint32_t words = wake_bytes / 8;
+	uint64_t *buf = calloc(words, 8);
+	if (!buf)
+		_exit(1);
 	pin_to_cpu(cpu);
 	prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0); /* a 10 kHz module would; the default slack is 50 us */
-	hg_pub *p = open_pub("bench.wake", WORDS_TYPE, 16, rate_hz * 1000000u);
+	hg_pub *p = open_pub("bench.wake", WAKE_TYPE, 16, rate_hz * 1000000u);
 	atomic_store(&sh->pub_open, 1);
 	while (!atomic_load(&sh->go))
 		sleep_ms(1);
@@ -582,8 +606,8 @@ static void pair_writer(struct pair_shared *sh, int cpu, unsigned rate_hz, int s
 		if (now > due + period)
 			sh->late++;
 		uint64_t seq = hg_pub_next_seq(p);
-		fill(buf, WORDS, seq);
-		hg_publish(p, buf, sizeof buf, now);
+		fill(buf, words, seq);
+		hg_publish(p, buf, wake_bytes, now);
 		sh->published = seq;
 		sample_if_asked(sh, 0);
 	}
@@ -656,7 +680,7 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	int wcpu, rcpu;
 	pick_cpus(&wcpu, &rcpu);
 	uint32_t cap = (uint32_t)((unsigned long long)rate_hz * (unsigned long long)seconds + 1024);
-	struct pair_shared *sh = shared_zeroed(sizeof *sh + (size_t)cap * sizeof(uint32_t));
+	struct pair_shared *sh = shared_zeroed(sizeof *sh + 2 * (size_t)cap * sizeof(uint32_t));
 	sh->cap = cap;
 	/* The writer opens the topic first, so the reader finds it (no "appeared"
 	 * wake-up), and publishes only once the reader is asleep in hg_wait. */
@@ -694,10 +718,17 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 		die("pair at %u Hz: writer exit %d, reader exit %d", rate_hz, wst, rst);
 	}
 	uint32_t n = sh->n;
+	uint32_t *cl = sh->lat + cap; /* the message copied out */
 	qsort(sh->lat, n, sizeof sh->lat[0], cmp_u32);
+	qsort(cl, n, sizeof cl[0], cmp_u32);
+	size_t i99 = (size_t)(n * 0.99) < n ? (size_t)(n * 0.99) : n - 1;
+	size_t i999 = (size_t)(n * 0.999) < n ? (size_t)(n * 0.999) : n - 1;
 	double p50 = n ? sh->lat[n / 2] / 1000.0 : 0;
-	double p99 = n ? sh->lat[(size_t)(n * 0.99) < n ? (size_t)(n * 0.99) : n - 1] / 1000.0 : 0;
+	double p99 = n ? sh->lat[i99] / 1000.0 : 0;
+	double p999 = n ? sh->lat[i999] / 1000.0 : 0;
 	double max = n ? sh->lat[n - 1] / 1000.0 : 0;
+	double c50 = n ? cl[n / 2] / 1000.0 : 0, c99 = n ? cl[i99] / 1000.0 : 0;
+	double c999 = n ? cl[i999] / 1000.0 : 0, cmax = n ? cl[n - 1] / 1000.0 : 0;
 	double sum = 0;
 	for (uint32_t i = 0; i < n; i++)
 		sum += sh->lat[i];
@@ -705,21 +736,24 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	unsigned long long expected = (unsigned long long)rate_hz * (unsigned long long)seconds;
 	int kept_up = sh->gaps == 0 && sh->late * 100 <= expected;
 	double wcpu_s = ru_seconds(&wru), rcpu_s = ru_seconds(&rru);
-	printf("wake  %6u Hz  p50 %7.1f  p99 %7.1f  max %8.1f us   msgs %llu wakes %llu gaps %llu "
+	printf("wake  %6u Hz  p50 %7.1f  p99 %7.1f  p99.9 %7.1f  max %8.1f us  (copied out %.1f, %.1f, "
+	       "%.1f, %.1f)   msgs %llu wakes %llu gaps %llu "
 	       "late %llu  cpu w %.1f%% r %.1f%%%s\n",
-	       rate_hz, p50, p99, max, sh->msgs, sh->wakes, sh->gaps, sh->late,
+	       rate_hz, p50, p99, p999, max, c50, c99, c999, cmax, sh->msgs, sh->wakes, sh->gaps, sh->late,
 	       100 * wcpu_s / seconds, 100 * rcpu_s / seconds, kept_up ? "" : "  (did not keep up)");
-	fprintf(J, "{\"rate_hz\": %u, \"seconds\": %d, \"payload\": 256, \"slots\": 16, "
+	fprintf(J, "{\"rate_hz\": %u, \"seconds\": %d, \"payload\": %u, \"slots\": 16, "
 		   "\"writer_cpu\": %d, \"reader_cpu\": %d, \"expected\": %llu, \"published\": %llu, "
 		   "\"msgs\": %llu, \"wakes\": %llu, \"timeouts\": %llu, \"gaps\": %llu, \"torn\": %llu, "
 		   "\"writer_late\": %llu, \"kept_up\": %s, \"samples\": %u, \"p50_us\": %.1f, "
-		   "\"p99_us\": %.1f, \"max_us\": %.1f, \"mean_us\": %.1f, "
+		   "\"p99_us\": %.1f, \"p999_us\": %.1f, \"max_us\": %.1f, \"mean_us\": %.1f, "
+		   "\"copied_p50_us\": %.1f, \"copied_p99_us\": %.1f, \"copied_p999_us\": %.1f, "
+		   "\"copied_max_us\": %.1f, "
 		   "\"writer_cpu_s\": %.3f, \"reader_cpu_s\": %.3f, "
 		   "\"writer_cpu_pct\": %.2f, \"reader_cpu_pct\": %.2f, "
 		   "\"writer_ctxsw\": [%ld, %ld], \"reader_ctxsw\": [%ld, %ld]",
-		rate_hz, seconds, wcpu, rcpu, expected, sh->published, sh->msgs, sh->wakes,
+		rate_hz, seconds, wake_bytes, wcpu, rcpu, expected, sh->published, sh->msgs, sh->wakes,
 		sh->timeouts, sh->gaps, sh->torn, sh->late, kept_up ? "true" : "false", n, p50, p99,
-		max, mean, wcpu_s, rcpu_s, 100 * wcpu_s / seconds, 100 * rcpu_s / seconds,
+		p999, max, mean, c50, c99, c999, cmax, wcpu_s, rcpu_s, 100 * wcpu_s / seconds, 100 * rcpu_s / seconds,
 		wru.ru_nvcsw, wru.ru_nivcsw, rru.ru_nvcsw, rru.ru_nivcsw);
 	if (mem) {
 		fputs(", ", J);
@@ -729,7 +763,7 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	}
 	fputs("}", J);
 	fflush(stdout);
-	munmap(sh, sizeof *sh + (size_t)cap * sizeof(uint32_t));
+	munmap(sh, sizeof *sh + 2 * (size_t)cap * sizeof(uint32_t));
 	return kept_up;
 }
 
@@ -738,9 +772,13 @@ static void bench_wake(void)
 	static const unsigned rates[] = { 100, 1000, 10000 };
 	j_section("wake");
 	fputs("[", J);
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < 3 && !wake_rate; i++) {
 		fputs(i ? ",\n  " : "\n  ", J);
 		run_pair(rates[i], wake_seconds, NULL);
+	}
+	if (wake_rate) {
+		fputs("\n  ", J);
+		run_pair(wake_rate, wake_seconds, NULL);
 	}
 	fputs("]", J);
 }
@@ -753,7 +791,7 @@ static void bench_wake_nopin(void)
 	int was = no_pin;
 	no_pin = 1;
 	j_section("wake_nopin");
-	run_pair(1000, wake_seconds, NULL);
+	run_pair(wake_rate ? wake_rate : 1000, wake_seconds, NULL);
 	no_pin = was;
 }
 
@@ -1180,7 +1218,8 @@ static int usage(void)
 	fprintf(stderr,
 		"usage: hg_bench {publish|latest|wake|wake_nopin|idle|rss|sizes|torn|lost_wake|all}...\n"
 		"       [--json <file>] [--bin <path>]... [--runs N] [--count N] [--seconds N]\n"
-		"       [--idle-seconds N] [--torn-seconds N] [--lost-msgs N] [--no-pin] [--quick]\n");
+		"       [--idle-seconds N] [--torn-seconds N] [--lost-msgs N] [--no-pin] [--quick]\n"
+		"       [--wake-bytes 16|256|4096|1048576] [--wake-rate HZ]\n");
 	return 2;
 }
 
@@ -1195,7 +1234,8 @@ int main(int argc, char **argv)
 		const char *a = argv[i];
 		if (!strcmp(a, "--json") || !strcmp(a, "--bin") || !strcmp(a, "--runs") ||
 		    !strcmp(a, "--count") || !strcmp(a, "--seconds") || !strcmp(a, "--idle-seconds") ||
-		    !strcmp(a, "--torn-seconds") || !strcmp(a, "--lost-msgs")) {
+		    !strcmp(a, "--torn-seconds") || !strcmp(a, "--lost-msgs") ||
+		    !strcmp(a, "--wake-bytes") || !strcmp(a, "--wake-rate")) {
 			if (i + 1 >= argc)
 				return usage();
 			const char *v = argv[++i];
@@ -1224,6 +1264,10 @@ int main(int argc, char **argv)
 				torn_seconds = (int)n;
 			else if (!strcmp(a, "--lost-msgs"))
 				lost_msgs = n;
+			else if (!strcmp(a, "--wake-bytes") && n <= 1048576)
+				wake_bytes = (uint32_t)n;
+			else if (!strcmp(a, "--wake-rate") && n <= 100000)
+				wake_rate = (unsigned)n;
 			else
 				return usage();
 			continue;

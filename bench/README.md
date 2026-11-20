@@ -46,7 +46,7 @@ hg_bench all --quick                       # short runs of everything: a smoke t
 |---|---|---|
 | `publish` | ns per `hg_publish`, no reader, payloads 16 B, 256 B, 4 KB, 1 MB | median of 5 runs of 1 M (1 MB: 1 M/256) |
 | `latest` | ns per `hg_latest` of the same sizes (publish+read loop minus publish loop) | same |
-| `wake` | publish to reader wake-up through `hg_wait`, writer and reader separate processes pinned to two CPUs, 100 Hz, 1 kHz, 10 kHz: p50, p99, max, wakes, CPU, context switches | 20 s each |
+| `wake` | publish to reader wake-up through `hg_wait`, writer and reader separate processes pinned to two CPUs, 100 Hz, 1 kHz, 10 kHz: p50, p99, p99.9, max at the wake-up and again with the message copied out, wakes, CPU, context switches | 20 s each |
 | `wake_nopin` | the 1 kHz run again with no pinning | 20 s |
 | `idle` | a reader asleep in `hg_wait`: context switches and CPU ticks from `/proc`, must be 0 | 30 s |
 | `rss` | the 1 kHz pair's Rss, Pss (anon, file, shmem) and VmHWM from `/proc/<pid>/smaps_rollup` and `status` | 3 s |
@@ -56,7 +56,10 @@ hg_bench all --quick                       # short runs of everything: a smoke t
 | `all` | everything above (`sizes` only with `--bin`) | ~3 min |
 
 Options: `--runs N`, `--count N`, `--seconds N`, `--idle-seconds N`, `--torn-seconds N`,
-`--lost-msgs N`, `--no-pin`, `--quick`, `--json <file>`, `--bin <path>`. The topic
+`--lost-msgs N`, `--no-pin`, `--quick`, `--json <file>`, `--bin <path>`, and for the
+wake pair `--wake-bytes N` (its payload, 256 unless given: one of publish's sizes) and
+`--wake-rate HZ` (that rate alone: `--wake-bytes 1048576 --wake-rate 30` is a camera's
+frames). The topic
 directory is `$HANGAR_TOPIC_DIR` if set, else a fresh `/dev/shm/hg-bench-<uid>-<pid>`,
 removed at exit. Run it on a quiet machine: with other load, the `wake` tails say more
 about the scheduler than about hangar (compare `wake` and `wake_nopin`).
@@ -73,7 +76,9 @@ publish      runs, sizes[]: bytes, count, ns (the median), raw[] (every run)
 latest       as publish, plus no_message (reads that returned nothing: must be 0)
 wake[]       per rate: rate_hz, seconds, writer_cpu/reader_cpu (-1: unpinned), expected,
              published, msgs, wakes, timeouts, gaps, torn, writer_late, kept_up,
-             samples, p50_us, p99_us, max_us, mean_us, writer/reader_cpu_s and _pct,
+             samples, p50_us, p99_us, p999_us, max_us, mean_us (publish to the reader's
+             wake-up), copied_p50_us, _p99_us, _p999_us, _max_us (publish to the message
+             copied out by hg_next), payload, writer/reader_cpu_s and _pct,
              writer/reader_ctxsw [voluntary, involuntary]
 wake_nopin   one such object, 1 kHz, unpinned
 idle         seconds, vol/nonvol context switches and cpu_ticks at t0 and t1, their deltas
