@@ -115,8 +115,8 @@ static struct {
 	struct prec { uint64_t end; int tx; uint64_t seq; } *precs;
 	int nprec, cap_prec;
 	uint64_t r_expect;
-	unsigned char *rbuf;
 	size_t rlen;
+	int r_held;              /* a message record waits for the clock's estimate */
 	/* The exchange after the handshake (docs/08 "The link"). */
 	int info_sent, peer_info, mirror_ok, config_match;
 	char detail[96];
@@ -355,9 +355,16 @@ static void promote(void)
 	B.pending = 0;
 	/* tx_seq runs on for the life of the process: never a seq twice */
 	B.rx_hi = B.rx_win = B.rx_count = 0;
+	/* The clock starts over with every link: nothing is translated with
+	 * the estimate of an earlier one (another boot of the peer has another
+	 * clock, and so has another process under the tests' offset). */
+	B.nsamp = 0;
+	B.npings = 0;
+	memset(B.pings, 0, sizeof B.pings);
+	B.have_offset = 0;
+	B.offset = 0;
+	B.unc = 0;
 	if (new_boot) {
-		B.nsamp = 0; /* another boot of the peer: the clock starts over */
-		B.have_offset = 0;
 		/* Its topics start their seqs over: each mirror is opened again
 		 * with the new boot id, a new epoch for its readers (docs/08
 		 * "Mirrored topics"). */
@@ -423,8 +430,16 @@ static void estimate(void)
 		B.unc = best_unc;
 		B.rtt_min = rmin;
 		B.have_offset = 1;
+	} else {
+		/* Every sample older than the window: no estimate, and nothing
+		 * translated until a pong gives one (docs/08 "Clocks"). */
+		B.have_offset = 0;
+		B.offset = 0;
+		B.unc = 0;
 	}
 }
+
+static void drain_records(void);
 
 static void on_pong(const unsigned char *b, size_t n)
 {
@@ -444,10 +459,13 @@ static void on_pong(const unsigned char *b, size_t n)
 	B.samp[B.nsamp++] = (struct sample){ .at = now_ns(), .off = off, .rtt = (uint64_t)rtt };
 	B.rtt = (uint64_t)rtt;
 	estimate();
+	if (B.r_held)
+		drain_records(); /* the messages that waited for this */
 }
 
 /* A time of the peer's to ours: the offset is theirs minus ours, both on the
- * wire. */
+ * wire. Only with an estimate of this link (B.have_offset): the callers hold
+ * or drop what they cannot translate. */
 static uint64_t to_local(uint64_t peer_t)
 {
 	if (!peer_t)
@@ -553,13 +571,36 @@ static void on_ack(const unsigned char *b, size_t n)
 
 static void handle_record(int type, const unsigned char *b, size_t n);
 
+/* The whole records received so far, in order. A message record stops here
+ * while the clock has no estimate: its stamp, and a request's deadline,
+ * cannot be put into this clock yet. It waits, and what follows it on the
+ * stream waits behind it, unacknowledged in the sender's backlog. */
+static void drain_records(void)
+{
+	size_t at = 0;
+	B.r_held = 0;
+	while (B.rlen - at >= 5) {
+		uint32_t rl = get32(recbuf + at);
+		if (rl < 1 || B.rlen - at - 4 < rl)
+			break;
+		if (recbuf[at + 4] == R_MSG && !B.have_offset) {
+			B.r_held = 1;
+			break;
+		}
+		handle_record(recbuf[at + 4], recbuf + at + 5, rl - 1);
+		at += 4 + rl;
+	}
+	memmove(recbuf, recbuf + at, B.rlen - at);
+	B.rlen -= at;
+}
+
 static void on_data(const unsigned char *b, size_t n)
 {
 	if (n < 8)
 		return;
 	uint64_t off = get64(b);
 	size_t len = n - 8;
-	if (off == B.r_expect) {
+	if (off == B.r_expect && !B.r_held) {
 		if (B.rlen + len > sizeof recbuf) {
 			B.rlen = 0; /* a record past 1 MB: not ours to take */
 		} else {
@@ -567,16 +608,7 @@ static void on_data(const unsigned char *b, size_t n)
 			B.rlen += len;
 		}
 		B.r_expect += len;
-		size_t at = 0;
-		while (B.rlen - at >= 5) {
-			uint32_t rl = get32(recbuf + at);
-			if (rl < 1 || B.rlen - at - 4 < rl)
-				break;
-			handle_record(recbuf[at + 4], recbuf + at + 5, rl - 1);
-			at += 4 + rl;
-		}
-		memmove(recbuf, recbuf + at, B.rlen - at);
-		B.rlen -= at;
+		drain_records();
 	}
 	unsigned char a[8];
 	put64(a, B.r_expect);
@@ -1031,6 +1063,7 @@ static void reset_generation(void)
 	B.nprec = 0;
 	B.r_expect = 0;
 	B.rlen = 0;
+	B.r_held = 0;
 	B.info_sent = B.peer_info = B.mirror_ok = 0;
 	B.config_match = 0;
 	for (int i = 0; i < B.ntx; i++) {
@@ -1045,6 +1078,7 @@ static void reset_generation(void)
 	B.last_rx_ns = now_ns();
 	send_info();
 	s_pump();
+	send_ping(); /* the first estimate of this link's clock, a round trip from now */
 }
 
 /* ---- Receiving datagrams --------------------------------------------------- */
@@ -1149,7 +1183,13 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 		on_ack(body, blen);
 		break;
 	case K_MSG:
-		on_message(body, blen);
+		/* No estimate of the peer's clock: a stamp cannot be translated
+		 * nor an age judged, and a latest message is not worth keeping
+		 * for later. Dropped, as one too old is. */
+		if (!B.have_offset)
+			B.st.dropped_late++;
+		else
+			on_message(body, blen);
 		break;
 	default:
 		B.st.rejected++;
@@ -1253,7 +1293,10 @@ static void publish_status(void)
 	s->rtt_min_ns = B.rtt_min;
 	s->clock_offset_ns = B.offset;
 	s->clock_uncertainty_ns = B.have_offset ? B.unc : 0;
-	snprintf(s->detail, sizeof s->detail, "%s", B.detail[0] ? B.detail : B.up && !B.peer_info ? "exchanging versions" : "");
+	snprintf(s->detail, sizeof s->detail, "%s",
+		 B.detail[0] ? B.detail :
+		 B.up && !B.peer_info ? "exchanging versions" :
+		 B.up && !B.have_offset ? "no clock estimate: nothing mirrored in" : "");
 	hg_publish(B.link_pub, s, sizeof *s, now_ns());
 	static char last[160];
 	char line[160];
@@ -1513,6 +1556,8 @@ int main(int argc, char **argv)
 		}
 		if (B.up && now - B.last_ping_ns >= PING_NS)
 			send_ping();
+		if (B.have_offset && B.nsamp && now - B.samp[B.nsamp - 1].at > PING_NS * 5)
+			estimate(); /* no pong for a while: the estimate ages, and ends with its window */
 		s_resend_check();
 		if (now - B.last_status_ns >= STATUS_NS) {
 			B.last_status_ns = now;

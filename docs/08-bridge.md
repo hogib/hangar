@@ -386,8 +386,32 @@ rise with sequence numbers, as `hg_find_stamp` does
 Stamps and deadlines are in `CLOCK_MONOTONIC`. Each side reads its `CLOCK_MONOTONIC`
 and `CLOCK_MONOTONIC_RAW` together at every ping and converts between the two with
 the newest pair; the conversion's error grows by at most 500 ppm of the time since
-that pair, and is counted in the uncertainty. When the peer's boot id changes, the
-samples are discarded and the estimate starts over.
+that pair, and is counted in the uncertainty. With every new link (a handshake
+completed: the peer rebooted, or its bridge restarted) the samples are discarded and
+the estimate starts over; it also ends when its newest sample is older than the 10 s
+window.
+
+**Without an estimate nothing is translated.** A stamp or a deadline put into this
+clock with no offset, or with the offset of the peer's previous boot, is wrong by the
+difference of two uptimes: days, between a laptop and a Pi just powered. A command
+stamped in the future passes `MaxAge`, a deadline in the future never expires, and a
+future stamp, once published, has every later stamp of its topic clamped above it.
+So, from the handshake until the first pong that answers a ping of this link (one
+round trip: the first ping goes with the handshake's last step), and whenever the
+estimate has ended:
+
+- a `latest` message is dropped and counted in `dropped_late`. For a command this is
+  the safe side: `pilot.wrench` is not published on the vehicle, and goes stale or
+  stays absent there, as when the tether is cut;
+- a `reliable` message waits. The receiver stops taking the stream at the first
+  message record (the version and schema records before it are handled), the sender
+  keeps what is unacknowledged and resends it, and everything is delivered in order
+  once the estimate exists. A request made meanwhile is answered late, or is past its
+  deadline by then and dropped by the server as expired; none is lost and none is
+  executed on a deadline nobody could read.
+
+`detail` in `bridge.<role>.link` says `no clock estimate: nothing mirrored in` while
+it lasts, and `clock_uncertainty_ns` is 0.
 
 The offset, the skew and the uncertainty are published in `bridge.<role>.link` and
 recorded, so an offline tool can refine the alignment of two recordings afterwards.
@@ -490,7 +514,7 @@ down this way, sent by the topside's `trainer` module
 | `low_rate` | the rate allowed now to `dataset` and `bulk` ([Delivery](#delivery)) |
 | `clock_offset_ns`, `clock_skew_ppm`, `clock_uncertainty_ns` | the estimate ([Clocks](#clocks)) |
 | `clamped` | translated stamps clamped to keep a mirrored topic's stamps monotone ([Clocks](#clocks)) |
-| `dropped_old`, `dropped_late` | mirrored messages dropped: seq not above the last published; older than `MaxAge` |
+| `dropped_old`, `dropped_late` | mirrored messages dropped: seq not above the last published; older than `MaxAge`, or a `latest` message received with no clock estimate ([Clocks](#clocks)) |
 | `config_match` | whether the two sides run the same release and `msg/` tree, the two configurations agree, and no module or topic name or id collides |
 | `detail` | one line: why, or what; the two release versions when they differ |
 

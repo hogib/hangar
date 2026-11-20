@@ -74,7 +74,13 @@ and calls to the other side).
   publish time into its own clock, clamped to rise (`clamped`), drops a `command`
   message older than `MaxAge` with the uncertainty added (`dropped_late`), and
   rewrites a request's `deadline_ns` (shortened by the uncertainty) and a reply's
-  `received_ns`.
+  `received_ns`, whatever the body after it. The estimate is of one link: it starts
+  over at every handshake and ends when its last sample leaves the window. With no
+  estimate nothing is translated: a `latest` message is dropped (`dropped_late`; a
+  command is then not published here, the safe side), a `reliable` one waits on the
+  stream behind the first message record, unacknowledged, and is delivered when the
+  first pong has come (one round trip after the handshake: a ping goes with it).
+  `detail` says `no clock estimate: nothing mirrored in` meanwhile.
 - **Calls across.** A server reads the mirrored `<caller>.req` as any request topic;
   `origin_boot` makes its caller `<other role>:<caller>`, and the mirrored
   `hangar.<other role>.admin.req` (writer `hangar`) `<other role>:admin:<user>`. On the

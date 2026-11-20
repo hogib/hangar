@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks).
+ * clocks, hold).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -437,6 +437,20 @@ static void tester_zero(const char *root, const char *out_path)
 	_exit(0);
 }
 
+/* --tester-one: one call, with 4 s to be answered in. */
+static void tester_one(const char *root, const char *out_path)
+{
+	tester_init(root);
+	FILE *f = fopen(out_path, "w");
+	struct depth d = { .depth_m = 4.5f }, r;
+	uint64_t t0 = now_ms();
+	hg_call_result res = hg_call("server.secret", &DEPTH_TYPE, &d, &DEPTH_TYPE, &r, 4000);
+	fprintf(f, "one %s after %llu ms %s\n", hg_status_name(res.status), (unsigned long long)(now_ms() - t0),
+		res.reason);
+	fclose(f);
+	_exit(0);
+}
+
 /* Runs this binary again as the topside's tester; its output, or NULL. */
 static const char *run_tester(const char *mode, int ahead, long timeout_ms)
 {
@@ -822,6 +836,127 @@ static void clocks_run(void)
 	       l ? strstr(l, "last ") + 5 : "");
 }
 
+/* Reads pilot.depth on the vehicle for ms, or until max messages: how many
+ * came, how many with a stamp within 50 ms before now, how many stamped
+ * over a second ahead of now. */
+struct stamps {
+	int n, good, ahead;
+};
+
+static struct stamps read_stamps(hg_sub *pd, long ms, int max)
+{
+	struct stamps st = { 0, 0, 0 };
+	struct depth d;
+	struct hg_info in;
+	uint64_t t0 = now_ms();
+	while (st.n < max && now_ms() - t0 < (uint64_t)ms) {
+		hg_wait(&pd, 1, 50);
+		while (st.n < max && hg_next(pd, &d, sizeof d, &in) == HG_MSG) {
+			uint64_t now = hg_now_ns();
+			st.n++;
+			st.good += in.stamp_ns <= now && now - in.stamp_ns < 50000000ull;
+			st.ahead += in.stamp_ns > now + 1000000000ull;
+		}
+	}
+	return st;
+}
+
+/* No clock estimate, nothing translated (docs/08 "Clocks"). The forwarder
+ * holds back the pongs on their way to the vehicle, so its bridge has a link
+ * and no estimate: no command may be published there meanwhile, a call
+ * waits and is answered once the estimate comes, and no stamp is clamped
+ * afterwards. Then the same with the topside rebooted onto another clock. */
+static void hold_run(void)
+{
+	setup_side(&V, "hold", NULL);
+	manifest("server", "[Module]\nExec=%s/server\n"
+			   "[Serve secret]\nRequest=depth\nReply=depth\nAllow=topside:tester\n", T_toys);
+	manifest("pilotread", "[Module]\nExec=%s/listener --topic pilot.depth\n[Subscribe pilot.depth]\n", T_toys);
+	setup_side(&T, "hold", NULL);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_OFFSET_NS=5000000000 %s %s\n[Bridge]\n",
+		 bridge_bin, T.conf);
+	manifest("pilot", "[Module]\nExec=%s/talker --topic pilot.depth --rate 50\n"
+			  "[Publish pilot.depth]\nType=depth\nRate=50\n", T_toys);
+	manifest("tester", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
+			   "[Call server.secret]\nRequest=depth\nReply=depth\n");
+	atomic_store(&fwd_drop_kind_v, 4);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "link up, config_match on both sides, with the vehicle's pongs held back");
+	if (!up)
+		return;
+	use(&V);
+	hg_sub *pd = hg_sub_open_from("pilot.depth", &DEPTH_TYPE, HG_OLDEST);
+	/* A call made now: its request reaches a vehicle that cannot yet say
+	 * when its deadline is. */
+	char out[600];
+	tfmt(out, sizeof out, "%s/tester.out", T.root);
+	unlink(out);
+	pid_t c = fork();
+	if (c == 0) {
+		execl(self_path, self_path, "--tester-one", T.root, out, (char *)NULL);
+		_exit(127);
+	}
+	struct stamps st = read_stamps(pd, 1200, 1000);
+	read_link(&V, &lv);
+	use(&V);
+	struct mstat ms;
+	long served = -1;
+	if (module_status("server", &ms))
+		sscanf(ms.status, "served %ld", &served);
+	EXPECT(st.n == 0 && lv.dropped_late > 0 && lv.state == 3,
+	       "no estimate on the vehicle for 1.2 s: %d pilot.depth messages published there (%d stamped over 1 s ahead), "
+	       "%llu dropped and counted",
+	       st.n, st.ahead, (unsigned long long)lv.dropped_late);
+	EXPECT(served == 0, "the call's request not handed to the server meanwhile (served %ld)", served);
+	atomic_store(&fwd_drop_kind_v, 0);
+	st = read_stamps(pd, 3000, 100);
+	read_link(&V, &lv);
+	EXPECT(st.n == 100 && st.good == st.n && lv.clamped == 0,
+	       "pongs through: %d messages, %d with their stamp within 50 ms before now, %llu clamped", st.n, st.good,
+	       (unsigned long long)lv.clamped);
+	int rc = wait_pid_ms(c, 8000);
+	const char *res = rc == 0 ? read_file(out) : NULL;
+	EXPECT(res && strstr(res, "one HG_OK"), "the call made meanwhile: %.*s", res ? (int)strcspn(res, "\n") : 9,
+	       res ? res : "no result");
+
+	/* The topside rebooted onto another clock (9 s ahead, not 5): the old
+	 * boot's offset is no estimate of the new one. */
+	atomic_store(&fwd_drop_kind_v, 4);
+	unsigned char boot0[16];
+	memcpy(boot0, lv.peer_boot_id, 16);
+	use(&T);
+	manager_stop(T.mgr);
+	rm_tree(T.topics);
+	manifest("bridge",
+		 "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_OFFSET_NS=9000000000 HANGAR_BRIDGE_TEST_BOOT=second "
+		 "%s %s\n[Bridge]\n",
+		 bridge_bin, T.conf);
+	start(&T);
+	uint64_t t0 = now_ms();
+	int newboot = 0;
+	while (!newboot && now_ms() - t0 < 8000) {
+		newboot = wait_link(&V, 1, 200, &lv) && memcmp(lv.peer_boot_id, boot0, 16) != 0;
+	}
+	uint64_t late0 = lv.dropped_late;
+	use(&V);
+	(void)read_stamps(pd, 100, 1000); /* what was left of the old boot's */
+	st = read_stamps(pd, 800, 1000);
+	read_link(&V, &lv);
+	EXPECT(newboot && st.n == 0 && lv.dropped_late > late0,
+	       "the topside rebooted, no estimate of its new clock for 0.8 s: %d messages published (%d stamped over 1 s ahead)",
+	       st.n, st.ahead);
+	atomic_store(&fwd_drop_kind_v, 0);
+	st = read_stamps(pd, 3000, 50);
+	read_link(&V, &lv);
+	EXPECT(st.n == 50 && st.good == st.n && lv.clamped == 0 && lv.clock_offset_ns > 8990000000ll &&
+		       lv.clock_offset_ns < 9010000000ll,
+	       "pongs through: %d messages, %d with their stamp within 50 ms before now, %llu clamped, offset %+.3f ms",
+	       st.n, st.good, (unsigned long long)lv.clamped, lv.clock_offset_ns / 1e6);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -829,6 +964,7 @@ static const struct run {
 	{ "main", main_run },
 	{ "mismatch", mismatch_run },
 	{ "clocks", clocks_run },
+	{ "hold", hold_run },
 };
 
 int main(int argc, char **argv)
@@ -842,6 +978,8 @@ int main(int argc, char **argv)
 		tester(argv[2], argv[3]);
 	if (argc == 4 && strcmp(argv[1], "--tester-zero") == 0)
 		tester_zero(argv[2], argv[3]);
+	if (argc == 4 && strcmp(argv[1], "--tester-one") == 0)
+		tester_one(argv[2], argv[3]);
 	const char *only = argc == 3 && strcmp(argv[1], "--only") == 0 ? argv[2] : NULL;
 	ssize_t sl = readlink("/proc/self/exe", self_path, sizeof self_path - 1);
 	self_path[sl > 0 ? sl : 0] = 0;
