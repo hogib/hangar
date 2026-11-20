@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold).
+ * clocks, hold, replay).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -125,6 +125,17 @@ static void *forwarder(void *arg)
 		}
 	}
 	return NULL;
+}
+
+/* Plays recorded datagrams [from, to) to the vehicle, from the forwarder's
+ * address (the peer the vehicle's bridge knows), gap_us apart. */
+static void replay_to_vehicle(int from, int to, int gap_us)
+{
+	for (int i = from; i < to; i++) {
+		sendto(fwd_sock, recs[i].d, recs[i].len, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
+		if (gap_us)
+			usleep((useconds_t)gap_us);
+	}
 }
 
 static int udp_bound(int *port)
@@ -957,6 +968,166 @@ static void hold_run(void)
 	       st.n, st.good, (unsigned long long)lv.clamped, lv.clock_offset_ns / 1e6);
 }
 
+static int count_in_file(const char *path, const char *needle)
+{
+	const char *t = read_file(path);
+	int n = 0;
+	for (const char *q = t; q && (q = strstr(q, needle)); q += strlen(needle))
+		n++;
+	return n;
+}
+
+/* Watches the vehicle's link for ms: 1 if it was ever up, 1 in *boot_seen
+ * if its peer was ever the boot id given. Reads pd (a subscription of the
+ * vehicle's) as it goes: how many messages came, how many were lost. */
+static int watch_link(long ms, const unsigned char *boot, int *boot_seen, hg_sub *pd, int *came, uint64_t *gaps)
+{
+	struct bridge_link lv;
+	struct depth d;
+	struct hg_info in;
+	int up_seen = 0;
+	uint64_t t0 = now_ms();
+	do {
+		if (read_link(&V, &lv) == 0) {
+			up_seen |= lv.state == 3;
+			if (boot && boot_seen && lv.state == 3 && memcmp(lv.peer_boot_id, boot, 16) == 0)
+				*boot_seen = 1;
+		}
+		use(&V);
+		while (pd && hg_next(pd, &d, sizeof d, &in) == HG_MSG) {
+			*came += 1;
+			*gaps += in.gap;
+		}
+		sleep_ms(20);
+	} while (now_ms() - t0 < (uint64_t)ms);
+	return up_seen;
+}
+
+/* A recorded session played back (docs/08 "The link": a hello replayed from
+ * an earlier connection starts at most an attempt that never completes).
+ * Someone on the tether with no key has recorded everything the topside
+ * sent, hello first, and sends it again, from the topside's address: into
+ * the session it came from; after the topside has rebooted and the link is
+ * up on new keys; with the topside gone; and after the vehicle's bridge has
+ * restarted. None of it may bring a link up, change the peer of one that is
+ * up, or put a message on a topic. */
+static void replay_run(void)
+{
+	setup_side(&V, "rpl", NULL);
+	manifest("pilotread", "[Module]\nExec=%s/listener --topic pilot.depth\n[Subscribe pilot.depth]\n", T_toys);
+	setup_side(&T, "rpl", NULL);
+	manifest("pilot", "[Module]\nExec=%s/talker --topic pilot.depth --rate 50\n"
+			  "[Publish pilot.depth]\nType=depth\nRate=50\n", T_toys);
+	atomic_store(&fwd_rec_on, 1);
+	char blog[600]; /* the vehicle's bridge says "link up with" for each link made */
+	tfmt(blog, sizeof blog, "%s/run/hangar/log/bridge.log", V.root);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "link up, the topside's datagrams recorded from its first hello");
+	if (!up)
+		return;
+	sleep_ms(1500);
+	read_link(&V, &lv);
+	unsigned char boot1[16], boot2[16];
+	memcpy(boot1, lv.peer_boot_id, 16);
+	int n1 = atomic_load(&fwd_nrec);
+	int hello1 = n1 > 0 && recs[0].d[4] == 1;
+
+	/* Into its own session: every datagram is a duplicate. */
+	uint64_t rej0 = lv.rejected;
+	int ups0 = count_in_file(blog, "link up with");
+	replay_to_vehicle(0, n1, 200);
+	sleep_ms(300);
+	read_link(&V, &lv);
+	EXPECT(hello1 && lv.state == 3 && lv.rejected - rej0 >= (uint64_t)n1 / 2 &&
+		       count_in_file(blog, "link up with") == ups0,
+	       "%d datagrams replayed into their own session: %llu rejected, the link up, no new link", n1,
+	       (unsigned long long)(lv.rejected - rej0));
+
+	/* The topside reboots: a new boot id, a new nonce, new keys. */
+	use(&T);
+	manager_stop(T.mgr);
+	n1 = atomic_load(&fwd_nrec);
+	rm_tree(T.topics);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_BOOT=second %s %s\n[Bridge]\n", bridge_bin,
+		 T.conf);
+	start(&T);
+	uint64_t t0 = now_ms();
+	int newboot = 0;
+	while (!newboot && now_ms() - t0 < 8000)
+		newboot = wait_link(&V, 1, 200, &lv) && memcmp(lv.peer_boot_id, boot1, 16) != 0;
+	memcpy(boot2, lv.peer_boot_id, 16);
+	sleep_ms(500);
+	int n2 = atomic_load(&fwd_nrec);
+	ups0 = count_in_file(blog, "link up with");
+	read_link(&V, &lv);
+	rej0 = lv.rejected;
+	use(&V);
+	hg_sub *pd = hg_sub_open("pilot.depth", &DEPTH_TYPE);
+	struct depth d;
+	struct hg_info in;
+	struct hg_topic_meta m;
+	while (pd && hg_next(pd, &d, sizeof d, &in) == HG_MSG)
+		;
+	uint32_t epoch0 = in.epoch;
+	/* The first session again, into the link the second one made. */
+	replay_to_vehicle(0, n1, 200);
+	int old_seen = 0, came = 0;
+	uint64_t gaps = 0;
+	watch_link(1500, boot1, &old_seen, pd, &came, &gaps);
+	read_link(&V, &lv);
+	int ups1 = count_in_file(blog, "link up with");
+	use(&V);
+	(void)hg_latest(pd, &d, sizeof d, &in);
+	int meta = pd && hg_sub_meta(pd, &m) == 0;
+	EXPECT(newboot && !old_seen && ups1 == ups0 && lv.state == 3 && memcmp(lv.peer_boot_id, boot2, 16) == 0,
+	       "the topside rebooted, its earlier session replayed (%d datagrams): %s, %d new link(s), %llu rejected",
+	       n1, old_seen ? "the vehicle's link went over to the replayed session" : "the link stays with the topside",
+	       ups1 - ups0, (unsigned long long)(lv.rejected - rej0));
+	EXPECT(meta && memcmp(m.origin_boot, boot2, 16) == 0 && in.epoch == epoch0 && came >= 60 && gaps < 5,
+	       "pilot.depth on the vehicle meanwhile: the rebooted topside's, %d messages in 1.5 s, %llu lost, epoch %u -> %u",
+	       came, (unsigned long long)gaps, epoch0, in.epoch);
+
+	/* The topside gone (unplugged, or off): both sessions replayed at a
+	 * vehicle with no link. */
+	use(&T);
+	manager_stop(T.mgr);
+	T.mgr = 0;
+	n2 = atomic_load(&fwd_nrec);
+	t0 = now_ms();
+	int down = 0;
+	while (!down && now_ms() - t0 < 6000) {
+		down = read_link(&V, &lv) == 0 && lv.state != 3;
+		sleep_ms(50);
+	}
+	use(&V);
+	while (pd && hg_next(pd, &d, sizeof d, &in) == HG_MSG)
+		;
+	ups0 = count_in_file(blog, "link up with");
+	int backs0 = count_in_file(blog, "link back up");
+	replay_to_vehicle(0, n2, 200);
+	int published = 0;
+	int up_seen = watch_link(1500, NULL, NULL, pd, &published, &gaps);
+	ups1 = count_in_file(blog, "link up with") + count_in_file(blog, "link back up") - backs0;
+	EXPECT(down && !up_seen && ups1 == ups0 && published == 0,
+	       "the topside gone, both its sessions replayed (%d datagrams): %s, %d message(s) published on pilot.depth",
+	       n2, up_seen || ups1 != ups0 ? "the vehicle's link came up with nobody there" : "no link", published);
+
+	/* And at a vehicle whose bridge has restarted since. */
+	use(&V);
+	pid_t b0 = pid_of(&V, "bridge");
+	ctl("restart bridge");
+	int again = wait_new_pid("bridge", b0, "ready", 5000);
+	sleep_ms(300);
+	replay_to_vehicle(0, n2, 200);
+	up_seen = watch_link(1500, NULL, NULL, pd, &published, &gaps);
+	EXPECT(again && !up_seen && published == 0,
+	       "the vehicle's bridge restarted, both sessions replayed: %s, %d message(s) published",
+	       up_seen ? "a link came up" : "no link", published);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -965,6 +1136,7 @@ static const struct run {
 	{ "mismatch", mismatch_run },
 	{ "clocks", clocks_run },
 	{ "hold", hold_run },
+	{ "replay", replay_run },
 };
 
 int main(int argc, char **argv)

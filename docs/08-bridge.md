@@ -220,11 +220,28 @@ UDP, one socket each side. Every datagram:
 | 24 | | body | at most 1200 bytes |
 | end | u8[16] | `tag` | keyed BLAKE2s-128 of header and body, with the sender's direction key; for a hello, with the shared key |
 
-**Handshake.** Each side sends a hello holding its role, its pair, a fresh random
-nonce of 16 bytes, and its machine's boot id (`/proc/sys/kernel/random/boot_id`). A
-hello that carries the receiver's own role or its own nonce is refused. From the two
-nonces, `n_v` the vehicle's and `n_t` the topside's, each side derives one key per
-direction:
+**Handshake.** Each side sends a hello holding its role, its pair, a random nonce of
+16 bytes, its machine's boot id (`/proc/sys/kernel/random/boot_id`), the peer's nonce
+it answers (zeros in a first hello), and the id of the link whose keys it holds (0:
+none). A hello that carries the receiver's own role or its own nonce is refused.
+
+A hello is tagged under the shared key, which never changes, so a recorded one checks
+for as long as that key is in use. What makes a hello count is the echo: a side acts
+only on a hello that **echoes the nonce it is offering now**, which nobody could have
+written before that nonce went out, nor without the key. A nonce is offered for one
+handshake: it is drawn again as soon as keys made from it are in force, and 5 s after
+it first went on the wire if no handshake completed. So three things can happen to a
+hello whose tag checks:
+
+- it names the link whose keys are in force here: the peer still holds them and lost
+  the link in an outage. The keys stand; a confirm under them is the answer;
+- it does not echo the nonce offered now (a first hello, or a recorded one sent
+  again): nothing is kept of it and nothing changes. The answer is this side's hello,
+  echoing the nonce received;
+- it echoes the nonce offered now: it is fresh, and its keys become the pending ones.
+
+From the two nonces, `n_v` the vehicle's and `n_t` the topside's, each side derives
+one key per direction:
 
 ```
 K_up   = BLAKE2s-256(key = K, "up"   ‖ n_v ‖ n_t)    vehicle to topside
@@ -235,9 +252,24 @@ A side tags what it sends with its own direction's key and checks what it receiv
 with the other: a datagram tagged with the receiver's own sending key (one of its own
 datagrams sent back to it) fails the check. Each side then sends a confirm under its
 new key. The link is up on a side once it has received a datagram that checks under
-the peer's new key. Until then, a link already up stays up with its old keys: a hello
-replayed from an earlier connection starts at most an attempt that never completes,
-and a peer without the shared key cannot produce a valid tag.
+the peer's new key and carries a packet sequence. Until then, a link already up stays
+up with its old keys, and a peer without the shared key cannot produce a valid tag.
+
+**What a recording is worth.** Someone on the tether who holds no key and has
+recorded earlier traffic can send it again. A recorded hello changes nothing on the
+side that receives it: it is answered with one hello, sent to the peer of a link that
+is up, and it sets no key. A recorded session cannot complete a handshake: its
+datagrams are tagged under keys made from a nonce this side has since replaced, and
+keys are never made twice from the same pair of nonces. The one recording that still
+counts is of a handshake under way, sent again within the 5 s its nonce lives and
+before that handshake completes: it is the peer's own, current hello, delivered a
+second time, and the keys it leads to are those the peer holds. What such a person
+can still do: delay or drop datagrams if they sit in the path (a link cut, which the
+staleness of every mirrored topic shows), and make each side send one hello per
+replayed hello. They cannot bring a link up, move one that is up to other keys, or
+put a message on a topic. And a link made of replayed datagrams, were there one,
+would get no clock estimate (its pongs answer no ping of this link), so nothing it
+carried would be published ([Clocks](#clocks)).
 
 Once the link is up, the two bridges exchange, reliably, their release version and the
 hash of their installed `msg/` tree, their configuration hash, and their machines'
@@ -537,7 +569,10 @@ them. The topside's recorder is a module of another name than the vehicle's
   back to its sender: rejected, counted, and none of them moves `last_rx_ns` or the
   replay window.
 - Handshake: a replayed hello leaves a live link up and never completes; a restarted
-  peer reconnects.
+  peer reconnects. A whole recorded session, hello first, sent again from the peer's
+  address: into its own session, after the peer rebooted, with the peer gone, and
+  after this side's bridge restarted: no link comes up or changes, nothing is
+  published.
 - Priorities, over a link narrower than `MaxRate` and shared by both directions
   (`netem` and `tbf` at 5 Mbit for both together, with video): dataset rows going up
   and a file going down; once the rates settle, the median latency of `pilot.wrench`

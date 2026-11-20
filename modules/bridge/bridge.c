@@ -46,6 +46,8 @@
 #define PING_NS 100000000ull
 #define STATUS_NS 100000000ull
 #define HELLO_NS 250000000ull
+#define NONCE_NS 5000000000ull    /* a nonce is offered for this long, then drawn again */
+#define HELLO_BODY 92
 #define WINDOW_NS 10000000000ull  /* the clock's sample window */
 
 enum { K_HELLO = 1, K_CONFIRM, K_PING, K_PONG, K_DATA, K_ACK, K_MSG };
@@ -96,11 +98,16 @@ static struct {
 	int have_peer, peer_fixed;
 	char peer_txt[48];
 	uint32_t id;
-	unsigned char boot[16], nonce[16];
+	unsigned char boot[16];
+	/* This side's nonce for the next handshake: drawn again once keys were
+	 * made in force with it, and NONCE_NS after it first went on the wire,
+	 * so no pair of nonces, and so no session key, comes twice. */
+	unsigned char nonce[16];
+	uint64_t nonce_since;    /* when it was first sent; 0: not yet */
 	int64_t fake_ns;         /* tests: this side's clock on the wire runs ahead by it */
 	/* Keys in force, and a handshake under way. */
 	int keyed;
-	unsigned char k_tx[32], k_rx[32], peer_nonce[16], peer_boot[16];
+	unsigned char k_tx[32], k_rx[32], peer_boot[16];
 	uint32_t peer_id, link_id;
 	int pending;
 	unsigned char p_tx[32], p_rx[32], p_nonce[16], p_boot[16];
@@ -271,17 +278,37 @@ static void derive(const unsigned char *nv, const unsigned char *nt, unsigned ch
 	*link_id = get32(id) | 1;
 }
 
-static void send_hello(void)
+/* A new nonce of ours: whatever handshake was under way with the old one
+ * is over. */
+static void new_nonce(void)
 {
-	unsigned char b[1 + 3 + 4 + 32 + 16 + 16];
+	random_bytes(B.nonce, 16);
+	B.nonce_since = 0;
+	B.pending = 0;
+}
+
+/* Role, id, pair, our nonce, our boot id; then the peer's nonce this hello
+ * answers (zeros: none, a first hello), and the id of the link whose keys we
+ * hold (0: none). A hello is tagged under the shared key and can be recorded
+ * and sent again for as long as that key lives: the echo is what makes one
+ * fresh. Only a hello that echoes the nonce we offer now was made after we
+ * offered it, by someone who holds the key. */
+static void send_hello(const unsigned char *echo)
+{
+	unsigned char b[HELLO_BODY];
 	memset(b, 0, sizeof b);
 	b[0] = (unsigned char)(B.vehicle ? 1 : 2);
 	put32(b + 4, B.id);
 	memcpy(b + 8, B.conf.pair, strnlen(B.conf.pair, 31));
 	memcpy(b + 40, B.nonce, 16);
 	memcpy(b + 56, B.boot, 16);
+	if (echo)
+		memcpy(b + 72, echo, 16);
+	put32(b + 88, B.keyed ? B.link_id : 0);
 	send_dgram(K_HELLO, BC_SAFETY, b, sizeof b, B.key);
 	B.last_hello_ns = now_ns();
+	if (!B.nonce_since)
+		B.nonce_since = B.last_hello_ns;
 }
 
 static void send_confirm(const unsigned char *k_tx)
@@ -297,47 +324,64 @@ static void send_confirm(const unsigned char *k_tx)
 
 static void reset_generation(void);
 
+/* A hello, its tag checked under the shared key: which proves the key, at
+ * some time, and nothing about now. Three kinds:
+ *
+ * - from the peer whose keys are in force (it names our link): it lost the
+ *   link in an outage; the keys stand, and a confirm under them brings it
+ *   back;
+ * - one that does not echo the nonce we offer: a first hello, or an old one
+ *   sent again. Nothing is kept of it and nothing changes; our hello,
+ *   echoing its nonce, asks whoever sent it to answer now;
+ * - one that echoes our nonce: fresh. Its keys become the pending ones, and
+ *   a confirm under them goes back; the link is theirs when a datagram
+ *   checks under them (on_dgram).
+ *
+ * So a recorded hello never sets a key, and the keys a fresh one sets are
+ * made from a nonce of ours that no earlier session used. */
 static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in *from)
 {
-	if (n < 72)
+	if (n < HELLO_BODY) {
+		B.st.rejected++;
 		return;
+	}
 	int role = b[0];
 	char pair[33];
 	memcpy(pair, b + 8, 32);
 	pair[32] = 0;
+	const unsigned char *nonce = b + 40, *echo = b + 72;
 	if (role == (B.vehicle ? 1 : 2) || role < 1 || role > 2 || strcmp(pair, B.conf.pair) != 0 ||
-	    memcmp(b + 40, B.nonce, 16) == 0) {
+	    memcmp(nonce, B.nonce, 16) == 0) {
 		B.st.rejected++; /* our own role or nonce, another pair: refused (docs/08) */
 		return;
 	}
-	if (B.keyed && memcmp(b + 40, B.peer_nonce, 16) == 0) {
-		/* The peer we have keys with, saying hello again after an outage: the
-		 * keys stand; a confirm under them brings the link back. */
-		if (!B.peer_fixed) {
-			B.peer = *from;
-			B.have_peer = 1;
-		}
-		send_keyed(K_CONFIRM, BC_SAFETY, "", 0);
-		return;
-	}
-	int fresh = !B.pending || memcmp(b + 40, B.p_nonce, 16) != 0;
-	memcpy(B.p_nonce, b + 40, 16);
-	memcpy(B.p_boot, b + 56, 16);
-	B.p_id = get32(b + 4);
-	unsigned char up[32], down[32];
-	if (B.vehicle)
-		derive(B.nonce, B.p_nonce, up, down, &B.p_link);
-	else
-		derive(B.p_nonce, B.nonce, up, down, &B.p_link);
-	memcpy(B.p_tx, B.vehicle ? up : down, 32);
-	memcpy(B.p_rx, B.vehicle ? down : up, 32);
-	B.pending = 1;
 	if (!B.peer_fixed || !B.have_peer) {
 		B.peer = *from;
 		B.have_peer = 1;
 	}
-	if (fresh)
-		send_hello(); /* the peer needs our nonce too */
+	if (B.keyed && get32(b + 88) == B.link_id) {
+		send_keyed(K_CONFIRM, BC_SAFETY, "", 0);
+		return;
+	}
+	if (!B.nonce_since || memcmp(echo, B.nonce, 16) != 0) {
+		send_hello(nonce);
+		return;
+	}
+	int again = B.pending && memcmp(nonce, B.p_nonce, 16) == 0;
+	if (!again) {
+		memcpy(B.p_nonce, nonce, 16);
+		memcpy(B.p_boot, b + 56, 16);
+		B.p_id = get32(b + 4);
+		unsigned char up[32], down[32];
+		if (B.vehicle)
+			derive(B.nonce, B.p_nonce, up, down, &B.p_link);
+		else
+			derive(B.p_nonce, B.nonce, up, down, &B.p_link);
+		memcpy(B.p_tx, B.vehicle ? up : down, 32);
+		memcpy(B.p_rx, B.vehicle ? down : up, 32);
+		B.pending = 1;
+		send_hello(nonce); /* the peer needs its nonce echoed too */
+	}
 	send_confirm(B.p_tx);
 }
 
@@ -346,13 +390,12 @@ static void promote(void)
 {
 	memcpy(B.k_tx, B.p_tx, 32);
 	memcpy(B.k_rx, B.p_rx, 32);
-	memcpy(B.peer_nonce, B.p_nonce, 16);
 	int new_boot = !B.keyed || memcmp(B.peer_boot, B.p_boot, 16) != 0;
 	memcpy(B.peer_boot, B.p_boot, 16);
 	B.peer_id = B.p_id;
 	B.link_id = B.p_link;
 	B.keyed = 1;
-	B.pending = 0;
+	new_nonce(); /* this one made the keys in force: never offered again */
 	/* tx_seq runs on for the life of the process: never a seq twice */
 	B.rx_hi = B.rx_win = B.rx_count = 0;
 	/* The clock starts over with every link: nothing is translated with
@@ -1142,6 +1185,10 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 			B.st.rejected++; /* a wrong key, a changed byte, our own datagram sent back */
 			return;
 		}
+		if (get64(d + 16) == 0) {
+			B.st.rejected++; /* no sequence number: checked before anything changes */
+			return;
+		}
 		promote(); /* the peer holds the new keys: the link is up on them */
 	}
 	if (!replay_ok(get64(d + 16))) {
@@ -1420,7 +1467,7 @@ int main(int argc, char **argv)
 	const char *fo = getenv("HANGAR_BRIDGE_TEST_OFFSET_NS");
 	B.fake_ns = fo ? strtoll(fo, NULL, 10) : 0;
 	random_bytes(&B.id, sizeof B.id);
-	random_bytes(B.nonce, 16);
+	new_nonce();
 	read_boot_id(B.boot);
 	hash_msg_dir(B.conf.msg_dir);
 	B.sbuf = malloc(SBUF_CAP);
@@ -1547,8 +1594,10 @@ int main(int argc, char **argv)
 			B.up = 0;
 			mod_log(WHO, "link down: nothing heard for %.1f s", (double)(now - B.last_rx_ns) / 1e9);
 		}
+		if (B.nonce_since && now - B.nonce_since > NONCE_NS)
+			new_nonce();
 		if (!B.up && B.have_peer && now - B.last_hello_ns >= (B.pending ? HELLO_NS : 1000000000ull)) {
-			send_hello();
+			send_hello(B.pending ? B.p_nonce : NULL);
 			if (B.pending)
 				send_confirm(B.p_tx);
 			else if (B.keyed)

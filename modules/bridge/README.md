@@ -43,11 +43,18 @@ and calls to the other side).
   shared key for a hello, else under the sender's direction key. A datagram whose tag
   does not check, or whose sequence is not new to a 64-wide replay window, is dropped
   and counted in `rejected`.
-- **The handshake.** Each side's hello carries its role, id, pair, a fresh 16-byte
-  nonce and its boot id. `K_up = BLAKE2s-256(key=K, "up"‖n_v‖n_t)`, `K_down` likewise;
-  a confirm under the new key goes at once, and the link is up on the new keys when a
-  datagram checks under them; the old keys stand until then. A hello with the nonce in
-  force, after an outage, is answered with a confirm under the standing keys.
+- **The handshake.** Each side's hello (92 bytes) carries its role, id, pair, a
+  16-byte nonce, its boot id, the peer's nonce it answers and the id of the link whose
+  keys it holds. Only a hello that echoes the nonce this side offers now is acted on:
+  `K_up = BLAKE2s-256(key=K, "up"‖n_v‖n_t)`, `K_down` likewise, become the pending
+  keys, a confirm under them goes at once, and the link is up on them when a datagram
+  checks under them; the old keys stand until then. Any other hello is answered with
+  this side's hello echoing its nonce, and changes nothing. A hello that names the
+  link in force, after an outage, is answered with a confirm under the standing keys.
+  The nonce is drawn again when keys made from it come into force and 5 s after it
+  first went out, so a pair of nonces, and a session key, never comes twice: a
+  recorded hello sets no key and a recorded session completes no handshake
+  (docs/08 "What a recording is worth").
 - **After the handshake** the two exchange the release (`HANGAR_VERSION`, `dev` when
   not set at build), the hash of `MsgDir`'s `.msg` files and the configuration's hash.
   A difference sets `config_match` false, says which in `detail` and the status line,
