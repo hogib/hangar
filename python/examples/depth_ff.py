@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The depth feed-forward trainer of docs/09-learning.md "Example: adaptive
-depth hold": an Affine that normalizes the inputs, a 1-layer LSTM of 16, a
-Linear to one output and an Affine that scales it, bound to the wrench's
-heave; trained on the heave the controller's command was short by, in
-stateful chunks of 50 ticks with the state carried across them.
+depth hold" in its first design: an Affine that normalizes the inputs, a
+1-layer LSTM of 16, a Linear to one output and an Affine that scales it,
+bound to the wrench's heave; trained on the heave the controller's command
+was short by, in stateful chunks of 50 ticks with the state carried across
+them.
+
+Kept as it was run (tools/sim/e2e-depth-ff.sh, profiles/sim-depth-ff). Its
+label is zero where only the controller drives, and the substitute label is
+the trim the integrator already holds: bench/e2e-depth-ff/README.md. The
+example docs/09 describes now is depth_ff2.py.
 
     depth_ff.py --synthetic --out depth_ff.hgw          offline, no vehicle, no recordings
     depth_ff.py --dataset depth_ff.hgr --out depth_ff.hgw
