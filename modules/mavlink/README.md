@@ -191,7 +191,13 @@ pseudo-terminal.
 2. **`SET_MODE` gets no `COMMAND_ACK`**: a message is not a command; the `STATUSTEXT`
    says what happened. docs/10 lists both under one row.
 3. **`BATTERY_STATUS` from ArduSub is not folded into `power.battery`**; `SYS_STATUS`
-   carries the voltage ArduSub measures, and the message is in the tlog.
+   carries the voltage ArduSub measures, and the message is in the tlog. A
+   `voltage_battery` of 65535, MAVLink's "the autopilot
+   does not measure it", is published as NaN (not 65.5 V): the topic keeps its rate,
+   the safety module counts NaN as no reading (arming refused while `battery_required`
+   is on), the console shows a dash, and the topside's module sends 65535 on to
+   QGroundControl. A 0, which ArduPilot sends without a battery monitor, is 0 V and
+   fails the checklist as before.
 4. **`pilot.buttons` is `msg/pilot_buttons.msg`** (`u32 pressed`, `u32 reserved`, the
    fields docs/10 gives), named for the topic as the other types are, since a type
    named `buttons` says nothing about whose.

@@ -379,7 +379,11 @@ static void tick(uint64_t now)
 		T.next_bat_ns = now + 500000000ull;
 		struct mav_sys_status s;
 		memset(&s, 0, sizeof s);
-		s.voltage_battery = (uint16_t)(T.bat.voltage_v * 1000);
+		/* A voltage that is not a number (the vehicle's autopilot measures
+		 * none) or does not fit goes on as MAVLink's "not measured". */
+		float mv = T.bat.voltage_v * 1000.0f;
+		uint16_t mv16 = mv >= 0.0f && mv < 65535.0f ? (uint16_t)mv : UINT16_MAX;
+		s.voltage_battery = mv16;
 		s.current_battery = T.bat.current_a < 0 ? -1 : (int16_t)(T.bat.current_a * 100);
 		s.battery_remaining = T.bat.remaining < 0 ? -1 : (int8_t)(T.bat.remaining * 100);
 		s.onboard_control_sensors_present = s.onboard_control_sensors_enabled = s.onboard_control_sensors_health =
@@ -391,7 +395,7 @@ static void tick(uint64_t now)
 		b.type = MAV_BATTERY_TYPE_LIPO;
 		for (int i = 0; i < 10; i++)
 			b.voltages[i] = UINT16_MAX;
-		b.voltages[0] = (uint16_t)(T.bat.voltage_v * 1000);
+		b.voltages[0] = mv16;
 		b.current_battery = s.current_battery;
 		b.battery_remaining = s.battery_remaining;
 		b.temperature = INT16_MAX;

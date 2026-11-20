@@ -478,7 +478,12 @@ static void on_frame(void *ctx, const struct mav_frame *f)
 		struct mav_sys_status m;
 		mav_unpack_sys_status(f->payload, f->len, &m);
 		struct battery b;
-		b.voltage_v = m.voltage_battery / 1000.0f;
+		/* UINT16_MAX is MAVLink's "the autopilot does not measure it", not
+		 * 65.535 V: published as NaN, which no reader takes for a voltage
+		 * (the safety module counts it as no reading; the console shows a
+		 * dash). The topic keeps its rate either way, so the manager does
+		 * not see a stale module where only a battery monitor is missing. */
+		b.voltage_v = m.voltage_battery == UINT16_MAX ? NAN : m.voltage_battery / 1000.0f;
 		b.current_a = m.current_battery < 0 ? -1.0f : m.current_battery / 100.0f;
 		b.remaining = m.battery_remaining < 0 ? -1.0f : m.battery_remaining / 100.0f;
 		hg_publish_with(pub_bat, &b, sizeof b, now, HG_NO_REFS, NULL, 0);

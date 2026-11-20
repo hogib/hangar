@@ -422,6 +422,20 @@ static void test_heartbeat_and_telemetry(void)
 	CHECK(R.hud >= 2);
 	CHECK(R.sys_status >= 1 && R.sys.voltage_battery == 15500 && R.sys.battery_remaining == 70);
 	CHECK(R.battery >= 1);
+	/* A voltage the vehicle does not know (NaN in power.battery: the autopilot
+	 * measures none) goes to the ground station as MAVLink's "not measured",
+	 * 65535, not as whatever a cast of NaN gives; and back. */
+	T.volts = NAN;
+	uint64_t tb = now_ms();
+	while (R.sys.voltage_battery != UINT16_MAX && now_ms() - tb < 5000)
+		pump(100);
+	CHECK_EQ_INT(R.sys.voltage_battery, UINT16_MAX);
+	CHECK_EQ_INT(R.sys.battery_remaining, 70);
+	T.volts = 15.5f;
+	tb = now_ms();
+	while (R.sys.voltage_battery != 15500 && now_ms() - tb < 5000)
+		pump(100);
+	CHECK_EQ_INT(R.sys.voltage_battery, 15500);
 	/* The first STATUSTEXT: the safety state as the module first saw it. */
 	CHECK(R.statustexts >= 1);
 	CHECK(strstr(R.texts[0], "hangar disarmed") != NULL);

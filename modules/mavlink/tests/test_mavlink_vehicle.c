@@ -435,6 +435,56 @@ static void test_start(void)
 	CHECK(info.stamp_ns > 0 && info.publish_ns >= info.stamp_ns && info.publish_ns - info.stamp_ns < 50000000ull);
 }
 
+/* power.battery's voltage as the next message says it, within the time. */
+static float battery_voltage_after(long ms)
+{
+	struct battery b = { 0 };
+	struct hg_info info;
+	uint64_t t0 = now_ms();
+	(void)hg_latest(S_bat, &b, sizeof b, &info); /* what was there before */
+	do {
+		pump(50);
+		if (hg_latest(S_bat, &b, sizeof b, &info) == HG_MSG)
+			return b.voltage_v;
+	} while (now_ms() - t0 < (uint64_t)ms);
+	return -1.0f;
+}
+
+/* SYS_STATUS.voltage_battery 65535 is MAVLink's "not measured". Divided by a
+ * thousand like any other value it was published as 65.5 V, a healthy pack
+ * to the safety module's checklist and battery trigger. It is NaN now, with
+ * the topic's rate and the other fields as before. */
+static void test_battery_unknown(void)
+{
+	CHECK(strncmp(fake_cmd("voltage 65535"), "ok", 2) == 0);
+	float v = 0;
+	uint64_t t0 = now_ms();
+	do {
+		v = battery_voltage_after(2000);
+	} while (!isnan(v) && now_ms() - t0 < 5000);
+	CHECK(isnan(v));
+	if (!isnan(v))
+		printf("    power.battery voltage_v %.3f with voltage_battery 65535\n", (double)v);
+	struct battery b;
+	struct hg_info info;
+	pump(600);
+	CHECK_EQ_INT(hg_latest(S_bat, &b, sizeof b, &info), HG_MSG); /* still published */
+	CHECK(fabsf(b.remaining - 0.8f) < 0.01f && fabsf(b.current_a - 2.5f) < 0.01f);
+	/* 65534 is a voltage like any other; and back to 16 V. */
+	CHECK(strncmp(fake_cmd("voltage 65534"), "ok", 2) == 0);
+	t0 = now_ms();
+	do {
+		v = battery_voltage_after(2000);
+	} while (isnan(v) && now_ms() - t0 < 5000);
+	CHECK(fabsf(v - 65.534f) < 0.01f);
+	CHECK(strncmp(fake_cmd("voltage 16000"), "ok", 2) == 0);
+	t0 = now_ms();
+	do {
+		v = battery_voltage_after(2000);
+	} while (!(fabsf(v - 16.0f) < 0.01f) && now_ms() - t0 < 5000);
+	CHECK(fabsf(v - 16.0f) < 0.01f);
+}
+
 static void test_params_and_setup(void)
 {
 	/* mavlink.arm refuses while the parameters differ (and safety is not arming). */
@@ -1123,6 +1173,7 @@ int main(void)
 	hd_setup(serial_mode ? "mavlink_serial" : "mavlink_vehicle", NULL);
 	copy_types();
 	RUN_TEST(test_start);
+	RUN_TEST(test_battery_unknown);
 	RUN_TEST(test_params_and_setup);
 	RUN_TEST(test_params_backup);
 	RUN_TEST(test_arming_and_commands);

@@ -27,6 +27,7 @@
  *
  * Control lines: status | arm | disarm | mode N | refuse <text> | accept |
  * refuse-disarm on|off | silence SECONDS | boot-reset | set NAME VALUE | quit |
+ * voltage MILLIVOLTS (SYS_STATUS.voltage_battery; 65535 is "not measured") |
  * get NAME ("NAME VALUE TYPE", or "none") | drop I [J ...] (those indices left
  * out of the next list stream) | ignore-set NAME|- (PARAM_SETs of NAME answered
  * with the old value, as a refused write);
@@ -85,6 +86,7 @@ static struct {
 	uint8_t mc_from;
 	uint64_t rx, rejected, rejected_gcs, arms, disarms, params_set, setinterval, mode_sets;
 	int quit;
+	uint16_t voltage_mv;         /* SYS_STATUS.voltage_battery */
 	/* --pty */
 	int serial, pty, noread;
 	const char *link;
@@ -256,7 +258,7 @@ static void send_telemetry(int k)
 	case MAV_MSG_ID_SYS_STATUS: {
 		struct mav_sys_status s;
 		memset(&s, 0, sizeof s);
-		s.voltage_battery = 16000;
+		s.voltage_battery = S.voltage_mv;
 		s.current_battery = 250;
 		s.battery_remaining = 80;
 		SEND(SYS_STATUS, sys_status, &s);
@@ -504,6 +506,8 @@ static void control(void)
 			S.refuse_disarm = strcmp(buf + 14, "on") == 0;
 		} else if (strncmp(buf, "silence ", 8) == 0) {
 			S.silent_until = now_ns() + (uint64_t)(atof(buf + 8) * 1e9);
+		} else if (strncmp(buf, "voltage ", 8) == 0) {
+			S.voltage_mv = (uint16_t)atoi(buf + 8);
 		} else if (strcmp(buf, "boot-reset") == 0) {
 			S.boot_ns = now_ns();
 		} else if (strncmp(buf, "set ", 4) == 0) {
@@ -709,6 +713,7 @@ int main(int argc, char **argv)
 		}
 	}
 	S.pty = -1;
+	S.voltage_mv = 16000;
 	if (S.link) {
 		S.serial = 1;
 		if (open_pty() < 0) {

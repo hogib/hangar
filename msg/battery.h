@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "hg_type.h"
 typedef struct battery {
-    float voltage_v;   // V
+    float voltage_v;   // V; NaN when the autopilot reports that it measures none
     float current_a;   // A, discharge positive
     float remaining;   // fraction 0 to 1 of capacity left; -1 unknown
     uint8_t _pad0[4];  // padding

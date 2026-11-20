@@ -3,7 +3,7 @@
 #include "battery.h"
 
 static const struct hg_field battery_fields[3] = {
-    {"voltage_v", HG_F32, 1, 0, "V"},
+    {"voltage_v", HG_F32, 1, 0, "V; NaN when the autopilot reports that it measures none"},
     {"current_a", HG_F32, 1, 4, "A, discharge positive"},
     {"remaining", HG_F32, 1, 8, "fraction 0 to 1 of capacity left; -1 unknown"},
 };
@@ -12,11 +12,11 @@ const struct hg_type BATTERY_TYPE = {
     .name = "battery",
     .schema =
         "# msg/battery.msg: power.battery, from SYS_STATUS and BATTERY_STATUS (docs/10-mavlink.md)\n"
-        "f32 voltage_v   # V\n"
+        "f32 voltage_v   # V; NaN when the autopilot reports that it measures none\n"
         "f32 current_a   # A, discharge positive\n"
         "f32 remaining   # fraction 0 to 1 of capacity left; -1 unknown\n"
         ,
-    .schema_bytes = 213,
+    .schema_bytes = 267,
     .hash = 0xe8094032d9e5f89cull,   // FNV-1a 64 of the canonical form
     .payload_bytes = 16,
     .n_fields = 3,
