@@ -79,11 +79,38 @@ static void test_shutdown_with_a_module_in_backoff(void)
 	unlink(T_log);
 }
 
+/* A module listed refused when the manager was killed, its manifest
+ * corrected before the next one starts: it is started, like any module that
+ * was not down on purpose. One the operator stopped stays down. */
+static void test_refused_then_corrected_starts(void)
+{
+	manifest("fixme", "[Module]\nExec=%s/stubborn --polite\nNoSuchKey=1\n", T_toys);
+	manifest("down", "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("fixme", "refused", 3000));
+	CHECK(wait_state("down", "ready", 3000));
+	CHECK(strncmp(ctl("stop down"), "ok", 2) == 0);
+	CHECK(wait_state("down", "stopped", 3000));
+	manager_kill9(mgr);
+	manifest("fixme", "[Module]\nExec=%s/stubborn --polite\n", T_toys);
+	log_clear();
+	mgr = manager_start();
+	CHECK(wait_state("fixme", "ready", 3000));
+	struct mstat m;
+	CHECK(module_status("down", &m));
+	CHECK(strcmp(m.state, "stopped") == 0);
+	manager_stop(mgr);
+	manifest_remove("fixme");
+	manifest_remove("down");
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("recover", NULL);
 	HD_RUN(test_adopted_under_a_refused_manifest);
 	HD_RUN(test_shutdown_with_a_module_in_backoff);
+	HD_RUN(test_refused_then_corrected_starts);
 	hd_teardown();
 	TEST_MAIN_END();
 }

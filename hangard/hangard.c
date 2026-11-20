@@ -564,8 +564,13 @@ static void apply_manifests(struct mf_set *set, char (*dead)[MF_NAME], int n_dea
 				set_state(m, ST_REFUSED, mf->reason);
 			continue;
 		}
-		if (m->st == ST_REFUSED)
+		if (m->st == ST_REFUSED) {
+			/* Refused before, accepted now: it was not down on purpose,
+			 * so step 6 does not keep it down as it keeps a stopped or
+			 * failed module of the registry. */
 			m->st = ST_STOPPED;
+			m->from_registry = 0;
+		}
 		module_outputs_init(m);
 		if (was_running && changed) {
 			hd_log("%s: manifest or wiring changed since it was started: restarting", m->name);
