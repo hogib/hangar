@@ -94,7 +94,10 @@ int hg_call_start(const char *target, const struct hg_type *req_type, const void
 hg_call_result hg_call_poll(hg_pending *pc, void *rep);
 /* hg_call_start, then hg_wait on the server's `.rep` topic until the reply
  * or the timeout: stops the module's loop for up to the timeout. Refused
- * (HG_E_REFUSED, with the reason) in a module with an actuator output. */
+ * (HG_E_REFUSED, with the reason) in a module with an actuator output.
+ * hg_wait_interrupt(), or a signal, ends the wait as it ends hg_wait: the
+ * call returns HG_E_TIMEOUT ("interrupted before a reply"), and the module's
+ * next hg_wait still reports the interrupt. */
 hg_call_result hg_call(const char *target, const struct hg_type *req_type, const void *req,
 		       const struct hg_type *rep_type, void *rep, int timeout_ms);
 

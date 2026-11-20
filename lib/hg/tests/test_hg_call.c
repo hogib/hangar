@@ -11,6 +11,7 @@
 #include "hg_test.h"
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 
 #include "hg_call.h"
@@ -501,6 +502,39 @@ static void test_short_request(void)
 	hg_sub_close(rep);
 }
 
+static void *interrupt_soon(void *arg)
+{
+	sleep_ms((long)(intptr_t)arg);
+	hg_wait_interrupt();
+	return NULL;
+}
+
+/* hg_wait_interrupt during a blocking hg_call ends the call, and the
+ * module's own next wait still sees the interrupt: a SIGTERM handler that
+ * calls it stops a module that is inside a call. */
+static void test_call_interrupted(void)
+{
+	/* hg_call needs a module that may wait on its own reply: self has no
+	 * actuator. ghost never answers: its .rep topic is absent. */
+	struct depth d = { .depth_m = 1 }, r;
+	pthread_t t;
+	pthread_create(&t, NULL, interrupt_soon, (void *)(intptr_t)50);
+	uint64_t t0 = hg_now_ns();
+	hg_call_result res = hg_call("ghost.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &r, 1500);
+	uint64_t ms = ms_since(t0);
+	pthread_join(t, NULL);
+	printf("    hg_call returned %s '%s' after %llu ms (timeout 1500, interrupt at 50)\n", hg_status_name(res.status),
+	       res.reason, (unsigned long long)ms);
+	CHECK_EQ_INT(res.status, HG_E_TIMEOUT);
+	CHECK(ms < 500);
+	hg_sub *subs[16];
+	int n = hg_call_subs(subs, 16);
+	t0 = hg_now_ns();
+	unsigned w = hg_wait(subs, n, 300);
+	CHECK(w != (unsigned)-1 && (w & HG_READY_INTERRUPT));
+	CHECK(ms_since(t0) < 200);
+}
+
 static void test_caller_tokens(void)
 {
 	pid_t pid = fork();
@@ -942,6 +976,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_caller_tokens);
 	RUN_TEST(test_idle_server_sleeps);
 	RUN_TEST(test_short_request);
+	RUN_TEST(test_call_interrupted);
 	RUN_TEST(test_actuator_refuses_hg_call);
 	RUN_TEST(test_param_grammar);
 	RUN_TEST(test_params);

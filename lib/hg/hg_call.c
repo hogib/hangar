@@ -459,7 +459,18 @@ hg_call_result hg_call(const char *target, const struct hg_type *req_type, const
 			return r;
 		uint64_t now = hg_now_ns();
 		int ms = now >= pc->deadline_ns ? 0 : (int)((pc->deadline_ns - now + 999999u) / 1000000u);
-		hg_wait(&sub, 1, ms);
+		unsigned w = hg_wait(&sub, 1, ms);
+		if (w != (unsigned)-1 && (w & HG_READY_INTERRUPT)) {
+			/* The module was told to stop waiting (hg_wait_interrupt, from
+			 * its SIGTERM handler, or a signal). That wait took the
+			 * interrupt: it is put back for the module's own loop, and
+			 * the call is given up as a timeout is, its outcome unknown. */
+			hg_wait_interrupt();
+			r.status = HG_E_TIMEOUT;
+			bfmt(r.reason, sizeof r.reason, "interrupted before a reply");
+			pc->in_use = 0;
+			return r;
+		}
 	}
 }
 
