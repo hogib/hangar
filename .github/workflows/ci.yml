@@ -30,7 +30,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             build-essential clang libomp-dev libturbojpeg0-dev pkg-config python3 \
-            libavcodec-dev libavutil-dev
+            libavcodec-dev libavutil-dev libx264-dev
       - name: ffmpeg (the encoder's suite has ffmpeg decode its RTP)
         if: matrix.cc == 'gcc'
         run: sudo apt-get install -y -q --no-install-recommends ffmpeg
@@ -85,7 +85,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            build-essential libturbojpeg0-dev pkg-config python3 libavcodec-dev libavutil-dev
+            build-essential libturbojpeg0-dev pkg-config python3 libavcodec-dev libavutil-dev libx264-dev
       - name: Kernel
         run: uname -r  # futex_waitv needs 5.16 or later
       - name: Build and check
@@ -133,6 +133,11 @@ jobs:
         run: |
           tools/cross/avcodec.sh --cc "zig cc -target ${{ matrix.target }} -mcpu=${{ matrix.mcpu }}" \
             --arch ${{ matrix.target == 'aarch64-linux-musl' && 'aarch64' || 'arm' }} --dir "$PWD/avcodec"
+      - name: libx264 for the target
+        # The encoder library alone, static, for topside_encoder (tools/cross/x264.sh).
+        run: |
+          tools/cross/x264.sh --cc "zig cc -target ${{ matrix.target }} -mcpu=${{ matrix.mcpu }}" \
+            --arch ${{ matrix.target == 'aarch64-linux-musl' && 'aarch64' || 'arm' }} --dir "$PWD/x264"
       - name: Static build of everything
         run: |
           make -j"$(nproc)" BUILD=release BUILDDIR=out/cross \
@@ -142,7 +147,9 @@ jobs:
             TURBOJPEG_LIBS="$PWD/ljt-build/libturbojpeg.a" \
             AVCODEC_CFLAGS="-I$PWD/avcodec/prefix/include" \
             AVCODEC_LIBS="$PWD/avcodec/prefix/lib/libavcodec.a $PWD/avcodec/prefix/lib/libavutil.a -lm -pthread" \
+            X264_CFLAGS="-I$PWD/x264/prefix/include" X264_LIBS="$PWD/x264/prefix/lib/libx264.a -lm -pthread" \
             all $(make -s -n check BUILDDIR=out/cross CC="zig cc -target ${{ matrix.target }}" 2>/dev/null | grep -o 'out/cross/tests-release/test_[a-z_0-9]*' | sort -u)
           file out/cross/eeye out/cross/hellion
           file out/cross/eeye | grep -q 'statically linked'
           file out/cross/hangar-video-relay | grep -q 'statically linked'
+          file out/cross/hangar-topside-encoder | grep -q 'statically linked'

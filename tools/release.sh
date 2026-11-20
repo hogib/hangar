@@ -160,6 +160,17 @@ else
 	echo "  avcodec   not built (see $work/avcodec.out): video_relay skipped"
 fi
 
+# ---- libx264 for the target: the encoder library alone (topside_encoder) ----
+x264=$work/x264
+x264_ok=no
+if [ -n "$av_arch" ] && "$ROOT/tools/cross/x264.sh" --cc "$cc" --arch "$av_arch" --dir "$x264" --jobs "$jobs" \
+	> "$work/x264.out" 2>&1; then
+	x264_ok=yes
+	echo "  x264      $x264/prefix (libx264, static)"
+else
+	echo "  x264      not built (see $work/x264.out): topside_encoder skipped"
+fi
+
 # ---- What the Makefile knows ------------------------------------------------
 run_make() {
 	# $@: targets. The Makefile's variables, the compiler, libjpeg-turbo and
@@ -171,11 +182,20 @@ run_make() {
 		av_cflags=
 		av_libs=
 	fi
+	# libx264 likewise (empty: the Makefile skips topside_encoder).
+	if [ "$x264_ok" = yes ]; then
+		x264_cflags="-I$x264/prefix/include"
+		x264_libs="$x264/prefix/lib/libx264.a -lm -pthread"
+	else
+		x264_cflags=
+		x264_libs=
+	fi
 	make -C "$ROOT" BUILD=release BUILDDIR="$builddir" CC="$cc" HOSTCC="zig cc" \
 	     LDFLAGS="-static -s" \
 	     TURBOJPEG_CFLAGS="-I$ljt/src/src -I$ljt/build" \
 	     TURBOJPEG_LIBS="$ljt/build/libturbojpeg.a" \
-	     AVCODEC_CFLAGS="$av_cflags" AVCODEC_LIBS="$av_libs" "$@"
+	     AVCODEC_CFLAGS="$av_cflags" AVCODEC_LIBS="$av_libs" \
+	     X264_CFLAGS="$x264_cflags" X264_LIBS="$x264_libs" "$@"
 }
 known() { run_make -n -s "$1" >/dev/null 2>&1; }
 
@@ -212,6 +232,11 @@ if [ "$avcodec_ok" = yes ]; then
 	want hangar-video-relay "$builddir/hangar-video-relay"
 else
 	skipped="$skipped hangar-video-relay"
+fi
+if [ "$x264_ok" = yes ]; then
+	want hangar-topside-encoder "$builddir/hangar-topside-encoder"
+else
+	skipped="$skipped hangar-topside-encoder"
 fi
 for t in "$ROOT"/lib/hg/tests/test_hg_*.c; do
 	[ -e "$t" ] || continue
