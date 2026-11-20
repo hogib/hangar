@@ -2,8 +2,8 @@
 
 Everything below runs on the laptop, from a checkout of hangar, with the laptop on the
 vehicle's tether (Fathom-X: the laptop is 192.168.2.1, the Pi 192.168.2.10).
-`tools/rov/lab.sh` drives the Pi over SSH and writes down what it changes, so that
-`down` can put it all back. The values for the lab's BlueROV2 are in
+`tools/rov/lab.sh` drives the Pi over SSH and writes down what it changes (on the laptop,
+with a copy on the Pi), so that `down` can put it all back. The values for the lab's BlueROV2 are in
 `tools/rov/lab.conf`; what is behind each step is in `tools/rov/README.md`.
 
 **Props off** until the arm and disarm work on the bench (README, "A session, in order").
@@ -56,6 +56,7 @@ session. Never on a vehicle that reads its battery.
 | no `[ OK ] pipeline` lines with `--video` | wait ten seconds and `lab.sh status`: the encoder starts after hangar. Still nothing: the camera's H.264 node (`H264_NODE` in `lab.conf`; `v4l2-ctl --list-formats-ext` on the Pi) |
 | `port 8092 is taken on this laptop` | another hellion runs: stop it, or set `HELLION_CONTROL_PORT` |
 | `sudo … needs a password and there is no terminal` | run `lab.sh` from a terminal, not from a script |
+| `NO SESSION FILE … not claimed: everything as found` (down) | the session file is gone from this laptop and the Pi has no copy, yet hangar ran: `down` stopped it and restored nothing. On the Pi, `ls -t ~/hangar-rov/lab-*-before.params`; if there is one from this session, `rov.sh up`, `rov.sh params restore <it>`, `rov.sh reset`; then `systemctl is-active eeye hellion` (README, "The parameter backup") |
 | `not everything could be put back: …` (down) | fix what it names (usually the link) and run `lab.sh down` again: the session file keeps what is left to do |
 
 ## Rehearsing without the vehicle

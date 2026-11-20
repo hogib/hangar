@@ -94,7 +94,16 @@ the Pixhawk's 979 are not measured yet).
 Only when hangar is not up do they go through MAVROS, as before (`rov.sh params via`
 says which). `lab.sh up` saves through hangar and stops if the save fails; `lab.sh
 down` restores and compares through hangar too, starting it again for that if it has
-stopped.
+stopped. A dump with no parameter in it is not a backup: `params save` removes the file
+and fails, either way.
+
+`lab.sh` writes down what `up` changed (the backup's name, the services it stopped) in
+its session file on the laptop, `~/.cache/hangar-lab/session`, and copies it to the Pi's
+`~/hangar-rov/lab-session`. A `down` or a second `up` on a laptop that has lost the file
+takes the Pi's copy and goes on from it. With no session on either side, `down` stops
+hangar if it runs but does not say "everything as found": it says that the parameters
+were not restored, and the newest `~/hangar-rov/lab-*-before.params` on the Pi is then
+the one to restore by hand (`rov.sh up`, `rov.sh params restore <file>`, `rov.sh reset`).
 
 The file is text, one parameter a line:
 
