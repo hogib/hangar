@@ -59,7 +59,14 @@ class TopicError(OSError):
 
 
 def topic_dir():
-    return os.environ.get("HANGAR_TOPIC_DIR") or "/dev/shm/hangar"
+    """$HANGAR_TOPIC_DIR (a module's, set by the manager); else the topic
+    directory of $HANGAR_ROOT's manager, as the CLI and learn.state_dir
+    take the root; else /dev/shm/hangar."""
+    d = os.environ.get("HANGAR_TOPIC_DIR")
+    if d:
+        return d
+    root = os.environ.get("HANGAR_ROOT")
+    return os.path.join(root, "dev/shm/hangar") if root else "/dev/shm/hangar"
 
 
 def _u32(m, off):

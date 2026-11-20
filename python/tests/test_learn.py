@@ -221,6 +221,24 @@ class WithTorch(unittest.TestCase):
 EXAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "depth_ff.py")
 
 
+class TopicDir(unittest.TestCase):
+    def test_root(self):
+        from hangar import topic
+        saved = {k: os.environ.pop(k, None) for k in ("HANGAR_TOPIC_DIR", "HANGAR_ROOT")}
+        try:
+            self.assertEqual(topic.topic_dir(), "/dev/shm/hangar")
+            os.environ["HANGAR_ROOT"] = "/dev/shm/r"
+            self.assertEqual(topic.topic_dir(), "/dev/shm/r/dev/shm/hangar")
+            self.assertEqual(learn.state_dir("x"), "/dev/shm/r/var/lib/hangar/policy_x")
+            os.environ["HANGAR_TOPIC_DIR"] = "/t"
+            self.assertEqual(topic.topic_dir(), "/t")
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+
 class Example(unittest.TestCase):
     @unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
     def test_data_path(self):
