@@ -1,6 +1,7 @@
 # Fuzzing (fuzz/README.md). Included by the root Makefile last, after every
-# module's .mk; relies on BUILDDIR, TESTDIR, HG_SRC, HGR_SRC, LIB_CPPFLAGS,
-# ALL_LDFLAGS, TIMEOUT and run_suite.
+# module's .mk; relies on BUILDDIR, OBJDIR, TESTDIR, obj, HG_SRC, HG_CFLAGS,
+# HGR_SRC, NN_SRC, LIB_CPPFLAGS, ALL_LDFLAGS, TIMEOUT and the generic
+# $(OBJDIR)/%.o rule.
 #
 #   make fuzz-build              every harness with libFuzzer, ASan and UBSan (needs clang)
 #   make fuzz [FUZZ_SECONDS=30]  runs each for FUZZ_SECONDS; fails on a crash (-j2 runs two at once)
@@ -11,8 +12,9 @@
 #   make fuzz-seeds              rewrites the generated seeds (fuzz/mkseeds.c)
 #
 # A harness is fuzz/fuzz_<name>.c. Per harness: fuzz_<name>_SRC (what it links),
-# fuzz_<name>_DEPS (the .c files it #includes, for rebuilds), _CPPFLAGS,
-# _LDLIBS, _STD (default -std=c11), _MAXLEN (the longest input the fuzzer makes).
+# fuzz_<name>_DEPS (the .c files it #includes, for the fuzzer build's rebuilds),
+# _CPPFLAGS, _LDLIBS, _STD (default -std=c11), _MAXLEN (the longest input the
+# fuzzer makes).
 
 FUZZ_CC ?= clang
 FUZZ_SECONDS ?= 30
@@ -82,15 +84,24 @@ fuzz_http_MAXLEN := 9000
 
 fuzz_std = $(if $(fuzz_$(1)_STD),$(fuzz_$(1)_STD),-std=c11)
 
+# Two builds of each harness. The fuzzer's: one clang command over the harness
+# and its sources, all instrumented. The regression runner's: the harness and
+# fuzz/standalone.c compiled by the build's own rule and linked with the
+# objects the programs and suites are made of, so `make check` compiles two
+# files per harness, with $(CC) and its flags of the day.
+$(OBJDIR)/fuzz/%.o: EE_CFLAGS := $(HG_CFLAGS)
+$(OBJDIR)/fuzz/%.o: EE_CPPFLAGS := $(FUZZ_CPPFLAGS)
+
 define fuzz_rule
 $(FUZZ_DIR)/fuzz_$(1): fuzz/fuzz_$(1).c $$(fuzz_$(1)_SRC) $$(fuzz_$(1)_DEPS) $$(FUZZ_HDRS)
 	@mkdir -p $$(dir $$@)
 	$$(FUZZ_CC) $$(FUZZ_FLAGS) $$(call fuzz_std,$(1)) $$(FUZZ_CPPFLAGS) $$(fuzz_$(1)_CPPFLAGS) -o $$@ \
 	  fuzz/fuzz_$(1).c $$(fuzz_$(1)_SRC) $$(fuzz_$(1)_LDLIBS) -pthread -lrt -lm
-$(TESTDIR)/fuzzreg_$(1): fuzz/fuzz_$(1).c fuzz/standalone.c $$(fuzz_$(1)_SRC) $$(fuzz_$(1)_DEPS) $$(FUZZ_HDRS)
+$(OBJDIR)/fuzz/fuzz_$(1).o: EE_CFLAGS := $$(call fuzz_std,$(1)) -Wall -Wextra -pthread
+$(OBJDIR)/fuzz/fuzz_$(1).o: EE_CPPFLAGS := $$(FUZZ_CPPFLAGS) $$(fuzz_$(1)_CPPFLAGS)
+$(TESTDIR)/fuzzreg_$(1): $(OBJDIR)/fuzz/fuzz_$(1).o $(OBJDIR)/fuzz/standalone.o $$(call obj,$$(fuzz_$(1)_SRC))
 	@mkdir -p $$(dir $$@)
-	$$(CC) $$(call fuzz_std,$(1)) -Wall -Wextra -pthread $$(CFLAGS) $$(FUZZ_CPPFLAGS) $$(fuzz_$(1)_CPPFLAGS) $$(CPPFLAGS) \
-	  $$(ALL_LDFLAGS) -o $$@ fuzz/fuzz_$(1).c fuzz/standalone.c $$(fuzz_$(1)_SRC) $$(fuzz_$(1)_LDLIBS) -pthread -lrt -lm $$(LDLIBS)
+	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(fuzz_$(1)_LDLIBS) -pthread -lrt -lm $$(LDLIBS)
 endef
 $(foreach h,$(FUZZ_HARNESSES),$(eval $(call fuzz_rule,$(h))))
 
@@ -119,8 +130,11 @@ $(FUZZ_RUNS): fuzz-run-%: $(FUZZ_DIR)/fuzz_%
 fuzz: $(FUZZ_RUNS)
 fuzz-http: fuzz-run-http
 
+# UBSAN_OPTIONS: in a sanitized build (check-asan-fuzz-corpus) the first
+# undefined operation ends the replay; it means nothing to a plain build.
 $(FUZZ_CHECKS): check-fuzz-corpus-%: $(TESTDIR)/fuzzreg_%
-	@if $(if $(TIMEOUT),$(TIMEOUT) 120) $< fuzz/corpus/$* > $(TESTDIR)/fuzzreg_$*.log 2>&1; then \
+	@if UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 $(if $(TIMEOUT),$(TIMEOUT) 120) $< fuzz/corpus/$* \
+	     > $(TESTDIR)/fuzzreg_$*.log 2>&1; then \
 	  echo "ok    fuzz corpus $*  ($$(tail -1 $(TESTDIR)/fuzzreg_$*.log))"; \
 	else \
 	  echo "FAIL  fuzz corpus $*"; tail -60 $(TESTDIR)/fuzzreg_$*.log; exit 1; \
@@ -145,7 +159,7 @@ check-asan-fuzz-corpus:
 	@mkdir -p $(BUILDDIR); \
 	if echo 'int main(void){return 0;}' | $(CC) -fsanitize=address,undefined -x c - -o $(BUILDDIR)/.san-probe-asan >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/asan \
-	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined" \
+	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" \
 	    LDFLAGS="-fsanitize=address,undefined" check-fuzz-corpus; \
 	else echo "skip  asan fuzz corpus: $(CC) cannot build with -fsanitize=address,undefined"; fi
 check-asan: check-asan-fuzz-corpus
