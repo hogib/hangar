@@ -1,0 +1,632 @@
+{
+ "sessions": [
+  "collect1 (seed 11)",
+  "collect2 (seed 12)"
+ ],
+ "the plant's target": {
+  "lags": {
+   "0": {
+    "r2 of a straight line": 0.58,
+    "r2 of the simulator's own model": 0.884
+   },
+   "1": {
+    "r2 of a straight line": 0.601,
+    "r2 of the simulator's own model": 0.946
+   },
+   "2": {
+    "r2 of a straight line": 0.599,
+    "r2 of the simulator's own model": 0.957,
+    "r2 of the plant network (fitted on the first 70 %, scored on the rest)": 0.891
+   },
+   "3": {
+    "r2 of a straight line": 0.575,
+    "r2 of the simulator's own model": 0.925
+   },
+   "4": {
+    "r2 of a straight line": 0.534,
+    "r2 of the simulator's own model": 0.862
+   },
+   "5": {
+    "r2 of a straight line": 0.483,
+    "r2 of the simulator's own model": 0.78
+   },
+   "6": {
+    "r2 of a straight line": 0.427,
+    "r2 of the simulator's own model": 0.683
+   },
+   "7": {
+    "r2 of a straight line": 0.37,
+    "r2 of the simulator's own model": 0.58
+   }
+  },
+  "fitted on the rows before the buoyancy change, scored on those after": {
+   "rows before, after": [
+    24001,
+    19000
+   ],
+   "heave at rest before: smallest, largest": [
+    -0.087,
+    0.0
+   ],
+   "heave at rest after": [
+    -0.085,
+    0.098
+   ],
+   "r2 of the plant network": 0.821,
+   "r2 of the simulator's own model": 0.844
+  },
+  "rows at lag 2": {
+   "rows with loss": 43001,
+   "still rows": 22802,
+   "acceleration made (m/s^2): sd": 0.1456,
+   "percentiles 1 5 25 50 75 95 99": [
+    -0.303,
+    -0.101,
+    0.001,
+    0.016,
+    0.029,
+    0.121,
+    0.393
+   ],
+   "on still rows: mean, sd": [
+    0.015,
+    0.0138
+   ],
+   "heave applied less heave at rest: sd": 0.0645,
+   "its percentiles": [
+    -0.226,
+    -0.08,
+    -0.005,
+    -0.0,
+    0.004,
+    0.118,
+    0.205
+   ],
+   "on still rows: mean, sd ": [
+    0.0004,
+    0.0097
+   ],
+   "share of rows with it beyond 0.02": 0.235,
+   "heave at rest: smallest, largest": [
+    -0.087,
+    0.098
+   ]
+  }
+ },
+ "acceleration": {
+  "nav.state accel[2] less the truth: mean": 0.016,
+  "sd": 0.011,
+  "the truth's sd": 0.1384
+ },
+ "the inverse fitted directly": {
+  "label (heave applied less at rest, plus ff x accel made): sd": 0.0582,
+  "r2 of the simulator's own inverse on it": 0.486,
+  "r2 of the fitted network on it (within the bound)": 0.83,
+  "rows": 43001,
+  "split": 30100
+ },
+ "residual at vel_z 0: [learned policy, oracle, inverse fitted directly]": {
+  "trim -0.087, accel wanted -2.0": [
+   0.18,
+   0.18,
+   0.176
+  ],
+  "trim -0.087, accel wanted -0.5": [
+   0.179,
+   0.18,
+   0.167
+  ],
+  "trim -0.087, accel wanted -0.2": [
+   0.177,
+   0.17,
+   0.157
+  ],
+  "trim -0.087, accel wanted -0.1": [
+   0.128,
+   0.15,
+   0.107
+  ],
+  "trim -0.087, accel wanted +0.0": [
+   0.002,
+   0.0,
+   0.002
+  ],
+  "trim -0.087, accel wanted +0.1": [
+   -0.019,
+   -0.018,
+   -0.013
+  ],
+  "trim -0.087, accel wanted +0.2": [
+   -0.024,
+   -0.031,
+   -0.03
+  ],
+  "trim -0.087, accel wanted +0.5": [
+   -0.049,
+   -0.057,
+   -0.036
+  ],
+  "trim -0.087, accel wanted +2.0": [
+   -0.156,
+   -0.129,
+   -0.103
+  ],
+  "trim +0.096, accel wanted -2.0": [
+   0.171,
+   0.18,
+   0.149
+  ],
+  "trim +0.096, accel wanted -0.5": [
+   0.082,
+   0.072,
+   0.057
+  ],
+  "trim +0.096, accel wanted -0.2": [
+   0.042,
+   0.036,
+   0.025
+  ],
+  "trim +0.096, accel wanted -0.1": [
+   0.024,
+   0.021,
+   0.011
+  ],
+  "trim +0.096, accel wanted +0.0": [
+   0.0,
+   0.0,
+   -0.002
+  ],
+  "trim +0.096, accel wanted +0.1": [
+   -0.104,
+   -0.157,
+   -0.061
+  ],
+  "trim +0.096, accel wanted +0.2": [
+   -0.173,
+   -0.17,
+   -0.152
+  ],
+  "trim +0.096, accel wanted +0.5": [
+   -0.178,
+   -0.18,
+   -0.146
+  ],
+  "trim +0.096, accel wanted +2.0": [
+   -0.18,
+   -0.18,
+   -0.167
+  ]
+ },
+ "closed loop, a heave axis in a few lines": {
+  "the controller alone": [
+   {
+    "hold rms (cm)": 2.01,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.91,
+     "peak_cm": 102.0,
+     "overshoot_pct": 10.0
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 3.06,
+     "peak_cm": 98.1,
+     "overshoot_pct": 20.0
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 2.0,
+     "peak_cm": 33.2
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 2.77,
+     "peak_cm": 101.7,
+     "overshoot_pct": 16.2
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 2.25,
+     "peak_cm": 98.3,
+     "overshoot_pct": 15.5
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.14,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.89,
+     "peak_cm": 102.3,
+     "overshoot_pct": 10.2
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 3.06,
+     "peak_cm": 98.1,
+     "overshoot_pct": 19.6
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 1.99,
+     "peak_cm": 32.9
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 2.77,
+     "peak_cm": 102.1,
+     "overshoot_pct": 16.2
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 2.23,
+     "peak_cm": 97.9,
+     "overshoot_pct": 14.7
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 1.98,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.9,
+     "peak_cm": 101.8,
+     "overshoot_pct": 10.6
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 3.07,
+     "peak_cm": 98.2,
+     "overshoot_pct": 19.9
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 1.98,
+     "peak_cm": 33.2
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 2.78,
+     "peak_cm": 102.4,
+     "overshoot_pct": 16.2
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 2.24,
+     "peak_cm": 98.1,
+     "overshoot_pct": 15.1
+    },
+    "ticks beyond the envelope": 0
+   }
+  ],
+  "with the oracle, unbounded (the envelope alone bounds it)": [
+   {
+    "hold rms (cm)": 1.99,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.25,
+     "peak_cm": 101.9,
+     "overshoot_pct": 1.0
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.96,
+     "peak_cm": 98.5,
+     "overshoot_pct": 4.3
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.1,
+     "peak_cm": 2.6
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.13,
+     "peak_cm": 100.0,
+     "overshoot_pct": 0.3
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.26,
+     "peak_cm": 100.0,
+     "overshoot_pct": 1.6
+    },
+    "ticks beyond the envelope": 170
+   },
+   {
+    "hold rms (cm)": 2.12,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.22,
+     "peak_cm": 102.2,
+     "overshoot_pct": 0.9
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.96,
+     "peak_cm": 98.5,
+     "overshoot_pct": 4.4
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.09,
+     "peak_cm": 2.5
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.12,
+     "peak_cm": 100.1,
+     "overshoot_pct": 0.4
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.28,
+     "peak_cm": 99.9,
+     "overshoot_pct": 1.6
+    },
+    "ticks beyond the envelope": 171
+   },
+   {
+    "hold rms (cm)": 2.03,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.25,
+     "peak_cm": 101.8,
+     "overshoot_pct": 0.6
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.96,
+     "peak_cm": 98.5,
+     "overshoot_pct": 4.2
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.1,
+     "peak_cm": 2.2
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.12,
+     "peak_cm": 100.2,
+     "overshoot_pct": 0.3
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.28,
+     "peak_cm": 99.9,
+     "overshoot_pct": 1.9
+    },
+    "ticks beyond the envelope": 171
+   }
+  ],
+  "with the oracle within the bound": [
+   {
+    "hold rms (cm)": 1.99,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.25,
+     "peak_cm": 101.9,
+     "overshoot_pct": 1.0
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 2.01,
+     "peak_cm": 98.5,
+     "overshoot_pct": 4.3
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.1,
+     "peak_cm": 2.7
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.15,
+     "peak_cm": 100.0,
+     "overshoot_pct": 0.3
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.29,
+     "peak_cm": 100.0,
+     "overshoot_pct": 1.5
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.12,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.23,
+     "peak_cm": 102.2,
+     "overshoot_pct": 0.9
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 2.0,
+     "peak_cm": 98.5,
+     "overshoot_pct": 4.4
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.09,
+     "peak_cm": 2.6
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.15,
+     "peak_cm": 100.1,
+     "overshoot_pct": 0.4
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.3,
+     "peak_cm": 99.9,
+     "overshoot_pct": 1.6
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.03,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.25,
+     "peak_cm": 101.8,
+     "overshoot_pct": 0.7
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 2.01,
+     "peak_cm": 98.5,
+     "overshoot_pct": 4.2
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.1,
+     "peak_cm": 2.2
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.15,
+     "peak_cm": 100.2,
+     "overshoot_pct": 0.3
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.32,
+     "peak_cm": 99.9,
+     "overshoot_pct": 1.9
+    },
+    "ticks beyond the envelope": 0
+   }
+  ],
+  "with the policy learned from the recorded rows": [
+   {
+    "hold rms (cm)": 2.02,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.25,
+     "peak_cm": 102.0,
+     "overshoot_pct": 0.3
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.85,
+     "peak_cm": 98.5,
+     "overshoot_pct": 3.2
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.27,
+     "peak_cm": 3.0
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.27,
+     "peak_cm": 100.8,
+     "overshoot_pct": 0.0
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.45,
+     "peak_cm": 99.2,
+     "overshoot_pct": 1.6
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.2,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.23,
+     "peak_cm": 102.2,
+     "overshoot_pct": 0.3
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.82,
+     "peak_cm": 98.6,
+     "overshoot_pct": 3.4
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.27,
+     "peak_cm": 2.8
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.28,
+     "peak_cm": 101.1,
+     "overshoot_pct": 0.0
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.44,
+     "peak_cm": 99.3,
+     "overshoot_pct": 1.4
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.14,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.26,
+     "peak_cm": 102.0,
+     "overshoot_pct": 0.0
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.85,
+     "peak_cm": 98.5,
+     "overshoot_pct": 3.2
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.28,
+     "peak_cm": 2.6
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.27,
+     "peak_cm": 100.9,
+     "overshoot_pct": 0.0
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.48,
+     "peak_cm": 99.2,
+     "overshoot_pct": 1.6
+    },
+    "ticks beyond the envelope": 0
+   }
+  ],
+  "with the inverse fitted directly": [
+   {
+    "hold rms (cm)": 2.7,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.52,
+     "peak_cm": 102.7,
+     "overshoot_pct": 5.2
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.94,
+     "peak_cm": 98.3,
+     "overshoot_pct": 3.4
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.86,
+     "peak_cm": 6.7
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.45,
+     "peak_cm": 100.5,
+     "overshoot_pct": 11.2
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.62,
+     "peak_cm": 99.2,
+     "overshoot_pct": 5.2
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.74,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.5,
+     "peak_cm": 102.5,
+     "overshoot_pct": 5.2
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.93,
+     "peak_cm": 97.9,
+     "overshoot_pct": 3.3
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.86,
+     "peak_cm": 6.8
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.45,
+     "peak_cm": 100.8,
+     "overshoot_pct": 11.1
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.6,
+     "peak_cm": 98.9,
+     "overshoot_pct": 5.3
+    },
+    "ticks beyond the envelope": 0
+   },
+   {
+    "hold rms (cm)": 2.56,
+    "nominal 3 to 4 m": {
+     "iae_m_s": 1.53,
+     "peak_cm": 102.4,
+     "overshoot_pct": 5.3
+    },
+    "nominal 4 to 3 m": {
+     "iae_m_s": 1.96,
+     "peak_cm": 98.3,
+     "overshoot_pct": 3.4
+    },
+    "buoyancy -4 N": {
+     "iae_m_s": 0.85,
+     "peak_cm": 6.8
+    },
+    "heavier 3 to 4 m": {
+     "iae_m_s": 1.47,
+     "peak_cm": 100.8,
+     "overshoot_pct": 11.1
+    },
+    "heavier 4 to 3 m": {
+     "iae_m_s": 1.62,
+     "peak_cm": 98.9,
+     "overshoot_pct": 5.2
+    },
+    "ticks beyond the envelope": 0
+   }
+  ]
+ }
+}

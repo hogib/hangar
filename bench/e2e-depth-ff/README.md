@@ -358,3 +358,146 @@ Not fixed, for a decision:
 | `profiles/sim-depth-ff/` | the manifests, the dataset and policy specs, the parameters |
 | `python/examples/depth_ff.py` | docs/09's trainer: the model, both labels, `--bound` |
 | `2026-11-20/<run>/` | `report.md` (the tables), `report.json` (everything), `events.log` (the schedule as it ran); `Q-trim-quick` is the smoke run |
+
+# Second design
+
+The owner's decision after the first: the model learns a feed-forward for what the
+controller cannot see, the thrusters' deadband and curve and the drag, from the motion
+that is commanded; the integrator keeps the trim. What follows was written before any
+model of this design drove; the results are under [The runs](#the-runs-of-the-second-design).
+
+```sh
+make -j4 all
+E2E_OUT=/tmp/c1 E2E_SEED=11 E2E_KEEP_SESSION=1 E2E_ARGS="--variant collect" tools/sim/e2e-depth-ff2.sh run   # 7 min
+PYTHONPATH=python ~/.cache/hangar-e2e-venv/bin/python tools/sim/depth_ff2_offline.py /tmp/c1/session         # the offline check
+E2E_OUT=/tmp/l1 E2E_SEED=1 tools/sim/e2e-depth-ff2.sh run                                    # learned, 13 min
+E2E_OUT=/tmp/o1 E2E_SEED=1 E2E_ARGS="--variant oracle" tools/sim/e2e-depth-ff2.sh run        # the ceiling
+PYTHONPATH=python ~/.cache/hangar-e2e-venv/bin/python tools/sim/e2e_depth_ff2.py --summarise /tmp/l? /tmp/o?
+```
+
+## The problem
+
+`depth_hold` commands `heave = I − ff · accel_z`: its integrator `I`, and a feed-forward
+that takes thrust for linear in the command (160 N at heave 1) and the vehicle for 16 kg
+in still water. The simulated vehicle has a deadband of ±0.07 in heave, 1.7 N at 0.085,
+12.6 N at 0.2 and 40 N at 0.4 where the line says 13.6, 32 and 64; it weighs 26 kg with
+its added mass, and its drag is 5.2 N s/m and 37 N s²/m². So the vehicle does not make
+the acceleration the controller asks for, least of all around the hold, where a vehicle
+trimmed at −0.085 (it floats by 2 N) gets no thrust at all for the first 0.155 of
+command upward.
+
+1. **What runs on the vehicle** (`policy_depth_ff`, 50 Hz, no state):
+   `residual = f(accel_z, vel_z, I)`, three numbers the policy has at its tick from
+   `ctl.depth_hold.target` and `nav.state`: the acceleration the controller wants, the
+   vertical velocity, the integrator. No force sensor, no thrust table.
+2. **What is learned** (the trainer, `python/examples/depth_ff2.py`): a model of the
+   heave axis, `accel made = φ(heave applied) − φ(heave at rest) − drag(vel_z)`, two
+   small networks, `drag(0) = 0`. The acceleration made is `nav.state`'s `accel[2]`; the
+   heave applied is `thr.out` two ticks before the anchor, scaled linearly (the command
+   as it left the mux, the controller's and any residual's together); the heave at rest
+   is the trainer's running mean of the heave applied over the rows in which the vehicle
+   was still (|accel| < 0.05 m/s², |vel_z| < 0.02 m/s). No join looks ahead.
+3. **The policy is that model inverted**: the heave nearest the trim that makes the
+   acceleration wanted at this velocity, less the controller's own command, within
+   ±0.18 by a `tanh` (the mux's residual envelope is ±0.2). The trainer fits the policy
+   network to the inversion as it fits the plant, and exports the policy. On the
+   vehicle the integrator stands for the heave at rest.
+4. **Why it does not compete with the integrator.** The plant has no constant: at the
+   heave at rest with the vehicle still it is `φ(h) − φ(h) − 0`, zero whatever was
+   learned, so nothing in it can hold a trim, and its inversion at `accel_z` 0, `vel_z`
+   0 is the trim itself: residual 0. A buoyancy change moves the point at which `φ` is
+   read, through `I`, not the function. A loss term pins the policy network to zero
+   there too. The first design's label had the trim in it; this one cannot.
+5. **Why not the inverse directly** (the command from the acceleration it made, which is
+   feedback-error learning's shape too): in the deadband every command makes the same
+   acceleration, and the mean of them is no command to give. The offline check below
+   has both.
+
+What the simulator gives for free and a vehicle would not: an accelerometer with 0.01
+m/s² of noise and no vibration (the acceleration is the whole label); thrust that
+depends on the command alone (no inflow, no battery sag within a dive that the model
+could not follow, four identical thrusters); buoyancy constant with depth; no tether
+and no current, so "still" means no force but the trim; `thr.out` equal to what was
+commanded. The additive form `φ − φ − drag` is exact here and an assumption there.
+
+## The offline check, before any model drove
+
+`tools/sim/depth_ff2_offline.py` on two recorded sessions (`--variant collect`: assisted
+only, the training phase's steps, the 3 to 4 m block, buoyancy −4 N, steps again; seeds
+11 and 12; 43 001 rows with loss, 22 802 of them still). The result is in
+[2026-11-20-second/offline/report.json](2026-11-20-second/offline/report.json).
+
+**Does the label carry signal.** The acceleration made has sd 0.146 m/s² (1st and 99th
+percentile −0.30 and +0.39); on still rows its mean is 0.015 (the accelerometer's bias)
+and its sd 0.014. The heave applied less the heave at rest has sd 0.064, is beyond ±0.02
+on 23.5 % of the rows, and on still rows has mean 0.0004: the trim is gone from it.
+`nav.state`'s acceleration against the simulator's truth: +0.016 ± 0.011 m/s².
+
+| Variance of the acceleration made explained (R², rows the fit did not see) | |
+|---|---|
+| a straight line in the three inputs | 0.60 |
+| the simulator's own thrust table, mass and drag on the same inputs | 0.96 |
+| the plant network, fitted on the first 70 % of each session, on the rest | 0.89 |
+| the plant network, fitted on the rows before the buoyancy change, on those after | 0.82 (the simulator's own: 0.84) |
+
+By the lag of the command behind the acceleration, the simulator's own model explains
+0.88, 0.95, **0.96**, 0.93, 0.86, 0.78, 0.68, 0.58 at 0 to 7 ticks: the lag is 2.
+
+The direct inverse's label (heave applied less at rest, plus `ff` × acceleration made)
+has sd 0.058, and the simulator's own inverse explains 0.49 of it: the rest is the
+deadband's ambiguity and the thrusters' lag.
+
+**What an oracle gains in closed loop.** On a heave axis in a few lines (the
+simulator's table, mass, drag and 50 ms thruster lag; `depth_hold`'s law with the
+profile's parameters; the mux's envelope and rate limit; three ticks of loop delay;
+three noise seeds, which differ in the last digit). It reproduces the recorded
+baseline: 1.91 m s and 10 % where the stack measured 1.85 and 8.7 %, 3.06 and 20 %
+for 3.01 and 19.7 %, 33 cm for 33 cm.
+
+| | Controller alone | Oracle, bounded ±0.18 | Policy learned from the recorded rows | Inverse fitted directly |
+|---|---|---|---|---|
+| hold rms (cm) | 2.0 | 2.0 | 2.1 | 2.7 |
+| nominal, 3 to 4 m: IAE (m s), overshoot | 1.90, 10 % | 1.25, 1 % | 1.25, 0.3 % | 1.52, 5 % |
+| nominal, 4 to 3 m | 3.06, 20 % | 2.01, 4 % | 1.85, 3 % | 1.94, 3 % |
+| buoyancy −4 N: IAE (m s), peak | 2.0, 33 cm | 0.10, 2.6 cm | 0.27, 2.8 cm | 0.86, 6.8 cm |
+| heavier, 3 to 4 m | 2.77, 16 % | 1.15, 0.3 % | 1.27, 0 % | 1.45, 11 % |
+| heavier, 4 to 3 m | 2.24, 15 % | 1.30, 1.6 % | 1.45, 1.5 % | 1.61, 5 % |
+
+The oracle is `depth_ff2.oracle`: the same inversion with the simulator's own numbers.
+Unbounded it asks for more than the envelope on 170 ticks of the 160 s, 40 a step:
+under the mux's rule (51 of 250 ticks) that is close to a demotion at every 1 m step,
+which is why the policy is bounded inside the envelope and its saturation is reported
+instead ("at its bound").
+
+So the task has something to learn, an oracle beats the controller on every metric but
+the hold, and a model fitted to recorded rows gets most of it in this few-line loop.
+That was the condition for running it live.
+
+## Metrics and comparison, fixed before the runs
+
+- **Steps**: IAE over 25 s and overshoot, 3 to 4 m and 4 to 3 m, truth (`sim.pose`)
+  against the target.
+- **Hold**: rms error over the last 8 s of a 20 s hold at 3 m.
+- **Buoyancy change**: −4 N live at the hold: peak error, IAE over 40 s, when the error
+  was last outside 5 cm.
+- **Transients** at the hold: the promotion (H1), the swap to the second model (S2),
+  the return to `assisted` (H2): peak and IAE over 20 s. An undisturbed hold reads 2.2 cm
+  and 0.40 m s (the depth sensor's 2 cm bias).
+- **Demotions**, and the share of ticks the policy was at its own bound.
+- The first experiment's checks, reported again: lineage, train/serve mismatch, loop
+  latency, rows lost, tick intervals.
+
+The baseline is `assisted` with the same controller parameters in the same run: B1
+(nominal) and B5 (heavier) for the steps and holds, T1 for the buoyancy change. Against
+it: B2 (M1, nominal), B3 (M1, 4 N heavier: the model from before the change), B4 (M2,
+heavier: the model trained since), T2 (the buoyancy change with M1 promoted). Two
+variants, five runs each with simulator and trainer seeds 1 to 5: **learned**, and
+**oracle** (the policy network fitted to `depth_ff2.oracle` and deployed through the
+same load, promotion and envelope, as M1 and again as M2). Per metric the median and
+the smallest and largest of the five; a difference between variants or against the
+baseline counts only when the two ranges do not overlap, and is called inside the
+spread otherwise.
+
+The schedule is the first experiment's with a shorter training phase: settle 30 s;
+training 120 s (steps of 0.1 to 1.5 m, 10 s each) and 20 s at 3 m; deploy M1; B1; T1
+and back; H1; B2; T2; B3; S2 with M2; B4; H2; B5; T3. 13 min.

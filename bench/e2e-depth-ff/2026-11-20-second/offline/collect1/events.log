@@ -1,0 +1,81 @@
+[    0.0] start variant=collect seed=11 quick=False
+[    1.0] armed
+[    1.0] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[    1.0] target depth=3.0 tag=descent
+[   31.0] phase what=train
+[   31.0] target depth=3.3 tag=train
+[   41.0] trainer steps=0 loss=nan rows=1523 lost=0
+[   41.0] target depth=3.0 tag=train
+[   51.0] trainer steps=0 loss=nan rows=2023 lost=0
+[   51.0] target depth=3.6 tag=train
+[   61.0] trainer steps=0 loss=nan rows=2523 lost=0
+[   61.0] target depth=2.8 tag=train
+[   71.0] trainer steps=0 loss=nan rows=3024 lost=0
+[   71.0] target depth=3.1 tag=train
+[   81.0] trainer steps=0 loss=nan rows=3524 lost=0
+[   81.0] target depth=4.0 tag=train
+[   91.0] trainer steps=0 loss=nan rows=4024 lost=0
+[   91.0] target depth=3.5 tag=train
+[  101.0] trainer steps=0 loss=nan rows=4524 lost=0
+[  101.0] target depth=3.0 tag=train
+[  111.0] trainer steps=0 loss=nan rows=5024 lost=0
+[  111.1] target depth=2.5 tag=train
+[  121.0] trainer steps=0 loss=nan rows=5524 lost=0
+[  121.1] target depth=3.4 tag=train
+[  131.0] trainer steps=0 loss=nan rows=6025 lost=0
+[  131.1] target depth=4.2 tag=train
+[  141.0] trainer steps=0 loss=nan rows=6525 lost=0
+[  141.1] target depth=3.0 tag=train
+[  151.0] target depth=3.0 tag=train:return
+[  151.1] trainer steps=0 loss=nan rows=7025 lost=0
+[  161.1] trainer steps=0 loss=nan rows=7525 lost=0
+[  171.0] phase what=B1 assisted, nominal
+[  171.0] block.begin tag=B1 mode=assisted
+[  171.0] target depth=3.0 tag=B1:hold
+[  171.1] trainer steps=0 loss=nan rows=8025 lost=0
+[  181.1] trainer steps=0 loss=nan rows=8525 lost=0
+[  191.0] target depth=4.0 tag=B1:down
+[  191.1] trainer steps=0 loss=nan rows=9025 lost=0
+[  201.1] trainer steps=0 loss=nan rows=9525 lost=0
+[  211.1] trainer steps=0 loss=nan rows=10025 lost=0
+[  216.0] target depth=3.0 tag=B1:up
+[  221.1] trainer steps=0 loss=nan rows=10525 lost=0
+[  231.1] trainer steps=0 loss=nan rows=11025 lost=0
+[  241.0] block.end tag=B1
+[  241.0] transient tag=T1 seconds=40.0
+[  241.0] buoyancy value=110.8 tag=T1
+[  241.1] trainer steps=0 loss=nan rows=11525 lost=0
+[  251.1] trainer steps=0 loss=nan rows=12025 lost=0
+[  261.1] trainer steps=0 loss=nan rows=12525 lost=0
+[  271.1] trainer steps=0 loss=nan rows=13025 lost=0
+[  281.0] phase what=heavier: the excitation again
+[  281.0] target depth=3.3 tag=train:heavier
+[  281.1] trainer steps=0 loss=nan rows=13526 lost=0
+[  291.0] target depth=3.0 tag=train:heavier
+[  291.1] trainer steps=0 loss=nan rows=14026 lost=0
+[  301.0] target depth=3.6 tag=train:heavier
+[  301.1] trainer steps=0 loss=nan rows=14526 lost=0
+[  311.0] target depth=2.8 tag=train:heavier
+[  311.1] trainer steps=0 loss=nan rows=15026 lost=0
+[  321.0] target depth=3.1 tag=train:heavier
+[  321.1] trainer steps=0 loss=nan rows=15526 lost=0
+[  331.0] target depth=4.0 tag=train:heavier
+[  331.1] trainer steps=0 loss=nan rows=16026 lost=0
+[  341.0] target depth=3.0 tag=train:heavier:return
+[  341.1] trainer steps=0 loss=nan rows=16526 lost=0
+[  351.1] trainer steps=0 loss=nan rows=17026 lost=0
+[  361.0] phase what=B5 assisted, heavier
+[  361.0] block.begin tag=B5 mode=assisted
+[  361.0] target depth=3.0 tag=B5:hold
+[  361.1] trainer steps=0 loss=nan rows=17526 lost=0
+[  371.1] trainer steps=0 loss=nan rows=18026 lost=0
+[  381.0] target depth=4.0 tag=B5:down
+[  381.1] trainer steps=0 loss=nan rows=18526 lost=0
+[  391.1] trainer steps=0 loss=nan rows=19026 lost=0
+[  401.1] trainer steps=0 loss=nan rows=19526 lost=0
+[  406.0] target depth=3.0 tag=B5:up
+[  411.1] trainer steps=0 loss=nan rows=20026 lost=0
+[  421.1] trainer steps=0 loss=nan rows=20526 lost=0
+[  431.0] block.end tag=B5
+[  431.0] disarmed
+[  433.0] session path=/dev/shm/hg-ff2-c1/var/lib/hangar/recorder/sessions/20261120-191214-mousev
