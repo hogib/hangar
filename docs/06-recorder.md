@@ -316,16 +316,15 @@ Fields=gyro accel
 ```
 
 Learning a correction to a controller: the anchor is the vehicle's state at each tick,
-an input, and so is the vertical acceleration the controller wants, joined by time; the
-labels, joined by time too, are the controller's own heave command and the pulse widths
-the thrusters were actually sent (`thr.out`, from `SERVO_OUTPUT_RAW` after ArduSub's
-mixing, [10-mavlink](10-mavlink.md#telemetry)). The training code maps the pulse widths
-through the vehicle's thrust curve and allocation to the heave thrust applied, and
-subtracts the controller's command: the label is the correction the controller lacked,
-which is what the mux adds in residual mode. `Where` keeps the rows in which outputs
-were enabled and the vehicle was vertically still, on which what was applied is what
-held it; the other rows are kept and masked, since the policy is recurrent. This spec
-feeds the adaptive depth hold of
+an input, and so are the vertical acceleration the controller wants and its integrator,
+joined by time; the labels, joined by time too, are the acceleration the vehicle made
+(`nav.state` again, under another part name) and the pulse widths the thrusters were
+sent over the last eight ticks (`thr.out`, from `SERVO_OUTPUT_RAW` after ArduSub's
+mixing, [10-mavlink](10-mavlink.md#telemetry)). The training code fits a model of the
+heave axis to them, the acceleration a command makes, and inverts it for the
+acceleration the controller wants: what the mux adds in residual mode. `Where` keeps the
+rows in which outputs were enabled and the controller drove the axis; the other rows
+are kept and masked. This spec feeds the adaptive depth hold of
 [09-learning](09-learning.md#example-adaptive-depth-hold), and is the same file.
 
 ```ini
@@ -333,28 +332,39 @@ feeds the adaptive depth hold of
 [Dataset]
 Anchor=nav.state
 AnchorRole=input
-Fields=depth_m vel_z pitch roll
+Fields=vel_z
 Lateness=0
 Filter=mask
 ResetAfter=200ms
-# Outputs enabled, and the vehicle vertically still (m/s): what was applied held it.
-Where=safety.state.outputs_enabled == 1 and nav.state.vel_z > -0.05 and nav.state.vel_z < 0.05
+# Outputs enabled and the depth controller driving the heave axis: thr.out is
+# then the controller's command and the residual's, nobody else's.
+Where=safety.state.outputs_enabled == 1 and ctl.depth_hold.target.driving == 1
 
-# The vertical acceleration the controller wants: an input the policy has at its tick.
+# What the controller wants (accel_z), its integrator, whether it drives:
+# inputs the policy has at its tick.
 [Input ctl.depth_hold.target]
 Join=asof:0
-Fields=accel_z
+Fields=accel_z integral driving
 
-# The controller's own heave command at this tick.
+# The vertical acceleration the vehicle made: nav.state again, as a label.
+[Input made]
+Topic=nav.state
+Join=asof:0
+Role=label
+Fields=accel
+
+# The pulse widths the thrusters were sent: the eight messages up to the anchor,
+# so the trainer picks the command that had become thrust by then.
+[Input thr.out]
+Join=asof:0
+Window=8
+Role=label
+
+# The controller's own heave command at this tick, kept beside them.
 [Input ctl.depth_hold]
 Join=asof:0
 Role=label
 Fields=heave
-
-# The pulse widths the thrusters were sent, after ArduSub's mixing.
-[Input thr.out]
-Join=asof:0
-Role=label
 
 [Input safety.state]
 Join=asof:0

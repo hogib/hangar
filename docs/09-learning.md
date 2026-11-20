@@ -314,8 +314,7 @@ once, since its output skipped a tick ([07-safety](07-safety.md#the-mux)).
 
 ## The weights file (`.hgw`)
 
-Self-describing, read into the policy's own memory and used in place (not a mapping
-of the file: a later write to the file must not reach the weights that were checked):
+Self-describing, mapped into memory and read in place:
 
 ```
 [ header: 4096 bytes ][ section directory ][ sections ][ tensor data, 64-byte aligned ]
@@ -578,59 +577,69 @@ out, and records the lineage.
 
 ## Example: adaptive depth hold
 
-**The idea.** The depth controller (`ctl.depth_hold`) is tuned for one buoyancy and one
-drag; both change with payload, depth and tether. And in phase 1 the heave it commands
-is not the heave the thrusters apply: ArduSub's mixer scales every axis down by the
-largest input, so a heave command sent beside a large surge or yaw arrives smaller
-([10-mavlink](10-mavlink.md#commands-to-ardusub)). A network learns, during the dive,
-the heave the controller's command was short by, at each state and for each vertical
-acceleration the controller wanted, and the mux adds it to the controller's output as a
-residual, within the residual envelope ([07-safety](07-safety.md#the-mux)). It learns
-the correction, not the whole heave: a network that learned the whole heave
-feed-forward and ran as a residual would sit at the residual envelope's cap.
+**The idea.** The depth controller (`ctl.depth_hold`) commands
+`heave = I − ff · accel_z`: its integrator, and a feed-forward that takes the thrusters
+for linear and the vehicle for a known mass in still water. Neither holds. A thruster
+gives nothing inside its deadband and little just outside it, the water adds mass and
+drag, and both change with payload and tether. So the vehicle does not make the vertical
+acceleration the controller wants, least of all around a hold, where the command is
+small; the feedback makes up for it slowly, with overshoot. A network learns, during the
+dive, the heave to add so that the vehicle does make that acceleration, and the mux adds
+it to the controller's output as a residual, within the residual envelope
+([07-safety](07-safety.md#the-mux)). The integrator keeps the trim: with the vehicle
+still and the controller wanting nothing the residual is zero, by the way it is built,
+whatever the buoyancy. A network that learned the whole heave, or the trim, would hold
+it against the integrator, and every promotion, swap and demotion would unwind one of
+the two through depth error.
 
-**Data.** Inputs: the state (depth, vertical velocity, pitch, roll) and the vertical
-acceleration the controller wants, `ctl.depth_hold.target`'s `accel_z`, which the
-policy has at its tick as the recording has it, so nothing stands in for anything.
-Labels: the controller's own heave command at that tick, `ctl.depth_hold`'s `heave`,
-and the pulse widths the thrusters were actually sent, `thr.out` (from
-`SERVO_OUTPUT_RAW`, after ArduSub's mixing, [10-mavlink](10-mavlink.md#telemetry)),
-both joined at the anchor. The training code maps `thr.out` through the vehicle's
-thrust curve and thruster allocation to the heave thrust applied, in the wrench's units,
-and subtracts `ctl.depth_hold.heave`: the label is what had to be added to the
-controller's command, which is what residual mode adds. `Where` keeps the rows in which
-outputs were enabled and the vehicle was vertically still: on those rows what was
-applied is what held it, whoever supplied the difference. Plain supervised learning; no
-join looks ahead, so the spec is usable by a policy as it stands, and no substitution
-is needed.
+**Data.** Inputs, all of which the policy has at its tick as the recording has them:
+`ctl.depth_hold.target`'s `accel_z` (the vertical acceleration the controller wants)
+and `integral` (its integrator), and `nav.state`'s vertical velocity. Labels: the
+vertical acceleration the vehicle made, `nav.state`'s `accel`, and the pulse widths the
+thrusters were sent over the last eight ticks, `thr.out` (from `SERVO_OUTPUT_RAW`, after
+ArduSub's mixing, [10-mavlink](10-mavlink.md#telemetry)), so that the training code can
+take the command that had become thrust by the anchor. `Where` keeps the rows in which
+outputs were enabled and the controller drove the heave axis. No join looks ahead, so
+the spec is usable by a policy as it stands, and no substitution is needed.
 
 ```ini
 # /etc/hangar/datasets/depth_ff.dataset
 [Dataset]
 Anchor=nav.state
 AnchorRole=input
-Fields=depth_m vel_z pitch roll
+Fields=vel_z
 Lateness=0
 Filter=mask
 ResetAfter=200ms
-# Outputs enabled, and the vehicle vertically still (m/s): what was applied held it.
-Where=safety.state.outputs_enabled == 1 and nav.state.vel_z > -0.05 and nav.state.vel_z < 0.05
+# Outputs enabled and the depth controller driving the heave axis: thr.out is
+# then the controller's command and the residual's, nobody else's.
+Where=safety.state.outputs_enabled == 1 and ctl.depth_hold.target.driving == 1
 
-# The vertical acceleration the controller wants: an input the policy has at its tick.
+# What the controller wants (accel_z), its integrator, whether it drives:
+# inputs the policy has at its tick.
 [Input ctl.depth_hold.target]
 Join=asof:0
-Fields=accel_z
+Fields=accel_z integral driving
 
-# The controller's own heave command at this tick.
+# The vertical acceleration the vehicle made: nav.state again, as a label.
+[Input made]
+Topic=nav.state
+Join=asof:0
+Role=label
+Fields=accel
+
+# The pulse widths the thrusters were sent: the eight messages up to the anchor,
+# so the trainer picks the command that had become thrust by then.
+[Input thr.out]
+Join=asof:0
+Window=8
+Role=label
+
+# The controller's own heave command at this tick, kept beside them.
 [Input ctl.depth_hold]
 Join=asof:0
 Role=label
 Fields=heave
-
-# The pulse widths the thrusters were sent, after ArduSub's mixing.
-[Input thr.out]
-Join=asof:0
-Role=label
 
 [Input safety.state]
 Join=asof:0
@@ -638,38 +647,100 @@ Role=filter
 Fields=outputs_enabled
 ```
 
-The spec has no `mux.state` part: the labels are what the thrusters were sent and
-what the controller commanded, whoever drove each axis, so they are valid on every row
-`Where` keeps. Its defaults, `Missing=flag` and `Rate=every:1`, with `Filter=mask`,
-make it usable by the recurrent `policy_depth_ff`: rows in which the vehicle was moving
-are stepped through and carry no loss. In `assisted` the label is the pilot's trim and
-the mixer's shortfall; in `residual:depth_ff` it includes the residual that was
-applied, so a model that holds the vehicle reproduces its own correction, and one that
-does not sees what was still added by hand.
+The spec has no `mux.state` part: `ctl.depth_hold.target`'s `driving` says whether the
+controller had the axis, in `assisted` and in `residual:depth_ff` alike, and `thr.out`
+is then the controller's command with whatever residual was added, which is what the
+plant below is fitted to: a model in the loop changes the commands the rows hold, not
+what they mean.
+
+**What is learned.** Two networks, both on the topside
+(`python/examples/depth_ff2.py`):
+
+- **The plant**: `accel made = φ(heave applied) − φ(heave at rest) − drag(vel_z)`,
+  fitted to the rows. The heave applied is `thr.out`'s vertical pulse widths, scaled
+  linearly, two ticks before the anchor (the lag at which the rows agree best); the
+  heave at rest is the trainer's running mean of the heave applied over the rows in
+  which the vehicle was still, what holds it, whoever supplies it. `φ` is the thrust
+  curve over the mass and `drag` the damping over it, as far as the rows show them;
+  the training code is given neither, nor the mass. The plant has no constant: at the
+  heave at rest with the vehicle still it is zero whatever was learned, so there is
+  nothing in it that could hold a trim, and a buoyancy change moves the point `φ` is
+  read at, not the function.
+- **The policy**, the model that is deployed: `heave to add = f(accel_z, vel_z, I)`,
+  fitted to the plant inverted. For an acceleration wanted at a velocity and a trim, the
+  inversion takes the heave nearest the trim that makes it, and subtracts the
+  controller's own command for it, `trim − ff · accel_z`. On the vehicle the integrator
+  stands for the trim. The target is zero for a trim outside the commands the rows
+  hold, where `φ` was never fitted.
+
+Fitting the inverse directly, the command from the acceleration it made, is one network
+less and does worse: inside the deadband every command makes the same acceleration, and
+the mean of them is no command to give
+([bench/e2e-depth-ff](../bench/e2e-depth-ff/README.md#the-offline-check-before-any-model-drove)).
 
 **The residual envelope** is a parameter of the mux, by default 20 % of the envelope
-on each axis ([07-safety](07-safety.md#the-mux)), and is set from recorded data: the
-distribution of this label over a dive, the fraction of heave the controller was short
-by, says how wide the envelope must be for the correction to fit. A policy sitting at
-the cap shows in `mux.state`, which names the limits acting on each axis, and the mux
-demotes it after `demote_saturation`; a share of saturated ticks per model
-(`policy.<name>.eval`) comes later ([Later](#later)).
+on each axis ([07-safety](07-safety.md#the-mux)). What the inversion asks for is larger
+than that at the start of every large step: it is the thrust the controller's
+feed-forward is short of. A policy that asked for it would be at the cap for 40 ticks
+of a 1 m step, where 51 in the 5 s of `demote_window` demote. So the policy's last op
+bounds its output at 90 % of the envelope, and the run reports the share of ticks it
+was at its own bound instead (3 % here); the mux's rule then catches a model that has
+gone wrong, not one that is doing its work. A share of saturated ticks per
+model on the vehicle (`policy.<name>.eval`) comes later ([Later](#later)).
 
-**Model.** An `affine` that normalizes the five inputs, a 1-layer `lstm` of 16, whose
-memory carries what it saw at nearby depths across the masked ticks, a `dense` to one
-output, and an `affine` that scales it; the output is bound to the heave field of the
-wrench type, the other axes 0.
+**Model.** An `affine` that scales the three inputs, two `dense` of 32 with `tanh`, a
+`dense` to one output, a `tanh` and an `affine` that scales it to the bound; the output
+is bound to the heave field of the wrench type, the other axes 0. No recurrent state:
+what the first design asked of an LSTM's memory, the integrator's value now says.
 
-**Training.** On the topside, from the live stream and from earlier dives' recordings
-built with the same spec; the label computed from the two label parts by the training
-code, with the vehicle's thrust curve and allocation from its configuration; chunks of
-50 ticks (1 s), with the state carried across them; a deploy every 3 minutes.
+**Training.** On the topside, from the live stream through a 3 min replay buffer: each
+step fits the plant to a batch of rows and the policy to the plant inverted on inputs
+drawn over the policy's range; a deploy when the operator or a timer asks. A model
+trained before a buoyancy change stays right after it, since the trim is an input; one
+trained since has also seen the thrust curve on the other side of the deadband.
 
 **On the vehicle.** `policy_depth_ff`, ticking on `nav.state`, with
 `ctl.depth_hold.target` as its second input part; mode `residual:depth_ff`, set once by
 the operator with the first model's hash, the network's heave within the residual
-envelope; each model the trainer deploys after that drives from its swap, and the
-correction follows the vehicle as it changes.
+envelope; each model the trainer deploys after that drives from its swap.
+
+**What was measured.** In simulation, five runs a variant with different seeds, the
+baseline `assisted` with the same controller in the same run
+([bench/e2e-depth-ff](../bench/e2e-depth-ff/README.md#second-design)). With the first
+model promoted, a 1 m step's integral of absolute error fell from 1.85 to 1.24 m s
+(3 to 4 m) and from 3.02 to 1.86 (4 to 3 m), and its overshoot from 9 and 20 % to 1 and
+3.5 %; a 4 N buoyancy change at the hold moved the vehicle 2.7 cm where it had moved it
+33. Each of these is far outside the five runs' spread. The hold itself did not
+change (2.0 cm rms, the depth sensor's bias). The promotion, the swap to a second model
+and the return to `assisted` moved the vehicle 2.1 to 3.0 cm, where an undisturbed hold
+reads 2.2; the mux demoted nothing in ten runs. The same network fitted to the
+simulator's own thrust table, mass and drag, the ceiling, did no better: no difference
+between the two is outside the spread. With the residual the vertical thrusters
+reverse several times as often as without.
+
+Not shown: that a later model follows a vehicle that changes. After the buoyancy change
+the first model was already right, the trim being one of its inputs, and the second
+added nothing. After a change no input carries, the thrusters' supply from 16.8 to
+12.6 V, the model trained since did no better than the one from before either (1.41 and
+2.22 m s against 1.44 and 2.20, inside the spread; `assisted` 1.98 and 3.47): at that
+supply the correction is at the policy's bound twice as often, and a model that knew
+the new thrust curve exactly gains 0.03 to 0.04 m s on the bench's few-line model of
+the loop. And none of it has run on a
+vehicle: the label is an accelerometer's, and the simulator's has 0.01 m/s² of noise
+and no vibration, its thrust depends on the command alone, and its water is still.
+
+**What did not work, and why.** The first design had the network learn "the heave the
+controller's command was short by": the heave applied, from `thr.out`, less
+`ctl.depth_hold`'s command, on the rows where the vehicle was still. Where nothing but
+the controller drives, that label is zero, since the integrator has already put the
+trim into the command; what was left in it was the control loop's delay. A substitute
+label that had something in it (the heave applied less the controller's feedback) was
+the trim itself, which the integrator already holds: promoted, the network and the
+integrator pushed for the same thing and the depth error had to unwind one of them at
+every promotion, swap and return (12 to 56 cm). And `Where` masked the moving rows,
+which are the rows a residual acts in. In five runs the residual improved nothing and
+was demoted or made the hold worse
+([bench/e2e-depth-ff](../bench/e2e-depth-ff/README.md#results)).
 
 ## Later
 
@@ -748,12 +819,17 @@ What version 1 leaves out, each a step that changes nothing already built:
 - Promotion: `mux.set_mode` with a hash other than the running model's refused; in
   `residual:<name>`, a load and a revert are followed without demotion; a stale,
   skipped or flagged output demotes.
-- The example's label: on recorded rows with no residual applied and no other axis
-  commanded, `thr.out` mapped through the thrust curve and allocation equals
-  `ctl.depth_hold.heave` within the curve's tolerance, so the label is zero; with a
-  surge command beside the heave, the label is the mixer's shortfall; with a residual
-  applied, the label is that residual.
-- The example end to end on recorded data, then on the bench with propellers off:
-  stream, train, deploy, promote, a second deploy applied at its swap, revert, demote;
-  the envelope set from the recorded label's distribution, and a model that would sit at
-  the cap seen in `mux.state` and demoted.
+- The example's plant and policy (`python/tests/test_depth_ff2.py`): the heave at rest
+  follows the still rows and nothing else, masked rows left out; the plant is zero at
+  the heave at rest with the vehicle still for any weights; the plant inverted with the
+  simulator's own thrust table, mass and drag is the oracle, zero with the vehicle
+  still and zero for a trim outside the commands the rows hold; the policy's output is
+  within its bound for any weights, and its architecture hash is the policy spec's; on
+  a heave axis in a few lines the learner finds the deadband's side and leaves the trim
+  alone.
+- The example end to end in simulation (`tools/sim/e2e-depth-ff2.sh`), then on the
+  bench with propellers off: stream, train, deploy, promote, a buoyancy change, a
+  second deploy applied at its swap, back to `assisted`; the baseline in the same run,
+  an oracle beside it, five seeds; lineage, train/serve mismatch, loop latency and
+  rows lost reported; a model that would sit at the cap seen in `mux.state` and
+  demoted.
