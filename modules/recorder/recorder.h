@@ -92,6 +92,8 @@ struct writer {
 	/* The writer thread's own. */
 	struct hgr_writer files[REC_MAX_TOPICS];
 	int open[REC_MAX_TOPICS];
+	uint64_t unwritten[REC_MAX_TOPICS]; /* records a failed write left out: the gap of the next one written */
+	char names[REC_MAX_TOPICS][48];     /* the open file's topic, for the log */
 	char session_dir[REC_PATH];
 	/* Read by the module's thread. */
 	_Atomic uint64_t bytes_written;

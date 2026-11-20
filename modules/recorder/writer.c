@@ -184,6 +184,8 @@ static void do_open(struct writer *w, uint32_t topic, const struct hgr_header *h
 		return;
 	}
 	w->open[topic] = 1;
+	w->unwritten[topic] = 0;
+	memcpy(w->names[topic], h->name, sizeof w->names[topic]);
 	atomic_fetch_add(&w->bytes_written, HGR_HEADER_BYTES);
 }
 
@@ -198,10 +200,35 @@ static void do_record(struct writer *w, uint32_t topic, const unsigned char *dat
 		atomic_fetch_add(&w->errors, 1);
 		return;
 	}
-	if (hgr_append(f, (const struct hgr_record *)(const void *)data, data + HGR_RECORD_HEADER) < 0) {
+	/* The first record written after a failure says how many were left
+	 * out, as a ring's loss is said (docs/06 "Recording files"). */
+	struct hgr_record hdr;
+	const struct hgr_record *rec = (const struct hgr_record *)(const void *)data;
+	if (w->unwritten[topic]) {
+		memcpy(&hdr, data, sizeof hdr);
+		hdr.gap = ((hdr.flags & HGR_REC_GAP) ? hdr.gap : 0) + w->unwritten[topic];
+		hdr.flags |= HGR_REC_GAP;
+		rec = &hdr;
+	}
+	if (hgr_append(f, rec, data + HGR_RECORD_HEADER) < 0) {
+		int e = errno;
 		atomic_fetch_add(&w->errors, 1);
-		atomic_store(&w->last_error, (uint64_t)errno);
+		atomic_store(&w->last_error, (uint64_t)e);
+		/* hgr_append left no partial record behind, so the file stays
+		 * readable; one line when the failures start, one when they end. */
+		if (!w->unwritten[topic]++)
+			wlog("%.47s: write failed: %s; its records are left out until one can be written, which carries the gap",
+			     w->names[topic], strerror(e));
+		if (f->fd < 0) {
+			w->open[topic] = 0;
+			wlog("%.47s: the partial record could not be cut off (%s): the file is closed, nothing more of this "
+			     "topic in this session", w->names[topic], strerror(e));
+		}
 		return;
+	}
+	if (w->unwritten[topic]) {
+		wlog("%.47s: written again, %llu records left out", w->names[topic], (unsigned long long)w->unwritten[topic]);
+		w->unwritten[topic] = 0;
 	}
 	atomic_fetch_add(&w->records, 1);
 	atomic_fetch_add(&w->bytes_written, f->record_bytes);

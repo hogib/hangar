@@ -8,6 +8,8 @@
  * python/tests/test_record.py. */
 #include "rec_test.h"
 
+#include <sys/resource.h>
+
 #include "depth.h"
 #include "hg_manager_stub.h"
 
@@ -205,6 +207,67 @@ static void test_meta_and_cut_off(void)
 	CHECK(hgr_open(&r, "/nonexistent/x.hgr") < 0 && errno == ENOENT);
 }
 
+/* A record that cannot be written whole (a full disk, a quota; a file size
+ * limit here) is cut back off the file: the append fails, and the records
+ * appended after it are where the reader looks for them. Before, the partial
+ * record stayed and every later one was read shifted. */
+static void test_partial_record_cut_back(void)
+{
+	struct hg_topic_meta m;
+	memset(&m, 0, sizeof m);
+	rfmt(m.name, sizeof m.name, "part.t");
+	m.payload_bytes = 64;
+	struct hgr_header h;
+	hgr_header_init(&h, &m, "u64 w[8]\n", 9, HGR_FULL, 1, "full", "s", 0);
+	char path[600];
+	path_of(path, sizeof path, "part.t.hgr");
+	struct hgr_writer w;
+	CHECK_EQ_INT(hgr_create(&w, path, &h), 0);
+	void (*old_handler)(int) = signal(SIGXFSZ, SIG_IGN);
+	struct rlimit old, lim;
+	getrlimit(RLIMIT_FSIZE, &old);
+	lim = old;
+	lim.rlim_cur = HGR_HEADER_BYTES + 2 * 192 + 100; /* two records and 100 bytes of a third */
+	setrlimit(RLIMIT_FSIZE, &lim);
+	int rc[6] = { 0 }, err[6] = { 0 };
+	for (uint64_t seq = 1; seq <= 5; seq++) {
+		struct hg_info info = { .seq = seq, .stamp_ns = seq * 1000, .publish_ns = seq * 1000 };
+		struct hgr_record r;
+		hgr_record_init(&r, &info, 0, 0);
+		uint64_t pl[8];
+		for (int i = 0; i < 8; i++)
+			pl[i] = seq;
+		if (seq == 4)
+			setrlimit(RLIMIT_FSIZE, &old); /* space came back */
+		rc[seq] = hgr_append(&w, &r, pl);
+		err[seq] = rc[seq] < 0 ? errno : 0;
+	}
+	setrlimit(RLIMIT_FSIZE, &old);
+	signal(SIGXFSZ, old_handler);
+	CHECK_EQ_INT(rc[1], 0);
+	CHECK_EQ_INT(rc[2], 0);
+	CHECK_EQ_INT(rc[3], -1);
+	CHECK_EQ_INT(err[3], EFBIG);
+	CHECK_EQ_INT(rc[4], 0);
+	CHECK_EQ_INT(rc[5], 0);
+	CHECK_EQ_INT(w.records, 4);
+	CHECK_EQ_INT(w.bytes, HGR_HEADER_BYTES + 4 * 192);
+	CHECK_EQ_INT(hgr_close(&w), 0);
+	struct stat st;
+	CHECK(stat(path, &st) == 0 && st.st_size == HGR_HEADER_BYTES + 4 * 192);
+	struct hgr_reader r;
+	CHECK_EQ_INT(hgr_open(&r, path), 0);
+	CHECK_EQ_INT(r.count, 4);
+	static const uint64_t want[4] = { 1, 2, 4, 5 };
+	for (uint64_t i = 0; i < r.count && i < 4; i++) {
+		CHECK_EQ_INT(hgr_at(&r, i)->seq, want[i]);
+		CHECK_EQ_INT(*(const uint64_t *)hgr_payload_at(&r, i), want[i]);
+	}
+	CHECK_EQ_INT(hgr_find_seq(&r, 5), 3);
+	CHECK_EQ_INT(hgr_find_seq(&r, 3), -1);
+	hgr_reader_close(&r);
+}
+
 /* A file written while a stamp is 0 is searched by publish time. */
 static void test_find_stamp_uses_publish_without_stamp(void)
 {
@@ -241,6 +304,7 @@ int main(void)
 	RUN_TEST(test_layout);
 	RUN_TEST(test_round_trip);
 	RUN_TEST(test_meta_and_cut_off);
+	RUN_TEST(test_partial_record_cut_back);
 	RUN_TEST(test_find_stamp_uses_publish_without_stamp);
 	rec_teardown();
 	TEST_MAIN_END();

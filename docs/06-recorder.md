@@ -268,7 +268,13 @@ sequence number *n* itself (not the seqlock's 2*n*), and the reserved words carr
 | 64 | {u32, u32, u64}[4] | `inputs` | as in the topic, with their `reused`, `stale` and `absent` flags |
 
 Files are only appended to. A file whose length is not a whole number of records was
-cut off mid-write; the reader ignores the partial record.
+cut off mid-write, by a power cut or the recorder's death; the reader ignores the
+partial record, which can only be the last thing in the file. A record that cannot be
+written whole while the recorder runs (a full disk between two `MinFree` checks, a
+quota) is not left in the file: what was written of it is cut back off, the recorder
+logs the failure, counts it (`WriteErrors` in `session.ini`, and on its status line
+while it runs), and the next record of that topic that it can write carries the
+records left out as its gap, like a loss in the ring.
 
 ```python
 rec = hangar.open_recording("session/nav.depth.hgr")   # numpy.memmap underneath

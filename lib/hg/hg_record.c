@@ -172,9 +172,20 @@ int hgr_append(struct hgr_writer *w, const struct hgr_record *r, const void *pay
 	size_t done = 0;
 	while (done < want) {
 		ssize_t k = writev(w->fd, iov, n);
-		if (k < 0) {
-			if (errno == EINTR)
-				continue;
+		if (k < 0 && errno == EINTR)
+			continue;
+		if (k <= 0) {
+			/* A full disk, a quota, a size limit. What went out of this
+			 * record is cut back off: the reader finds record i at
+			 * header + i * record_bytes, so a partial record in the middle
+			 * would shift every record appended after it. If it cannot be
+			 * cut off, nothing more goes into this file. */
+			int e = k < 0 ? errno : EIO;
+			if (done && ftruncate(w->fd, (off_t)w->bytes) < 0) {
+				close(w->fd);
+				w->fd = -1;
+			}
+			errno = e;
 			return -1;
 		}
 		done += (size_t)k;

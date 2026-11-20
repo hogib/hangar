@@ -57,7 +57,9 @@
  *   64   {u32,u32,u64}[4]  inputs, as in the topic
  *
  * A file whose length is not a whole number of records was cut off
- * mid-write; the reader ignores the partial record. */
+ * mid-write (its writer died, or the power went); the reader ignores the
+ * partial record, which is always the last thing in the file: a writer that
+ * cannot write a record whole cuts it back off (hgr_append). */
 #ifndef HG_RECORD_H
 #define HG_RECORD_H
 
@@ -143,8 +145,11 @@ struct hgr_writer {
  * with errno. */
 int hgr_create(struct hgr_writer *w, const char *path, const struct hgr_header *h);
 /* Appends one record: the header and, unless the file is `meta`, the
- * payload (payload_bytes of it). 0, or -1 with errno; a short write
- * leaves a partial record the reader ignores and is reported as EIO. */
+ * payload (payload_bytes of it). 0, or -1 with the write's errno (ENOSPC,
+ * EDQUOT, EFBIG): then nothing of the record is in the file, what a short
+ * write left of it is cut back off, and a later append goes where the
+ * reader expects it. If the partial record cannot be cut off the file is
+ * closed (w->fd is -1) and every later append fails with EBADF. */
 int hgr_append(struct hgr_writer *w, const struct hgr_record *r, const void *payload);
 int hgr_close(struct hgr_writer *w);
 

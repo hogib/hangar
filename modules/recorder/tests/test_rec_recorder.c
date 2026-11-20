@@ -14,6 +14,8 @@
  * bad Dir and on a bad recorder.conf. Under 30 s. */
 #include "rec_test.h"
 
+#include <sys/resource.h>
+
 #include "depth.h"
 #include "empty.h"
 #include "hangar_modules.h"
@@ -359,6 +361,68 @@ static void test_every_n_and_shallow_ring(void)
 	hgr_reader_close(&r);
 }
 
+/* A write that fails part way (a full disk, a quota; a file size limit on
+ * the recorder here): the partial record is cut back off the file, the
+ * recorder says so in its log and counts it, and once it can write again the
+ * first record carries the gap. Before, the file went on after the partial
+ * record and everything behind it was read shifted. */
+static void test_write_failure(void)
+{
+	struct recorder_start req;
+	memset(&req, 0, sizeof req);
+	rfmt(req.note, sizeof req.note, "a full disk");
+	CHECK_EQ_INT(call("recorder.start", &req, &RECORDER_START_TYPE).status, HG_OK);
+	struct recorder_status st;
+	CHECK(wait_status(1, 2000, &st));
+	sleep_ms(1000);
+	char s[700];
+	rfmt(s, sizeof s, "%s", find_session("20"));
+	struct hgr_reader r;
+	CHECK_EQ_INT(open_rec(s, "chain.c", &r), 0);
+	uint64_t rb = r.record_bytes, whole = r.count;
+	hgr_reader_close(&r);
+	CHECK(whole >= 20);
+	/* Room for 50 more records of chain.c, half a second of them, and half of the next. */
+	struct rlimit old, lim;
+	CHECK_EQ_INT(prlimit(rec_pid, RLIMIT_FSIZE, NULL, &old), 0);
+	lim = old;
+	lim.rlim_cur = HGR_HEADER_BYTES + (whole + 50) * rb + rb / 2;
+	CHECK_EQ_INT(prlimit(rec_pid, RLIMIT_FSIZE, &lim, NULL), 0);
+	CHECK(wait_file_contains(log_path("recorder"), "chain.c: write failed: File too large", 3000));
+	sleep_ms(300);
+	CHECK_EQ_INT(prlimit(rec_pid, RLIMIT_FSIZE, &old, NULL), 0);
+	CHECK(wait_file_contains(log_path("recorder"), "chain.c: written again", 3000));
+	sleep_ms(300);
+	CHECK_EQ_INT(call("recorder.stop", NULL, &EMPTY_TYPE).status, HG_OK);
+	CHECK(wait_status(0, 2000, &st));
+	sleep_ms(200);
+	CHECK_EQ_INT(open_rec(s, "chain.c", &r), 0);
+	CHECK_EQ_INT(r.len, HGR_HEADER_BYTES + r.count * rb); /* no partial record in it */
+	CHECK(r.count > whole + 50);
+	uint64_t holes = 0, missing = 0;
+	for (uint64_t i = 1; i < r.count; i++) {
+		const struct hgr_record *rec = hgr_at(&r, i), *prev = hgr_at(&r, i - 1);
+		CHECK(rec->seq > prev->seq);
+		if (rec->seq != prev->seq + 1) {
+			holes++;
+			missing = rec->seq - prev->seq - 1;
+			CHECK(rec->flags & HGR_REC_GAP);
+			CHECK_EQ_INT(rec->gap, missing);
+			CHECK_EQ_INT(i, whole + 50); /* the 50 that fitted, then the hole */
+		} else {
+			CHECK_EQ_INT(rec->flags & HGR_REC_GAP, 0);
+		}
+	}
+	CHECK_EQ_INT(holes, 1);
+	CHECK(missing >= 20); /* 300 ms and more at 100 Hz */
+	printf("    chain.c: %llu records, %llu left out while the file could not grow\n", (unsigned long long)r.count,
+	       (unsigned long long)missing);
+	hgr_reader_close(&r);
+	char p[1024];
+	rfmt(p, sizeof p, "%s/session.ini", s);
+	CHECK(file_contains(p, "WriteErrors=") && !file_contains(p, "WriteErrors=0\n"));
+}
+
 /* The black box: dumped on `dump`, within 64 KB, classes in order. */
 static void test_blackbox_dump(void)
 {
@@ -555,10 +619,12 @@ static void test_teardown(void)
 
 int main(void)
 {
+	signal(SIGXFSZ, SIG_IGN); /* inherited by the recorder: test_write_failure limits its files */
 	rec_setup("recorder");
 	RUN_TEST(test_setup);
 	RUN_TEST(test_session_by_call);
 	RUN_TEST(test_every_n_and_shallow_ring);
+	RUN_TEST(test_write_failure);
 	RUN_TEST(test_blackbox_dump);
 	RUN_TEST(test_blackbox_triggers);
 	RUN_TEST(test_autostart_armed);

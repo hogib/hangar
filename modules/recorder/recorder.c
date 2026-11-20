@@ -346,9 +346,16 @@ static void publish_status(void)
 	st.topics = recorded;
 	st.blackbox_ns = least == UINT64_MAX ? 0 : least;
 	hg_publish(status_pub, &st, sizeof st, hg_now_ns());
+	/* Failed writes of this session are on the status line, not only in
+	 * session.ini's WriteErrors once it has stopped. */
+	char werr[64] = "";
+	uint64_t errors = atomic_load(&W.errors);
+	if (errors)
+		bfmt(werr, sizeof werr, ", %llu write errors (%s)", (unsigned long long)errors,
+		     strerror((int)atomic_load(&W.last_error)));
 	char line[128];
-	bfmt(line, sizeof line, "%s%s %llu bytes, %u topics, %llu gaps%s%s", active ? "recording " : "idle",
-		 active ? session_id : "", (unsigned long long)st.bytes_written, recorded, (unsigned long long)gaps,
+	bfmt(line, sizeof line, "%s%s %llu bytes, %u topics, %llu gaps%s%s%s", active ? "recording " : "idle",
+		 active ? session_id : "", (unsigned long long)st.bytes_written, recorded, (unsigned long long)gaps, werr,
 		 status_reason[0] ? ": " : "", status_reason);
 	hg_status(line);
 }
