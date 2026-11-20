@@ -6,6 +6,12 @@ vehicle's Pi until the bridge exists; `rov.sh` lays them out from `profiles/rov-
 and `profiles/rov-topside` and starts them. In a release the script is
 `share/hangar/rov.sh` and this file `share/doc/ROV.md`.
 
+**A session from the laptop:** `tools/rov/lab.sh` (deploy, up, status, bench, down) does
+every step below over SSH and puts it all back at the end; `tools/rov/QUICKSTART.md` is
+the page to have open at the lab. It runs from a checkout of hangar, not from a release:
+it uses the laptop's own builds (`builddir/hellion`, `builddir/eeye`), `bench/` and
+`profiles/rov-laptop/`. The steps below are what it does, by hand.
+
 ## The vehicle
 
 Found on 2026-11-09 (`bench/PI-TEST.md`, results):
