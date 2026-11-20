@@ -117,3 +117,11 @@ check-asan-recording:
 	else echo "skip  asan recording: $(CC) cannot build with -fsanitize=address,undefined"; fi
 check-tsan: check-tsan-recording
 check-asan: check-asan-recording
+# Each of these runs a make of its own in the same $(BUILDDIR)/tsan or /asan as
+# hangard.mk's, and both build the shared objects and binaries: run side by
+# side under -j, one could link an object the other was still writing (CI,
+# 2026-11-20: builddir/asan/hangar, "undefined reference to `main'"; every run
+# compiled hangar.o and hg_topic.o twice). The recording's make waits for the
+# hangard one; check-tsan's and check-asan's own recipe runs after both.
+check-tsan-recording: | check-tsan-hangard
+check-asan-recording: | check-asan-hangard
