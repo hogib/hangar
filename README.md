@@ -50,7 +50,7 @@ procedure and the measurements are in [tools/rov/README.md](tools/rov/README.md)
 | `docs/` | the design, one document per part; start at [`00-overview.md`](docs/00-overview.md) |
 | `lib/hg/` | the module library: topics, provenance, waiting, calls, parameters, recordings (LGPL) |
 | `hangard/`, `hangar/` | the manager and the command-line tool |
-| `modules/` | the modules, one directory each, each with its README |
+| `modules/` | the modules, one directory each with its own README, and `common/` for what they share |
 | `msg/` | message types (`.msg`) and their generated headers |
 | `profiles/` | manifest sets: the simulation roots, the lab's BlueROV2 and its topside |
 | `lib/sim/`, `lib/nn/` | the simulator's physics; the inference runtime and the `.hgw` weights file |
