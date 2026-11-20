@@ -554,6 +554,79 @@ static int requested(const char *prefix)
 	return 0;
 }
 
+/* `hangar call` opens the server's .rep topic afresh and took the first
+ * message whose call_id and caller_id were its own. A fresh subscription's
+ * first read is the newest message already there, a reply to some earlier
+ * call; and the manager counts call ids from 1 after a cold start while a
+ * server it adopted keeps its ring. Where the two ids met, the old reply was
+ * printed as the answer to the new call: an `arm` reported with the status
+ * of a `disarm` made before the manager restarted. A reply is the call's
+ * only if the server read the request after the call was made
+ * (received_ns), as hg_call_poll has always asked. Here the manager is the
+ * stand-in, which gives every call the id 7, and a child is the server: an
+ * old refusal with that id is on srv.rep before the call, and the answer to
+ * the call itself comes a second after it. */
+static void test_call_takes_no_older_reply(void)
+{
+	static const struct answer table[] = {
+		{ "method ", "ok\nreq=empty hash=1 size=8 rep=empty hash=2 size=8 deadline=100 running=1 reqschema=12 "
+			     "repschema=12\nu8 reserved\nu8 reserved\n" },
+		{ "call ", "ok 7 4242\n" },
+		{ NULL, NULL }
+	};
+	pid_t mgr = stand_in_manager(table);
+	pid_t srv = fork();
+	if (srv == 0) {
+		static char text[HG_SCHEMA_MAX];
+		static struct hg_schema sc;
+		int n = hg_call_rep_schema("srv", 8, text, sizeof text);
+		if (n <= 0 || hg_schema_parse(text, (size_t)n, &sc, NULL, 0) < 0)
+			_exit(3);
+		struct hg_pub_opts o = { .slots = 16 };
+		hg_pub *p = hg_pub_open("srv.rep", &sc.type, &o);
+		unsigned char *buf = calloc(1, sc.type.payload_bytes);
+		if (!p || !buf)
+			_exit(4);
+		struct hg_call_reply_envelope e;
+		memset(&e, 0, sizeof e);
+		e.call_id = 7;
+		e.caller_id = 4242;
+		e.status = HG_E_REFUSED;
+		e.received_ns = hg_now_ns();
+		tfmt(e.reason, sizeof e.reason, "an answer to an earlier call");
+		memcpy(buf, &e, sizeof e);
+		hg_publish_with(p, buf, sc.type.payload_bytes, hg_now_ns(), HG_NO_REFS, NULL, 0);
+		/* The call is made while this sleeps; then its own answer. */
+		char mark[600];
+		tfmt(mark, sizeof mark, "%s/requests", T_root);
+		for (int i = 0; i < 3000 && !file_contains(mark, "call srv.arm"); i++)
+			sleep_ms(10);
+		sleep_ms(200);
+		e.status = HG_OK;
+		e.reason[0] = 0;
+		e.received_ns = hg_now_ns();
+		memcpy(buf, &e, sizeof e);
+		hg_publish_with(p, buf, sc.type.payload_bytes, hg_now_ns(), HG_NO_REFS, NULL, 0);
+		sleep_ms(20000);
+		_exit(0);
+	}
+	char rep[700];
+	tfmt(rep, sizeof rep, "%s/srv.rep", getenv("HANGAR_TOPIC_DIR") ? getenv("HANGAR_TOPIC_DIR") : "");
+	for (int i = 0; i < 500 && access(rep, F_OK) < 0; i++)
+		sleep_ms(10);
+	sleep_ms(100); /* the old reply is on the topic */
+	char *call[] = { (char *)T_hangar, "call", "srv.arm", "--timeout", "15000", NULL };
+	int rc = run_hangar(out_path(), 20000, NULL, call);
+	const char *o = read_file(out_path());
+	CHECK_EQ_INT(rc, 0);
+	CHECK(strstr(o, "HG_OK") != NULL);
+	CHECK(strstr(o, "an answer to an earlier call") == NULL);
+	if (rc != 0)
+		printf("    hangar call: exit %d: %s", rc, o);
+	reap(srv);
+	stand_in_stop(mgr);
+}
+
 /* D4: method_info and params_saved returned 1 for a reply they could not
  * parse and their callers tested < 0: after the error message the command
  * went on with a zeroed struct, sent a call with an empty body, and took
@@ -995,6 +1068,7 @@ int main(void)
 	RUN_TEST(test_json_is_json);
 	RUN_TEST(test_echo_schema_larger_than_payload);
 	RUN_TEST(test_malformed_reply_stops_the_command);
+	RUN_TEST(test_call_takes_no_older_reply);
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
 	RUN_TEST(test_non_finite_parameters_refused);

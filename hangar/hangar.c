@@ -920,6 +920,10 @@ static int do_call(const char *target, const struct method_info *mi, const unsig
 			 mi->req_hash, body_len);
 	memcpy(req + n, body, body_len);
 	static char reply[HG_CONTROL_MAX];
+	/* A reply is this call's only if the server read the request after
+	 * this moment: the subscription is new, and its first read is the
+	 * newest reply already on the topic, to somebody's earlier call. */
+	uint64_t started_ns = hg_now_ns();
 	if (request_bin(req, (size_t)n + body_len, reply, sizeof reply) < 0) {
 		hg_sub_close(sub);
 		return -100;
@@ -941,7 +945,7 @@ static int do_call(const char *target, const struct method_info *mi, const unsig
 		if (r == HG_MSG) {
 			struct hg_call_reply_envelope e;
 			memcpy(&e, buf, sizeof e);
-			if (e.call_id == call_id && e.caller_id == caller_id) {
+			if (e.call_id == call_id && e.caller_id == caller_id && e.received_ns >= started_ns) {
 				*env = e;
 				status = e.status;
 				size_t have = hg_sub_payload_bytes(sub) - HG_CALL_REP_ENVELOPE;

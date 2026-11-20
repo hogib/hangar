@@ -472,6 +472,7 @@ struct pending {
 	char target[64];
 	unsigned long long call_id;
 	unsigned caller_id;
+	uint64_t started_ns; /* before the call went out: an older reply is not its answer */
 	uint64_t deadline_ns;
 };
 static struct pending calls[CON_MAX_CALLS];
@@ -650,6 +651,7 @@ static void call_start(struct conn *c, const char *target, const char *preset)
 		memcpy(creq + h, pbody, req_size);
 	else
 		memset(creq + h, 0, req_size);
+	uint64_t started_ns = hg_now_ns();
 	n = hg_control_call(G.control_path, creq, (size_t)h + req_size, reply, sizeof reply, NULL, 0);
 	unsigned long long call_id;
 	unsigned caller_id;
@@ -672,6 +674,7 @@ static void call_start(struct conn *c, const char *target, const char *preset)
 	snprintf(p->target, sizeof p->target, "%s", target);
 	p->call_id = call_id;
 	p->caller_id = caller_id;
+	p->started_ns = started_ns;
 	p->deadline_ns = hg_now_ns() + (uint64_t)CALL_TIMEOUT_MS * 1000000u;
 	/* Waits without reading: a level-triggered EPOLLIN on the request's
 	 * leftovers would wake the loop for nothing. A hang-up still shows. */
@@ -696,7 +699,10 @@ static void calls_poll(void)
 				break;
 			struct hg_call_reply_envelope e;
 			memcpy(&e, buf, sizeof e);
-			if (e.call_id == p->call_id && e.caller_id == p->caller_id) {
+			/* received_ns: the reply topic was opened for this call, and its
+			 * first message is the newest reply that was already there
+			 * (hangar/hangar.c do_call, the same rule). */
+			if (e.call_id == p->call_id && e.caller_id == p->caller_id && e.received_ns >= p->started_ns) {
 				e.reason[sizeof e.reason - 1] = 0;
 				struct conn *c = p->conn;
 				char target[64];
