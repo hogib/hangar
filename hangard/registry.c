@@ -64,12 +64,14 @@ int proc_tracer_pid(pid_t pid)
 	return (int)strtol(t + 11, NULL, 10);
 }
 
-void registry_write(void)
+int registry_write(void)
 {
 	FILE *f = fopen(G.paths.registry_tmp, "we");
 	if (!f) {
-		hd_log("cannot write %s: %s", G.paths.registry_tmp, strerror(errno));
-		return;
+		int e = errno;
+		hd_log("cannot write %s: %s", G.paths.registry_tmp, strerror(e));
+		errno = e;
+		return -1;
 	}
 	fprintf(f, "hangar-registry 2\n");
 	fprintf(f, "system: %s %llu %s\n", sys_state_names[G.sys], (unsigned long long)G.sys_since_ns,
@@ -83,9 +85,14 @@ void registry_write(void)
 			m->pid && m->stopping ? state_names[m->after_stop] : "-");
 	}
 	if (fclose(f) != 0 || chmod(G.paths.registry_tmp, 0600) != 0 ||
-	    rename(G.paths.registry_tmp, G.paths.registry) != 0)
-		hd_log("cannot write %s: %s", G.paths.registry, strerror(errno));
+	    rename(G.paths.registry_tmp, G.paths.registry) != 0) {
+		int e = errno;
+		hd_log("cannot write %s: %s", G.paths.registry, strerror(e));
+		errno = e;
+		return -1;
+	}
 	G.registry_written_ns = hg_now_ns();
+	return 0;
 }
 
 int registry_read(const char *path, struct reg_entry *out, int max, enum sys_state *sys,

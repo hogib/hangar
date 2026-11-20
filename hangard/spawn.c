@@ -827,12 +827,18 @@ int module_spawn(struct module *m)
 	m->stop_timeout_ns = mf->stop_timeout_ns;
 	m->starttime = proc_starttime(m->pid);
 	m->exit_known = 0;
-	registry_write();
-	if (neutral_record_write(m) < 0) {
-		/* No module runs without its record: with none, nothing would put
+	const char *missing = NULL;
+	if (registry_write() < 0)
+		missing = "its registry entry";
+	else if (neutral_record_write(m) < 0)
+		missing = "the Neutral record";
+	if (missing) {
+		/* No module runs without its entry: a manager that crashed would
+		 * not find it, and its successor would start a second instance
+		 * beside it. Nor without its record: with none, nothing would put
 		 * the hardware to neutral when it dies. The child is not released;
 		 * it sees the pipe close and exits without having run anything. */
-		hd_log("%s: cannot write the Neutral record: %s: not started", m->name, strerror(errno));
+		hd_log("%s: cannot write %s: %s: not started", m->name, missing, strerror(errno));
 		close(release[1]);
 		close(errp[0]);
 		siginfo_t si;

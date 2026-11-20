@@ -230,7 +230,8 @@ void hd_die(const char *fmt, ...) __attribute__((format(printf, 1, 2), noreturn)
 
 unsigned long long proc_starttime(pid_t pid);
 int proc_tracer_pid(pid_t pid); /* -1 if unknown */
-void registry_write(void);
+/* 0, or -1 (logged) when the registry on disk is not the one just written. */
+int registry_write(void);
 
 struct reg_entry {
 	char name[MF_NAME];

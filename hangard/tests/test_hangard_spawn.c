@@ -115,6 +115,34 @@ static void test_no_module_without_its_neutral_record(void)
 	unlink(T_log);
 }
 
+/* docs/03, step 1: "no module ever runs without an entry". The registry's
+ * directory is made read-only (a full /run does the same to the rename): a
+ * module added now is not started, since a manager that crashed would not
+ * find it, and its successor would start a second one beside it. */
+static void test_no_module_without_its_registry_entry(void)
+{
+	char dir[1024];
+	tfmt(dir, sizeof dir, "%s/run/hangar", T_root);
+	mgr = manager_start();
+	CHECK(chmod(dir, 0555) == 0);
+	manifest("m", "[Module]\nExec=%s/stubborn --polite\n[Restart]\nPolicy=never\n", T_toys);
+	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
+	CHECK(wait_file_contains(T_log, "m: cannot write its registry entry", 2000));
+	sleep_ms(300);
+	struct mstat m;
+	CHECK(module_status("m", &m));
+	CHECK_EQ_INT(m.pid, 0);
+	CHECK(strcmp(m.state, "stopped") == 0);
+	CHECK(!file_contains(T_log, "m: started"));
+	/* With the directory writable again it starts. */
+	CHECK(chmod(dir, 0755) == 0);
+	CHECK(strncmp(ctl("start m"), "ok", 2) == 0);
+	CHECK(wait_state("m", "ready", 3000));
+	manager_stop(mgr);
+	manifest_remove("m");
+	unlink(T_log);
+}
+
 /* The record belongs to the instance: one started from a manifest without
  * a Neutral has none, though its predecessor had; a module removed by a
  * reload leaves none behind. */
@@ -267,6 +295,7 @@ int main(void)
 	hd_setup("spawn", NULL);
 	HD_RUN(test_manager_killed_before_the_release);
 	HD_RUN(test_no_module_without_its_neutral_record);
+	HD_RUN(test_no_module_without_its_registry_entry);
 	HD_RUN(test_no_record_outlives_its_instance);
 	HD_RUN(test_environment);
 	HD_RUN(test_exit_78_with_an_unterminated_status);
