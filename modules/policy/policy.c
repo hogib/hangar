@@ -165,6 +165,11 @@ static int sub_info(hg_sub *s, struct hg_schema *sch, struct hg_ds_topic_info *o
 {
 	struct hg_topic_meta m;
 	uint32_t slen;
+	/* A topic absent at hg_sub_open attaches on a read, and nothing reads a
+	 * part before the bind: hg_skip settles it (the parts are read by seq
+	 * and stamp, never by hg_next, so skipping loses nothing). */
+	if (hg_sub_meta(s, &m) < 0)
+		(void)hg_skip(s);
 	const char *text = hg_sub_schema(s, &slen);
 	if (!text || hg_sub_meta(s, &m) < 0)
 		return -1;

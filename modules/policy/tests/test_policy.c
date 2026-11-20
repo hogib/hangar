@@ -34,7 +34,7 @@
 static pid_t mgr;
 static const char *T_policy, *T_mux, *T_python, *T_pairer;
 static char models[600], incoming[600], state[600];
-static hg_pub *P_anchor, *P_target, *P_pilot, *P_ctl, *P_depth, *P_safety;
+static hg_pub *P_anchor, *P_target, *P_pilot, *P_ctl, *P_depth, *P_safety, *P_late;
 static hg_sub *S_out, *S_active, *S_load, *S_cmd, *S_mux, *S_rows;
 
 static struct {
@@ -95,11 +95,20 @@ static void write_files(void)
 	tfmt(path, sizeof path, "%s/etc/hangar/datasets/toy.dataset", T_root);
 	write_file(path, "[Dataset]\nAnchor=toy.anchor\nAnchorRole=input\nFields=depth_m\nLateness=0\nResetAfter=200ms\n\n"
 			 "[Input toy.target]\nJoin=asof:0\nFields=depth_m\n");
+	/* policy_late's dataset: a label part whose topic appears after the
+	 * policy started (test_start_neutral). */
+	tfmt(path, sizeof path, "%s/etc/hangar/datasets/late.dataset", T_root);
+	write_file(path, "[Dataset]\nAnchor=toy.anchor\nAnchorRole=input\nFields=depth_m\nLateness=0\n\n"
+			 "[Input toy.target]\nJoin=asof:0\nFields=depth_m\n\n"
+			 "[Input toy.late]\nJoin=asof:0\nRole=label\nFields=depth_m\n");
 	tfmt(path, sizeof path, "%s/etc/hangar/policies", T_root);
 	mkdir_p(path);
 	char text[256];
 	tfmt(text, sizeof text, "[Policy]\nName=toy\nDataset=toy\nArch=%s\nTickBudget=50%%\n", arch);
 	tfmt(path, sizeof path, "%s/etc/hangar/policies/toy.policy", T_root);
+	write_file(path, text);
+	tfmt(text, sizeof text, "[Policy]\nName=late\nDataset=late\nArch=%s\nTickBudget=50%%\n", arch);
+	tfmt(path, sizeof path, "%s/etc/hangar/policies/late.policy", T_root);
 	write_file(path, text);
 	tfmt(state, sizeof state, "%s/var/lib/hangar/policy_toy", T_root);
 	tfmt(incoming, sizeof incoming, "%s/incoming", state);
@@ -147,12 +156,26 @@ static void write_manifests(void)
 			   "[Publish ctl.depth_hold]\nType=wrench\nRate=50\n"
 			   "[Publish nav.depth]\nType=depth\nRate=50\n"
 			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
+			   "[Publish toy.late]\nType=depth\nRate=50\n"
 			   "[Call policy_toy.load_weights]\n[Call policy_toy.revert]\n[Call policy_toy.reset_state]\n"
 			   "[Call policy_toy.runtime_info]\n[Call mux.set_mode]\n");
 	/* The manager's check: hangar-policy under another name, and without
 	 * its .load output. */
 	manifest("misnamed", "[Module]\nExec=%s %s/etc/hangar/policies/toy.policy\n[Restart]\nPolicy=never\n"
 			     "[Publish policy.toy2.wrench]\nType=wrench\nRate=50\n",
+		 T_policy, T_root);
+	/* Never restarted, and a long StartGrace: it must bind once toy.late
+	 * appears, not be restarted into binding. */
+	manifest("policy_late", "[Module]\nExec=%s %s/etc/hangar/policies/late.policy\n"
+				"[Restart]\nPolicy=never\n[Health]\nStartGrace=30s\n"
+				"[Subscribe toy.anchor]\n[Subscribe toy.target]\n[Subscribe toy.late]\n"
+				"[Publish policy.late.wrench]\nType=wrench\nRate=50\nInputs=toy.anchor toy.target policy.late.active\n"
+				"[Publish policy.late.active]\nType=policy_active\n"
+				"[Publish policy.late.load]\nType=policy_load\n"
+				"[Serve load_weights]\nRequest=load_weights_req\nReply=load_weights_rep\nAllow=tester admin\n"
+				"[Serve revert]\nRequest=empty\nReply=policy_version\nAllow=tester admin\n"
+				"[Serve reset_state]\nRequest=empty\nReply=empty\nAllow=tester admin\n"
+				"[Serve runtime_info]\nRequest=empty\nReply=runtime_info\nAllow=tester admin\n",
 		 T_policy, T_root);
 	manifest("policy_lacking", "[Module]\nExec=%s %s/etc/hangar/policies/lacking.policy\n[Restart]\nPolicy=never\n"
 				   "[Publish policy.lacking.wrench]\nType=wrench\nRate=50\n"
@@ -259,6 +282,8 @@ static void pump(long ms)
 			s.state = 1;
 			s.outputs_enabled = 1;
 			hg_publish(P_safety, &s, sizeof s, now);
+			if (P_late)
+				hg_publish(P_late, &d, sizeof d, now);
 		}
 		hg_sub *subs[5] = { S_out, S_active, S_load, S_cmd, S_mux };
 		hg_wait(subs, 5, 5);
@@ -392,6 +417,25 @@ static void test_start_neutral(void)
 	pump(300);
 	CHECK(wait_state("policy_toy", "ready", 5000));
 	CHECK(wait_state("mux", "ready", 5000));
+	/* Its parts' topics appeared after it started (the tester opened them
+	 * above): bound and ready all the same, without a restart. */
+	struct mstat ms;
+	CHECK(module_status("policy_toy", &ms) && ms.failures == 0);
+	if (ms.failures)
+		printf("    policy_toy restarted %u times: %s\n", ms.failures, ms.last_exit);
+	/* policy_late: toy.late does not exist yet, so it cannot bind; once the
+	 * topic appears it binds and is ready, in the same process (a part
+	 * nothing reads before the bind was never attached: unbound until the
+	 * manager's StartGrace restarted it). */
+	CHECK(module_status("policy_late", &ms) && strcmp(ms.state, "starting") == 0);
+	int pid_late = ms.pid;
+	P_late = hg_pub_open("toy.late", &DEPTH_TYPE, NULL);
+	CHECK(P_late != NULL);
+	uint64_t tl = now_ms();
+	while (now_ms() - tl < 3000 && !(module_status("policy_late", &ms) && strcmp(ms.state, "ready") == 0))
+		pump(50);
+	printf("    policy_late: %s %.1f s after toy.late appeared (%s)\n", ms.state, (now_ms() - tl) / 1e3, ms.status);
+	CHECK(strcmp(ms.state, "ready") == 0 && ms.pid == pid_late && ms.failures == 0);
 	/* No model: a neutral wrench, flagged stale, on every tick. */
 	uint64_t o0 = O.outs, a0 = T.anchors;
 	pump(500);
