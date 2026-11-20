@@ -561,6 +561,25 @@ static void test_bridge(void)
 		printf("    safety's wiring lacks 'subglob *.req':\n%s", text);
 		CHECK(0);
 	}
+	// The shipped example (modules/bridge/bridge.conf, the docs' own), on
+	// both roles: the vehicle sends its own bridge.vehicle.link up.
+	char example[1024];
+	snprintf(example, sizeof example, "%s/../modules/bridge/bridge.conf", src && *src ? src : "msg");
+	const char *roles[] = { "vehicle", "topside" };
+	for (int r = 0; r < 2; r++) {
+		mf_set_free(&set);
+		mf_set_init(&set, roles[r], "", T_msg);
+		snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", example);
+		add("bridge", MOD "[Bridge]\n");
+		add("safety", MOD "[Serve arm]\nRequest=empty\nReply=empty\n");
+		CHECK_EQ_INT(mf_set_check(&set), 2);
+		if (mf_find(&set, "bridge")->refused)
+			printf("    %s: %s\n", roles[r], mf_find(&set, "bridge")->reason);
+		len = wiring_text(&set, mf_find(&set, "bridge"), text, sizeof text);
+		CHECK(len > 0);
+		CHECK(strstr(text, r == 0 ? "sub bridge.vehicle.link" : "mirror bridge.vehicle.link") != NULL);
+		CHECK(strstr(text, r == 0 ? "mirror pilot.wrench" : "sub pilot.wrench") != NULL);
+	}
 	mf_set_free(&set);
 }
 

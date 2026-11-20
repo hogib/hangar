@@ -272,7 +272,7 @@ static int local_key(const char *text, size_t k, size_t j)
 	return 0;
 }
 
-/* The configuration hash: of the text, without those lines. */
+/* The configuration hash: of the text, without those lines, comments and blank lines. */
 static void conf_hash(const char *text, size_t len, unsigned char out[32])
 {
 	struct blake2s s;
@@ -285,7 +285,8 @@ static void conf_hash(const char *text, size_t len, unsigned char out[32])
 		size_t k = i;
 		while (k < j && (text[k] == ' ' || text[k] == '\t'))
 			k++;
-		if (!local_key(text, k, j))
+		/* Comments and blank lines are not configuration. */
+		if (k < j && text[k] != '#' && text[k] != ';' && !local_key(text, k, j))
 			blake2s_update(&s, text + i, j - i + (j < len));
 		i = j + 1;
 	}

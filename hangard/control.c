@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "bridge_conf.h"
 #include "hg_call.h"
 #include "hg_control.h"
 #include "hg_params.h"
@@ -211,17 +212,18 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 	/* This machine's own names are never the other side's to write: the
 	 * manager's hangar.<role>.* (its admin topic's caller field is trusted)
 	 * and the bridge's bridge.<role>.*. The writer "hangar" only on the
-	 * other side's admin topic, where it names the other side's operator. */
-	char own_h[MF_TOPIC], own_b[MF_TOPIC], other_admin[MF_TOPIC];
+	 * other side's manager's topics (hangar.<other role>.*: its system and
+	 * modules, its admin topic naming the other side's operator). */
+	char own_h[MF_TOPIC], own_b[MF_TOPIC], other_h[MF_TOPIC];
 	mf_fmt(own_h, sizeof own_h, "hangar.%s.", G.set.role);
 	mf_fmt(own_b, sizeof own_b, "bridge.%s.", G.set.role);
-	mf_fmt(other_admin, sizeof other_admin, "hangar.%s.admin.req", G.set.other_role);
+	mf_fmt(other_h, sizeof other_h, "hangar.%s.", G.set.other_role);
 	if (strncmp(topic, own_h, strlen(own_h)) == 0 || strncmp(topic, own_b, strlen(own_b)) == 0) {
 		err_reply(fd, "%s is this machine's own: not mirrored", topic);
 		return;
 	}
-	if (strcmp(writer, "hangar") == 0 && strcmp(topic, other_admin) != 0) {
-		err_reply(fd, "%s: the writer hangar only on %s", topic, other_admin);
+	if (strcmp(writer, "hangar") == 0 && strncmp(topic, other_h, strlen(other_h)) != 0) {
+		err_reply(fd, "%s: the writer hangar only on %s*", topic, other_h);
 		return;
 	}
 	const struct mf_mirror *mm = NULL;
@@ -552,9 +554,41 @@ static void req_clear_failsafe(int fd)
 
 /* ---- Calls and parameters (docs/04 "Admin calls", docs/05) ------------- */
 
-/* The method <module>.<method> of an enabled module, set_params included. */
-static const struct mf_serve *find_method(const char *target, struct module **mod, char *err, size_t errlen)
+/* A method of the other side that [Calls] Remote= names, as the bridge
+ * carries it (docs/08 "Calls across the tether"): its types are those a
+ * module of this machine declares in its [Call] of it, as built with them.
+ * NULL with err when nothing here declares it. */
+static const struct mf_serve *remote_method(const char *target, const char *server, const char *method, char *err,
+					    size_t errlen)
 {
+	static struct mf_serve sv;
+	for (int k = 0; k < G.set.n_modules; k++) {
+		const struct mf_module *o = G.set.modules[k];
+		if (o->refused)
+			continue;
+		for (int i = 0; i < o->n_calls; i++) {
+			const struct mf_call *c = &o->calls[i];
+			if (!c->remote || strcmp(c->server, server) != 0 || strcmp(c->method, method) != 0)
+				continue;
+			memset(&sv, 0, sizeof sv);
+			mf_fmt(sv.method, sizeof sv.method, "%s", method);
+			sv.req_idx = c->req_idx;
+			sv.rep_idx = c->rep_idx;
+			return &sv;
+		}
+	}
+	mf_fmt(err, errlen, "%s is the %s's: no module here declares [Call %s] with its types", target,
+	       G.set.other_role, target);
+	return NULL;
+}
+
+/* The method <module>.<method> of an enabled module, set_params included,
+ * or of the other side through the bridge (*mod NULL then); server gets the
+ * module's name. */
+static const struct mf_serve *find_method(const char *target, struct module **mod, char *server, char *err,
+					  size_t errlen)
+{
+	*mod = NULL;
 	const char *dot = strchr(target, '.');
 	if (!dot || dot == target || !dot[1]) {
 		mf_fmt(err, errlen, "'%s' is not <module>.<method>", target);
@@ -562,7 +596,10 @@ static const struct mf_serve *find_method(const char *target, struct module **mo
 	}
 	char name[MF_NAME];
 	mf_fmt(name, sizeof name, "%.*s", (int)(dot - target), target);
+	mf_fmt(server, MF_NAME, "%s", name);
 	struct module *m = module_find(name);
+	if ((!m || !m->mf) && G.set.bridge && bc_remote_matches(G.set.bridge, name, dot + 1))
+		return remote_method(target, name, dot + 1, err, errlen);
 	if (!m || !m->mf || m->mf->refused) {
 		mf_fmt(err, errlen, "no module serves %s: %s is %s", target, name,
 			 !m || !m->mf ? "not a module here" : "refused");
@@ -608,9 +645,9 @@ static void req_call(int fd, const struct peer *p, char *req, size_t len)
 		err_reply(fd, "call: unknown key %s", tok);
 		return;
 	}
-	char err[MF_ERR];
+	char err[MF_ERR], server[MF_NAME];
 	struct module *m = NULL;
-	const struct mf_serve *sv = find_method(target, &m, err, sizeof err);
+	const struct mf_serve *sv = find_method(target, &m, server, err, sizeof err);
 	if (!sv) {
 		err_reply(fd, "%s", err);
 		return;
@@ -632,7 +669,7 @@ static void req_call(int fd, const struct peer *p, char *req, size_t len)
 	env.deadline_ns = now + deadline_ms * 1000000ull;
 	env.request_type = have_type ? type_hash : rq->hash;
 	char rep_topic[MF_TOPIC];
-	mf_fmt(rep_topic, sizeof rep_topic, "%s.rep", m->name);
+	mf_fmt(rep_topic, sizeof rep_topic, "%s.rep", server);
 	env.target_id = hg_topic_id(rep_topic);
 	mf_fmt(env.method, sizeof env.method, "%s", sv->method);
 	char user[64];
@@ -657,9 +694,9 @@ static void req_call(int fd, const struct peer *p, char *req, size_t len)
  * building a request by field name. */
 static void req_method(int fd, const char *target)
 {
-	char err[MF_ERR];
+	char err[MF_ERR], server[MF_NAME];
 	struct module *m = NULL;
-	const struct mf_serve *sv = find_method(target, &m, err, sizeof err);
+	const struct mf_serve *sv = find_method(target, &m, server, err, sizeof err);
 	if (!sv) {
 		err_reply(fd, "%s", err);
 		return;
@@ -673,7 +710,7 @@ static void req_method(int fd, const char *target)
 	int n = mf_fmt(buf, sizeof buf,
 			 "ok\nreq=%s hash=%016llx size=%u rep=%s hash=%016llx size=%u deadline=%llu running=%d reqschema=%u repschema=%u\n",
 			 rq->name, (unsigned long long)rq->hash, rq->payload_bytes, rp->name, (unsigned long long)rp->hash,
-			 rp->payload_bytes, (unsigned long long)(sv->deadline_ns / 1000000u), m->pid ? 1 : 0,
+			 rp->payload_bytes, (unsigned long long)(sv->deadline_ns / 1000000u), !m || m->pid ? 1 : 0,
 			 rq->schema_bytes, rp->schema_bytes);
 	if ((size_t)n + rq->schema_bytes + rp->schema_bytes >= sizeof buf) {
 		err_reply(fd, "the schemas do not fit a reply");
