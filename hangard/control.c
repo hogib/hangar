@@ -71,13 +71,22 @@ static struct {
 static int n_conns;
 static uint64_t accept_paused_until; /* not 0: the listening socket is out of epoll */
 
-static void conn_close(int fd)
+static int conn_index(int fd)
 {
 	for (int i = 0; i < n_conns; i++)
-		if (conns[i].fd == fd) {
-			conns[i] = conns[--n_conns];
-			break;
-		}
+		if (conns[i].fd == fd)
+			return i;
+	return -1;
+}
+
+/* Closes a connection of the table, and nothing that is not one: the
+ * number may by now be another descriptor's. */
+static void conn_close(int fd)
+{
+	int i = conn_index(fd);
+	if (i < 0)
+		return;
+	conns[i] = conns[--n_conns];
 	epoll_del(fd);
 	close(fd);
 }
@@ -1079,6 +1088,12 @@ void control_handle(int fd)
 {
 	static char req[HG_CONTROL_MAX + 1];
 	ssize_t n;
+	/* An event names its connection by descriptor number. Connections are
+	 * also closed outside their own event now (the idle limit, the cap);
+	 * should an event ever outlive its connection, the number is not ours
+	 * to read from or to close. */
+	if (conn_index(fd) < 0)
+		return;
 	while ((n = recv(fd, req, HG_CONTROL_MAX, 0)) < 0 && errno == EINTR)
 		;
 	if (n <= 0) {
