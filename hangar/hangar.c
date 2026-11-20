@@ -435,7 +435,12 @@ static int cmd_echo(int argc, char **argv)
 			}
 			uint32_t slen;
 			const char *text = hg_sub_schema(s, &slen);
-			if (!schema->type.n_fields || schema->type.schema_bytes != slen) {
+			/* Parsed again whenever the header's text is not the text parsed
+			 * last: a replaced topic may carry another type of the same
+			 * length (a renamed field, a frame of another size), so the
+			 * length alone does not tell. */
+			if (!schema->type.n_fields || schema->type.schema_bytes != slen ||
+			    memcmp(schema->text, text, slen) != 0) {
 				char err[128];
 				if (hg_schema_parse(text, slen, schema, err, sizeof err) < 0) {
 					fail("schema: %s", err);

@@ -115,6 +115,51 @@ static void test_hz_large_payload(void)
 	CHECK_EQ_INT(lines, 3);
 }
 
+/* `hangar echo` parsed the header's schema again only when its length
+ * changed. A topic replaced by a writer with another type of the same
+ * length (a renamed field, two fields swapped, a frame of another size with
+ * as many digits) was decoded with the old layout and names. */
+static void test_echo_follows_a_replaced_schema(void)
+{
+	pid_t pub = fork();
+	if (pub == 0) {
+		static struct hg_schema a, b;
+		const char ta[] = "u32 left\nu32 right\n", tb[] = "u32 right\nu32 left\n";
+		_Static_assert(sizeof ta == sizeof tb, "the two texts are of one length");
+		if (hg_schema_parse(ta, sizeof ta - 1, &a, NULL, 0) < 0 || hg_schema_parse(tb, sizeof tb - 1, &b, NULL, 0) < 0)
+			_exit(3);
+		struct hg_pub_opts o = { .slots = 4 };
+		uint32_t v[2] = { 11, 22 };
+		hg_pub *p = hg_pub_open("swap.t", &a.type, &o);
+		if (!p)
+			_exit(4);
+		hg_publish(p, v, sizeof v, hg_now_ns());
+		sleep_ms(1500);
+		hg_pub_close(p);
+		/* The same name, the other type: the file is replaced. */
+		p = hg_pub_open("swap.t", &b.type, &o);
+		if (!p)
+			_exit(5);
+		v[0] = 33; /* right */
+		v[1] = 44; /* left */
+		for (int i = 0; i < 20; i++) {
+			hg_publish(p, v, sizeof v, hg_now_ns());
+			sleep_ms(100);
+		}
+		_exit(0);
+	}
+	sleep_ms(500);
+	char *argv[] = { (char *)T_hangar, "echo", "swap.t", "--json", "--count", "2", NULL };
+	int rc = run_hangar(out_path(), 8000, NULL, argv);
+	reap(pub);
+	const char *o = read_file(out_path());
+	printf("    echo across the replacement:\n%s", o);
+	CHECK_EQ_INT(rc, 0);
+	CHECK(strstr(o, "\"left\":11,\"right\":22") != NULL);
+	CHECK(strstr(o, "\"right\":33,\"left\":44") != NULL);
+	CHECK(strstr(o, "\"left\":33") == NULL);
+}
+
 /* A stand-in manager on the control socket: every request's first line is
  * appended to <root>/requests, and answered from the table (the first entry
  * whose prefix the request starts with), or "err stand-in manager". */
@@ -566,6 +611,7 @@ int main(void)
 	hd_setup("cli", NULL);
 	mkdir_p(T_topics);
 	RUN_TEST(test_hz_large_payload);
+	RUN_TEST(test_echo_follows_a_replaced_schema);
 	RUN_TEST(test_malformed_reply_stops_the_command);
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
