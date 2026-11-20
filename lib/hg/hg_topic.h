@@ -176,6 +176,16 @@ void hg_sub_close(hg_sub *s);
 /* The buffer must hold the payload: HG_ERROR with EMSGSIZE if shorter. */
 enum hg_result hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info);
 enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info);
+/* Moves hg_next past every message published so far without reading one:
+ * the subscription is no news for hg_wait until the next publish. For a
+ * subscription in a wait set whose messages the module reads elsewhere or
+ * does not want (a glob's match of a topic also subscribed by name): one
+ * that is never read stays news, and hg_wait returns at once, every time.
+ * The messages stepped over are not counted as lost. It settles what a read
+ * would (the topic appeared, a bad type, an attach error) and follows a
+ * replaced file; a closed or dead writer is still reported, as by hg_next.
+ * HG_NONE, or what hg_next would return instead of a message. */
+enum hg_result hg_skip(hg_sub *s);
 /* Random access: HG_GONE when seq is not in the ring. Neither moves hg_next. */
 enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len,
 			   struct hg_info *info);
@@ -195,6 +205,12 @@ void hg_use(hg_sub *s, const struct hg_info *info);
  * HG_MAX_WAIT or 0). */
 unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char *ready);
 unsigned hg_wait(hg_sub *const *subs, int n, int timeout_ms);
+/* How often hg_wait in this process has returned on news that was not read
+ * since its previous return on it: a subscription in the wait set that the
+ * module never reads (hg_next, hg_latest, hg_skip) is news for good, and
+ * every hg_wait returns at once, a full core. Over 1000 in a second, hg_wait
+ * also says so on stderr, naming the topic, at most once a minute. */
+uint64_t hg_wait_unread(void);
 /* Makes the hg_wait() under way in this process, or else the next one,
  * return HG_READY_INTERRUPT. Async-signal-safe. */
 void hg_wait_interrupt(void);

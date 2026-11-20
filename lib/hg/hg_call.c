@@ -848,10 +848,21 @@ static int is_named_sub(const char *name)
 
 int hg_serve(void)
 {
+	/* Every reply topic of hg_call_subs, read to its end: replies to this
+	 * module's calls in flight are kept for hg_call_poll, the rest (another
+	 * caller's, a timed-out call's) passed over. Only hg_call_poll read them
+	 * before, so with no call of its own in flight a module's wait set held a
+	 * reply topic with unread messages, news to hg_wait for good: the module
+	 * spun at a full core (safety on mavlink.rep, on the vehicle). */
+	if (C.inited)
+		for (int i = 0; i < C.n_reps; i++)
+			scan_replies(i);
 	if (server_init() < 0)
 		return -1;
 	/* The topics of this pass: the named ones, then the glob's matches that
-	 * are not among them (a module on a timer polls the glob here). */
+	 * are not among them (a module on a timer polls the glob here). A match
+	 * that is among them is served through its named subscription and
+	 * skipped here, every pass: unread, it would stay news to hg_wait. */
 	hg_sub *tops[HG_WIRING_MAX_SUBS + 64];
 	int ntop = 0;
 	for (int i = 0; i < S.n_subs; i++)
@@ -859,10 +870,14 @@ int hg_serve(void)
 	if (S.glob) {
 		hg_glob_poll(S.glob);
 		int k = hg_glob_count(S.glob);
-		for (int i = 0; i < k && ntop < (int)(sizeof tops / sizeof tops[0]); i++) {
+		for (int i = 0; i < k; i++) {
 			hg_sub *g = hg_glob_at(S.glob, i);
-			if (!is_named_sub(hg_sub_name(g)))
+			if (is_named_sub(hg_sub_name(g)))
+				(void)hg_skip(g);
+			else if (ntop < (int)(sizeof tops / sizeof tops[0]))
 				tops[ntop++] = g;
+			else
+				(void)hg_skip(g); /* past what one pass can hold: not served, as before, and not news */
 		}
 	}
 	if (!ntop)

@@ -675,6 +675,7 @@ struct hg_sub {
 	int attach_err_reported;
 	int appeared;               /* attached since the last report */
 	int appeared_reported;
+	uint64_t news_mark;         /* last, when hg_wait last returned it as news (+1; 0 never) */
 	int use_set;
 	uint64_t use_seq;
 	uint32_t use_flags;
@@ -2053,6 +2054,31 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
 	}
 }
 
+enum hg_result hg_skip(hg_sub *s)
+{
+	struct hg_info info;
+	memset(&info, 0, sizeof info);
+	if (s->glob) {
+		errno = EINVAL;
+		return finish(s, &info, HG_ERROR);
+	}
+	for (;;) {
+		/* Any length passes the buffer check: nothing is copied. */
+		enum hg_result a = ensure_attached(s, SIZE_MAX / 2);
+		if (a != HG_MSG)
+			return finish(s, &info, a);
+		uint32_t flags = atomic_load_explicit(&s->h->flags, memory_order_acquire);
+		uint64_t W = atomic_load_explicit(&s->h->write_seq, memory_order_acquire);
+		if (W > s->last)
+			s->last = W;
+		int switched;
+		enum hg_result r = at_end(s, flags, &switched);
+		if (switched)
+			continue;
+		return finish(s, &info, r);
+	}
+}
+
 enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len, struct hg_info *info)
 {
 	memset(info, 0, sizeof *info);
@@ -2229,6 +2255,39 @@ static int has_news(const hg_sub *s)
 
 #define GLOB_POLL_NS 10000000u /* glob matches are polled, every 10 ms at most */
 
+/* News returned again with nothing read since: counted, and said on stderr
+ * past UNREAD_SAY a second, once a minute (hg_wait_unread). Only the thread
+ * that calls hg_wait touches these. */
+#define UNREAD_SAY 1000u
+static uint64_t unread_total, unread_window_ns, unread_said_ns;
+static unsigned unread_window;
+
+uint64_t hg_wait_unread(void)
+{
+	return unread_total;
+}
+
+static void unread_news(hg_sub *s)
+{
+	if (s->news_mark != s->last + 1) {
+		s->news_mark = s->last + 1; /* first time at this position */
+		return;
+	}
+	unread_total++;
+	uint64_t now = hg_now_ns();
+	if (now - unread_window_ns >= 1000000000u) {
+		unread_window_ns = now;
+		unread_window = 0;
+	}
+	if (++unread_window == UNREAD_SAY && (!unread_said_ns || now - unread_said_ns >= 60000000000ull)) {
+		unread_said_ns = now;
+		fprintf(stderr,
+			"hg_wait: %s returned as news %u times in a second with nothing read from it in between: "
+			"it is in the wait set but not read, and the module spins (read it, or hg_skip it)\n",
+			s->name, UNREAD_SAY);
+	}
+}
+
 unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char *ready)
 {
 	if (n <= 0 || n > HG_MAX_WAIT) {
@@ -2320,8 +2379,21 @@ unsigned hg_wait_ready(hg_sub *const *subs, int n, int timeout_ms, unsigned char
 			}
 			nready += ready[i];
 		}
-		if (nready)
+		if (nready) {
+			for (int i = 0; i < n; i++) {
+				if (!ready[i])
+					continue;
+				hg_sub *s = subs[i];
+				if (!s->glob) {
+					unread_news(s);
+					continue;
+				}
+				for (int k = 0; k < s->n_kids; k++)
+					if (has_news(s->kids[k]))
+						unread_news(s->kids[k]);
+			}
 			return HG_READY_TOPICS;
+		}
 
 		uint64_t now = hg_now_ns();
 		if (now >= deadline)

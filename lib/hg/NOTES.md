@@ -349,3 +349,38 @@ name and renamed, with no fsync.
   other role, and passes the two variables to its modules. Everything here is marked
   `until the bridge` and goes when the bridge writes mirrored topics into the local
   directory; nothing in the modules knows which way a topic arrived.
+
+## Unread news: `hg_skip` and `hg_wait_unread` (2026-11-20)
+
+On the lab's BlueROV2 `safety`, `mux`, the recorder and the pairer each spun at a full
+core, in the simulator too, since phase 1 (hangar#1; `tools/rov/README.md`, "Results,
+2026-11-19"). One cause in four places: **a subscription in a module's wait set that
+the module never reads (`hg_next`, `hg_latest`) stays news**, and every `hg_wait`
+returns at once. docs/01 says what news is; it never said that what is waited on must
+be read, and nothing measured an idle module's CPU.
+
+- **`hg_skip(sub)`** (`hg_topic.h`): moves `hg_next` past every message published so
+  far without reading one, settling what a read would (appeared, a bad type, an attach
+  error) and following a replaced file; a close or a death is still reported. The
+  messages stepped over are not counted as lost. For a subscription a module waits on
+  but reads elsewhere or not at all.
+- **`hg_serve`** now reads every reply topic of `hg_call_subs` to its end on each pass
+  (`scan_replies`: replies to this module's calls in flight kept for `hg_call_poll`, the
+  rest passed over). Before, only `hg_call_poll` read them, so a module with no call of
+  its own in flight held a reply topic with unread messages in its wait set (`safety`
+  on `mavlink.rep`). It also skips each `*.req` glob match that is one of its named
+  subscriptions, which it serves through the named one and never read (every server
+  with the implicit `subglob *.req`).
+- **`hg_wait_unread()`** counts the returns of `hg_wait` on news not read since its
+  previous return on it; past 1000 in a second `hg_wait` also says so on stderr, naming
+  the topic, at most once a minute. A module's log now shows this class of bug.
+- **The modules** (each README): `mux` and the recorder read their inputs on a timer
+  (the 50 Hz tick, the 50 ms drain) and now wait on their call topics only; the pairer
+  skips the parts of its rows (read by stamp and sequence) after each pass.
+
+Tests: `test_hg_wait` `test_skip_and_unread`; `test_hg_call` `test_idle_server_sleeps`
+(the module `self` has the implicit `subglob *.req` now); the idle CPU of every module
+in `test_phase1_chain` (`test_idle_cpu`), `rec_recorder` and `rec_pairer` (under 10 %,
+the pairer under 25 % while it builds rows at 100 Hz), with `th_cpu_ticks` and
+`th_cpu_percent` in `lib/common/test_harness.h`. Each fails on the code before the fix:
+1000 waits in 300 ms all on news; safety 94.8 %, mux 93.8 %, recorder 78 %, pairer 99 %.

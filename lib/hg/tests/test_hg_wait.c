@@ -3,7 +3,8 @@
 // of step 4 played out step by step; the spike's lost_wake run with the real
 // library; liveness on a dead or closed topic; absent topics and the
 // directory word; the interrupt word; ready sets over several topics; glob
-// subscriptions polled at 10 ms; the 127 limit.
+// subscriptions polled at 10 ms; the 127 limit; hg_skip, and news left
+// unread counted (hg_wait_unread).
 #include "hg_test.h"
 
 #include <pthread.h>
@@ -502,6 +503,56 @@ static void test_glob(void)
 	hg_sub_close(g);
 }
 
+/* ---- hg_skip and unread news ------------------------------------------- */
+
+static void test_skip_and_unread(void)
+{
+	hg_pub *p = open_words("wt.skip", 16);
+	hg_sub *s = hg_sub_open("wt.skip", WORDS_TYPE);
+	for (int i = 0; i < 3; i++)
+		pub_one(p);
+	// News left unread: every wait returns at once, and each return after
+	// the first is counted. (The modules that spun on the vehicle, 2026-11-19.)
+	uint64_t u0 = hg_wait_unread();
+	int ready = 0;
+	for (int i = 0; i < 100; i++)
+		ready += hg_wait(&s, 1, 1000) == HG_READY_TOPICS;
+	CHECK_EQ_INT(ready, 100);
+	CHECK_EQ_INT(hg_wait_unread() - u0, 99);
+	// Skipped: no news; the whole timeout is slept and nothing counted.
+	CHECK_EQ_INT(hg_skip(s), HG_NONE);
+	u0 = hg_wait_unread();
+	uint64_t t0 = hg_now_ns();
+	CHECK_EQ_INT(hg_wait(&s, 1, 100), 0);
+	CHECK(ms_since(t0) >= 100);
+	CHECK_EQ_INT(hg_wait_unread() - u0, 0);
+	// The next message is read as usual; the skipped ones are not lost.
+	pub_one(p);
+	CHECK_EQ_INT(hg_wait(&s, 1, 1000), HG_READY_TOPICS);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	CHECK(info.seq == 4 && info.gap == 0);
+	// News read at every return is never counted.
+	u0 = hg_wait_unread();
+	for (int i = 0; i < 20; i++) {
+		pub_one(p);
+		ready = hg_wait(&s, 1, 1000) == HG_READY_TOPICS;
+		ready &= hg_next(s, buf, sizeof buf, &info) == HG_MSG;
+		CHECK(ready);
+	}
+	CHECK_EQ_INT(hg_wait_unread() - u0, 0);
+	// A close is still reported by a skip, then the reader sleeps.
+	hg_pub_close(p);
+	CHECK_EQ_INT(hg_skip(s), HG_CLOSED);
+	t0 = hg_now_ns();
+	CHECK_EQ_INT(hg_wait(&s, 1, 100), 0);
+	CHECK(ms_since(t0) >= 100);
+	hg_sub_close(s);
+	// A glob is not skipped itself (its matches are, one by one).
+	hg_sub *g = hg_sub_open("wt.*", WORDS_TYPE);
+	CHECK_EQ_INT(hg_skip(g), HG_ERROR);
+	hg_sub_close(g);
+}
+
 int main(void)
 {
 	hg_test_setup("wait");
@@ -514,6 +565,7 @@ int main(void)
 	RUN_TEST(test_ready_set_over_several_topics);
 	RUN_TEST(test_limits);
 	RUN_TEST(test_glob);
+	RUN_TEST(test_skip_and_unread);
 	hg_test_teardown();
 	TEST_MAIN_END();
 }

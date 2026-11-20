@@ -102,6 +102,7 @@ static void build(void)
 		     "sub hangar.vehicle.admin.req type=req:hangar slots=16 implicit\n"
 		     "sub hangar.topside.admin.req type=req:hangar slots=16 implicit\n"
 		     "sub pilot.req slots=16\n"
+		     "subglob *.req implicit\n"
 		     "pub self.req type=req:self hash=%016llx slots=16 implicit\n"
 		     "pub self.rep type=rep:self hash=%016llx slots=16 sources=self.req,hangar.vehicle.admin.req,hangar.topside.admin.req,pilot.req implicit\n"
 		     "pub self.params type=params:self slots=16 sources=self.req implicit\n"
@@ -264,7 +265,7 @@ static void test_roundtrip(void)
 	// The subscriptions the library holds, for the module's wait set.
 	hg_sub *subs[16];
 	int n = hg_call_subs(subs, 16);
-	CHECK_EQ_INT(n, 6); /* self.req, hangar.vehicle.admin.req, hangar.topside.admin.req, pilot.req; self.rep, ghost.rep (none for nobody) */
+	CHECK_EQ_INT(n, 7); /* self.req, hangar.vehicle.admin.req, hangar.topside.admin.req, pilot.req; the glob *.req; self.rep, ghost.rep (none for nobody) */
 	CHECK(hg_call_req_type() && hg_call_req_type()->hash == req_parsed.type.hash);
 	CHECK(hg_call_rep_type() && hg_call_rep_type()->hash == rep_parsed.type.hash);
 }
@@ -498,6 +499,31 @@ static void test_caller_tokens(void)
 		else if (strcmp(name, "self.req") == 0)
 			CHECK(strcmp(tok, "self") == 0);
 	}
+}
+
+/* An idle server sleeps. Its request topics are matched by its *.req glob as
+ * well as subscribed by name, and its reply topic holds replies to other
+ * callers (test_caller_tokens): before the fix neither the glob's copies nor
+ * those replies were ever read, both stayed news, and every hg_wait returned
+ * at once. safety, mux and the recorder spun at a full core on the vehicle
+ * (2026-11-19). */
+static void test_idle_server_sleeps(void)
+{
+	hg_sub *subs[16];
+	int n = hg_call_subs(subs, 16);
+	CHECK_EQ_INT(n, 7);
+	uint64_t u0 = hg_wait_unread();
+	int ready = 0, waits = 0;
+	uint64_t t0 = hg_now_ns();
+	while (ms_since(t0) < 300 && waits < 1000) {
+		ready += (hg_wait(subs, n, 50) & HG_READY_TOPICS) != 0;
+		hg_serve();
+		waits++;
+	}
+	printf("    %d waits in 300 ms, %d of them on news\n", waits, ready);
+	CHECK(waits <= 12); /* six 50 ms timeouts, and room for news still owed */
+	CHECK(ready <= 2);
+	CHECK_EQ_INT(hg_wait_unread() - u0, 0);
 }
 
 static int child_actuator(void)
@@ -833,6 +859,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_roundtrip);
 	RUN_TEST(test_status_codes);
 	RUN_TEST(test_caller_tokens);
+	RUN_TEST(test_idle_server_sleeps);
 	RUN_TEST(test_actuator_refuses_hg_call);
 	RUN_TEST(test_param_grammar);
 	RUN_TEST(test_params);
