@@ -224,6 +224,35 @@ static void test_layout_rules(void)
 	CHECK_EQ_INT(hg_schema_canonical("f128 a\n", 7, NULL, 0), (size_t)-1);
 }
 
+/* The layout is computed in 64 bits and bounded: a count near 2^32 used to
+ * wrap the running offset, and the type parsed with a 4 GB field at offset
+ * 0 of an 8-byte payload. */
+static void test_layout_bound(void)
+{
+	static struct hg_schema s;
+	char err[128] = "";
+#define PARSE(text) hg_schema_parse(text, strlen(text), &s, err, sizeof err)
+	CHECK_EQ_INT(PARSE("u8 a[4294967295]\nu32 b\n"), -1);
+	CHECK(strstr(err, "line 1") && strstr(err, "1 GiB"));
+	/* Each field small enough for 32 bits, the sum not. */
+	CHECK_EQ_INT(PARSE("u64 a[268435456]\nu64 b[268435456]\nu32 c\n"), -1);
+	CHECK(strstr(err, "line 1"));
+	CHECK_EQ_INT(PARSE("u32 a[134217728]\nu32 b[134217728]\nu32 c\n"), -1);
+	CHECK(strstr(err, "line 3"));
+	/* The bound itself parses, and so does the largest frame. */
+	CHECK_EQ_INT(PARSE("u8 a[1073741824]\n"), 0);
+	CHECK_EQ_INT(s.type.payload_bytes, HG_PAYLOAD_MAX);
+	CHECK_EQ_INT(PARSE("u8 a[1073741825]\n"), -1);
+	struct hg_frame_type ft;
+	CHECK_EQ_INT(hg_frame_type(16384, 16384, HG_I422, &ft), 0);
+	CHECK_EQ_INT(PARSE(ft.text), 0);
+#undef PARSE
+	CHECK_EQ_INT(s.type.payload_bytes, ft.type.payload_bytes);
+	CHECK(s.type.hash == ft.type.hash);
+	const struct hg_field *last = &s.fields[s.type.n_fields - 1];
+	CHECK((uint64_t)last->offset + last->count <= s.type.payload_bytes);
+}
+
 static void test_frame_type(void)
 {
 	struct hg_frame_type ft;
@@ -297,6 +326,7 @@ int main(void)
 	RUN_TEST(test_depth_canonical_and_hash);
 	RUN_TEST(test_parameter_attributes_ignored);
 	RUN_TEST(test_layout_rules);
+	RUN_TEST(test_layout_bound);
 	RUN_TEST(test_frame_type);
 	RUN_TEST(test_frame_topic_defaults_to_4_slots);
 	RUN_TEST(test_names);

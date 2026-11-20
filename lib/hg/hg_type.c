@@ -168,7 +168,7 @@ int hg_schema_parse(const char *text, size_t len, struct hg_schema *out, char *e
 	out->type.fields = out->fields;
 	size_t pool_used = 0;
 	uint64_t h = 0xcbf29ce484222325ull;
-	uint32_t off = 0;
+	uint64_t off = 0; /* 64 bits: a count is up to 2^32 - 1, and the sum must not wrap */
 	const char *s = out->text, *end = out->text + len;
 	int line = 0;
 	while (s < end) {
@@ -211,9 +211,15 @@ int hg_schema_parse(const char *text, size_t len, struct hg_schema *out, char *e
 			}
 		/* Natural alignment, padding explicit: the C layout. */
 		uint32_t a = kinds[f->kind].size;
-		off = (off + a - 1) & ~(a - 1);
-		f->offset = off;
-		off += a * f->count;
+		off = (off + a - 1) & ~(uint64_t)(a - 1);
+		f->offset = (uint32_t)off;
+		off += (uint64_t)a * f->count;
+		/* The one place a layout is bounded: every reader of a parsed type
+		 * takes offset + size * count as inside payload_bytes, in 32 bits. */
+		if (off > HG_PAYLOAD_MAX) {
+			set_err(err, errlen, line, "payload larger than 1 GiB");
+			goto bad;
+		}
 		char cl[HG_FIELD_NAME_MAX + 32];
 		size_t cn = canon_line(f, cl, sizeof cl);
 		for (size_t i = 0; i < cn; i++) {
@@ -226,7 +232,7 @@ int hg_schema_parse(const char *text, size_t len, struct hg_schema *out, char *e
 		set_err(err, errlen, line, "no fields");
 		goto bad;
 	}
-	out->type.payload_bytes = (off + 7) & ~7u;
+	out->type.payload_bytes = (uint32_t)((off + 7) & ~(uint64_t)7);
 	out->type.hash = h;
 	return 0;
 bad:

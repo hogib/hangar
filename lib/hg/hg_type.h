@@ -52,6 +52,7 @@ struct hg_param_meta {
 #define HG_SCHEMA_MAX 3584       /* the header's schema field */
 #define HG_SCHEMA_MAX_FIELDS 128
 #define HG_FIELD_NAME_MAX 63     /* hg_type_abi.md; dotted dataset names fit too */
+#define HG_PAYLOAD_MAX 0x40000000u /* 1 GiB: the largest frame type (16384 x 16384 I422) is half of it */
 
 /* A type parsed at run time from the schema in a topic's header, with the
  * storage its descriptor points into: the text, the field table and the
@@ -67,7 +68,9 @@ struct hg_schema {
  * HG_SCHEMA_MAX) into *out. Parameter attributes (= default, [min, max],
  * @restart) are accepted and ignored, as the hash ignores them. 0 on
  * success; -1 with errno EINVAL and, if err is given, one line saying what
- * was wrong. The descriptor's name is "" (the text has no stem). */
+ * was wrong. The descriptor's name is "" (the text has no stem). A layout
+ * past HG_PAYLOAD_MAX is refused, so for a parsed type every field's
+ * offset + size * count is within payload_bytes and fits 32 bits. */
 int hg_schema_parse(const char *text, size_t len, struct hg_schema *out, char *err, size_t errlen);
 
 /* The canonical form: one "type name[N]\n" per field. Returns the length it
