@@ -28,6 +28,9 @@ Tlog=/var/lib/hangar/mavlink/rov.tlog
 
 [Params]
 File=/etc/hangar/ardusub.params
+# hangar ardusub-params's files (mavlink.params_dump, mavlink.params_load): by default
+# <state dir>/params-backup, shared with hangar-admin through the group.
+#BackupDir=/var/lib/hangar/mavlink/params-backup
 
 [Depth]
 # depth = (press_abs - SurfacePressure) / (FluidDensity * g), from SCALED_PRESSURE2

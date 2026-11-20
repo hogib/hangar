@@ -57,6 +57,15 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   reads as the file, 2 with the first mismatch in the status line. `mavlink.setup`
   (`hangar ardusub-setup`): refused unless `safety.state` is disarmed and ArduSub is,
   else a `PARAM_SET` per line, then the read-back.
+- Saving and restoring ArduSub's parameters: `mavlink.params_dump` and
+  `mavlink.params_load` (Allow `admin topside:admin`; `hangar ardusub-params`,
+  docs/12), `param_backup.c`. Files of `NAME VALUE TYPE` lines in `[Params]
+  BackupDir=` (default `<state dir>/params-backup`), progress and end on
+  `ardusub.params_job` (`msg/params_job.msg`). The dump is the list request with the
+  missing indices read again; the load sets what differs, typed, each confirmed by
+  its read-back, never `STAT_*` or `BARO*_GND_PRESS`, never while armed. While a job
+  runs, the module's own read of `ardusub.params` waits. A manifest without the two
+  `[Serve]` and the `[Publish ardusub.params_job]` runs without them.
 - `--neutral`: binds the same port, takes ArduSub's address from `Peer=`, else from
   `<state dir>/peer` (written by the module when it first hears ArduSub), else from the
   next packet within 0.6 s (the manager allows 1 s); sends neutral manual control and a
@@ -143,8 +152,9 @@ HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar start mavlink
 ```
 
 The edited conf stays until `rov.sh reset`; after a reset, the same three lines
-again. `RELAY=0` also means no `rov.sh params save/restore`, which go through MAVROS:
-save the parameters before switching. On an installed vehicle: copy
+again. `rov.sh params save|diff|restore` go through hangar (`hangar ardusub-params`)
+whenever the vehicle's manager is up, over the serial line as over MAVROS's UDP, and
+fall back to MAVROS only when it is not. On an installed vehicle: copy
 `mavlink.conf.serial` to `/etc/hangar/mavlink.conf` and `mavlink.module.serial` to
 `/etc/hangar/modules/mavlink.module`, and do not start MAVROS. **Not yet tried on
 the real Pixhawk**: everything above is tested against the fake ArduSub on a

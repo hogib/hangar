@@ -372,16 +372,21 @@ static int compare(struct table *want, struct table *now, int quiet)
 			n++;
 		}
 	}
+	/* What the file does not name: the first ten (a partial file names few). */
+	int only = 0;
 	for (int i = 0; i < now->n; i++) {
 		struct param *c = &now->p[i];
 		if (c->seen || self_kept(c->id))
 			continue;
 		char b[48];
 		fmt_value(b, sizeof b, c->value, c->type);
-		if (!quiet)
+		if (!quiet && only < 10)
 			printf("  %-16s autopilot %s, not in the file\n", c->id, b);
+		only++;
 		n++;
 	}
+	if (!quiet && only > 10)
+		printf("  and %d more on the autopilot, not in the file\n", only - 10);
 	return n;
 }
 

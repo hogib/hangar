@@ -56,6 +56,7 @@ One static binary (musl), with subcommands:
 | `hangar run <module>` | A module in the foreground, for development: its wiring from its manifest, a private topic directory ([01-topics](01-topics.md#writing)) |
 | `hangar graph` | The wiring graph in DOT: modules, topics, the request and reply topics of calls, provenance links (`Inputs` and `Sources`), with live rates and states |
 | `hangar ardusub-setup` | Set ArduSub's parameters from `/etc/hangar/ardusub.params` before a dive ([below](#hangar-ardusub-setup), [10-mavlink](10-mavlink.md#ardusubs-parameters)) |
+| `hangar ardusub-params save\|diff\|restore <file>` | Every one of ArduSub's parameters into a file, a file compared with the autopilot, a file set back: the backup taken before `ardusub-setup` and put back after ([below](#hangar-ardusub-params)) |
 | `hangar upgrade-vehicle <tarball>` | Upgrade the vehicle from the topside over the tether, with no shell on the vehicle: send the release, call `installer.apply`, confirm both sides match ([13-deployment](13-deployment.md#upgrading-the-vehicle-over-the-tether)) |
 | `hangar sim up\|down [...]` | The whole system on one computer: two managers in two network namespaces, the simulators, a virtual tether with loss, delay and rate from the command line ([14-simulation](14-simulation.md#running-it)) |
 | `hangar sim fit <session>` | Fit the simulator's buoyancy, damping and thruster lag to a recorded dive; writes a parameter file and a residuals report ([14-simulation](14-simulation.md#physics)) |
@@ -166,6 +167,47 @@ differs or that ArduSub does not know; exit status as `hangar check`. `hangar ch
 compares the same file with the same topic, so a parameter changed on ArduSub by any
 other means shows before the dive.
 
+## `hangar ardusub-params`
+
+`ardusub-setup` changes a Pixhawk that may not be hangar's alone (a lab's, a borrowed
+vehicle's). Its whole parameter set is saved first and put back afterwards:
+
+```sh
+hangar ardusub-params save pixhawk.params      # every parameter, about 1 000 on ArduSub 4.5
+hangar ardusub-params diff pixhawk.params      # exit 1 and the differences, if any
+hangar ardusub-params restore pixhawk.params   # sets only what differs, each read back
+```
+
+Two calls on the vehicle's `mavlink` module, as `admin:<user>` (or
+`topside:admin:<user>`), as `ardusub-setup` is one: `mavlink.params_dump` and
+`mavlink.params_load`, each naming a file of the module's backup directory (`[Params]
+BackupDir=` in `mavlink.conf`, by default `<state dir>/params-backup`, mode 02770, shared
+with `hangar-admin` through the group). The reply is the job; `ardusub.params_job`
+reports its progress and its end, and its first message names the directory. The
+command copies the dump out of the directory to `<file>`, or `<file>` into it to load.
+
+- A dump: `PARAM_REQUEST_LIST`, each `PARAM_VALUE` filed by its index, then each index
+  still missing asked again by `PARAM_REQUEST_READ`, one every 50 ms, three rounds; the
+  job fails naming how many never came. Over UDP or a serial line alike; the requests
+  never crowd out `MANUAL_CONTROL`, which keeps its 50 Hz and its place at the head of
+  a serial line's queue.
+- A load: refused unless `safety.state` is `disarmed` and ArduSub is disarmed, and
+  stopped if ArduSub arms. It dumps first (kept beside as `<name>.before`), then sends
+  a `PARAM_SET` for each parameter whose value differs, one every 50 ms, with the
+  file's type. A set counts when ArduSub's `PARAM_VALUE` reads it back: exactly for an
+  integer type, within a millionth for a float. Three tries, 1 s apart; the job fails
+  naming how many were not confirmed.
+- ArduSub's own bookkeeping, `STAT_*` (boot count, run and flight times) and
+  `BARO*_GND_PRESS` (calibrated at each boot), changes by itself: never set, and left out
+  of `diff`.
+
+The file is text: one `NAME VALUE TYPE` a line, `TYPE` the `MAV_PARAM_TYPE` (9 a
+float, 1 to 8 the integer types, as ArduSub reports them), `#` comments; an integer's
+value is written as an integer, a float's with nine significant digits, so a value read
+back is the value written. `restore` and `diff` also read a file without types (the
+autopilot's own are used) and the YAML of `ros2 param dump /mavros/param`, the format
+of the backups taken through MAVROS before hangar could.
+
 ## Datasets and analysis
 
 `hangar dataset build <spec> <session>` runs the pairer's join code over a session's
@@ -272,6 +314,13 @@ release's own report, and a line more than 10% worse fails.
   and the command exits 0; a parameter SITL refuses named, exit status 2; refused
   while `safety.state` is `armed` or SITL is armed; from the topside, allowed as
   `topside:admin:<user>`.
+- `hangar ardusub-params` against the fake ArduSub, over UDP and over a
+  pseudo-terminal (the vehicle suite): 418 typed parameters saved with two
+  `PARAM_VALUE`s lost and asked again, `MANUAL_CONTROL` at 50 Hz meanwhile; a `diff`
+  naming the two changed and not `STAT_*`; `restore` refused unless `safety.state`
+  is disarmed and while ArduSub is armed, then setting the two alone, each confirmed;
+  MAVROS's YAML restored; a write ArduSub refuses failing after its three tries.
+  Against the real Pixhawk: not yet.
 - `hangar dataset check` against specs staged for each line of its table, with and
   without a policy spec, and against a session that recorded a part `meta`; the
   `depth_ff` spec of
