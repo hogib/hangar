@@ -212,6 +212,38 @@ directories belong to the group `hangar-rec` (mode 2770,
 [06-recorder](06-recorder.md#sessions)), so the encoder has
 `SupplementaryGroups=hangar-rec`.
 
+**The camera's own H.264** (`Source=uvc:/dev/videoN`, decided 2026-11-20). A UVC
+camera that encodes H.264 itself gives the encoder its access units ready made
+(`V4L2_PIX_FMT_H264`, one V4L2 buffer a frame): nothing is encoded on the vehicle. The
+encoder only packetizes them, with the packetizer above (RFC 6184: single NAL units and
+FU-A fragments, RTP packets of at most 1 200 bytes, the marker bit on each frame's last
+packet), and sends them to the topside's video port, 5610. A camera that sends its
+SPS and PPS only once gets the ones last seen put in front of every IDR frame without
+them, so a receiver that starts at any keyframe can decode: the topside's SDP carries
+no `sprop-parameter-sets`. The RTP timestamp is the frame's number (the driver's
+sequence count) times the nominal frame period at 90 kHz, as for an encoded frame, so the
+frame's identity still crosses the tether, and each frame is a `video.index` message,
+its `frame topic id` 0 since the frame is no hangar topic. The encoder asks the camera
+for a keyframe at start and whenever none has come for `KeyframeInterval` (1 s), through
+`V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME` where the driver has it; a UVC camera without it
+needs its H.264 extension unit (the UVC 1.1 H.264 payload's XU), which comes later. A
+receiver that joins cannot be seen from the vehicle (the stream is one-way UDP), so the
+interval stands in for "when a receiver joins".
+
+Why: the Pi 5 has no hardware H.264 encoder, and the software encode was the largest
+cost of the video on the vehicle: on the lab's BlueROV2 on 2026-11-19 electric-eye's
+`ffmpeg` took 0.51 of a core of the 0.91 the whole video path did (electric-eye#3).
+Decided with it: ffmpeg goes from the vehicle only (the topside keeps it for decoding,
+the encode for QGroundControl and the recording), and the pilot's picture in
+QGroundControl keeps its effects, applied on the topside as in placement A. libx264
+through its API, above, stays the design for frame topics and for a camera without
+H.264; it is not built yet.
+
+Built so far (stage 1, `modules/encoder/`): this source, and `Source=file:` (an Annex B
+file, paced at the frame rate) for the tests and the bench. Until `video_relay`
+exists the topside is electric-eye's own `hellion` in placement A
+([`tools/rov/README.md`](../tools/rov/README.md)).
+
 ### `video_relay`
 
 `hellion`'s topside half: owns the tether's video port, copies every packet unchanged to
@@ -282,6 +314,7 @@ Placement becomes a question of which modules are enabled where:
 |---|---|---|
 | **B** (as electric-eye recommends) | `camera`, `vision`, `cam_nn`, `encoder` | `video_relay` (`cam.decoded` from `cam.pilot`), `pilot_console` |
 | **A** | `camera`, `cam_nn`, `encoder` (of `cam.raw`) | `video_relay` (`cam.decoded` from `cam.raw`, `Inputs=vehicle:cam.raw`, nothing to QGroundControl), `vision` (reading `cam.decoded`), `topside_encoder` to QGroundControl, `pilot_console` |
+| **A, the camera's H.264** | `encoder` (`Source=uvc:`); `camera` and `cam_nn` only on a camera that streams its H.264 and another format at once (unverified on the lab's) | as **A**, `cam.decoded` from the encoder's stream: its provenance names the frame by `video.index`, since the frame is no topic (settled with `video_relay`) |
 
 `vision` runs on one machine or the other, never both; the topside's encoder in
 placement A is a module of another name, `topside_encoder`.
