@@ -167,6 +167,28 @@ Found on the vehicle:
 5. Ubuntu's `unattended-upgrades` runs on the Pi and was installing in the middle of
    the session.
 
+## Results, 2026-11-20
+
+The third visit, with main at `e559888` (the busy-loop fix and the encoder); props off.
+
+- **The fix on the vehicle:** all of hangar, ten processes on both roles, 5.3–6.3 % of a
+  core at rest and armed (168.6 % on 11-19); every module at 1.7 % or less, the Pi at
+  48–66 °C, not throttled. (`mavlink` and `safety` at 1.6 and 1.2 % carry ArduSub's
+  50 Hz telemetry: work, not a spin.)
+- **The camera's H.264 on `/dev/video2`** (1920×1080, 1280×720, 800×600 at 30, 25, 15
+  fps; `/dev/video0` is its MJPEG): no controls on that node, so no keyframe request
+  (the camera sends one every ~30 frames on its own) and no bitrate setting.
+- **End to end, armed from QGroundControl:** the encoder at 30 frames/s (1.1 % of a core,
+  7.3 MB) → electric-eye's hellion and eeye on the laptop in placement A → QGC with the
+  effects; the recorder recorded the armed session with no gap. Against the old setup
+  (electric-eye with ffmpeg on the ROV, 89.5 % of a core, 116 MB): the ROV's video cost
+  1/80 of it; the tether carries 11.4 Mbit/s instead of 4.7 (the camera's own rate);
+  the laptop does the decode, the effects and the re-encode (0.84 of a core).
+- **The MAVROS relay** is now the largest cost on the vehicle: 28 % of a core, 128 MB.
+- Ubuntu's unattended-upgrades ran as root at a full core mid-session and, with the
+  closed tube, took the Pi to 86 °C and throttling; two of the runs read high for it.
+  Results and caveats: the user's `~/hangar-results/2026-11-20-lab/` on the laptop.
+
 ## Not tried yet
 
 - The encoder (`ENCODER=1`) on this vehicle: its camera's H.264 node, the keyframe

@@ -18,7 +18,7 @@ import sys
 import time
 
 GROUPS = [
-    ('hangar', ('hangard', 'hangar-safety', 'hangar-mux', 'hangar-mavlink', 'dawn-patrold', 'recorder', 'pairer')),
+    ('hangar', ('hangard', 'hangar-safety', 'hangar-mux', 'hangar-mavlink', 'hangar-encoder', 'dawn-patrold', 'recorder', 'pairer')),
     ('electric-eye', ('eeye', 'hellion', 'ffmpeg', 'rpicam-vid')),
     ('MAVROS relay', ('mavros_node',)),
 ]
