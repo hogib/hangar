@@ -796,6 +796,47 @@ static void control_seeds(void)
 	free(b.p);
 }
 
+/* ---- console: a piece-size byte (fuzz_console.c), then the connection's bytes -------- */
+
+static void console_seed(const char *name, int piece, const char *text)
+{
+	struct buf b = { 0 };
+	unsigned char p = (unsigned char)piece;
+	add(&b, &p, 1);
+	adds(&b, text);
+	put("console", name, &b);
+	free(b.p);
+}
+
+static void console_seeds(void)
+{
+	static const char *const gets[] = { "/", "/api/system", "/api/modules", "/api/topics", "/api/topic/nav.depth",
+					    "/api/links", "/api/fly", "/api/log?lines=50", "/api/nothing" };
+	for (size_t i = 0; i < sizeof gets / sizeof gets[0]; i++) {
+		char req[300], name[40];
+		snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAccept: */*\r\n\r\n", gets[i]);
+		snprintf(name, sizeof name, "get-%zu", i);
+		console_seed(name, 0, req);
+	}
+	console_seed("post-reload", 0,
+		     "POST /api/reload HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: http://127.0.0.1:8080\r\n"
+		     "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+	console_seed("post-call", 2,
+		     "POST /api/call/safety.arm HTTP/1.1\r\nHost: 192.168.2.2:8080\r\nOrigin: http://192.168.2.2:8080\r\n"
+		     "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+	console_seed("post-call-preset", 0,
+		     "POST /api/call/mux.set_mode?preset=manual HTTP/1.1\r\nHost: [::1]:8080\r\n"
+		     "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+	console_seed("post-module", 1,
+		     "POST /api/module/mux/restart HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: http://localhost:8080\r\n"
+		     "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+	console_seed("refused-host", 0, "GET / HTTP/1.1\r\nHost: rov.example.org\r\n\r\n");
+	console_seed("refused-origin", 0,
+		     "POST /api/reload HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: http://evil.example\r\n"
+		     "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+	console_seed("refused-method", 0, "DELETE /api/system HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+}
+
 int main(void)
 {
 	const char *tmp = getenv("TMPDIR");
@@ -810,6 +851,7 @@ int main(void)
 	video_seeds();
 	conf_seeds();
 	control_seeds();
+	console_seeds();
 	rmdir(tmpdir);
 	return 0;
 }

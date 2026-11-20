@@ -22,7 +22,8 @@ FUZZ_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ifuzz -Ilib/hg -Ilib/common -Imsg -Ihan
 	-Imodules/bridge -Imodules/mavlink -Imodules/recorder -Imodules/encoder -Imodules/video_relay -Imodules/joystick -Ihangar -DFUZZ_REPO='"$(CURDIR)"'
 FUZZ_HDRS := $(wildcard fuzz/*.h lib/hg/*.h lib/common/*.h hangard/*.h msg/*.h modules/*/*.h lib/net/*.h lib/video/*.h)
 
-FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside control video schema wiring manifest bridge_conf conf params recording topic http
+FUZZ_HARNESSES := bridge mavlink_vehicle mavlink_topside console control video schema wiring manifest bridge_conf conf params \
+	recording topic nn http
 
 # bridge.c is included by the harness (its statics are what is fuzzed).
 fuzz_bridge_SRC := $(BRIDGE_LIB_SRC) $(HG_SRC)
@@ -40,6 +41,12 @@ fuzz_mavlink_topside_DEPS := modules/mavlink/mavlink_topside.c modules/mavlink/m
 fuzz_mavlink_topside_MAXLEN := 2048
 fuzz_video_SRC := modules/video_relay/depack.c modules/video_relay/mp4.c modules/encoder/h264.c
 fuzz_video_MAXLEN := 16384
+# dawn_patrold.c is included by the harness; lib/net/http.c is gnu99 like the rest of lib/net.
+fuzz_console_SRC := modules/console/console_api.c msg/hangar_system.c msg/hangar_modules.c lib/net/http.c $(HG_SRC)
+fuzz_console_DEPS := modules/console/dawn_patrold.c
+fuzz_console_CPPFLAGS := -Ilib/net -Imodules/console
+fuzz_console_STD := -std=gnu11
+fuzz_console_MAXLEN := 8192
 # control.c is included by the harness; the manager around it is stubs there.
 fuzz_control_SRC := hangard/topics.c hangard/registry.c $(HANGARD_CORE_SRC) $(HG_SRC)
 fuzz_control_DEPS := hangard/control.c
@@ -60,6 +67,9 @@ fuzz_conf_DEPS := hangar/hangar_params.c
 fuzz_conf_MAXLEN := 8192
 fuzz_params_SRC := $(HG_SRC)
 fuzz_params_MAXLEN := 8192
+fuzz_nn_SRC := $(NN_SRC)
+fuzz_nn_CPPFLAGS := -Ilib/nn
+fuzz_nn_MAXLEN := 32768
 fuzz_recording_SRC := $(HGR_SRC) $(HG_SRC)
 fuzz_recording_MAXLEN := 16384
 fuzz_topic_SRC := $(HG_SRC)

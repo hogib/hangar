@@ -1,0 +1,7 @@
+POST /api/module/mux/restart HTTP/1.1
+Host: localhost:8080
+Origin: http://localhost:8080
+Content-Type: application/json
+Content-Length: 2
+
+{}

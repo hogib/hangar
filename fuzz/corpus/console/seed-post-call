@@ -1,0 +1,7 @@
+POST /api/call/safety.arm HTTP/1.1
+Host: 192.168.2.2:8080
+Origin: http://192.168.2.2:8080
+Content-Type: application/json
+Content-Length: 2
+
+{}
