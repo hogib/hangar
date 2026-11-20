@@ -40,6 +40,11 @@
 #define MAX_IN_BIND 128
 #define MAX_OUT_BIND 6
 #define MAX_MODEL_IO 16
+/* The longest warm-up a weights file may ask for: 30 s of ticks, or 1500
+ * ticks on an anchor without a declared rate. docs/09 has the warm-up "by
+ * default the chunk length it was trained on": tens to a few hundred ticks. */
+#define WARMUP_MAX_NS 30000000000ull
+#define WARMUP_MAX_TICKS 1500u
 
 enum { CAUSE_START = 0, CAUSE_LOAD = 1, CAUSE_REVERT = 2 };
 enum { LOAD_NONE = 0, LOAD_CHECKING = 1, LOAD_WARMING = 2, LOAD_DONE = 3, LOAD_REJECTED = 4 };
@@ -787,6 +792,17 @@ static void load_poll(void)
 		return;
 	}
 	cand.step_ns = rep.step_ns;
+	/* warmup_ticks comes from the file. Unbounded, a file that said four
+	 * thousand million kept the load "warming" for years of ticks, and every
+	 * load_weights and revert after it refused ("a load is in progress")
+	 * until the module was restarted. */
+	uint64_t warm_max = tick_period_ns ? WARMUP_MAX_NS / tick_period_ns : WARMUP_MAX_TICKS;
+	if (cand.hdr.warmup_ticks > warm_max) {
+		mod_fmt(why, sizeof why, "warm-up of %u ticks: more than %llu (30 s)", cand.hdr.warmup_ticks,
+			(unsigned long long)warm_max);
+		load_reject(8, why);
+		return;
+	}
 	L.state = LOAD_WARMING;
 	L.warm_needed = cand.hdr.warmup_ticks ? cand.hdr.warmup_ticks : 1;
 	publish_load(LOAD_WARMING, 0, NULL);

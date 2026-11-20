@@ -820,6 +820,21 @@ static void test_revert_while_files_are_written(void)
 
 static void test_warmup_overrun(void)
 {
+	/* A warm-up no load can finish: the file asks for 4e9 ticks, 2.5 years
+	 * at 50 Hz. It used to be taken: the load stayed `warming`, and every
+	 * load_weights and revert after it was refused until a restart. Refused
+	 * as check 8 now, at once, and the next load goes through. */
+	uint32_t vl = 0;
+	CHECK_EQ_INT(load("long_warm", NULL, &vl, NULL), HG_OK);
+	CHECK_EQ_INT(wait_load(vl, 5000), 4);
+	CHECK_EQ_INT(O.load.check, 8);
+	CHECK(strstr(O.load.reason, "warm-up of 4000000000 ticks") != NULL);
+	pump(60);
+	CHECK(O.active.hash == hash_b);
+	CHECK_EQ_INT(load("good_b", NULL, &vl, NULL), HG_OK); /* not "a load is in progress" */
+	CHECK_EQ_INT(wait_load(vl, 5000), 3);
+	pump(300);
+	CHECK(O.active.hash == hash_b);
 	char path[700];
 	tfmt(path, sizeof path, "%s/test-warm-delay-us", state);
 	write_file(path, "30000\n");

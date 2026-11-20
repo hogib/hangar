@@ -117,6 +117,9 @@ hash a model was trained on with the one it builds the same way.
 - Every dataset part must be subscribed, not only the inputs: the row type, whose hash
   check 4 compares, is built over all the parts, as the pairer's. Only the inputs are
   read.
+- A weights file's `warmup_ticks` is bounded: more than 30 s of ticks (1500 on an
+  anchor without a rate) is refused as check 8. docs/09 sets no bound; without one a
+  file could keep a load warming, and every later load and revert refused, for good.
 - The warm-up's overrun is measured against the tick period, not `TickBudget`: the
   budget is what check 7 holds the new model's step to; a tick that overran its period
   is the one that delayed the running model's output.
