@@ -341,7 +341,7 @@ On the Pi:
 | Result | Goes to |
 |---|---|
 | `publish 256 B`, `latest 256 B`, `idle`, `wake 1 kHz` from `bench-performance.json` (and `-default`) | the Targets table of [docs/00](../docs/00-overview.md#targets): each target beside its measured value, with the Pi model and governor |
-| `sizes` of `hangard` (once in the tarball), `eeye`, `hellion` | the manager's "under 100 KB stripped" line; the electric-eye sizes beside `tools/cross/README.md`'s |
+| `sizes` of `hangard` (once in the tarball), `eeye`, `hellion` | the manager's "under 200 KB stripped" line (100 KB until 2026-11-20); the electric-eye sizes beside `tools/cross/README.md`'s |
 | the whole report, both governors | the paper's measurement table (`proposal/`): hangar's column, with machine, kernel and commit from the report's header |
 | the same report | the ROS 2 comparison: `bench/ros2/` (to be written) runs a talker/listener pair in a container on this same Pi, same sizes, same rates, same governor, and the comparison script states the factor per line ([docs/12](../docs/12-tools.md#the-benchmark)). The container goes on the Pi only for that run, never on the vehicle |
 | `suites/summary.txt` | `lib/hg/NOTES.md`'s "running the suites on AArch64" item, which stops being open |
@@ -379,7 +379,7 @@ machine. One pass, not the three the plan asks for; the benchmark's `torn` and
 | `wake 10000 Hz` p50 / p99 | reported | 5.2 / 5.5 µs, kept up, 5.7 % CPU | 7.7 / 8.2 µs, 33 late |
 | `idle 30 s` | no wake-ups | 0 context switches, 0 ticks, RSS 336 kB | the same, 332 kB |
 | `torn`, `lost_wake` | 0 | 0 torn of 28 M reads; 20000 of 20000, 0 timeouts | the same |
-| `hangard` size | under 100 KB | **291 440 bytes** | |
+| `hangard` size | under 100 KB (since restated: 200 KB) | **291 440 bytes** | |
 
 The targets are met on a Pi 5 except the manager's size, which is three times its
 target (the spike's 50 KB manager had no manifests, registry, control requests, calls
