@@ -88,11 +88,13 @@ manager (manifests, calls, parameters, the bridge's wiring) measured 292 KB stri
 AArch64, of which libc and the runtime are 88 KB and unwind tables 33 KB. Build flags alone
 (`-Os`, no unwind tables, unused sections dropped) bring it to 187 KB with no change to the
 code, and 100 KB is out of reach without removing function (`bench/HANGARD-SIZE.md`), so the
-target is 200 KB (restated 2026-11-20).
+target is 200 KB (restated 2026-11-20). `tools/release.sh` builds the manager and `hangar`
+with those flags since the same day; the manager had grown meanwhile (314 KB at `-O3`), and
+with the flags it is 201 KB.
 
 | What | Target | Measured: Pi 5, `performance`, 2026-11-09 |
 |---|---|---|
-| Manager binary (static, stripped) | under 200 KB (was 100 KB) | **291 KB**: over until the build flags of `bench/HANGARD-SIZE.md` are applied (187 KB) |
+| Manager binary (static, stripped) | under 200 KB (was 100 KB) | **201 KB** (201,040 bytes, AArch64, the release of 2026-11-20 with the build flags of `bench/HANGARD-SIZE.md`; 314 KB at `-O3`): over by 1 KB. Not from the Pi: the size of the file `tools/release.sh` built |
 | Manager resident memory, 20 modules | under 2 MB | not measured yet |
 | Manager CPU when nothing changes | no wake-ups other than its own timers (event-driven: `epoll`, `pidfd`, `signalfd`, `timerfd`) | not measured yet |
 | Module library | no threads (except one helper in a module that asks to wait on file descriptors too, `hg_wait_fd`), no allocation after opening a topic, no serialization | |

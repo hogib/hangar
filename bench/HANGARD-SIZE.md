@@ -6,6 +6,12 @@ control socket). The release's `hangard` is **292,784 bytes** (aarch64, musl, zi
 `-O3`, `-static -s`; 2026-11-20, main at `bfe3bfb`). This is where the bytes are, and what
 would bring them down. Measured only: nothing in `hangard/` was changed.
 
+**Since 2026-11-20 the release is built with the flags measured below** (`tools/release.sh`:
+`hangard` and `hangar` only, in a build directory of their own; the modules keep `-O3`).
+The manager grew in the meantime, so the result is **201,040 bytes, 1,040 over the
+restated target of 200 KB**: see [Applied](#applied-2026-11-20) at the end. The rest of
+this file is the measurement as made at `bfe3bfb`.
+
 ## Method
 
 The release's build (`make BUILD=release CC="zig cc -target aarch64-linux-musl
@@ -78,3 +84,39 @@ been measured" for that subset. A decision for the project: restate the target f
 full manager (for example, under 200 KB with the flags above, under 150 KB with the libc
 work), or keep it and move the manifest checking out of the manager (into `hangar
 check`, for example).
+
+## Applied (2026-11-20)
+
+`tools/release.sh` builds `hangard` and `hangar` a second time into `<work>/build-small`
+with `-Os -fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections
+-fdata-sections` and `-static -s -Wl,--gc-sections`, and ships those two in place of the
+`-O3` ones; every other binary, and `lib/hg` inside the modules, stays `-O3`. If the
+second build fails, the `-O3` pair ships and the script says so.
+
+Measured on the branch `params-backup` (main at `8b72be1` plus the parameter backup, which
+adds nothing to `hangard`), zig cc 0.17.1, `-mcpu=cortex_a72`:
+
+| Binary (aarch64, musl, static, stripped) | `-O3` | the size build |
+|---|---|---|
+| `hangard` | 313,920 | **201,040** (`.text` 169,400, `.rodata` 30,034, no unwind tables) |
+| `hangar` | 301,792 | 193,776 |
+| `hangard`, x86-64 (`release.sh --host`) | | 199,696 |
+
+The manager is 21 KB larger at `-O3` than when this file was written (292,784 at
+`bfe3bfb`), and the flags that gave 187,192 then give 201,040 now: **1,040 bytes over the
+200 KB target** (in units of 1,024 bytes it is 196.3). No further flag closes that:
+`-Oz` gives the same bytes as `-Os` with zig cc, `-fno-stack-protector` and
+`-Wl,--build-id=none` change nothing, `-fmerge-all-constants -fno-ident` saves 32 bytes,
+`-Wl,-z,norelro` 192, and zig cc's linker does not take `--icf`. The next step is the
+first of the list above (number parsing without scanf and strtod, 13.5 KB at `-O3`), or
+the insertion sort in place of `qsort` (11 KB).
+
+What was checked with the flags: every suite of `make check` passes built with them by
+gcc (glibc), and by zig cc for x86_64-linux-musl, static, as the release is (there
+without the suites of `video_relay` and `topside_encoder`, whose libraries were not built
+for that target, and after one check in `test_hangard_run` stopped expecting glibc's
+words for `EBUSY`). The x86-64 release (`release.sh --host`) ran a `lab.sh` rehearsal
+on the laptop: both managers up, ArduSub's parameters saved, set and restored against
+the fake ArduSub, down. Of the aarch64 release, `hangar` and three of the `test_hg_*`
+suites (layout, wiring, pubsub) were run under QEMU's user mode, which cannot run the
+manager. **Not checked: the aarch64 manager on a Pi.**
