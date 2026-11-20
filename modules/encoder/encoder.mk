@@ -32,9 +32,17 @@ $(ENCODER_TEST): $(OBJDIR)/modules/encoder/tests/test_encoder.o $(OBJDIR)/module
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
 
+# The suite's camera: an LD_PRELOAD library (tests/fake_uvc.c). Built where the
+# toolchain makes shared objects; where it does not (a static cross build), the
+# file is absent and the suite says that it skipped the unplug test.
+ENCODER_FAKE_UVC := $(TESTDIR)/encoder-modules/fake_uvc.so
+$(ENCODER_FAKE_UVC): modules/encoder/tests/fake_uvc.c
+	@mkdir -p $(dir $@)
+	-$(CC) -std=gnu11 -Wall -Wextra -O2 -fPIC -shared -o $@ $< -ldl -lpthread 2>/dev/null || rm -f $@
+
 .PHONY: check-encoder
-check-encoder: $(ENCODER_TEST) $(ENCODER_BIN)
-	@if ENCODER_BIN=$(abspath $(ENCODER_BIN)) \
+check-encoder: $(ENCODER_TEST) $(ENCODER_BIN) $(ENCODER_FAKE_UVC)
+	@if ENCODER_BIN=$(abspath $(ENCODER_BIN)) ENCODER_FAKE_UVC=$(abspath $(ENCODER_FAKE_UVC)) \
 	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/encoder.log 2>&1; then \
 	  echo "ok    encoder"; \
 	else \

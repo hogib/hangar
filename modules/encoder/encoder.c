@@ -305,12 +305,21 @@ static void force_keyframe(void)
 	}
 }
 
+/* Exit status when the camera is not there, at start or later: not 78 (a
+ * configuration the manager gives up on), so that the manager starts the
+ * module again under its back-off and the next start finds a camera that
+ * was plugged back in. */
+#define EXIT_NO_CAMERA 75 /* EX_TEMPFAIL */
+
+/* 0; -1 for a node that is no H.264 camera (the configuration is wrong); -2
+ * when there is no such device now (unplugged, not yet enumerated). */
 static int uvc_open(const char *dev)
 {
 	vfd = open(dev, O_RDWR | O_NONBLOCK | O_CLOEXEC);
 	if (vfd < 0) {
-		mod_log(WHO, "%s: %s", dev, strerror(errno));
-		return -1;
+		int gone = errno == ENOENT || errno == ENODEV || errno == ENXIO;
+		mod_log(WHO, "%s: %s%s", dev, strerror(errno), gone ? " (the camera is not there: started again by the manager)" : "");
+		return gone ? -2 : -1;
 	}
 	struct v4l2_format f;
 	memset(&f, 0, sizeof f);
@@ -360,13 +369,15 @@ static int uvc_open(const char *dev)
 	return 0;
 }
 
-/* Every frame the camera has ready: each V4L2 buffer is one access unit. */
-static void uvc_read(void)
+/* Every frame the camera has ready: each V4L2 buffer is one access unit.
+ * The number of frames taken, or -1 with errno when the camera answered
+ * with an error other than "none ready" (ENODEV once it is unplugged). */
+static int uvc_read(void)
 {
-	for (;;) {
+	for (int got = 0;; got++) {
 		struct v4l2_buffer b = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE, .memory = V4L2_MEMORY_MMAP };
 		if (xioctl(vfd, VIDIOC_DQBUF, &b) < 0)
-			return; /* EAGAIN: none left */
+			return errno == EAGAIN ? got : -1;
 		uint64_t cap = hg_now_ns();
 		if ((b.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC)
 			cap = (uint64_t)b.timestamp.tv_sec * 1000000000u + (uint64_t)b.timestamp.tv_usec * 1000u;
@@ -417,9 +428,11 @@ int main(int argc, char **argv)
 	rtp_h264_init(&R, ssrc, C.pt, C.max_packet);
 
 	int uvc = strncmp(C.source, "uvc:", 4) == 0;
-	if (uvc ? uvc_open(C.source + 4) < 0 : file_open(C.source + 5) < 0) {
-		hg_status("the source cannot be opened (the log says why)");
-		return 78;
+	int opened = uvc ? uvc_open(C.source + 4) : file_open(C.source + 5);
+	if (opened < 0) {
+		hg_status(opened == -2 ? "the camera is not there (the log says which)"
+				       : "the source cannot be opened (the log says why)");
+		return opened == -2 ? EXIT_NO_CAMERA : 78;
 	}
 	/* The timer: the file's frame period, or 100 ms for the keyframe check
 	 * and the status line. The camera's frames wake the loop themselves. */
@@ -448,7 +461,9 @@ int main(int argc, char **argv)
 		C.max_packet, C.pt, uvc ? "" : C.loop ? ", looped" : "");
 	hg_ready();
 	last_key_ns = hg_now_ns();
-	while (!mod_stop) {
+	int camera_gone = 0;
+	uint64_t alive_frames = 0, alive_ns = hg_now_ns();
+	while (!mod_stop && !camera_gone) {
 		struct epoll_event evs[4];
 		int k = epoll_wait(ep, evs, 4, 1000);
 		if (k < 0 && errno != EINTR)
@@ -456,7 +471,23 @@ int main(int argc, char **argv)
 		for (int i = 0; i < k; i++) {
 			int fd = evs[i].data.fd;
 			if (fd == vfd) {
-				uvc_read();
+				/* A camera that is unplugged: every request answers ENODEV
+				 * and the descriptor reports an error or a hang-up at every
+				 * poll, for good. The loop used to go round on that at a
+				 * full core, sending nothing, until someone restarted the
+				 * module by hand. An error from the camera, or an error
+				 * event with no frame behind it, ends the module instead:
+				 * the manager starts it again and the start opens the
+				 * camera afresh. */
+				int got = uvc_read();
+				if (got < 0 || (got == 0 && (evs[i].events & (EPOLLERR | EPOLLHUP)))) {
+					mod_log(WHO, "%s is gone (%s): %llu frames sent; ending, for the manager to start the module again",
+						C.source + 4, got < 0 ? strerror(errno) : "an error on its descriptor and no frame",
+						(unsigned long long)frames);
+					hg_status("the camera is gone: ending, to be started again");
+					camera_gone = 1;
+					break;
+				}
 			} else if (fd == tfd) {
 				uint64_t ticks;
 				if (read(tfd, &ticks, sizeof ticks) == sizeof ticks && !uvc)
@@ -474,6 +505,21 @@ int main(int argc, char **argv)
 			last_key_ns = now; /* asked: the next ask after another interval */
 		}
 		status_line(now);
+		/* Alive, for the manifest's Watchdog, means frames: a camera that
+		 * stops delivering without an error (a hung driver) is a dead
+		 * encoder to the manager a few seconds later, and is started again.
+		 * A file that was sent to its end is not a camera that stopped. */
+		if (now - alive_ns >= 500000000u) {
+			if (!uvc || frames != alive_frames)
+				hg_alive();
+			alive_frames = frames;
+			alive_ns = now;
+		}
+	}
+	if (camera_gone) {
+		if (efd >= 0)
+			hg_wait_fd_close();
+		return EXIT_NO_CAMERA;
 	}
 	mod_log(WHO, "stopping: %llu frames, %llu keyframes, %llu packets sent", (unsigned long long)frames,
 		(unsigned long long)keyframes, (unsigned long long)R.packets);

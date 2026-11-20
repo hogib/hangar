@@ -57,6 +57,18 @@ C11, libc and lib/hg only: no ffmpeg, no libx264.
 - **Waiting.** One epoll over the camera's descriptor (or the frame timer), a 100 ms
   timer for the keyframe check and the status line, and `hg_wait_fd` only if the wiring
   has calls (none in this stage). Nothing in the wait set goes unread (hangar#1).
+- **A camera that goes away.** Unplugged, a V4L2 node answers every request with
+  `ENODEV` and reports an error on its descriptor at every poll. The module ends then,
+  with exit status 75, and the manager starts it again under the manifest's
+  `[Restart]` (`Backoff=1s..10s`, a burst limit the retries never reach): each start
+  opens the camera afresh, and one that is still missing ends with 75 again, so a
+  camera plugged back in is streaming within 10 s. (It used to go round its loop on
+  the error at 99 % of a core, sending nothing, until restarted by hand.) A node that
+  exists and is no H.264 camera is still 78, a configuration the manager gives up on.
+  A camera that stops delivering without any error is the watchdog's: the module
+  calls `hg_alive()` only while frames are being sent, and the manifests set
+  `[Health] Watchdog=5s`, since `video.index` is an event topic with no rate for the
+  manager to judge.
 - **Status line:** the source and peer, frames, keyframes, packets, kbit/s, send errors.
   A send to a topside that is not listening is refused by the kernel and only counted.
 
@@ -96,7 +108,13 @@ opt-in; [tools/rov/README.md](../../tools/rov/README.md) has the session, with
   equal byte for byte to the input (the parameter sets added before each later IDR
   accounted for), RTP timestamps of n × 900 at 100 frames/s, sequence numbers in order;
   `video.index` read back, one message a frame with its fields; 0 % of a core once the
-  file has ended; a bad `Source=` or a `uvc:` node that is no camera ends it with 78.
+  file has ended; a bad `Source=` or a `uvc:` node that is no camera ends it with 78,
+  a `uvc:` node that does not exist with 75.
+- The camera unplugged (`test_camera_unplugged`): `tests/fake_uvc.c`, an `LD_PRELOAD`
+  library that is a V4L2 H.264 node inside the encoder's process, streams for 1.5 s and
+  is then "unplugged" (`ENODEV` from every request, a hang-up at every poll): the
+  encoder ends by itself with 75 and says the camera is gone. Skipped, and said so,
+  where the toolchain makes no shared objects or the encoder is static.
 - ffmpeg, where it is installed with libx264: a real stream (three slices a frame)
   whose parameter sets are kept only at the first IDR, ffmpeg joining after that IDR
   has gone by, from the SDP `hellion` writes: it decodes from the IDR at frame 30, 23 or
@@ -106,6 +124,12 @@ opt-in; [tools/rov/README.md](../../tools/rov/README.md) has the session, with
   whether the parameter sets are added or not, so it proves nothing about them.
 
 ## Unverified
+
+- **A real unplug.** What the kernel does to a UVC node whose device is pulled
+  (`ENODEV` from the ioctls, `EPOLLERR | EPOLLHUP` from poll) is emulated by the
+  suite's fake camera from a reading of `v4l2-dev.c`, not observed on a camera. The
+  watchdog path (a camera that hangs without an error) was run once by hand under a
+  manager with the fake's `FAKE_UVC_STALL_S`, not in the suite.
 
 - **That the lab's camera** (USB `32e4:9422`, "H264 USB Camera") **offers H.264 on one
   of its `/dev/video` nodes**, and on which: `v4l2-ctl -d /dev/videoN

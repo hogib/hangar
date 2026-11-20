@@ -314,10 +314,20 @@ static int free_port(void)
 	return port;
 }
 
+/* The suite's camera for the next encoder started: tests/fake_uvc.c as
+ * LD_PRELOAD, unplugged after `unplug_s` seconds. NULL: no camera. */
+static const char *fake_so;
+static const char *fake_unplug_s;
+
 static pid_t spawn_encoder(const char *conf, const char *log)
 {
 	pid_t pid = fork();
 	if (pid == 0) {
+		if (fake_so) {
+			setenv("LD_PRELOAD", fake_so, 1);
+			setenv("FAKE_UVC", "/dev/fake-uvc", 1);
+			setenv("FAKE_UVC_UNPLUG_S", fake_unplug_s, 1);
+		}
 		int fd = open(log, O_WRONLY | O_CREAT | O_APPEND, 0644);
 		if (fd >= 0) {
 			dup2(fd, 2);
@@ -465,10 +475,87 @@ static void test_conf_refused(void)
 	int st;
 	waitpid(pid, &st, 0);
 	CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 78);
-	write_text(conf, "[Encoder]\nSource=uvc:/dev/null-not-a-camera\nPeer=127.0.0.1:1\n");
+	/* A node that is there and is no camera: the configuration is wrong, 78. */
+	write_text(conf, "[Encoder]\nSource=uvc:/dev/null\nPeer=127.0.0.1:1\n");
 	pid = spawn_encoder(conf, log);
 	waitpid(pid, &st, 0);
 	CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 78);
+	/* A node that is not there: the camera is unplugged or not enumerated yet.
+	 * Not 78, which the manager gives up on: 75, and it tries again. */
+	write_text(conf, "[Encoder]\nSource=uvc:/dev/null-not-a-camera\nPeer=127.0.0.1:1\n");
+	pid = spawn_encoder(conf, log);
+	waitpid(pid, &st, 0);
+	CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 75);
+}
+
+/* The camera unplugged while it streams. Every V4L2 request then answers
+ * ENODEV and the descriptor reports an error at every poll; the encoder
+ * went round its loop on that at 99 % of a core, sending nothing, and never
+ * ended: the video was gone until someone restarted the module by hand. It
+ * ends now, by itself, with the status the manager restarts on. The camera
+ * is tests/fake_uvc.c, inside the encoder's process. */
+static void test_camera_unplugged(void)
+{
+	fake_so = getenv("ENCODER_FAKE_UVC");
+	if (!fake_so || access(fake_so, R_OK) != 0) {
+		printf("    (skipped: no fake camera library; the toolchain makes no shared objects)\n");
+		fake_so = NULL;
+		return;
+	}
+	char conf[700], log[700];
+	snprintf(conf, sizeof conf, "%s/cam.conf", root);
+	snprintf(log, sizeof log, "%s/cam.log", root);
+	int port, s = udp_bound(&port);
+	CHECK(s >= 0);
+	write_text(conf, "[Encoder]\nSource=uvc:/dev/fake-uvc\nPeer=127.0.0.1:%d\nWidth=1280\nHeight=720\nFrameRate=30\n", port);
+	fake_unplug_s = "1.5";
+	pid_t pid = spawn_encoder(conf, log);
+	fake_so = NULL;
+	/* It ends by itself: 1.5 s of frames, the unplug, then at most a loop's
+	 * turn. Given 20 s; before the fix it never did. */
+	int st = 0, ended = 0;
+	uint64_t t0 = now_ms();
+	while (now_ms() - t0 < 20000) {
+		if (waitpid(pid, &st, WNOHANG) == pid) {
+			ended = 1;
+			break;
+		}
+		sleep_ms(20);
+	}
+	if (!ended) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &st, 0);
+	}
+	char *text = NULL;
+	FILE *f = fopen(log, "r");
+	static char buf[8192];
+	if (f) {
+		size_t n = fread(buf, 1, sizeof buf - 1, f);
+		buf[n] = 0;
+		fclose(f);
+		text = buf;
+	}
+	if (text && !strstr(text, "fake_uvc: opened")) {
+		/* LD_PRELOAD did nothing (a static binary): there was no camera to unplug. */
+		printf("    (skipped: the encoder did not load the fake camera; a static build?)\n");
+		close(s);
+		return;
+	}
+	CHECK(ended);
+	CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 75);
+	if (ended && !(WIFEXITED(st) && WEXITSTATUS(st) == 75))
+		printf("    the encoder ended with %s %d\n", WIFEXITED(st) ? "status" : "signal",
+		       WIFEXITED(st) ? WEXITSTATUS(st) : WTERMSIG(st));
+	CHECK(text && strstr(text, "fake_uvc: unplugged") != NULL);
+	CHECK(text && strstr(text, "/dev/fake-uvc is gone (No such device)") != NULL);
+	/* It streamed before that: frames arrived at the peer. */
+	unsigned char pkt[2048];
+	int packets = 0;
+	while (recv(s, pkt, sizeof pkt, MSG_DONTWAIT) > 0)
+		packets++;
+	CHECK(packets >= 10);
+	printf("    %d RTP packets before the unplug; the encoder ended %s\n", packets, ended ? "by itself" : "only when killed");
+	close(s);
 }
 
 /* ---- ffmpeg decodes it ---------------------------------------------------- */
@@ -607,6 +694,7 @@ int main(void)
 	RUN_TEST(test_parameter_sets_inserted);
 	RUN_TEST(test_file_to_udp);
 	RUN_TEST(test_conf_refused);
+	RUN_TEST(test_camera_unplugged);
 	RUN_TEST(test_ffmpeg_decodes);
 	if (!getenv("ENCODER_KEEP")) {
 		snprintf(mk, sizeof mk, "rm -rf %s", root);

@@ -14,3 +14,18 @@ SupplementaryGroups=video
 [Publish video.index]
 Type=video_index
 Slots=64
+
+# video.index has no rate of its own, so the watchdog is what tells the manager
+# of an encoder that stopped: the module reports itself alive only while frames
+# are being sent. A camera that hangs is noticed after 5 s and the module
+# started again; one that is unplugged ends the module itself (exit status 75).
+[Health]
+Watchdog=5s
+
+# A camera that stays unplugged is tried again every 10 s for as long as it
+# takes, without the manager giving up: the back-off, and a burst limit that
+# those tries never reach.
+[Restart]
+Policy=always
+Backoff=1s..10s
+Burst=30/60s
