@@ -99,6 +99,36 @@ static void test_bad_file_at_the_path(void)
 	hg_pub_close(q);
 }
 
+static void test_wrong_type_then_the_right_one(void)
+{
+	// A subscription that expects words, on a topic a writer opened as
+	// depth: HG_ERROR with EPROTOTYPE. The writer replaced by one of the
+	// right type: the subscription follows the replacement and reads.
+	struct depth d = { 1.0f, 2.0f, 3.0f };
+	hg_pub *p = hg_pub_open("rp.type", DEPTH_TYPE, NULL);
+	CHECK(p != NULL);
+	hg_sub *s = hg_sub_open("rp.type", WORDS_TYPE);
+	hg_publish(p, &d, sizeof d, 1);
+	errno = 0;
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_ERROR);
+	CHECK_EQ_INT(errno, EPROTOTYPE);
+	CHECK_EQ_INT(hg_wait(&s, 1, 50), 0); // said once: not news again
+	hg_pub *q = open_words("rp.type");
+	pub_n(q, 1);
+	unsigned w = hg_wait(&s, 1, 1000);
+	CHECK_EQ_INT(w, HG_READY_TOPICS);
+	enum hg_result r = hg_next(s, buf, sizeof buf, &info);
+	if (r == HG_NONE)
+		r = hg_next(s, buf, sizeof buf, &info);
+	printf("    after the replacement by a writer of the right type: %s\n",
+	       r == HG_MSG ? "HG_MSG" : r == HG_ERROR ? "HG_ERROR still" : "nothing");
+	CHECK_EQ_INT(r, HG_MSG);
+	CHECK_EQ_INT(hg_sub_reopens(s), 1);
+	hg_sub_close(s);
+	hg_pub_close(p);
+	hg_pub_close(q);
+}
+
 static void test_restart_continues_seq_without_gap(void)
 {
 	ino_t wake0, dir0, topic0, wake1, dir1, topic1;
@@ -285,6 +315,7 @@ int main(void)
 	hg_test_setup("replace");
 	RUN_TEST(test_bit2_without_new_file);
 	RUN_TEST(test_bad_file_at_the_path);
+	RUN_TEST(test_wrong_type_then_the_right_one);
 	RUN_TEST(test_restart_continues_seq_without_gap);
 	RUN_TEST(test_lost_messages_across_restart_are_a_gap);
 	RUN_TEST(test_mirror_new_boot_is_new_epoch);

@@ -1990,6 +1990,16 @@ static enum hg_result ensure_attached(hg_sub *s, size_t buf_len)
 	}
 	s->appeared_reported = 1;
 	if (s->type_bad) {
+		/* A file of another type is not read, but it is followed: its
+		 * replacement may be of the type expected. */
+		uint32_t f = atomic_load_explicit(&s->h->flags, memory_order_acquire) &
+			     (HG_FLAG_CLOSED | HG_FLAG_DIED | HG_FLAG_REPLACED);
+		if (f & HG_FLAG_REPLACED)
+			(void)reopen(s, f);
+		else
+			s->seen_flags = f;
+	}
+	if (s->type_bad) {
 		s->type_bad_reported = 1;
 		errno = EPROTOTYPE;
 		return HG_ERROR;
@@ -2282,8 +2292,14 @@ static int has_news(const hg_sub *s)
 {
 	if (!s->h)
 		return s->attach_err && !s->attach_err_reported;
-	if (s->type_bad)
-		return !s->type_bad_reported;
+	if (s->type_bad) {
+		/* Said once; after that only a change of the file's flags is
+		 * news: a replacement may be of the type expected. */
+		if (!s->type_bad_reported)
+			return 1;
+		return (atomic_load_explicit(&s->h->flags, memory_order_seq_cst) &
+			(HG_FLAG_CLOSED | HG_FLAG_DIED | HG_FLAG_REPLACED)) != s->seen_flags;
+	}
 	if (s->appeared && !s->appeared_reported)
 		return 1;
 	uint64_t w = atomic_load_explicit(&s->h->write_seq, memory_order_seq_cst);
