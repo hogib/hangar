@@ -484,12 +484,34 @@ static void bench_latest(void)
  * and shmem parts) read from /proc/<pid>/smaps_rollup and VmHWM from
  * /proc/<pid>/status while the pair runs, 2 s in. */
 
+struct mem_sample {
+	long long rss, pss, pss_anon, pss_file, pss_shmem, hwm;
+};
+
+/* The pair samples its own memory when the parent asks (sample_req): hg_init
+ * makes a module undumpable (PR_SET_DUMPABLE 0), which leaves its
+ * /proc/<pid>/smaps_rollup to root, so the parent read -1 for both (on the Pi
+ * and here); a process reads its own /proc/self files whatever its dumpable
+ * flag. [0] the writer, [1] the reader. */
+static void sample_mem(pid_t pid, struct mem_sample *m);
+
 struct pair_shared {
 	atomic_int pub_open, ready, go;  /* writer opened the topic; reader is in place; start */
+	atomic_int sample_req, sampled[2];
+	struct mem_sample mem[2];
 	unsigned long long msgs, gaps, torn, wakes, timeouts, late, published;
 	uint32_t cap, n;          /* samples: latency in ns, capped at UINT32_MAX */
 	uint32_t lat[];
 };
+
+/* The child's side of a memory sample: once per run, when asked. */
+static void sample_if_asked(struct pair_shared *sh, int who)
+{
+	if (atomic_load(&sh->sample_req) && !atomic_load(&sh->sampled[who])) {
+		sample_mem(0, &sh->mem[who]);
+		atomic_store(&sh->sampled[who], 1);
+	}
+}
 
 static void pair_reader(struct pair_shared *sh, int cpu)
 {
@@ -512,6 +534,7 @@ static void pair_reader(struct pair_shared *sh, int cpu)
 			continue;
 		}
 		sh->wakes++;
+		sample_if_asked(sh, 1);
 		for (;;) {
 			enum hg_result res = hg_next(s, buf, sizeof buf, &info);
 			if (res == HG_CLOSED) {
@@ -562,19 +585,19 @@ static void pair_writer(struct pair_shared *sh, int cpu, unsigned rate_hz, int s
 		fill(buf, WORDS, seq);
 		hg_publish(p, buf, sizeof buf, now);
 		sh->published = seq;
+		sample_if_asked(sh, 0);
 	}
 	hg_pub_close(p); /* wakes the reader with HG_CLOSED */
 	_exit(0);
 }
 
-struct mem_sample {
-	long long rss, pss, pss_anon, pss_file, pss_shmem, hwm;
-};
-
 static void sample_mem(pid_t pid, struct mem_sample *m)
 {
 	char path[64], buf[8192];
-	snprintf(path, sizeof path, "/proc/%d/smaps_rollup", (int)pid);
+	if (pid)
+		snprintf(path, sizeof path, "/proc/%d/smaps_rollup", (int)pid);
+	else
+		snprintf(path, sizeof path, "/proc/self/smaps_rollup");
 	memset(m, -1, sizeof *m);
 	if (read_file(path, buf, sizeof buf) > 0) {
 		m->rss = proc_field(buf, "Rss");
@@ -583,7 +606,10 @@ static void sample_mem(pid_t pid, struct mem_sample *m)
 		m->pss_file = proc_field(buf, "Pss_File");
 		m->pss_shmem = proc_field(buf, "Pss_Shmem");
 	}
-	snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
+	if (pid)
+		snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
+	else
+		snprintf(path, sizeof path, "/proc/self/status");
 	if (read_file(path, buf, sizeof buf) > 0)
 		m->hwm = proc_field(buf, "VmHWM");
 }
@@ -650,8 +676,15 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	atomic_store(&sh->go, 1);
 	if (mem) {
 		sleep_ms(2000);
-		sample_mem(writer, &mem[0]);
-		sample_mem(reader, &mem[1]);
+		atomic_store(&sh->sample_req, 1);
+		for (int i = 0; i < 1000 && !(atomic_load(&sh->sampled[0]) && atomic_load(&sh->sampled[1])); i++)
+			sleep_ms(1);
+		for (int i = 0; i < 2; i++) {
+			if (atomic_load(&sh->sampled[i]))
+				mem[i] = sh->mem[i];
+			else
+				memset(&mem[i], -1, sizeof mem[i]);
+		}
 	}
 	struct rusage wru, rru;
 	int wst = wait_child(writer, &wru);
