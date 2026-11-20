@@ -1,0 +1,5 @@
+[Module]
+Exec=/bin/true
+[Publish nav.slow]
+Type=depth
+Rate=0.26

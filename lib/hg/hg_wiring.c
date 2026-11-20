@@ -84,29 +84,33 @@ static int64_t scaled(const char **sp, int scale_digits)
 
 int64_t hg_parse_duration(const char *s)
 {
-	/* Parsed as nanoseconds with 9 fractional digits, then scaled by unit. */
-	const char *p = s;
-	int64_t v = scaled(&p, 9); /* value * 1e9 */
-	if (v < 0)
-		return -1;
-	int64_t unit_ns;
-	if (strcmp(p, "ns") == 0)
-		unit_ns = 1;
-	else if (strcmp(p, "us") == 0)
-		unit_ns = 1000;
-	else if (strcmp(p, "ms") == 0)
-		unit_ns = 1000000;
-	else if (strcmp(p, "s") == 0)
-		unit_ns = 1000000000;
-	else if (*p == 0 && v == 0)
-		return 0; /* a bare 0: no unit needed */
+	/* The unit first: it says how many fractional digits a whole number of
+	 * nanoseconds leaves room for, and the value is read at that scale, as
+	 * nanoseconds. (Read as value * 1e9 whatever the unit, nothing from 9.3 s
+	 * up fits 63 bits when written in ns, and the manager writes the
+	 * stale_after of a slow topic so: 11538461538ns for three periods of
+	 * 0.26 Hz.) */
+	const char *u = s;
+	while ((*u >= '0' && *u <= '9') || *u == '.')
+		u++;
+	int digits;
+	if (strcmp(u, "ns") == 0 || *u == 0)
+		digits = 0;
+	else if (strcmp(u, "us") == 0)
+		digits = 3;
+	else if (strcmp(u, "ms") == 0)
+		digits = 6;
+	else if (strcmp(u, "s") == 0)
+		digits = 9;
 	else
 		return -1;
-	/* v is value*1e9; result = value*unit_ns = v*unit_ns/1e9, exact when the
-	 * fractional part fits the unit. */
-	if (v % (1000000000 / unit_ns) != 0)
+	const char *p = s;
+	int64_t v = scaled(&p, digits);
+	if (v < 0 || p != u)
 		return -1;
-	return v / (1000000000 / unit_ns);
+	if (*u == 0 && v != 0)
+		return -1; /* only a bare 0 needs no unit */
+	return v;
 }
 
 int64_t hg_parse_rate_mhz(const char *s)

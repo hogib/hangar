@@ -171,6 +171,16 @@ static void test_durations_and_rates(void)
 	CHECK_EQ_INT(hg_parse_duration("9223372037s"), -1);
 	CHECK_EQ_INT(hg_parse_duration("1125899906842624s"), -1);
 	CHECK_EQ_INT(hg_parse_duration("1125899906842624.5s"), -1);
+	/* Nanoseconds past 9.3 s, as the manager writes three periods of a slow
+	 * topic (Rate=0.26): read as they are, not through value * 1e9. */
+	CHECK(hg_parse_duration("11538461538ns") == 11538461538ll);
+	CHECK(hg_parse_duration("1125899906842624ns") == 1125899906842624ll);
+	CHECK(hg_parse_duration("9000000000000ms") == 9000000000000000000ll);
+	CHECK_EQ_INT(hg_parse_duration("1.2.3s"), -1);
+	CHECK_EQ_INT(hg_parse_duration("0.0005us"), -1);
+	CHECK_EQ_INT(hg_parse_duration("0.0"), 0);
+	CHECK_EQ_INT(hg_parse_duration(""), -1);
+	CHECK_EQ_INT(hg_parse_duration(".s"), -1);
 	CHECK_EQ_INT(hg_parse_rate_mhz("50"), 50000);
 	CHECK_EQ_INT(hg_parse_rate_mhz("0.5"), 500);
 	CHECK_EQ_INT(hg_parse_rate_mhz("12.345"), 12345);
