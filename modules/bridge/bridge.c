@@ -62,10 +62,19 @@ struct tx_topic {
 	uint64_t last_sent_ns;
 	int decimated;           /* messages skipped by Rate= since the last sent */
 	int schema_sent;         /* in this generation of the stream */
-	int started;             /* reliable: next_seq set */
-	uint64_t next_seq;       /* reliable: the next seq to queue */
 	uint64_t acked_seq;      /* reliable: the last seq the peer acknowledged */
-	uint64_t last_read;      /* reliable: the last seq read by hg_next */
+	/* Reliable: the messages read and not yet acknowledged, oldest first,
+	 * each as the record that goes on the stream. At most the topic's ring
+	 * of them (docs/08 "Delivery"); the oldest goes when one more comes. */
+	struct held {
+		uint64_t seq;
+		uint32_t len;
+		int queued;      /* on the stream of this generation */
+		unsigned char *rec;
+	} *held;
+	int nheld, cap_held;
+	uint32_t max_held;       /* the ring's slots, as last read from the file */
+	uint64_t reopens;        /* the subscription's, when max_held was read */
 	int call_kind;           /* 1 a request topic, 2 a reply topic */
 };
 
@@ -592,6 +601,9 @@ static void s_resend_check(void)
 	}
 }
 
+struct tx_topic;
+static void held_acked(struct tx_topic *t);
+
 static void on_ack(const unsigned char *b, size_t n)
 {
 	if (n < 8)
@@ -611,6 +623,7 @@ static void on_ack(const unsigned char *b, size_t n)
 			struct tx_topic *t = &B.tx[B.precs[i].tx];
 			if (B.precs[i].seq > t->acked_seq)
 				t->acked_seq = B.precs[i].seq;
+			held_acked(t);
 		} else {
 			B.precs[k++] = B.precs[i];
 		}
@@ -830,39 +843,81 @@ static void pump_latest(struct tx_topic *t)
 	s_pump();
 }
 
+/* What the peer has acknowledged is held no longer. */
+static void held_acked(struct tx_topic *t)
+{
+	int k = 0;
+	while (k < t->nheld && t->held[k].seq <= t->acked_seq)
+		free(t->held[k++].rec);
+	if (k) {
+		memmove(t->held, t->held + k, (size_t)(t->nheld - k) * sizeof *t->held);
+		t->nheld -= k;
+	}
+}
+
+/* Keeps a copy of a message's record until it is acknowledged. */
+static void hold(struct tx_topic *t, uint64_t seq, const unsigned char *rec, size_t len)
+{
+	if (t->max_held == 0 || t->reopens != hg_sub_reopens(t->sub)) {
+		struct hg_topic_meta m;
+		t->max_held = hg_sub_meta(t->sub, &m) == 0 && m.slot_count ? m.slot_count : 16;
+		t->reopens = hg_sub_reopens(t->sub);
+	}
+	unsigned char *copy = malloc(len ? len : 1);
+	if (!copy)
+		return; /* as a message the ring lost: a gap the peer sees */
+	memcpy(copy, rec, len);
+	if (t->nheld >= (int)t->max_held) {
+		/* More unsent than the ring holds: the oldest goes, as it would
+		 * have gone from the ring. The peer sees the gap in the seqs. */
+		free(t->held[0].rec);
+		memmove(t->held, t->held + 1, (size_t)(t->nheld - 1) * sizeof *t->held);
+		t->nheld--;
+	}
+	if (t->nheld == t->cap_held) {
+		int cap = t->cap_held ? t->cap_held * 2 : 16;
+		struct held *nh = realloc(t->held, (size_t)cap * sizeof *nh);
+		if (!nh) {
+			free(copy);
+			return;
+		}
+		t->held = nh;
+		t->cap_held = cap;
+	}
+	t->held[t->nheld++] = (struct held){ .seq = seq, .len = (uint32_t)len, .rec = copy };
+}
+
 /* The reliable topics: every message read as it comes (nothing left unread
- * in the wait set), and queued on the stream by seq (hg_read_seq) from the
- * first not yet queued to the last read: after a reconnect, from the first
- * the peer did not acknowledge; while the backlog is full, from where it
- * stopped. A seq gone from the ring meanwhile is a gap the peer sees. */
+ * in the wait set) and held, as the record to send, until the peer
+ * acknowledges it; what is held and not yet on the stream is queued in
+ * order: after a reconnect, from the first the peer did not acknowledge;
+ * while the backlog is full, from where it stopped. The copy is the
+ * bridge's own because the ring is not its to keep: a writer that restarts
+ * gets a new file, and the messages the bridge had read from the old one
+ * and could not send yet (the link down, the backlog full) are in no file
+ * any more. */
 static void pump_reliable(struct tx_topic *t)
 {
 	struct hg_info in;
 	while (hg_next(t->sub, rd, sizeof rd, &in) == HG_MSG) {
-		if (!t->started) {
-			t->next_seq = in.seq; /* the oldest in the ring: opened from there */
-			t->started = 1;
-		}
-		t->last_read = in.seq;
+		if (!local_topic(t->sub))
+			continue; /* mirrored here from the other side: not sent back */
+		size_t n = build_msg(obuf, t, &in, rd, hg_sub_payload_bytes(t->sub), 0);
+		hold(t, in.seq, obuf, n);
 	}
-	if (!t->started || !B.up || !B.mirror_ok || !local_topic(t->sub))
+	if (!B.up || !B.mirror_ok || !t->nheld || t->held[t->nheld - 1].queued)
 		return;
-	struct hg_topic_meta m;
-	if (hg_sub_meta(t->sub, &m) < 0)
-		return;
-	if (t->next_seq <= t->last_read && !t->schema_sent)
+	if (!t->schema_sent)
 		send_schema(t);
 	if (!t->schema_sent)
 		return;
-	while (t->next_seq <= t->last_read) {
-		if (hg_read_seq(t->sub, t->next_seq, rd, sizeof rd, &in) != HG_MSG) {
-			t->next_seq++;
+	for (int i = 0; i < t->nheld; i++) {
+		struct held *h = &t->held[i];
+		if (h->queued)
 			continue;
-		}
-		size_t n = build_msg(obuf, t, &in, rd, m.payload_bytes, 0);
-		if (s_append(R_MSG, obuf, n, (int)(t - B.tx), in.seq) < 0)
+		if (s_append(R_MSG, h->rec, h->len, (int)(t - B.tx), h->seq) < 0)
 			break;
-		t->next_seq = in.seq + 1;
+		h->queued = 1;
 		B.st.msgs_tx++;
 	}
 	s_pump();
@@ -1119,8 +1174,8 @@ static void reset_generation(void)
 	for (int i = 0; i < B.ntx; i++) {
 		struct tx_topic *t = &B.tx[i];
 		t->schema_sent = 0;
-		if (t->reliable && t->started)
-			t->next_seq = t->acked_seq + 1 > t->next_seq ? t->next_seq : t->acked_seq + 1;
+		for (int k = 0; k < t->nheld; k++)
+			t->held[k].queued = 0; /* not acknowledged on the old stream: sent again */
 	}
 	for (int i = 0; i < B.nrx; i++)
 		B.rx[i].refused = 0;

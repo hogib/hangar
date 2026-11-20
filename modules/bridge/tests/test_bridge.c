@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay, auto).
+ * clocks, hold, replay, auto, writer).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -271,8 +271,10 @@ static int wait_link(const struct side *s, int want_match, long ms, struct bridg
 {
 	uint64_t t0 = now_ms();
 	do {
+		/* config_match is false too while the versions are still on their
+		 * way ("exchanging versions"): not the verdict waited for. */
 		if (read_link(s, out) == 0 && out->state == 3 && out->config_match == want_match &&
-		    (want_match || out->detail[0]))
+		    (want_match || (out->detail[0] && strcmp(out->detail, "exchanging versions") != 0)))
 			return 1;
 		sleep_ms(20);
 	} while (now_ms() - t0 < (uint64_t)ms);
@@ -1246,6 +1248,83 @@ static void auto_run(void)
 	       (now_ms() - t0) / 1e3);
 }
 
+/* Reads test.ev on the topside until it has seen seq `until` or ms have
+ * passed: messages, lost ones, the last seq. */
+static void read_ev(hg_sub *ev, uint64_t until, long ms, int *came, uint64_t *gaps, uint64_t *last)
+{
+	struct depth d;
+	struct hg_info in;
+	uint64_t t0 = now_ms();
+	use(&T);
+	while (*last < until && now_ms() - t0 < (uint64_t)ms) {
+		hg_wait(&ev, 1, 50);
+		while (hg_next(ev, &d, sizeof d, &in) == HG_MSG) {
+			*came += 1;
+			*gaps += in.gap;
+			*last = in.seq;
+		}
+	}
+}
+
+/* A reliable topic whose writer restarts while the link is down (docs/08
+ * "Calls": what is sent while the link is down goes through when it is
+ * back). The vehicle's `ev` publishes at 20 Hz into a ring of 256; with the
+ * tether cut it is restarted twice, each restart a new file for the topic.
+ * What the bridge read from the first two files while it could not send is
+ * in no file when the link returns: it must arrive all the same, every seq
+ * up to the newest. */
+static void writer_run(void)
+{
+	const char *mirror = "[Mirror test.ev]\nDirection=up\nDelivery=reliable\n";
+	setup_side(&V, "wr", mirror);
+	manifest("ev", "[Module]\nExec=%s/talker --topic test.ev --rate 20\n"
+		       "[Publish test.ev]\nType=depth\nRate=20\nSlots=256\n", T_toys);
+	setup_side(&T, "wr", mirror);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	use(&T);
+	hg_sub *ev = hg_sub_open_from("test.ev", &DEPTH_TYPE, HG_OLDEST);
+	int came = 0;
+	uint64_t gaps = 0, last = 0;
+	if (up && ev)
+		read_ev(ev, 20, 3000, &came, &gaps, &last);
+	EXPECT(up && came >= 20 && gaps == 0, "test.ev (reliable, 20 Hz): %d messages on the topside, to seq %llu, none lost",
+	       came, (unsigned long long)last);
+	if (!up)
+		return;
+	/* The tether cut. */
+	atomic_store(&fwd_drop_pct, 100);
+	uint64_t t0 = now_ms(), cut = last;
+	int down = 0;
+	while (!down && now_ms() - t0 < 6000) {
+		down = read_link(&V, &lv) == 0 && lv.state != 3;
+		sleep_ms(50);
+	}
+	int restarts = 0;
+	for (int i = 0; i < 2; i++) {
+		sleep_ms(600); /* some 12 messages, read by the bridge */
+		use(&V);
+		pid_t p0 = pid_of(&V, "ev");
+		ctl("restart ev");
+		restarts += wait_new_pid("ev", p0, "ready", 5000);
+	}
+	sleep_ms(600);
+	use(&V);
+	hg_sub *lev = hg_sub_open("test.ev", &DEPTH_TYPE);
+	struct depth d;
+	struct hg_info in;
+	uint64_t there = lev && hg_latest(lev, &d, sizeof d, &in) == HG_MSG ? in.seq : 0;
+	/* And mended. */
+	atomic_store(&fwd_drop_pct, 0);
+	came = 0;
+	read_ev(ev, there, 6000, &came, &gaps, &last);
+	EXPECT(down && restarts == 2 && there > cut + 40 && last >= there && gaps == 0,
+	       "the link down, the writer restarted twice, the link back: seqs %llu to %llu arrive, %d messages, %llu lost",
+	       (unsigned long long)cut + 1, (unsigned long long)last, came, (unsigned long long)gaps);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -1256,6 +1335,7 @@ static const struct run {
 	{ "hold", hold_run },
 	{ "replay", replay_run },
 	{ "auto", auto_run },
+	{ "writer", writer_run },
 };
 
 int main(int argc, char **argv)

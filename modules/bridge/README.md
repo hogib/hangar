@@ -70,10 +70,13 @@ and calls to the other side).
   schema, seq and boot id (`origin_boot`) and ring size, the writer the module there,
   the receiving file's rate and staleness. Seqs are kept (`hg_publish_seq`); a seq not
   above the last is dropped (`dropped_old`). A lost latest message is a gap a reader
-  sees; a reliable topic has none unless its sender's ring overran meanwhile. After a
-  reconnect a reliable topic resumes from the oldest message its ring still holds that
-  the peer did not acknowledge, so a request made while the link was down goes when it
-  is back, and the server drops it if it is past its deadline.
+  sees. The sending bridge keeps its own copy of every reliable message it has read,
+  as the record to send, until the peer acknowledges it: at most as many per topic as
+  the topic's ring has slots, the oldest going when one more comes (a gap the peer
+  sees). After a reconnect a reliable topic resumes from the oldest one not
+  acknowledged, so a request made while the link was down goes when it is back, and
+  the server drops it if it is past its deadline. The copies are why a writer that
+  restarts meanwhile loses nothing: its new file does not hold what the old one did.
 - **Clocks.** Pings at 10 Hz on the up link; each pong gives an offset
   `((t2−t1)+(t3−t4))/2` and a round trip `(t4−t1)−(t3−t2)`; the estimate is the
   sample of least uncertainty `rtt/2 + age × 500 ppm` within 10 s. Every time on the
@@ -108,8 +111,7 @@ and calls to the other side).
   the same in short.
 - **Waiting.** One `epoll`: the socket, the eventfd of `hg_wait_fd` over the named
   topics it sends, and a 10 ms timer (glob matches, pings, resends, the status topic).
-  Every subscription in the wait set is read on every wake (reliable ones by `hg_next`,
-  then by seq), so nothing is left unread. Idle with the link up: under 1 % of a core.
+  Every subscription in the wait set is read on every wake, so nothing is left unread. Idle with the link up: under 1 % of a core.
 
 ## Deviations from docs/08, with reasons
 
