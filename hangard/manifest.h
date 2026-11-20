@@ -255,6 +255,9 @@ int mf_fmt(char *dst, size_t len, const char *fmt, ...) __attribute__((format(pr
 int64_t mf_parse_duration(const char *s);   /* "100ms", "2.5s", "1min": ns */
 int mf_parse_bool(const char *s);           /* yes/no: 1/0, -1 otherwise */
 int mf_parse_exec(const char *s, struct mf_exec *out);
+/* A module running hangar-policy: policy_<Name> with its three outputs
+ * (docs/09 "Policy modules"; hangard/policy_check.c). 0, or -1 with why. */
+int mf_policy_check(const struct mf_module *m, char *why, size_t len);
 /* A single-token test of the module/method name rule: [a-z0-9_], 1..31. */
 int mf_valid_module_name(const char *s);
 /* 1 if token is a valid Allow token for a machine of role `role`. */

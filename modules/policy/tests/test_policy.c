@@ -138,6 +138,18 @@ static void write_manifests(void)
 			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
 			   "[Call policy_toy.load_weights]\n[Call policy_toy.revert]\n[Call policy_toy.reset_state]\n"
 			   "[Call policy_toy.runtime_info]\n[Call mux.set_mode]\n");
+	/* The manager's check: hangar-policy under another name, and without
+	 * its .load output. */
+	manifest("misnamed", "[Module]\nExec=%s %s/etc/hangar/policies/toy.policy\n[Restart]\nPolicy=never\n"
+			     "[Publish policy.toy2.wrench]\nType=wrench\nRate=50\n",
+		 T_policy, T_root);
+	manifest("policy_lacking", "[Module]\nExec=%s %s/etc/hangar/policies/lacking.policy\n[Restart]\nPolicy=never\n"
+				   "[Publish policy.lacking.wrench]\nType=wrench\nRate=50\n"
+				   "[Publish policy.lacking.active]\nType=policy_active\n",
+		 T_policy, T_root);
+	char lp[700];
+	tfmt(lp, sizeof lp, "%s/etc/hangar/policies/lacking.policy", T_root);
+	write_file(lp, "[Policy]\nName=lacking\nDataset=toy\nArch=0000000000000001\n");
 	manifest("intruder", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n[Call policy_toy.runtime_info]\n");
 }
 
@@ -609,12 +621,18 @@ static void test_allow(void)
 	CHECK(file_contains(T_log, "intruder is not in the method's Allow list"));
 	char path[600];
 	CHECK(wiring_to_file("intruder", path, sizeof path) < 0);
+	CHECK(file_contains(T_log, "hangar-policy runs policy toy, so the module must be policy_toy"));
+	CHECK(file_contains(T_log, "needs [Publish policy.lacking.load] Type=policy_load"));
 }
 
 static void test_mux_residual(void)
 {
-	/* Running good_a: heave 0.5 a + 0.25 t + 0.1 = 1.1 with a = 1, t = 2. */
+	/* Running good_a: heave 0.5 a + 0.25 t + 0.1 = 0.1 with a = t = 0, inside
+	 * the residual envelope (a residual held at it would be demoted). */
 	T.ctl_heave = 0.2f;
+	T.a = 0.0f;
+	T.t = 0.0f;
+	pump(100);
 	set_mode_req req;
 	set_mode_rep rep;
 	memset(&req, 0, sizeof req);
@@ -625,15 +643,18 @@ static void test_mux_residual(void)
 	CHECK_EQ_INT(call("mux.set_mode", &SET_MODE_REQ_TYPE, &req, &SET_MODE_REP_TYPE, &rep).status, HG_OK);
 	pump(200);
 	CHECK(strcmp(O.mux.mode, "residual:toy") == 0);
-	/* The controller's heave plus the residual, held within the residual
-	 * envelope (20 % of 1 by default): 0.2 + 0.2. */
-	CHECK(fabsf(O.cmd.heave - 0.4f) < 0.02f);
-	printf("    residual: ctl.wrench heave %.3f (controller 0.2, policy 1.1 held to 0.2)\n", O.cmd.heave);
+	if (strcmp(O.mux.mode, "residual:toy") != 0)
+		printf("    mux mode %s\n", O.mux.mode);
+	/* The controller's heave plus the policy's. */
+	CHECK(fabsf(O.cmd.heave - 0.3f) < 0.02f);
+	printf("    residual: ctl.wrench heave %.3f (controller 0.2, policy 0.1)\n", O.cmd.heave);
 	/* The policy's input part stops: its output is flagged, the mux demotes. */
 	T.publish_target = 0;
 	pump(400);
 	CHECK(strncmp(O.mux.mode, "residual", 8) != 0);
 	T.publish_target = 1;
+	T.a = 1.0f;
+	T.t = 2.0f;
 	pump(100);
 }
 

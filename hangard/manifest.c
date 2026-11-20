@@ -1629,6 +1629,9 @@ static void check_module(struct mf_set *s, struct mf_module *m)
 {
 	if (strcmp(m->name, "hangar") == 0)
 		refuse(m, module_line(m), "a module may not be named hangar");
+	char policy_why[200];
+	if (mf_policy_check(m, policy_why, sizeof policy_why) < 0)
+		refuse(m, module_line(m), "%s", policy_why);
 	if (m->legacy) {
 		if (m->n_pubs || m->n_subs || m->n_serves || m->n_calls || m->has_params)
 			refuse(m, module_line(m), "Legacy=yes: a legacy module declares no topics, calls or parameters");
