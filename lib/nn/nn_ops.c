@@ -213,7 +213,7 @@ static int lstm_check(const nn_op_sig *s, nn_tdesc *out, char *r, size_t rl) {
   if (!attr_uint(s->attrs, 1, 1, 1u << 16, &H))
     return fail(r, rl, "lstm attr hidden out of range");
   if (!attr_uint(s->attrs, 2, 1, NN_MAX_OP_TENSORS / 4, &L))
-    return fail(r, rl, "lstm attr layers must be 1 to %u", NN_MAX_OP_TENSORS / 4);
+    return fail(r, rl, "lstm attr layers must be 1 to %d", NN_MAX_OP_TENSORS / 4);
   if (check_one_f32_input(s, "lstm", r, rl) < 0)
     return -1;
   if (nn_tdesc_numel(&s->inputs[0]) != I)
