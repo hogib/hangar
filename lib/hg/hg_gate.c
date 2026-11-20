@@ -11,6 +11,14 @@
 #define GATE_DEFAULT_COMMAND_NS 200000000ull
 #define GATE_DEFAULT_SAFETY_NS 300000000ull
 #define SAFETY_BYTES 128
+/* The type hash of msg/safety_state.msg, whose first bytes the gate reads by
+ * offset (state, outputs_enabled, action, reserved, u32 triggers). The
+ * subscription expects it: a safety.state of any other layout is not read
+ * as if it were this one, the gate stays closed ("safety state unreadable"),
+ * and under a wiring that carries the topic's hash the open fails. A change
+ * to that .msg changes this line too; the gate's suite parses the file and
+ * checks that the gate still reads it. */
+#define SAFETY_STATE_HASH 0xbd38de094a170b5full
 
 struct hg_gate {
 	hg_sub *cmd, *safety;
@@ -34,7 +42,7 @@ static hg_gate *gate_new(const char *command, uint64_t ct, uint64_t st)
 	g->safety_timeout_ns = st ? st : GATE_DEFAULT_SAFETY_NS;
 	g->cmd = hg_sub_open(command, NULL);
 	if (g->cmd)
-		g->safety = hg_sub_open("safety.state", NULL);
+		g->safety = hg_sub_open("safety.state", &(struct hg_type){ .name = "safety_state", .hash = SAFETY_STATE_HASH });
 	if (!g->cmd || !g->safety) {
 		int e = errno;
 		hg_gate_close(g);

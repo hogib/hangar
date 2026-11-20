@@ -367,8 +367,85 @@ static void test_standalone_open(void)
 	hg_gate_close(g);
 }
 
-int main(void)
+/* Run again with no wiring (--layouts), in a topic directory of its own: a
+ * safety.state whose fields are in another order than msg/safety_state.msg's
+ * is not read by offset as if it were that message. Here it says failsafe
+ * with the outputs off; read by the old offsets, its second byte (the state,
+ * 2) is "outputs enabled". Then the real file's type: read. */
+static void test_layouts(void)
 {
+	static const char REORDERED[] =
+		"u8 outputs_enabled\nu8 state\nu8 action\nu8 reserved\nu32 triggers\nu64 since_ns\n"
+		"char by[48]\nchar reason[64]\n";
+	static struct hg_schema other, real;
+	CHECK(hg_schema_parse(REORDERED, strlen(REORDERED), &other, NULL, 0) == 0);
+	hg_pub *ps = hg_pub_open("safety.state", &other.type, NULL);
+	hg_pub *pc = hg_pub_open("ctl.wrench", &wrench_parsed.type, NULL);
+	hg_gate *g = hg_gate_open_with("ctl.wrench", 0, 0);
+	CHECK(ps && pc && g);
+	if (!ps || !pc || !g)
+		return;
+	unsigned char m[128] = { 0, 2 }; /* outputs_enabled 0, state 2 (failsafe) */
+	float w[6] = { 0.5f, 0, 0, 0, 0, 0 };
+	hg_publish(ps, m, sizeof m, hg_now_ns());
+	hg_publish(pc, w, sizeof w, hg_now_ns());
+	const char *why = NULL;
+	const void *c = hg_gate_check(g, &why);
+	printf("    a safety.state of another layout, failsafe with outputs off: the gate is %s ('%s')\n",
+	       c ? "OPEN" : "closed", why);
+	CHECK(c == NULL);
+	CHECK(why && strcmp(why, "safety state unreadable") == 0);
+	hg_gate_close(g);
+	hg_pub_close(ps);
+	/* msg/safety_state.msg itself (the suites run from the repository's root). */
+	static char text[HG_SCHEMA_MAX];
+	FILE *f = fopen("msg/safety_state.msg", "r");
+	if (!f) {
+		printf("    (msg/safety_state.msg not found from here: its type not checked against the gate's)\n");
+		hg_pub_close(pc);
+		return;
+	}
+	size_t n = fread(text, 1, sizeof text - 1, f);
+	fclose(f);
+	CHECK(hg_schema_parse(text, n, &real, NULL, 0) == 0);
+	ps = hg_pub_open("safety.state", &real.type, NULL);
+	g = hg_gate_open_with("ctl.wrench", 0, 0);
+	CHECK(ps && g);
+	if (ps && g) {
+		unsigned char a[128] = { 1, 1 }; /* armed, outputs enabled */
+		hg_publish(ps, a, sizeof a, hg_now_ns());
+		hg_publish(pc, w, sizeof w, hg_now_ns());
+		c = hg_gate_check(g, &why);
+		CHECK(c != NULL);
+		if (!c)
+			printf("    msg/safety_state.msg's own type: closed, '%s'\n", why);
+	}
+	hg_gate_close(g);
+	hg_pub_close(ps);
+	hg_pub_close(pc);
+}
+
+static void test_other_layout_is_not_read(void)
+{
+	pid_t pid = fork();
+	if (pid == 0) {
+		unsetenv("HANGAR_WIRING_FILE");
+		execl("/proc/self/exe", "test_hg_gate", "--layouts", (char *)NULL);
+		_exit(127);
+	}
+	CHECK_EQ_INT(wait_child(pid), 0);
+}
+
+int main(int argc, char **argv)
+{
+	if (argc > 1 && strcmp(argv[1], "--layouts") == 0) {
+		hg_test_setup("gatel");
+		if (hg_schema_parse(WRENCH_SCHEMA, strlen(WRENCH_SCHEMA), &wrench_parsed, NULL, 0) < 0)
+			return 2;
+		RUN_TEST(test_layouts);
+		hg_test_teardown();
+		TEST_MAIN_END();
+	}
 	hg_test_setup("gate");
 	if (hg_schema_parse(SAFETY_SCHEMA, strlen(SAFETY_SCHEMA), &safety_parsed, NULL, 0) < 0 ||
 	    hg_schema_parse(WRENCH_SCHEMA, strlen(WRENCH_SCHEMA), &wrench_parsed, NULL, 0) < 0 ||
@@ -389,6 +466,7 @@ int main(void)
 	RUN_TEST(test_flagged_command);
 	RUN_TEST(test_closed_writer);
 	RUN_TEST(test_standalone_open);
+	RUN_TEST(test_other_layout_is_not_read);
 	if (P_depth)
 		hg_pub_close(P_depth);
 	unlink(wiring_path);
