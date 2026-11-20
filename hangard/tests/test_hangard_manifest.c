@@ -191,6 +191,12 @@ static void test_values(void)
 	CHECK_EQ_INT(mf_parse_duration("1min"), 60000000000ll);
 	CHECK_EQ_INT(mf_parse_duration("0.001ms"), 1000);
 	CHECK_EQ_INT(mf_parse_duration("5"), -1);     // no unit
+	// What does not fit 63 bits of nanoseconds is malformed, not wrapped.
+	CHECK(mf_parse_duration("9223372036s") == 9223372036000000000ll);
+	CHECK_EQ_INT(mf_parse_duration("9223372037s"), -1);
+	CHECK_EQ_INT(mf_parse_duration("1125899906842624s"), -1);
+	CHECK(mf_parse_duration("153722867min") == 9223372020000000000ll);
+	CHECK_EQ_INT(mf_parse_duration("200000000min"), -1);
 	CHECK_EQ_INT(mf_parse_duration("5us"), -1);   // not a docs/02 unit
 	CHECK_EQ_INT(mf_parse_duration("ms"), -1);
 	CHECK_EQ_INT(mf_parse_duration("1.2.3s"), -1);

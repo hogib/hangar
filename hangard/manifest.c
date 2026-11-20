@@ -27,7 +27,8 @@
 int64_t mf_parse_duration(const char *s)
 {
 	/* digits[.digits] then ms, s or min (docs/02), exact in nanoseconds:
-	 * the number is read as value * 1e9, then scaled by the unit. */
+	 * the number is read as value * 1e9, then scaled by the unit. One that
+	 * does not fit 63 bits of nanoseconds (292 years) is malformed. */
 	const char *p = s;
 	int64_t v = 0;
 	int digits = 0, frac = 0;
@@ -42,6 +43,8 @@ int64_t mf_parse_duration(const char *s)
 		p++;
 		while (*p >= '0' && *p <= '9') {
 			if (frac < 9) {
+				if (v > (INT64_MAX - 9) / 10)
+					return -1;
 				v = v * 10 + (*p - '0');
 				frac++;
 			} else if (*p != '0') {
@@ -53,8 +56,11 @@ int64_t mf_parse_duration(const char *s)
 	}
 	if (digits == 0)
 		return -1;
-	for (; frac < 9; frac++)
+	for (; frac < 9; frac++) {
+		if (v > INT64_MAX / 10)
+			return -1;
 		v *= 10;
+	}
 	if (strcmp(p, "ms") == 0) {
 		if (v % 1000 != 0)
 			return -1; /* finer than a nanosecond */
@@ -63,7 +69,7 @@ int64_t mf_parse_duration(const char *s)
 	if (strcmp(p, "s") == 0)
 		return v;
 	if (strcmp(p, "min") == 0)
-		return v * 60;
+		return v > INT64_MAX / 60 ? -1 : v * 60;
 	return -1;
 }
 
