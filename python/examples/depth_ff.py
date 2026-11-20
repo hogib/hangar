@@ -39,24 +39,45 @@ INPUTS = ["nav.state.depth_m", "nav.state.vel_z", "nav.state.pitch", "nav.state.
 CTL_HEAVE = "ctl.depth_hold.heave"
 # The vehicle's configuration: the vertical thrusters' servo outputs (0-based)
 # and their share of heave, sign included; the thrust curve as linear around
-# 1500 us with 400 us to full thrust. A BlueROV2 (vectored frame): outputs 5
-# and 6. Check against the frame before trusting the label.
-VERTICAL = {4: 0.5, 5: 0.5}
+# 1500 us with 400 us to full thrust. A BlueROV2 heavy (vectored 6DOF frame):
+# outputs 5 to 8, throttle factor -1 in ArduPilot's mixing (lib/sim/README.md
+# "thruster directions"), so heave up is a pulse width below 1500 us on all
+# four. The mixing is linear in the wrench's units until it scales the axes
+# down, so this inverts it exactly for a heave-only command.
+VERTICAL = {4: -0.25, 5: -0.25, 6: -0.25, 7: -0.25}
 PWM_STOP, PWM_FULL = 1500.0, 400.0
+# depth_hold's feed-forward (msg/depth_control_params.msg ff): heave per m/s^2
+# wanted. --label trim adds it back to the applied heave.
+FF = 0.1
 
 
 def label_fields():
     return [CTL_HEAVE] + ["thr.out.pwm[%d]" % ch for ch in sorted(VERTICAL)]
 
 
-def residual(labels):
-    """[..., 1 + len(VERTICAL)] (the controller's heave, the vertical pwms) to
-    [...] the heave applied less the controller's: what residual mode adds."""
+def applied_heave(labels):
+    """The heave the thrusters applied, in the wrench's units, from the
+    vertical pwms (labels[..., 1:])."""
     applied = 0.0
     for k, ch in enumerate(sorted(VERTICAL)):
         t = (labels[..., 1 + k] - PWM_STOP) / PWM_FULL
         applied = applied + VERTICAL[ch] * t.clip(-1, 1)
-    return applied - labels[..., 0]
+    return applied
+
+
+def residual(labels):
+    """[..., 1 + len(VERTICAL)] (the controller's heave, the vertical pwms) to
+    [...] the heave applied less the controller's: what residual mode adds
+    (docs/09, --label shortfall)."""
+    return applied_heave(labels) - labels[..., 0]
+
+
+def trim(labels, inputs, accel_index):
+    """The heave applied less the controller's feedback (-FF x accel_z): the
+    feed-forward that held the vehicle, its integrator's share and the
+    residual's together (--label trim). On a still row, the heave the net
+    buoyancy needs."""
+    return applied_heave(labels) + FF * inputs[..., accel_index]
 
 
 # ---- A vehicle in a few lines, for --synthetic ----------------------------------
@@ -140,22 +161,30 @@ def main():
     ap.add_argument("--policy", default="depth_ff")
     ap.add_argument("--deploy-every", type=float, default=0, help="seconds; 0: write --out at the end")
     ap.add_argument("--check", action="store_true", help="the data path only (no PyTorch): a few chunks")
+    ap.add_argument("--label", choices=("shortfall", "trim"), default="shortfall",
+                    help="shortfall: applied less the controller's heave (docs/09); trim: applied less "
+                         "the controller's feedback, which is not zero where nothing but the "
+                         "controller drives")
     a = ap.parse_args()
 
     inputs = a.inputs.split(",") if a.inputs else INPUTS
     if a.synthetic:
         stream = synthetic(a.batch, a.seq_len)
-        label = lambda Y: Y[..., 0]  # noqa: E731
+        label = lambda Y, X: Y[..., 0]  # noqa: E731
     else:
         kw = dict(inputs=inputs, labels=label_fields())
         stream = learn.open_dataset(a.dataset, a.batch, a.seq_len, **kw) if a.dataset else \
             learn.stream("dataset.depth_ff", a.batch, a.seq_len, **kw)
-        label = residual
+        if a.label == "trim":
+            ai = stream.input_fields.index("ctl.depth_hold.target.accel_z")
+            label = lambda Y, X: trim(Y, X, ai)  # noqa: E731
+        else:
+            label = lambda Y, X: residual(Y)  # noqa: E731
 
     if a.check:
         for _ in range(5):
             c = stream.next_chunk()
-            y = label(c.labels)
+            y = label(c.labels, c.inputs)
             print("chunk %s: %d rows with loss, %d fresh slots, label mean %.4f" % (
                 c.inputs.shape, int(c.mask.sum()), int(c.fresh.sum()), float((y * c.mask).sum() / max(c.mask.sum(), 1))))
         print("%d rows in the buffer, %d lost" % (len(stream.replay), stream.lost))
@@ -171,7 +200,7 @@ def main():
         c = stream.next_chunk()
         h = learn.carry(h, c.fresh)
         out, h = model(torch.from_numpy(c.inputs), h)
-        y = torch.from_numpy(label(c.labels))
+        y = torch.from_numpy(label(c.labels, c.inputs))
         m = torch.from_numpy(c.mask)
         loss = (((out[..., 0] - y) ** 2) * m).sum() / m.sum().clamp(min=1)
         opt.zero_grad()

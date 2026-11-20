@@ -234,8 +234,12 @@ class Example(unittest.TestCase):
     def test_residual_label(self):
         sys.path.insert(0, os.path.dirname(EXAMPLE))
         import depth_ff
-        L = numpy.array([[0.1, 1620.0, 1620.0]])
+        # The heavy frame's four verticals at 1380 us: heave 0.3 up, as
+        # ArduSub mixes it (modules/thrusters checks the mixing against lib/sim).
+        L = numpy.array([[0.1, 1380.0, 1380.0, 1380.0, 1380.0]])
         self.assertAlmostEqual(float(depth_ff.residual(L)[0]), 0.2, places=6)
+        X = numpy.array([[3.0, 0.0, 0.0, 0.0, -1.0]])
+        self.assertAlmostEqual(float(depth_ff.trim(L, X, 4)[0]), 0.3 - depth_ff.FF, places=6)
 
     @unittest.skipUnless(HAVE_TORCH, "PyTorch is not installed")
     def test_trains_and_exports(self):
