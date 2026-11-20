@@ -339,6 +339,8 @@ int api_links_json(struct console *c, struct cbuf *b)
 {
 	cbuf_printf(b, "{\"hellion\":");
 	cbuf_json_str(b, c->hellion_url, sizeof c->hellion_url);
+	cbuf_printf(b, ",\"preview\":");
+	cbuf_json_str(b, c->preview_url, sizeof c->preview_url);
 	cbuf_printf(b, "}\n");
 	return 200;
 }
@@ -571,6 +573,102 @@ int api_topic_json(struct console *c, const char *name, struct cbuf *b)
 	free(buf);
 	free(schema);
 	hg_sub_close(s);
+	return 200;
+}
+
+/* ---- The Fly view --------------------------------------------------------------- */
+
+/* The topics the Fly view reads: the vehicle's state, ArduSub's, depth,
+ * heading, battery, the recorder, and the video's frames (video.index, for
+ * its rate and age). Each is opened once, on the first request, and kept
+ * open: hg_latest on every poll and nothing else. None of them is in the
+ * console's wait set (hg_wait_fd has the manager's two topics alone), so one
+ * that is never read cannot make the loop spin (hangar#1). Through the
+ * same-host shim a vehicle topic opens from the topside's console too. */
+static const char *const fly_names[] = { "safety.state",  "ardusub.state",   "nav.depth",  "nav.attitude",
+					 "power.battery", "recorder.status", "video.index" };
+#define FLY_N (sizeof fly_names / sizeof fly_names[0])
+
+struct flyrec {
+	hg_sub *s;
+	uint64_t tried_ns; /* the last failed open: tried again 5 s later */
+	uint64_t type_hash; /* of the schema parsed; another one is parsed again */
+	int parsed;
+	struct hg_schema schema;
+	unsigned char *buf;
+	uint32_t buf_len;
+};
+static struct flyrec fly[FLY_N];
+
+/* One topic's object: present, age, measured rate, and its fields by name
+ * (arrays of more than CON_MAX_ARRAY elements as their size, as /api/topic). */
+static void fly_topic_json(struct console *c, struct cbuf *b, unsigned i, uint64_t now)
+{
+	struct flyrec *f = &fly[i];
+	const char *name = fly_names[i];
+	cbuf_printf(b, "%s\"%s\":{", i ? "," : "", name);
+	if (!f->s && (!f->tried_ns || now - f->tried_ns >= 5000000000ull)) {
+		f->s = hg_sub_open(name, NULL);
+		if (!f->s)
+			f->tried_ns = now;
+	}
+	const struct raterec *rate = rate_find(c, name);
+	if (rate && rate->hz >= 0.0)
+		cbuf_printf(b, "\"rate_hz\":%.2f,", rate->hz);
+	uint32_t pl = f->s ? hg_sub_payload_bytes(f->s) : 0;
+	if (f->s && !pl) {
+		/* Not attached yet: a subscription attaches on its first read. One
+		 * with no room for a message attaches and reads nothing (EMSGSIZE). */
+		struct hg_info probe;
+		unsigned char tiny[1];
+		(void)hg_latest(f->s, tiny, sizeof tiny, &probe);
+		pl = hg_sub_payload_bytes(f->s);
+	}
+	struct hg_topic_meta meta;
+	if (!pl || hg_sub_meta(f->s, &meta) < 0) {
+		cbuf_printf(b, "\"present\":false}");
+		return;
+	}
+	if (!f->parsed || meta.type_hash != f->type_hash) {
+		uint32_t slen = 0;
+		const char *text = hg_sub_schema(f->s, &slen);
+		f->parsed = text && hg_schema_parse(text, slen, &f->schema, NULL, 0) == 0;
+		f->type_hash = meta.type_hash;
+	}
+	if (pl > f->buf_len) {
+		unsigned char *nb = realloc(f->buf, pl);
+		if (!nb) {
+			cbuf_printf(b, "\"present\":false,\"error\":\"out of memory\"}");
+			return;
+		}
+		f->buf = nb;
+		f->buf_len = pl;
+	}
+	struct hg_info info;
+	if (hg_latest(f->s, f->buf, pl, &info) != HG_MSG) {
+		cbuf_printf(b, "\"present\":false}");
+		return;
+	}
+	cbuf_printf(b, "\"present\":true,\"age_ms\":%.0f,\"stale\":%s,\"v\":{", secs_since(info.publish_ns, now) * 1e3,
+		    info.flags & HG_SLOT_STALE ? "true" : "false");
+	if (f->parsed)
+		for (uint32_t k = 0; k < f->schema.type.n_fields; k++) {
+			const struct hg_field *fd = &f->schema.fields[k];
+			if (fd->offset + fd->count * hg_field_elem_size(fd->kind) > pl)
+				break;
+			cbuf_printf(b, "%s\"%s\":", k ? "," : "", fd->name);
+			field_json(b, fd, f->buf + fd->offset);
+		}
+	cbuf_printf(b, "}}");
+}
+
+int api_fly_json(struct console *c, struct cbuf *b)
+{
+	uint64_t now = hg_now_ns();
+	cbuf_printf(b, "{\"role\":\"%s\",\"topics\":{", c->role);
+	for (unsigned i = 0; i < FLY_N; i++)
+		fly_topic_json(c, b, i, now);
+	cbuf_printf(b, "}}\n");
 	return 200;
 }
 

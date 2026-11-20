@@ -45,10 +45,11 @@ $(CONSOLE_TEST): $(OBJDIR)/modules/console/tests/test_console.o $(call obj,$(HG_
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
 
 .PHONY: check-console
-check-console: $(CONSOLE_TEST) $(CONSOLE_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(HANGARD_TOYDIR)/talker
+check-console: $(CONSOLE_TEST) $(CONSOLE_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(HANGARD_TOYDIR)/talker \
+		$(BUILDDIR)/hangar-safety
 	@if HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(abspath $(BUILDDIR)/hangar) \
 	    HANGARD_TOYS=$(abspath $(HANGARD_TOYDIR)) HANGAR_MSG_SRC=$(abspath msg) \
-	    DAWN_PATROLD_BIN=$(abspath $(CONSOLE_BIN)) \
+	    DAWN_PATROLD_BIN=$(abspath $(CONSOLE_BIN)) SAFETY_BIN=$(abspath $(BUILDDIR)/hangar-safety) \
 	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/console.log 2>&1; then \
 	  echo "ok    console"; \
 	else \

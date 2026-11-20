@@ -56,6 +56,7 @@ struct console {
 	char log_dir[CON_PATH];
 	char journal_path[CON_PATH];
 	char hellion_url[CON_PATH]; /* what the Hellion tab frames: --hellion, else CON_HELLION_DEFAULT */
+	char preview_url[CON_PATH]; /* the Fly view's picture, an MJPEG URL: --preview, else "" (none) */
 	hg_sub *sub_system, *sub_modules;
 	struct hangar_system sys;
 	struct hg_info sys_info;
@@ -80,7 +81,12 @@ int api_modules_json(struct console *c, struct cbuf *b);
 int api_topics_json(struct console *c, struct cbuf *b);
 int api_topic_json(struct console *c, const char *name, struct cbuf *b);
 int api_log_json(struct console *c, int lines, struct cbuf *b);
-/* The pages the console embeds or links to: {"hellion": url}. */
+/* The pages the console embeds or links to: {"hellion": url, "preview": url or ""}. */
 int api_links_json(struct console *c, struct cbuf *b);
+/* The Fly view's readings in one body: for each topic it shows (safety.state,
+ * ardusub.state, nav.depth, nav.attitude, power.battery, recorder.status,
+ * video.index), present or not, its age, its measured rate and its fields by
+ * name. The subscriptions are opened once and kept; none is in a wait set. */
+int api_fly_json(struct console *c, struct cbuf *b);
 
 #endif

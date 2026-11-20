@@ -5,7 +5,7 @@
  * the manager keeps alive, every topic, the recent log, with start, stop and
  * restart buttons that go through the control socket.
  *
- *   dawn-patrold [--listen ADDR] [--role vehicle|topside] [--hellion URL]
+ *   dawn-patrold [--listen ADDR] [--role vehicle|topside] [--hellion URL] [--preview URL]
  *
  * ADDR is "host:port", "[v6]:port" or "port" (default 127.0.0.1:8080; port 0
  * picks one and the log line says which). The role names the manager's
@@ -28,9 +28,17 @@
  *   GET  /api/topics               every file of the topic directory
  *   GET  /api/topic/<name>         the newest message, decoded by its schema
  *   GET  /api/log[?lines=N]        the fallback log tails, or a journald note
- *   GET  /api/links                {"hellion": URL}, what the Hellion tab frames
+ *   GET  /api/links                {"hellion": URL, "preview": URL}: the Hellion tab's
+ *                                  page, the Fly view's picture (--preview, "" without)
+ *   GET  /api/fly                  the Fly view's readings: safety.state, ardusub.state,
+ *                                  nav.depth, nav.attitude, power.battery, recorder.status,
+ *                                  video.index (issue #2)
  *   POST /api/module/<name>/start|stop|restart
  *   POST /api/reload               through the control socket, as this process's user
+ *   POST /api/call/<module>.<method>  safety.arm|disarm|estop|clear, recorder.start|stop
+ *                                  and no other: a call through the manager, as `hangar
+ *                                  call` makes it, answered when the reply comes (a
+ *                                  20 ms timer while one is in flight; nothing blocks)
  *
  * GPL-3.0-or-later; C11; libc, pthreads (the library's helper thread),
  * lib/hg and lib/net only; builds static for musl. */
@@ -56,6 +64,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "hg_call.h"
 #include "hg_control.h"
 #include "hg_wiring.h"
 #include "http.h"
@@ -179,14 +188,18 @@ struct conn {
 	size_t out_len, out_off;
 	uint64_t deadline_ns;
 	int want_write;
+	int waiting; /* a call of its request is in flight: its answer comes from call_poll */
 };
 
 static int epfd = -1;
 static struct conn *conns[CON_MAX_CONNS];
 static int n_conns;
 
+static void calls_drop(struct conn *c);
+
 static void conn_close(struct conn *c)
 {
+	calls_drop(c);
 	epoll_ctl(epfd, EPOLL_CTL_DEL, c->fd, NULL);
 	close(c->fd);
 	free(c->in);
@@ -212,6 +225,7 @@ static const char *reason(int status)
 	case 431: return "Request Header Fields Too Large";
 	case 500: return "Internal Server Error";
 	case 502: return "Bad Gateway";
+	case 504: return "Gateway Timeout";
 	}
 	return "Status";
 }
@@ -352,6 +366,215 @@ static void control_post(struct conn *c, const char *req)
 	respond_json(c, strncmp(why, "permission denied", 17) == 0 ? 403 : 409, &b);
 }
 
+/* ---- Calls: the Fly view's arm, disarm, e-stop, clear, record ------------------ */
+
+/* The calls a browser may ask for, and no other: what the Fly view's buttons
+ * do. Each goes through the manager's control socket as `hangar call` does
+ * (method, then call), so the caller is admin:<this process's user> and the
+ * server's Allow list and checks (safety's checklist for an arm) decide, as
+ * for any caller. */
+static const char *const allowed_calls[] = { "safety.arm",   "safety.disarm",  "safety.estop",
+					     "safety.clear", "recorder.start", "recorder.stop" };
+#define CALL_TIMEOUT_MS 1500
+#define CALL_POLL_NS 20000000u /* the reply topics are read every 20 ms, while a call is in flight */
+#define CON_MAX_CALLS 8
+
+struct pending {
+	struct conn *conn;
+	hg_sub *rep;
+	char target[64];
+	unsigned long long call_id;
+	unsigned caller_id;
+	uint64_t deadline_ns;
+};
+static struct pending calls[CON_MAX_CALLS];
+static int n_calls;
+static int call_tfd = -1;
+
+/* The timer runs while a call is in flight and stops with the last one: an
+ * idle console has no wake-up of its own beyond the 1 s tick. */
+static void call_timer(int on)
+{
+	struct itimerspec its;
+	memset(&its, 0, sizeof its);
+	if (on) {
+		its.it_value.tv_nsec = CALL_POLL_NS;
+		its.it_interval.tv_nsec = CALL_POLL_NS;
+	}
+	timerfd_settime(call_tfd, 0, &its, NULL);
+}
+
+static void call_remove(int i)
+{
+	hg_sub_close(calls[i].rep);
+	calls[i] = calls[--n_calls];
+	if (!n_calls)
+		call_timer(0);
+}
+
+/* A connection closed: its calls are forgotten (the calls themselves were
+ * sent and run; nobody waits for the answer any more). */
+static void calls_drop(struct conn *c)
+{
+	for (int i = 0; i < n_calls;) {
+		if (calls[i].conn == c)
+			call_remove(i);
+		else
+			i++;
+	}
+}
+
+static void call_answer(struct conn *c, const char *target, int status, const char *why)
+{
+	struct cbuf b = { 0 };
+	cbuf_printf(&b, "{\"ok\":%s,\"call\":\"%s\",\"status\":\"%s\",\"reason\":", status == HG_OK ? "true" : "false",
+		    target, hg_status_name(status));
+	cbuf_json_str(&b, why, HG_CALL_REASON);
+	cbuf_printf(&b, "}\n");
+	c->waiting = 0;
+	respond_json(c, status == HG_OK ? 200 : status == HG_E_TIMEOUT ? 504 : 409, &b);
+	if (conn_flush(c) != 0)
+		conn_close(c);
+}
+
+/* A manager's refusal or an unreachable manager, before any call went out. */
+static void call_refused(struct conn *c, const char *target, int http, const char *why)
+{
+	struct cbuf b = { 0 };
+	cbuf_printf(&b, "{\"ok\":false,\"call\":\"%s\",\"status\":\"refused by the manager\",\"reason\":", target);
+	cbuf_json_str(&b, why, 4096);
+	cbuf_printf(&b, "}\n");
+	respond_json(c, http, &b);
+}
+
+/* method, then call, on the control socket; the reply topic opened before the
+ * call goes out, so its answer cannot be missed (hangar/hangar.c do_call). */
+static void call_start(struct conn *c, const char *target)
+{
+	if (n_calls == CON_MAX_CALLS) {
+		call_refused(c, target, 409, "too many calls in flight");
+		return;
+	}
+	static char reply[HG_CONTROL_MAX];
+	char req[128];
+	snprintf(req, sizeof req, "method %s", target);
+	ssize_t n = hg_control_call(G.control_path, req, strlen(req), reply, sizeof reply, NULL, 0);
+	if (n < 0) {
+		char msg[CON_PATH + 64];
+		snprintf(msg, sizeof msg, "cannot reach the manager at %s: %s", G.control_path, strerror(errno));
+		call_refused(c, target, 502, msg);
+		return;
+	}
+	if (!hg_control_ok(reply)) {
+		char *nl = strchr(reply, '\n');
+		if (nl)
+			*nl = 0;
+		call_refused(c, target, 409, strncmp(reply, "err ", 4) == 0 ? reply + 4 : reply);
+		return;
+	}
+	unsigned long long req_hash = 0;
+	unsigned req_size = 0;
+	char *line = strchr(reply, '\n');
+	if (!line || sscanf(line + 1, "req=%*s hash=%llx size=%u", &req_hash, &req_size) != 2 ||
+	    req_size > HG_CALL_MAX_PAYLOAD) {
+		call_refused(c, target, 502, "method: a reply the console does not read");
+		return;
+	}
+	char rep_topic[64];
+	const char *dot = strchr(target, '.');
+	snprintf(rep_topic, sizeof rep_topic, "%.*s.rep", (int)(dot - target), target);
+	hg_sub *rep = hg_sub_open(rep_topic, NULL);
+	if (!rep) {
+		char msg[128];
+		snprintf(msg, sizeof msg, "cannot subscribe to %s: %s", rep_topic, strerror(errno));
+		call_refused(c, target, 500, msg);
+		return;
+	}
+	/* The bodies of these calls are all zeros: empty for safety's, an empty
+	 * note for recorder.start. */
+	static unsigned char creq[HG_CONTROL_MAX];
+	int h = snprintf((char *)creq, sizeof creq, "call %s deadline=%d type=%016llx body=%u\n", target, CALL_TIMEOUT_MS,
+			 req_hash, req_size);
+	memset(creq + h, 0, req_size);
+	n = hg_control_call(G.control_path, creq, (size_t)h + req_size, reply, sizeof reply, NULL, 0);
+	unsigned long long call_id;
+	unsigned caller_id;
+	if (n < 0 || !hg_control_ok(reply) || sscanf(reply, "ok %llu %u", &call_id, &caller_id) != 2) {
+		hg_sub_close(rep);
+		if (n < 0) {
+			call_refused(c, target, 502, "the manager went away during the call");
+			return;
+		}
+		char *nl = strchr(reply, '\n');
+		if (nl)
+			*nl = 0;
+		call_refused(c, target, 409, strncmp(reply, "err ", 4) == 0 ? reply + 4 : reply);
+		return;
+	}
+	struct pending *p = &calls[n_calls++];
+	memset(p, 0, sizeof *p);
+	p->conn = c;
+	p->rep = rep;
+	snprintf(p->target, sizeof p->target, "%s", target);
+	p->call_id = call_id;
+	p->caller_id = caller_id;
+	p->deadline_ns = hg_now_ns() + (uint64_t)CALL_TIMEOUT_MS * 1000000u;
+	/* Waits without reading: a level-triggered EPOLLIN on the request's
+	 * leftovers would wake the loop for nothing. A hang-up still shows. */
+	c->waiting = 1;
+	struct epoll_event ev = { .events = EPOLLRDHUP, .data.ptr = c };
+	epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev);
+	if (n_calls == 1)
+		call_timer(1);
+}
+
+/* Every 20 ms while calls are in flight: their replies, or their deadlines. */
+static void calls_poll(void)
+{
+	static unsigned char buf[HG_CALL_REP_ENVELOPE + HG_CALL_MAX_PAYLOAD];
+	uint64_t now = hg_now_ns();
+	for (int i = 0; i < n_calls;) {
+		struct pending *p = &calls[i];
+		int done = 0;
+		for (int k = 0; k < 64 && !done; k++) {
+			struct hg_info info;
+			if (hg_next(p->rep, buf, sizeof buf, &info) != HG_MSG)
+				break;
+			struct hg_call_reply_envelope e;
+			memcpy(&e, buf, sizeof e);
+			if (e.call_id == p->call_id && e.caller_id == p->caller_id) {
+				e.reason[sizeof e.reason - 1] = 0;
+				struct conn *c = p->conn;
+				char target[64];
+				snprintf(target, sizeof target, "%s", p->target);
+				call_remove(i);
+				call_answer(c, target, e.status, e.reason);
+				done = 1;
+			}
+		}
+		if (done)
+			continue; /* calls[i] is now another call */
+		if (now >= p->deadline_ns) {
+			struct conn *c = p->conn;
+			char target[64], why[64];
+			snprintf(target, sizeof target, "%s", p->target);
+			snprintf(why, sizeof why, "no reply within %d ms", CALL_TIMEOUT_MS);
+			call_remove(i);
+			call_answer(c, target, HG_E_TIMEOUT, why);
+			continue;
+		}
+		i++;
+	}
+}
+
+static int allowed_call(const char *target)
+{
+	for (size_t i = 0; i < sizeof allowed_calls / sizeof allowed_calls[0]; i++)
+		if (strcmp(target, allowed_calls[i]) == 0)
+			return 1;
+	return 0;
+}
+
 static void route(struct conn *c, const HttpRequest *req)
 {
 	int get = strcmp(req->method, "GET") == 0;
@@ -386,6 +609,10 @@ static void route(struct conn *c, const HttpRequest *req)
 		respond_json(c, api_links_json(&G, &b), &b);
 		return;
 	}
+	if (get && strcmp(p, "/api/fly") == 0) {
+		respond_json(c, api_fly_json(&G, &b), &b);
+		return;
+	}
 	if (get && strcmp(p, "/api/log") == 0) {
 		int lines = 100;
 		const char *q = strstr(req->query, "lines=");
@@ -400,6 +627,16 @@ static void route(struct conn *c, const HttpRequest *req)
 	}
 	if (post && strcmp(p, "/api/reload") == 0) {
 		control_post(c, "reload");
+		return;
+	}
+	if (post && strncmp(p, "/api/call/", 10) == 0) {
+		const char *target = p + 10;
+		if (!allowed_call(target)) {
+			respond_error(c, 404, "not a call the console makes: safety.arm, safety.disarm, safety.estop, "
+					      "safety.clear, recorder.start, recorder.stop");
+			return;
+		}
+		call_start(c, target);
 		return;
 	}
 	if (post && strncmp(p, "/api/module/", 12) == 0) {
@@ -521,6 +758,12 @@ static void conn_event(struct conn *c, uint32_t events)
 		conn_close(c);
 		return;
 	}
+	if (c->waiting) {
+		/* Only the hang-up is listened for while its call is in flight. */
+		if (events & EPOLLRDHUP)
+			conn_close(c);
+		return;
+	}
 	if (!c->want_write && (events & (EPOLLIN | EPOLLRDHUP)) && conn_read(c) < 0)
 		return;
 	if (c->want_write) {
@@ -601,16 +844,26 @@ static int listen_on(const char *spec, char *shown, size_t shown_len)
 
 static void usage(void)
 {
-	fputs("usage: dawn-patrold [--listen ADDR] [--role vehicle|topside] [--hellion URL]\n"
+	fputs("usage: dawn-patrold [--listen ADDR] [--role vehicle|topside] [--hellion URL] [--preview URL]\n"
 	      "  ADDR: host:port, [v6]:port or port (default 127.0.0.1:8080; port 0 picks one)\n"
-	      "  URL:  hellion's page, framed by the Hellion tab (default " CON_HELLION_DEFAULT ")\n"
+	      "  --hellion URL: hellion's page, framed by the Hellion tab (default " CON_HELLION_DEFAULT ")\n"
+	      "  --preview URL: an MJPEG stream, the Fly view's picture (default none),\n"
+	      "                 e.g. hellion's http://127.0.0.1:8092/stream?src=pilot\n"
 	      "Paths follow $HANGAR_ROOT; $HANGAR_CONTROL and $HANGAR_TOPIC_DIR override.\n",
 	      stderr);
 }
 
+/* A URL goes into the page as a frame's or an image's src and a link's href:
+ * an http(s) URL that fits, without spaces, quotes or angle brackets. */
+static int url_ok(const char *u, size_t cap)
+{
+	return (strncmp(u, "http://", 7) == 0 || strncmp(u, "https://", 8) == 0) && strlen(u) < cap &&
+	       strpbrk(u, " \t\r\n\"'\\<>") == NULL;
+}
+
 int main(int argc, char **argv)
 {
-	const char *listen_spec = "127.0.0.1:8080", *role_arg = NULL, *hellion = CON_HELLION_DEFAULT;
+	const char *listen_spec = "127.0.0.1:8080", *role_arg = NULL, *hellion = CON_HELLION_DEFAULT, *preview = "";
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--listen") == 0 && i + 1 < argc)
 			listen_spec = argv[++i];
@@ -618,6 +871,8 @@ int main(int argc, char **argv)
 			role_arg = argv[++i];
 		else if (strcmp(argv[i], "--hellion") == 0 && i + 1 < argc)
 			hellion = argv[++i];
+		else if (strcmp(argv[i], "--preview") == 0 && i + 1 < argc)
+			preview = argv[++i];
 		else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
 			return usage(), 0;
 		else
@@ -637,14 +892,16 @@ int main(int argc, char **argv)
 		return 3;
 	}
 	setup_paths(role_arg);
-	/* The URL becomes a frame's src and a link's href in the page: an
-	 * http(s) URL that fits, without spaces, quotes or angle brackets. */
-	if ((strncmp(hellion, "http://", 7) != 0 && strncmp(hellion, "https://", 8) != 0) ||
-	    strlen(hellion) >= sizeof G.hellion_url || strpbrk(hellion, " \t\r\n\"'\\<>") != NULL) {
+	if (!url_ok(hellion, sizeof G.hellion_url)) {
 		logf_("--hellion: not an http(s) URL: \"%s\"", hellion);
 		return 2;
 	}
+	if (preview[0] && !url_ok(preview, sizeof G.preview_url)) {
+		logf_("--preview: not an http(s) URL: \"%s\"", preview);
+		return 2;
+	}
 	snprintf(G.hellion_url, sizeof G.hellion_url, "%s", hellion);
+	snprintf(G.preview_url, sizeof G.preview_url, "%s", preview);
 
 	char name[64];
 	snprintf(name, sizeof name, "hangar.%s.system", G.role);
@@ -671,9 +928,10 @@ int main(int argc, char **argv)
 
 	int sfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
 	int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	call_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC); /* armed while calls are in flight */
 	struct itimerspec its = { { 1, 0 }, { 1, 0 } };
 	epfd = epoll_create1(EPOLL_CLOEXEC);
-	if (sfd < 0 || tfd < 0 || epfd < 0 || timerfd_settime(tfd, 0, &its, NULL) < 0) {
+	if (sfd < 0 || tfd < 0 || call_tfd < 0 || epfd < 0 || timerfd_settime(tfd, 0, &its, NULL) < 0) {
 		logf_("cannot set up the event loop: %s", strerror(errno));
 		return 5;
 	}
@@ -687,6 +945,8 @@ int main(int argc, char **argv)
 	epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev);
 	ev.data.ptr = &sfd;
 	epoll_ctl(epfd, EPOLL_CTL_ADD, sfd, &ev);
+	ev.data.ptr = &call_tfd;
+	epoll_ctl(epfd, EPOLL_CTL_ADD, call_tfd, &ev);
 
 	api_tick(&G);
 	char status[128];
@@ -726,6 +986,10 @@ int main(int argc, char **argv)
 					else
 						k++;
 				}
+			} else if (p == &call_tfd) {
+				uint64_t v;
+				(void)!read(call_tfd, &v, sizeof v);
+				calls_poll();
 			} else if (p == &sfd) {
 				struct signalfd_siginfo si;
 				(void)!read(sfd, &si, sizeof si);
