@@ -110,8 +110,8 @@ jq '{idle: .idle.ok, torn: .torn.ok, lost_wake: .lost_wake.ok}' report.json
 ## On a running vehicle: `procbench.py`
 
 `sudo python3 -I bench/procbench.py [seconds]` measures what hangar, electric-eye and the
-MAVLink relay cost while they run: CPU per process (percent of one core) and PSS, once a
-second, with the machine's load and temperature, from `/proc` and `/sys` alone. It is how
+MAVLink relay cost while they run: CPU per process (percent of one core), wake-ups per
+second (voluntary context switches, every thread) and PSS, once a second, with the machine's load and temperature, from `/proc` and `/sys` alone. It is how
 the busy loops of hangar#1 were found on the lab's BlueROV2.
 
 ## The ROS 2 side

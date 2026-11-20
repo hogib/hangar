@@ -538,18 +538,21 @@ for chunk in stream:
     out, h = model(chunk.inputs, h)
     loss = train_step(out, chunk.labels, chunk.mask) # your loss, masked
     if time.monotonic() - deployed >= 180:           # every 3 minutes
-        learn.deploy(model, policy="depth_ff", dataset="depth_ff",
-                     probes=stream.probes(8))
+        learn.deploy(model, "depth_ff", stream=stream, outputs=["heave"])
         deployed = time.monotonic()
 ```
+
+This is the recurrent form. A model without state calls `stream` without `seq_len`, takes
+batches of single rows and has nothing to carry; the example below is one, and
+`python/examples/depth_ff2.py` is its script as it was run.
 
 | Function | |
 |---|---|
 | `stream(topic, batch, seq_len=None, replay="10min")` | rows from the live topic, through a replay buffer. With `seq_len`, stateful chunks for recurrent models (below) |
-| `open_dataset(file, seq_len=None)` | the same over a built dataset file |
+| `open_dataset(file, batch, seq_len=None)` | the same over a built dataset file |
 | `carry(state, fresh)` | the recurrent state, detached from the graph, zeroed for the slots marked fresh |
-| `export(model, dataset, probes)` | the `.hgw` file: graph, tensors, bindings, probes and lineage, checked against the vehicle's `runtime_info` |
-| `deploy(model or file, policy)` | export, `bridge.send`, `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
+| `export(model, file, stream, outputs)` | the `.hgw` file: graph, tensors, bindings to the stream's input fields and to `outputs`, probes and lineage from the stream's buffer, checked against the vehicle's `runtime_info` |
+| `deploy(model or file, policy, stream, outputs)` | export, `bridge.send`, `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
 | `revert(policy)`, `watch(policy)` | |
 
 **Stateful chunks.** With `seq_len`, each of the `batch` slots follows one run of rows
