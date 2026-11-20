@@ -1,0 +1,12 @@
+# Findings of cppcheck judged false, each with why.
+# <checker> <file glob> [text the message contains]  # reason
+
+uninitvar hangard/manifest.c names                   # names[0..n) were assigned by the readdir loop above the qsort
+uninitvar hangar/hangar.c names                      # the same pattern: filled by the readdir loop
+uninitvar modules/console/console_api.c names        # the same pattern: filled by the readdir loop
+uninitvar lib/hg/hg_dataset.c sel                    # sel[0..n) were filled by select_fields, which returned n
+internalAstError lib/hg/hg_topic.c                   # cppcheck cannot parse a compound literal inside ?: (hg_glob_poll); the compilers and the other analysers read the file
+invalidPointerCast lib/nn/nn_hgw.c                   # a probe record is float blocks at 8-byte aligned offsets of an aligned file copy; the format is IEEE 754 little-endian by definition (lib/nn/README.md)
+wrongPrintfScanfArgNum lib/nn/nn_ops.c               # fail() hands three values to formats that use two or three of them; C ignores the excess
+constStatement modules/bridge/bridge.c               # `if (read(...) < 0) (void)0;` consumes the result of a read whose failure changes nothing
+nullPointer modules/mavlink/mavlink_vehicle.c        # w is read only under `finite`, which is false when w is NULL

@@ -1,0 +1,8 @@
+# Findings of clang-tidy judged false, each with why.
+# <checker> <file glob> [text the message contains]  # reason
+
+bugprone-sizeof-expression modules/recorder/recorder.c # the dump's pointer itself goes through the writer's queue: sizeof d is what is meant
+bugprone-sizeof-expression modules/recorder/writer.c   # the other end of the same queue
+misc-redundant-expression hangar/hangar.c              # `v != v || v - v != 0` is the test for nan and inf
+misc-redundant-expression lib/camera/camera_ctrl.c     # `unset || != 0` and `!= unset && == 0` say which of three states is meant, though one comparison would do
+bugprone-signed-char-misuse lib/hg/hg_params.c         # an i8 field's value is signed: sign extension is what is meant

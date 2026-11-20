@@ -388,6 +388,15 @@ equivalence: $(BUILDDIR)/equiv
 # Fuzzing (`make fuzz`, and `make fuzz-http` for the HTTP parsers alone) is in
 # fuzz/fuzz.mk, included at the end of this file.
 
+# Static analysis (tools/analyze/README.md): clang's analyzer, gcc -fanalyzer,
+# cppcheck and clang-tidy, those that are installed, over the C code that is
+# not a test; fails on any finding that tools/analyze/suppress-<tool>.txt does
+# not name. Not part of check: it takes minutes. ANALYZE_TOOLS=clang,cppcheck
+# runs some of them; ANALYZE_JOBS=n bounds the processes (default: every core).
+.PHONY: analyze
+analyze:
+	@$(PYTHON) tools/analyze/analyze.py $(if $(ANALYZE_TOOLS),--tools $(ANALYZE_TOOLS)) $(if $(ANALYZE_JOBS),--jobs $(ANALYZE_JOBS))
+
 clean:
 	rm -rf $(BUILDDIR)
 

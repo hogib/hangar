@@ -1,0 +1,37 @@
+# Findings of clang's static analyzer judged false, each with why.
+# <checker> <file glob> [text the message contains]  # reason
+
+# Commands of a one-shot program: what a failing command leaves allocated is freed by the exit a line later.
+unix.Malloc hangar/hangar.c Potential leak                # `hangar run` returns to main, which exits
+unix.Malloc hangar/hangar_dataset.c Potential leak        # `hangar dataset build` returns to main, which exits
+unix.Malloc hangar/hangar_params.c Potential leak         # `hangar ardusub-params` returns to main, which exits
+unix.Malloc modules/pairer/pairer.c 'rows'                # kept: every d->pend[i].row points into it
+
+# The analyzer does not know that these calls fill their output on success.
+core.UndefinedBinaryOperatorResult hangar/hangar_params.c # hg_next filled the struct it returned HG_MSG for; read_table set n before it returned 0
+core.UndefinedBinaryOperatorResult modules/bridge/bridge.c # recvfrom on the UDP socket filled the address it returned a datagram for
+core.UndefinedBinaryOperatorResult modules/mavlink/mavlink_main.c # the same recvfrom
+core.UndefinedBinaryOperatorResult modules/console/dawn_patrold.c # getsockname returned 0: the address is set
+
+# `while ((n = fread(...)) > 0)` ends at the first short read, and ferror() is asked after the loop.
+unix.Stream hangar/hangar_params.c                        # the copy loop of copy_out
+unix.Stream modules/bridge/bridge.c                       # hash_msg_dir's read loop
+unix.Stream tools/msggen/msggen.c                         # read_all's read loop
+
+# Pointers the analyzer takes for NULL because another pointer beside them is tested.
+core.NullDereference lib/camera/camera_ctrl.c             # `target` is NULL for the three boolean keys, `out` never: every caller passes a struct
+core.NullDereference lib/camera/v4l2_in.c                 # the frame is the driver's mapped buffer of a dequeued index
+core.NullDereference lib/nn/nn_hgw.c                      # out[] and exp_out[] were filled by split_record for every j below n_outputs (at most MAX_IO, checked above)
+core.uninitialized.Assign lib/camera/rpicam_in.c          # the frame buffer was filled whole by the read loop before it is unpacked
+core.NonNullParamChecker modules/sim_vehicle/sim_vehicle.c # sitl_open is called only when --sitl gave a spec
+
+# Indexes that are counts, never negative; the analyzer assumes they may be.
+security.ArrayBound hangard/manifest.c preceding          # s->n_types counts the types added
+security.ArrayBound lib/hg/hg_topic.c preceding           # g->n_kids counts the subscriptions of a glob
+security.ArrayBound modules/mavlink/param_backup.c preceding # J.next starts at 0 and only grows, below J.count <= PJ_MAX
+
+unix.StdCLibraryFunctions modules/sim_vehicle/sim_vehicle.c # a socket() that failed is reported by the bind that follows it
+unix.StdCLibraryFunctions tools/sim/pilot.c               # the same, in a test tool
+unix.Errno hangard/hangard.c                              # rewind on the descriptor a predecessor handed over; a failure shows as a first line that is not "hangar-reexec 1"
+unix.BlockInCriticalSection lib/video/mp4_record.c        # the pipe's read end is non-blocking (child_proc.c sets O_NONBLOCK): read returns at once
+optin.core.EnumCastOutOfRange lib/hg/hg_dataset.c         # -1 marks "no Join= yet" while a spec is parsed; it is read back through (int) and refused before the spec is returned

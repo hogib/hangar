@@ -1,0 +1,12 @@
+# Findings of gcc -fanalyzer judged false, each with why.
+# <checker> <file glob> [text the message contains]  # reason
+
+# Commands of a one-shot program: what a failing command leaves allocated is freed by the exit a line later.
+analyzer-malloc-leak hangar/hangar.c                 # fail() is on a command's way back to main, which exits
+analyzer-malloc-leak hangar/hangar_dataset.c         # the same, in `hangar dataset`
+
+analyzer-out-of-bounds lib/hg/hg_record.c            # hgr_append's loop over iov[] stops at n, which is 1 or 2: the two vectors declared
+analyzer-null-dereference lib/hg/hg_record.c         # hgr_at is asked for an index below r->count, which it has
+analyzer-null-argument modules/recorder/blackbox.c   # nb is NULL only for cap 0, and then keep is 0 and the loop does not run; bb_at is asked for an index below count
+analyzer-fd-leak lib/net/http.c                      # the accepted descriptor goes to the connection's thread, which closes it
+analyzer-fd-use-without-check modules/bridge/bridge.c # the read is inside `while (fd >= 0 && ...)`
