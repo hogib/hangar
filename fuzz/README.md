@@ -12,6 +12,7 @@ that matter (the seeds, and every input that ever crashed) replayed by
     make check-fuzz-corpus           part of `make check`: the corpora, with $(CC), no fuzzer
     make check-asan-fuzz-corpus      part of `make check-asan`: the same under ASan and UBSan
     make fuzz-seeds                  rewrites the generated seeds (mkseeds.c)
+    make fuzz-cov-bridge             what a harness's corpus reaches, per source file (llvm-cov)
 
 A run keeps what it finds beyond the seeds in `builddir/fuzz/corpus-<name>/`
 for the next run, writes its log to `builddir/fuzz/<name>.log`, and a crashing
@@ -47,7 +48,7 @@ Files:
 | `params` | `lib/hg/hg_params.c`: attributes and defaults of a parameter type, `hg_params_file_parse`, range checks, `hg_params_file_format` and back | `/var/lib/hangar/<module>/params` |
 | `recording` | `lib/hg/hg_record.c` (the `.hgr` reader), `hg_dataset.c` (`hg_ds_parse`, `hg_ds_bind`, the joins and `Where` of an offline build), `hg_ini.c` | recordings, `.dataset` specs |
 | `bridge_conf` | `modules/bridge/bridge_conf.c`: `bc_parse`, `bc_find`, `bc_load_key` | `bridge.conf`, the key file |
-| `conf` | `hangard.conf` (`conf_load`), the registry (`registry_read`), `mavlink.conf` both roles, `ardusub.params` (`mavlink_params_load`), `recorder.conf`, `joystick.conf`, an ArduSub parameter dump as `hangar ardusub-params` reads it, a parameter backup as the mavlink module loads it | the operator's and the manager's files |
+| `conf` | `hangard.conf` (`conf_load`), the registry (`registry_read`), `mavlink.conf` both roles, `ardusub.params` (`mavlink_params_load`), `recorder.conf`, `joystick.conf`, an ArduSub parameter dump as `hangar ardusub-params` reads it, a parameter backup as the mavlink module loads it and sets it on an autopilot that answers | the operator's and the manager's files |
 | `nn` | `lib/nn`: `nn_hgw_parse`, `nn_graph_build`, the loader's checks 2 to 6, `nn_step` | a weights file given to `load_weights` |
 
 Each harness file starts with a comment that says what it calls, what its
@@ -77,8 +78,10 @@ with a hostile payload, can do.
 asserts it (`FZ_CHECK`): a parsed schema's fields lie inside its payload; the
 wiring the manager writes for an accepted manifest is accepted by lib/hg; a
 parameter file the formatter wrote parses to the same bytes; every control
-request gets one reply that starts `ok` or `err`; counters stay inside their
-arrays. Two of the bugs found were property failures, not crashes.
+request gets one reply that starts `ok` or `err`; what a parameter load hands
+to the sender is a finite number; counters stay inside their arrays. Six of
+the bugs found in the first campaign were property failures, one was a
+reader that never returned, and the rest were sanitizer reports.
 
 ## Adding a harness
 
