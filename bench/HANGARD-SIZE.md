@@ -8,8 +8,9 @@ would bring them down. Measured only: nothing in `hangard/` was changed.
 
 **Since 2026-11-20 the release is built with the flags measured below** (`tools/release.sh`:
 `hangard` and `hangar` only, in a build directory of their own; the modules keep `-O3`).
-The manager grew in the meantime, so the result is **201,040 bytes, 1,040 over the
-restated target of 200 KB**: see [Applied](#applied-2026-11-20) at the end. The rest of
+The manager grew in the meantime, so the result is **201,040 bytes**: see
+[Applied](#applied-2026-11-20) at the end. The size is no longer a target (docs/00,
+2026-11-20): it is a guide figure of about 200 KB, reported at each release. The rest of
 this file is the measurement as made at `bfe3bfb`.
 
 ## Method
@@ -103,12 +104,12 @@ adds nothing to `hangard`), zig cc 0.17.1, `-mcpu=cortex_a72`:
 | `hangard`, x86-64 (`release.sh --host`) | | 199,696 |
 
 The manager is 21 KB larger at `-O3` than when this file was written (292,784 at
-`bfe3bfb`), and the flags that gave 187,192 then give 201,040 now: **1,040 bytes over the
-200 KB target** (in units of 1,024 bytes it is 196.3). No further flag closes that:
+`bfe3bfb`), and the flags that gave 187,192 then give 201,040 now, which is the guide
+figure of docs/00. No further flag takes much off:
 `-Oz` gives the same bytes as `-Os` with zig cc, `-fno-stack-protector` and
 `-Wl,--build-id=none` change nothing, `-fmerge-all-constants -fno-ident` saves 32 bytes,
-`-Wl,-z,norelro` 192, and zig cc's linker does not take `--icf`. The next step is the
-first of the list above (number parsing without scanf and strtod, 13.5 KB at `-O3`), or
+`-Wl,-z,norelro` 192, and zig cc's linker does not take `--icf`. Should the size ever
+matter, the next step is the first of the list above (number parsing without scanf and strtod, 13.5 KB at `-O3`), or
 the insertion sort in place of `qsort` (11 KB).
 
 What was checked with the flags: every suite of `make check` passes built with them by

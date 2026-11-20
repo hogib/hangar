@@ -276,7 +276,7 @@ else
 	     LDFLAGS="-static -s" "$builddir/hg_bench" >> "$work/make.log" 2>&1 || true
 fi
 
-# hangard and hangar built again for size (docs/00's target under 200 KB;
+# hangard and hangar built again for size (docs/00's guide figure, about 200 KB;
 # bench/HANGARD-SIZE.md): -Os, no unwind tables, every function and datum in a
 # section of its own and the unused ones dropped at link. A build directory of
 # their own, so that lib/hg's objects in the modules keep -O3: the manager
