@@ -352,7 +352,9 @@ int mav_link_open_ex(struct mav_link *l, const struct mavlink_conf *c, int exclu
 	if (c->have_peer) {
 		l->peer = c->peer;
 		l->have_peer = 1;
+		l->peer_fixed = 1;
 	}
+	l->peer_quiet_ns = MAV_PEER_QUIET_NS;
 	return 0;
 }
 
@@ -566,6 +568,19 @@ int mav_link_receive(struct mav_link *l, void (*fn)(void *ctx, const struct mav_
 		ssize_t n = recvfrom(l->fd, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
 		if (n < 0)
 			break;
+		/* Whose datagram (mavlink.h). The peer used to be learned once and
+		 * for good, and frames were read from anybody: a relay that came
+		 * back on another source port kept the telemetry flowing in while
+		 * every MANUAL_CONTROL and disarm went to the dead port, and on a
+		 * link without signing anybody could report a disarmed ArduSub. */
+		uint64_t now = now_mono_ns();
+		int from_peer = l->have_peer && from.sin_addr.s_addr == l->peer.sin_addr.s_addr &&
+				from.sin_port == l->peer.sin_port;
+		int peer_there = l->peer_fixed || (l->peer_heard_ns && now - l->peer_heard_ns < l->peer_quiet_ns);
+		if (l->have_peer && !from_peer && peer_there && !l->signing.enabled) {
+			l->strangers++;
+			continue;
+		}
 		size_t off = 0;
 		while (off < (size_t)n) {
 			struct mav_frame f;
@@ -585,10 +600,15 @@ int mav_link_receive(struct mav_link *l, void (*fn)(void *ctx, const struct mav_
 			}
 			l->received++;
 			valid++;
-			if (!l->have_peer) {
+			if (!from_peer && !(l->have_peer && peer_there)) {
+				if (l->have_peer)
+					l->peer_changes++;
 				l->peer = from;
 				l->have_peer = 1;
+				from_peer = 1;
 			}
+			if (from_peer)
+				l->peer_heard_ns = now;
 			tlog_write(l, buf + off - used, used);
 			fn(ctx, &f);
 		}

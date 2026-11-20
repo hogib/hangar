@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The link of modules/mavlink/mavlink_main.c by itself, with no manager and
-// no module around it: the serial line's transmit queue against a
+// no module around it. The UDP link's peer: whose datagrams are read, and when
+// a learned peer gives way to another address. The serial line's transmit queue against a
 // pseudo-terminal whose far end does not read (the kernel's buffer fills,
 // then the module's queue holds what follows), with signing on, and what
 // comes out when the far end reads again judged by a receiver that checks
@@ -420,6 +421,178 @@ static void test_line_gone_inside_a_handler(void)
 	CHECK_EQ_INT(WIFEXITED(st) ? WEXITSTATUS(st) : -1, 0);
 }
 
+/* ---- UDP: whose datagrams are read, and where the commands go ---------------- */
+
+static int udp_frames;
+
+static void count_frame(void *ctx, const struct mav_frame *f)
+{
+	(void)ctx;
+	(void)f;
+	udp_frames++;
+}
+
+static int udp_socket(struct sockaddr_in *addr)
+{
+	int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	socklen_t sl = sizeof sa;
+	if (s < 0 || bind(s, (struct sockaddr *)&sa, sizeof sa) < 0 || getsockname(s, (struct sockaddr *)&sa, &sl) < 0) {
+		printf("    no UDP socket: %s\n", strerror(errno));
+		exit(2);
+	}
+	*addr = sa;
+	return s;
+}
+
+/* The link on a free loopback port; `fixed` names its peer in the configuration. */
+static struct sockaddr_in open_udp(int signing, const struct sockaddr_in *fixed)
+{
+	struct sockaddr_in at;
+	int probe = udp_socket(&at);
+	close(probe);
+	struct mavlink_conf c;
+	memset(&c, 0, sizeof c);
+	c.bind = at;
+	c.signing = signing;
+	snprintf(c.key_file, sizeof c.key_file, "%s", keyfile);
+	c.sysid = 255;
+	c.compid = 190;
+	if (fixed) {
+		c.peer = *fixed;
+		c.have_peer = 1;
+	}
+	char err[128] = "";
+	if (mav_link_open_ex(&L, &c, 0, err, sizeof err) < 0) {
+		printf("    cannot open the UDP link: %s\n", err);
+		exit(2);
+	}
+	return at;
+}
+
+/* One HEARTBEAT from socket s to the link, signed with `sign` or not; then the
+ * link reads what came (the datagram is waited for, not assumed there). The
+ * number of frames the handler got. */
+static int heartbeat_from(int s, const struct sockaddr_in *to, struct mav_signing *sign, uint8_t seq)
+{
+	struct mav_heartbeat h;
+	memset(&h, 0, sizeof h);
+	h.type = 12;
+	uint8_t pl[MAV_LEN_HEARTBEAT], frame[MAV_MAX_FRAME];
+	mav_pack_heartbeat(&h, pl);
+	size_t n = mav_encode(frame, sizeof frame, seq, 1, 1, MAV_MSG_ID_HEARTBEAT, pl, sizeof pl, MAV_CRC_HEARTBEAT, sign);
+	if (sendto(s, frame, n, 0, (const struct sockaddr *)to, sizeof *to) != (ssize_t)n)
+		return -1;
+	struct pollfd p = { .fd = L.fd, .events = POLLIN };
+	if (poll(&p, 1, 5000) <= 0)
+		return -2;
+	udp_frames = 0;
+	mav_link_receive(&L, count_frame, NULL);
+	return udp_frames;
+}
+
+/* 1 if a datagram the link sent arrives at socket s within 5 s. */
+static int arrives_at(int s)
+{
+	struct pollfd p = { .fd = s, .events = POLLIN };
+	uint8_t buf[512];
+	return poll(&p, 1, 5000) > 0 && recv(s, buf, sizeof buf, MSG_DONTWAIT) > 0;
+}
+
+static int nothing_at(int s)
+{
+	uint8_t buf[512];
+	return recv(s, buf, sizeof buf, MSG_DONTWAIT) < 0;
+}
+
+/* The peer was learned from the first valid frame and never again, and frames
+ * were read from any address. On a link without signing (the lab's): anybody
+ * who reached the port could report a disarmed ArduSub in MANUAL, and a relay
+ * that came back from another source port kept its telemetry flowing in
+ * (ArduSub "heard") while every MANUAL_CONTROL and disarm went to the port
+ * nobody held any more, for good. */
+static void test_udp_peer(void)
+{
+	struct sockaddr_in a_addr, b_addr;
+	int a = udp_socket(&a_addr), b = udp_socket(&b_addr);
+	/* Without signing, the peer learned. */
+	struct sockaddr_in at = open_udp(0, NULL);
+	L.peer_quiet_ns = 3600ull * 1000000000ull; /* the peer is "there" for this part, however slow the machine */
+	CHECK_EQ_INT(send_hb(), -1);                     /* nobody to send to yet */
+	CHECK_EQ_INT(heartbeat_from(a, &at, NULL, 0), 1); /* A speaks: A is the peer */
+	CHECK(L.have_peer && L.peer.sin_port == a_addr.sin_port);
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 0), 0); /* B is not read */
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 1), 0);
+	CHECK_EQ_INT(L.strangers, 2);
+	CHECK_EQ_INT(L.received, 1);
+	CHECK(L.peer.sin_port == a_addr.sin_port);
+	CHECK_EQ_INT(send_hb(), 0);
+	CHECK(arrives_at(a) && nothing_at(b));
+	/* A falls silent for longer than the bound (the relay restarted and
+	 * speaks from B now): B's next frame is read and B is the peer. */
+	L.peer_quiet_ns = 20000000ull;
+	usleep(60000);
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 2), 1);
+	CHECK(L.peer.sin_port == b_addr.sin_port);
+	CHECK_EQ_INT(L.peer_changes, 1);
+	CHECK_EQ_INT(send_hb(), 0);
+	CHECK(arrives_at(b) && nothing_at(a));
+	/* And A, back while B speaks, is the stranger. */
+	L.peer_quiet_ns = 3600ull * 1000000000ull;
+	CHECK_EQ_INT(heartbeat_from(a, &at, NULL, 3), 0);
+	CHECK(L.peer.sin_port == b_addr.sin_port);
+	mav_link_close(&L);
+	/* A configured peer never changes, silent or not; a stranger is never read. */
+	at = open_udp(0, &a_addr);
+	L.peer_quiet_ns = 1;
+	CHECK_EQ_INT(send_hb(), 0);
+	CHECK(arrives_at(a));
+	usleep(2000);
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 0), 0);
+	CHECK_EQ_INT(L.strangers, 1);
+	CHECK_EQ_INT(heartbeat_from(a, &at, NULL, 0), 1);
+	usleep(2000);
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 1), 0);
+	CHECK(L.peer.sin_port == a_addr.sin_port);
+	CHECK_EQ_INT(L.peer_changes, 0);
+	mav_link_close(&L);
+	/* With signing, the signature says who may speak: a frame from another
+	 * address that verifies is read (a second component behind the same key),
+	 * one that does not is refused as from anywhere; neither becomes the peer
+	 * while the peer is there. */
+	struct mav_signing sa, sb;
+	memset(&sa, 0, sizeof sa);
+	sa.enabled = 1;
+	sa.link_id = 3;
+	char err[64];
+	mav_signing_load_key(&sa, keyfile, err, sizeof err);
+	sb = sa;
+	sb.link_id = 4;
+	at = open_udp(1, NULL);
+	L.peer_quiet_ns = 3600ull * 1000000000ull;
+	CHECK_EQ_INT(heartbeat_from(a, &at, &sa, 0), 1);
+	CHECK_EQ_INT(heartbeat_from(b, &at, &sb, 0), 1);
+	CHECK(L.peer.sin_port == a_addr.sin_port);
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 1), 0);
+	CHECK_EQ_INT(L.rejected, 1);
+	CHECK_EQ_INT(L.strangers, 0);
+	CHECK_EQ_INT(send_hb(), 0);
+	CHECK(arrives_at(a) && nothing_at(b));
+	/* Silent, the peer gives way to a frame that verifies, not to one that does not. */
+	L.peer_quiet_ns = 20000000ull;
+	usleep(60000);
+	CHECK_EQ_INT(heartbeat_from(b, &at, NULL, 2), 0);
+	CHECK(L.peer.sin_port == a_addr.sin_port);
+	CHECK_EQ_INT(heartbeat_from(b, &at, &sb, 3), 1);
+	CHECK(L.peer.sin_port == b_addr.sin_port);
+	mav_link_close(&L);
+	close(a);
+	close(b);
+}
+
 /* The tlog holds what went on the line, whole signed frames in the order
  * they went: a reader of it (pymavlink) must find every frame well formed. */
 static void test_tlog_is_what_went(void)
@@ -480,6 +653,7 @@ int main(void)
 	RUN_TEST(test_a_disarm_is_never_dropped);
 	RUN_TEST(test_a_queued_arm_does_not_outlive_its_window);
 	RUN_TEST(test_line_gone_inside_a_handler);
+	RUN_TEST(test_udp_peer);
 	RUN_TEST(test_tlog_is_what_went);
 	unlink(keyfile);
 	unlink(tlogfile);

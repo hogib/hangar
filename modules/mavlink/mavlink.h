@@ -33,10 +33,19 @@ struct mav_txframe {
 };
 enum { MAV_TX_OTHER = 0, MAV_TX_MANUAL_CONTROL, MAV_TX_DISARM, MAV_TX_ARM };
 
+/* UDP: how long a learned peer must have been silent before a frame from
+ * another address may take its place (below, mav_link_receive). */
+#define MAV_PEER_QUIET_NS 1000000000ull
+
 struct mav_link {
 	int fd;                      /* -1 while a serial line is closed */
 	struct sockaddr_in peer;
 	int have_peer;
+	int peer_fixed;              /* UDP: the peer is the configuration's (Peer=, GCS=) and never changes */
+	uint64_t peer_heard_ns;      /* UDP: the last valid frame from the peer; 0: none yet */
+	uint64_t peer_quiet_ns;      /* UDP: MAV_PEER_QUIET_NS (a field so that a test need not wait a second) */
+	uint64_t strangers;          /* UDP: datagrams from another address than the peer's, not read */
+	uint64_t peer_changes;       /* UDP: a learned peer replaced by another address */
 	uint8_t sysid, compid, seq;
 	struct mav_signing signing;
 	uint64_t sent, received, rejected;   /* rejected: bad CRC, bad signature, truncated */
@@ -103,9 +112,18 @@ int mav_link_send(struct mav_link *l, uint32_t msgid, const uint8_t *payload, si
  * waits. */
 int mav_link_cancel_arm(struct mav_link *l);
 /* Receives every datagram waiting, decoding each frame and calling fn with
- * it; frames that fail their checks are counted, not delivered. The sender
- * of the first valid frame becomes the peer when none is configured. Returns
- * the number of valid frames. */
+ * it; frames that fail their checks are counted, not delivered. Returns the
+ * number of valid frames.
+ * Whose datagrams: with no peer yet, anybody's, and the sender of the first
+ * valid frame becomes the peer. After that, on a link without signing, only
+ * the peer's: a datagram from another address is counted (strangers) and not
+ * read, since without a key nothing else tells ArduSub's HEARTBEAT from one
+ * anybody who reaches the port made up. On a signed link a frame from another
+ * address is judged by its signature like any other (who holds the key may
+ * speak), but never becomes the peer while the peer is there. A learned peer
+ * that has been silent for MAV_PEER_QUIET_NS (ArduSub, or the relay in front
+ * of it, came back from another port) gives way to the sender of the next
+ * valid frame, signed or not as the link is; a configured peer never does. */
 int mav_link_receive(struct mav_link *l, void (*fn)(void *ctx, const struct mav_frame *f), void *ctx);
 
 /* Convenience: pack a struct through its generated function and send it. */

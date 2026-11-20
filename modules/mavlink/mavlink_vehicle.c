@@ -280,6 +280,10 @@ static void publish_state(uint64_t now)
 		size_t u = strlen(line);
 		mod_fmt(line + u, sizeof line - u, " other-component %llu", (unsigned long long)L.foreign);
 	}
+	if (L.strangers) {
+		size_t u = strlen(line);
+		mod_fmt(line + u, sizeof line - u, " other-address %llu", (unsigned long long)L.strangers);
+	}
 	if (strcmp(line, A.status) != 0) {
 		mod_fmt(A.status, sizeof A.status, "%s", line);
 		hg_status(line);
@@ -741,6 +745,14 @@ static struct sockaddr_in peer_noted;
 
 static void note_peer(void)
 {
+	static uint64_t changes_logged;
+	if (L.peer_changes != changes_logged) {
+		char ip[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &L.peer.sin_addr, ip, sizeof ip);
+		mod_log(WHO, "ArduSub now speaks from %s:%u (the address before fell silent): commands go there",
+			ip, (unsigned)ntohs(L.peer.sin_port));
+		changes_logged = L.peer_changes;
+	}
 	if (L.serial || !L.have_peer || memcmp(&L.peer, &peer_noted, sizeof L.peer) == 0)
 		return;
 	char dir[1024], path[1100], text[64], ip[INET_ADDRSTRLEN];

@@ -66,6 +66,17 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   its read-back, never `STAT_*` or `BARO*_GND_PRESS`, never while armed. While a job
   runs, the module's own read of `ardusub.params` waits. A manifest without the two
   `[Serve]` and the `[Publish ardusub.params_job]` runs without them.
+- Whose datagrams (UDP): with no `Peer=`, ArduSub's address is the sender of the first
+  valid frame, and that is where every command goes. After that a link without
+  signing reads the peer's datagrams only: one from another address is counted
+  (`other-address N` in the status line) and not read, since without a key nothing
+  else tells ArduSub's `HEARTBEAT` from one that anybody who reaches the port made
+  up. A link with signing judges a frame from another address by its signature (who
+  holds the key may speak), without making it the peer. A learned peer that has
+  been silent for 1 s gives way to the sender of the next valid frame, and the log
+  says so: a relay or a MAVProxy that came back from another source port gets the
+  commands again, where before they went to the dead port for good while the
+  telemetry kept arriving. A `Peer=` named in the configuration never changes.
 - `--neutral`: binds the same port, takes ArduSub's address from `Peer=`, else from
   `<state dir>/peer` (written by the module when it first hears ArduSub), else from the
   next packet within 0.6 s (the manager allows 1 s); sends neutral manual control and a
@@ -305,7 +316,11 @@ pseudo-terminal.
   queue of nothing but rate requests gives one up for it; an arm waiting on the blocked
   line is gone after a disarm, and after `mav_link_cancel_arm`, and is not delivered
   when the line drains; a frame handler that sends on a line that went away under it
-  (in a child process: the receive loop used to move a negative length); the tlog holds
+  (in a child process: the receive loop used to move a negative length); the UDP
+  peer: a stranger's datagrams not read on an unsigned link and the commands still
+  going to the peer, the peer replaced once it has been silent, a configured peer
+  never replaced, and on a signed link a verified frame from elsewhere read without
+  becoming the peer; the tlog holds
   exactly the frames that went, each one whole and verifiable.
 - `make check-mavlink_vehicle` (20 s): the module against `fake_ardusub` (a UDP client
   like MAVProxy's `--out`, signing, a parameter table, scripted refusals, a control
