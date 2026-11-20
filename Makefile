@@ -557,3 +557,13 @@ check: check-topside_encoder
 # vehicle simulator over lib/sim, standalone or as ArduSub SITL's physics.
 include modules/sim_vehicle/sim_vehicle.mk
 check: check-sim_vehicle
+
+# nav and depth_hold (modules/nav/README.md, modules/depth_hold/README.md; each
+# .mk carries its rules): the vehicle's state estimate, nav.state, and the
+# classical depth controller, ctl.depth_hold and ctl.depth_hold.target: the
+# two modules docs/09's adaptive depth hold needs. GPL-3.0-or-later, C11 over
+# lib/hg. depth_hold.mk after mux.mk and nav.mk: its suite runs both.
+include modules/nav/nav.mk
+check: check-nav
+include modules/depth_hold/depth_hold.mk
+check: check-depth_hold

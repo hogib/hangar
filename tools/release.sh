@@ -228,6 +228,9 @@ want recorder "$builddir/recorder"
 want pairer "$builddir/pairer"
 want hangar-encoder "$builddir/hangar-encoder"
 want hangar-sim-vehicle "$builddir/hangar-sim-vehicle"
+
+want hangar-nav "$builddir/hangar-nav"
+want hangar-depth-hold "$builddir/hangar-depth-hold"
 want hangar-joystick "$builddir/hangar-joystick"
 if [ "$avcodec_ok" = yes ]; then
 	want hangar-video-relay "$builddir/hangar-video-relay"
