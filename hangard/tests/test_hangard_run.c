@@ -252,7 +252,9 @@ static void test_open_refusals(void)
 	CHECK(strncmp(ctl("start talker"), "ok", 2) == 0);
 	CHECK(wait_file_contains(T_log, "test.depth already has a writer", 6000));
 	tfmt(log, sizeof log, "%s/run/hangar/log/talker.log", T_root);
-	CHECK(wait_file_contains(log, "hg_pub_open(test.depth): Device or resource busy", 3000));
+	char busy[128]; // the C library's own words for EBUSY: musl's are not glibc's
+	tfmt(busy, sizeof busy, "hg_pub_open(test.depth): %s", strerror(EBUSY));
+	CHECK(wait_file_contains(log, busy, 3000));
 	// Give the file back: the talker's next attempt succeeds.
 	fd = open(path, O_RDWR | O_CLOEXEC);
 	uint32_t died = HG_FLAG_DIED;
