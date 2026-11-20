@@ -661,10 +661,10 @@ int hg_ds_policy_usable(const struct hg_ds_spec *s, char *out, size_t outlen)
 /* ---- Manifests --------------------------------------------------------------- */
 
 struct mscan {
-	const char *anchor;
+	const struct hg_ds_spec *spec;
 	int in_anchor;
 	int found;
-	char links[2048];   /* "topic topic ..." from Inputs and Sources */
+	unsigned char linked[HG_DS_MAX_PARTS]; /* the part's topic is in the anchor's Inputs or Sources */
 };
 
 static int m_section(void *ctx, const char *section, const char *arg, int line, char *why, size_t whylen)
@@ -673,7 +673,7 @@ static int m_section(void *ctx, const char *section, const char *arg, int line, 
 	(void)line;
 	(void)why;
 	(void)whylen;
-	m->in_anchor = strcmp(section, "Publish") == 0 && strcmp(arg, m->anchor) == 0;
+	m->in_anchor = strcmp(section, "Publish") == 0 && strcmp(arg, m->spec->anchor) == 0;
 	if (m->in_anchor)
 		m->found = 1;
 	return 0;
@@ -685,9 +685,21 @@ static int m_key(void *ctx, const char *key, const char *value, int line, char *
 	(void)line;
 	(void)why;
 	(void)whylen;
-	if (m->in_anchor && (strcmp(key, "Inputs") == 0 || strcmp(key, "Sources") == 0)) {
-		size_t l = strlen(m->links);
-		snprintf(m->links + l, sizeof m->links - l, " %s ", value);
+	if (!m->in_anchor || (strcmp(key, "Inputs") != 0 && strcmp(key, "Sources") != 0))
+		return 0;
+	/* Each name of the list against each part, as the value is read: the
+	 * lists were once gathered into a buffer, and what did not fit it was
+	 * a topic "neither in the Inputs nor in the Sources". */
+	for (const char *p = value; *p;) {
+		while (*p == ' ' || *p == '\t')
+			p++;
+		const char *s = p;
+		while (*p && *p != ' ' && *p != '\t')
+			p++;
+		size_t n = (size_t)(p - s);
+		for (int i = 0; n && i < m->spec->n_parts; i++)
+			if (strlen(m->spec->parts[i].topic) == n && memcmp(m->spec->parts[i].topic, s, n) == 0)
+				m->linked[i] = 1;
 	}
 	return 0;
 }
@@ -699,7 +711,7 @@ int hg_ds_check_manifests(const struct hg_ds_spec *s, const char *dir, char *err
 		seterr(err, errlen, "%s: %s", dir, strerror(errno));
 		return -1;
 	}
-	struct mscan m = { .anchor = s->anchor };
+	struct mscan m = { .spec = s };
 	static char text[65536];
 	struct dirent *e;
 	while ((e = readdir(d))) {
@@ -726,9 +738,7 @@ int hg_ds_check_manifests(const struct hg_ds_spec *s, const char *dir, char *err
 		const struct hg_ds_part_spec *p = &s->parts[i];
 		if (p->join != HG_DS_PROVENANCE)
 			continue;
-		char needle[HG_NAME_MAX + 3];
-		snprintf(needle, sizeof needle, " %s ", p->topic);
-		if (!strstr(m.links, needle)) {
+		if (!m.linked[i]) {
 			seterr(err, errlen, "part %s: a provenance join to %s, which is neither in the Inputs nor in the "
 					    "Sources of %s", p->name, p->topic, s->anchor);
 			errno = EINVAL;

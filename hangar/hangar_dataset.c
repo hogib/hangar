@@ -528,7 +528,7 @@ struct pairs_scan {
 	const char *module;
 	int in_pub;
 	char topic[HG_NAME_MAX + 1];
-	char inputs[1024];
+	char inputs[HG_INI_VALUE]; /* the longest value the reader hands over: never cut here */
 	int printed;
 };
 

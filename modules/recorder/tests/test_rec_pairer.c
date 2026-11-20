@@ -379,6 +379,45 @@ static void test_refusals(void)
 	CHECK(file_contains(log_path("pairer-mismatch"), "dataset.other, which pairer.conf does not list"));
 }
 
+/* `hangar dataset pairs` on the longest Inputs line a manifest can hold
+ * (1023 bytes, the ini reader's bound, which is also the size of the
+ * buffer pairs keeps the list in): every name is there, the last one too.
+ * One byte more is refused by the reader with its line, not cut. */
+static void test_pairs_long_inputs(void)
+{
+	char dir[700], mp[800], cmd[1700];
+	static char text[4096], out[32768];
+	rfmt(dir, sizeof dir, "%s/long-session/manifests", R_root);
+	mkdir_p(dir, 0755);
+	rfmt(mp, sizeof mp, "%s/wide.module", dir);
+	for (int extra = 0; extra < 2; extra++) {
+		size_t n = (size_t)rfmt(text, sizeof text, "[Module]\nExec=/bin/true\n[Publish wide.out]\nType=wrench\nInputs=");
+		size_t start = n;
+		int names = 0;
+		for (; n - start + 10 <= 1023 - 6; names++)
+			n += (size_t)rfmt(text + n, sizeof text - n, "in.t%04d ", names);
+		while (n - start < 1023 - 6)
+			text[n++] = ' ';
+		n += (size_t)rfmt(text + n, sizeof text - n, "z.last%s\n", extra ? "x" : "");
+		CHECK_EQ_INT(n - start - 1, 1023 + (size_t)extra);
+		CHECK_EQ_INT(write_file(mp, text), 0);
+		rfmt(cmd, sizeof cmd, "%s dataset pairs %s/long-session wide 2>&1", R_hangar, R_root);
+		int rc = run(out, sizeof out, cmd);
+		if (!extra) {
+			CHECK_EQ_INT(rc, 0);
+			CHECK(strstr(out, "[Input in.t0000]\nJoin=provenance") != NULL);
+			CHECK(strstr(out, "[Input z.last]\nJoin=provenance") != NULL);
+			int inputs = 0;
+			for (const char *p = out; (p = strstr(p, "[Input ")); p += 7)
+				inputs++;
+			CHECK_EQ_INT(inputs, names + 1);
+		} else {
+			CHECK_EQ_INT(rc, 2);
+			CHECK(strstr(out, "line 5: value too long") != NULL);
+		}
+	}
+}
+
 /* A one-topic session in <root>/<name>: t.a.hgr with three records of an
  * 8-byte payload, the header's schema, hash, policy and policy text as
  * given (a damaged or hand-made file). */
@@ -488,6 +527,7 @@ int main(void)
 	RUN_TEST(test_stop_and_build);
 	RUN_TEST(test_live_equals_offline);
 	RUN_TEST(test_refusals);
+	RUN_TEST(test_pairs_long_inputs);
 	RUN_TEST(test_damaged_recordings);
 	if (rows_sub)
 		hg_sub_close(rows_sub);

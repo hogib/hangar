@@ -357,6 +357,41 @@ static void test_row_type(void)
 	CHECK(hg_ds_check_manifests(&s, mdir, err, sizeof err) < 0 && errno == ENOENT);
 }
 
+/* The manifest check gathered the anchor's Inputs and Sources into 2048
+ * bytes and cut what did not fit: three Sources lines of a thousand bytes
+ * each, and a topic at the end of the second was "neither in the Inputs
+ * nor in the Sources". Each value is looked through as it is read now. */
+static void test_manifest_long_lists(void)
+{
+	static const char SPEC[] = "[Dataset]\nAnchor=t.c\n[Input t.b]\nJoin=provenance\n[Input t.z]\nJoin=provenance\n";
+	static struct hg_ds_spec s;
+	char err[400] = "";
+	CHECK_EQ_INT(hg_ds_parse(SPEC, strlen(SPEC), "long", &s, err, sizeof err), 0);
+	char mdir[700], mp[800];
+	rfmt(mdir, sizeof mdir, "%s/manifests-long", files);
+	mkdir_p(mdir, 0755);
+	rfmt(mp, sizeof mp, "%s/chain.module", mdir);
+	static char text[4096];
+	size_t n = (size_t)rfmt(text, sizeof text, "[Module]\nExec=/bin/true\n[Publish t.c]\nType=wrench\nInputs=t.a t.b\n");
+	for (int line = 0; line < 3; line++) {
+		n += (size_t)rfmt(text + n, sizeof text - n, "Sources=");
+		size_t start = n;
+		for (int i = 0; n - start < 1000; i++)
+			n += (size_t)rfmt(text + n, sizeof text - n, "s.l%d.t%03d ", line, i);
+		n += (size_t)rfmt(text + n, sizeof text - n, "%s\n", line == 2 ? "t.z" : "t.y"); /* t.z: the last of all */
+	}
+	CHECK_EQ_INT(write_file(mp, text), 0);
+	int rc = hg_ds_check_manifests(&s, mdir, err, sizeof err);
+	if (rc < 0)
+		printf("    %s\n", err);
+	CHECK_EQ_INT(rc, 0);
+	/* A name that is only part of a listed one is not listed. */
+	rfmt(s.parts[1].topic, sizeof s.parts[1].topic, "s.l1.t00");
+	CHECK(hg_ds_check_manifests(&s, mdir, err, sizeof err) < 0 && errno == EINVAL && strstr(err, "s.l1.t00"));
+	rfmt(s.parts[1].topic, sizeof s.parts[1].topic, "s.l0.t007");
+	CHECK_EQ_INT(hg_ds_check_manifests(&s, mdir, err, sizeof err), 0);
+}
+
 static void test_where(void)
 {
 	unsigned char row[272];
@@ -953,6 +988,7 @@ int main(void)
 	RUN_TEST(test_spec_examples);
 	RUN_TEST(test_spec_refusals);
 	RUN_TEST(test_row_type);
+	RUN_TEST(test_manifest_long_lists);
 	RUN_TEST(test_where);
 	RUN_TEST(test_chain_live);
 	RUN_TEST(test_chain_offline_matches);
