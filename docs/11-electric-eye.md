@@ -113,6 +113,26 @@ repository, and the port is the module's manifest, its topics and its parameters
 place of the glue in `legacy/`. Once a module runs, the legacy binary it replaces is no
 longer built.
 
+**hangar's own, not electric-eye's** (decided 2026-11-20). electric-eye stays a tool of
+its own, for another use; hangar does not depend on it at run time and does not keep
+following it as an upstream. `legacy/` goes once the stages below have replaced what
+`eeye` and `hellion` do here. The topside's video modules decode with libavcodec and
+encode with libx264 **in process**, linked statically like libjpeg-turbo: no ffmpeg
+child anywhere, and the decoder returns each frame's RTP timestamp, so `cam.decoded`
+names the vehicle's frame exactly. The order of the work, one stage at a time:
+
+| Stage | Module | Side | |
+|---|---|---|---|
+| B1 | `encoder`, the camera's own H.264 | vehicle | built (2026-11-20) |
+| B2 | `video_relay` | topside | RTP in; relayed unchanged where wanted; `cam.decoded` with the vehicle's frame as provenance; MP4 recording |
+| B3 | `vision` | topside here, vehicle in placement B | the effects, `cam.decoded` → `cam.pilot` |
+| B4 | `topside_encoder` | topside | `cam.pilot` to QGroundControl on 5600 |
+| B5 | `camera`; the live picture in the console | vehicle; topside | cameras without H.264; `hellion`'s page in Dawn Patrol |
+| B6 | `legacy/` removed | | `legacy/hellion/embed.c` into `tools/`; the phase-A test of `bench/PI-TEST.md` around `camera`; the release without `eeye` and `hellion` |
+
+After B4 the video path of the camera's H.264 is hangar's alone: `encoder` →
+`video_relay` → `vision` → `topside_encoder` → QGroundControl.
+
 | Module | Side | From | Publishes |
 |---|---|---|---|
 | `camera` | vehicle | `eeye`: `v4l2_in`, `rpicam_in`, `jpeg_decode`, `camera_ctrl` | `cam.raw` |
