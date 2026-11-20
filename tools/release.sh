@@ -181,6 +181,7 @@ want hangar-mux "$builddir/hangar-mux"
 want hangar-mavlink "$builddir/hangar-mavlink"
 want recorder "$builddir/recorder"
 want pairer "$builddir/pairer"
+want hangar-encoder "$builddir/hangar-encoder"
 for t in "$ROOT"/lib/hg/tests/test_hg_*.c; do
 	[ -e "$t" ] || continue
 	s=$(basename "$t" .c)

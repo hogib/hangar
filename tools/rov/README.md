@@ -77,6 +77,47 @@ Props off until step 6 has passed. Stop at the first step that does not do what 
    what differs, then compares again), `rov.sh down`, and check `systemctl is-active
    eeye hellion`. The sessions in `~/hangar-sessions` come home.
 
+## The camera's own H.264 (the encoder, opt-in)
+
+The vehicle sends the camera's H.264 as the camera makes it, with no encode on the Pi
+(`modules/encoder/README.md`; docs/11 "encoder"), and the effects run on the laptop:
+electric-eye's `hellion` and `eeye` there in placement A, until hangar's `video_relay`
+and `vision` exist. Unverified on this vehicle: that its camera offers H.264 at all.
+
+On the Pi, first:
+
+1. **Which node has H.264.** `sudo apt install v4l-utils` if `v4l2-ctl` is missing, then
+   `for d in /dev/video[0-9]; do echo "== $d"; v4l2-ctl -d $d --list-formats-ext | grep -B1 -A3 H264; done`.
+   Put that node in `profiles/rov-vehicle/encoder.conf` (`Source=uvc:/dev/videoN`), or in
+   the laid-out `/dev/shm/hangar-vehicle/etc/hangar/encoder.conf` and `hangar restart
+   encoder`. No node with H264: this path has nothing to send on this camera; stop here.
+2. **The lab's electric-eye off the camera:** `sudo systemctl stop eeye hellion` (they
+   hold the camera and send to the laptop's 5610 too); `start` them again at the end.
+3. **`ENCODER=1 rov.sh up`** (after `rov.sh reset` if the roots were laid out without it).
+   `hangar status` shows `encoder` ready, its frames and kbit/s; `hangar echo
+   video.index` a message a frame.
+
+On the laptop, electric-eye's topside in placement A:
+
+4. **`hellion`** with `legacy/hellion/examples/a-topside.json`, two changes for this
+   laptop: `"control": "8092"` (8080 is taken) and the `v4l2:/dev/video10` sink removed
+   (no v4l2loopback). Its `camera-in` pipeline receives `rtp:5610` and decodes into the
+   frame bus stream `camera`; its `pilot-out` pipeline encodes the stream `pilot` for
+   QGroundControl on 127.0.0.1:5600.
+5. **`eeye`** with a config of its own: `"capture_source": "bus"`, `"capture_stream":
+   "camera"`, `"output_device": ""`, the effects as wanted. It reads `camera` and
+   publishes `pilot`.
+6. **QGroundControl**: the video, with the effects, on UDP 5600 as before; the effects
+   from hellion's page on http://127.0.0.1:8092.
+
+What the encoder's RTP is to `hellion`: payload type 96, H264/90000,
+packetization-mode 1, on 5610, the marker on each frame's last packet, parameter sets in
+band before each IDR: what its SDP (`lib/video/ffmpeg.c`, `ff_write_sdp`) and its relay
+(`lib/video/udp_relay.c`, the delimiter after each marker) take. `hellion` receives
+without discovering a peer; its `"peer": "auto"` and `"camera_controls": "peer"` find no
+`hellion` on the vehicle, so the page's camera controls do nothing in this setup (the
+encoder has no control channel yet).
+
 ## Results, 2026-11-19
 
 The second visit, with the v0.1.1 release; props off, the battery connected.
@@ -128,5 +169,7 @@ Found on the vehicle:
 
 ## Not tried yet
 
+- The encoder (`ENCODER=1`) on this vehicle: its camera's H.264 node, the keyframe
+  control, the latency and the CPU against electric-eye's 0.91 of a core.
 - Signing against the real ArduSub (`Signing=no` here).
 - Driving with props on, in the tank.

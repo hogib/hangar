@@ -30,6 +30,9 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             build-essential clang libomp-dev libturbojpeg0-dev pkg-config python3
+      - name: ffmpeg (the encoder's suite has ffmpeg decode its RTP)
+        if: matrix.cc == 'gcc'
+        run: sudo apt-get install -y -q --no-install-recommends ffmpeg
       - name: Zig
         if: matrix.cc == 'zig'
         run: |

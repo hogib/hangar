@@ -1,0 +1,16 @@
+# profiles/rov-vehicle/encoder.module.off: the encoder (docs/11-electric-eye.md
+# "encoder", modules/encoder/README.md): the camera's own H.264 to the topside
+# over RTP, nothing encoded on the vehicle. Opt-in: tools/rov/rov.sh lays it
+# out as encoder.module with ENCODER=1. Its settings: encoder.conf beside it.
+[Module]
+Description=Video to the topside: the camera's own H.264 over RTP
+Exec=/usr/lib/hangar/hangar-encoder /etc/hangar/encoder.conf
+User=hg-encoder
+# The camera's device belongs to the video group.
+SupplementaryGroups=video
+
+# One message per frame sent (msg/video_index.msg): an event topic, since its
+# rate is the camera's. 64 slots: two seconds at 30 frames/s for the recorder.
+[Publish video.index]
+Type=video_index
+Slots=64

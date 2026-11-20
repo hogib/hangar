@@ -18,7 +18,8 @@
 # laptop's addresses on the tether; FCU (/dev/ttyACM0:115200), the Pixhawk;
 # HANGAR_SESSIONS (~/hangar-sessions), where the recorder writes; HANGAR_ROV_STATE
 # (~/hangar-rov), the relay's log and the parameter files; HANGAR_BIN, the binaries;
-# ROS_SETUP (/opt/ros/jazzy/setup.bash); RELAY=0 starts no relay (a test without a Pixhawk).
+# ROS_SETUP (/opt/ros/jazzy/setup.bash); RELAY=0 starts no relay (a test without a Pixhawk);
+# ENCODER=1 lays out the encoder too (the camera's own H.264 to the laptop; README).
 set -euo pipefail
 
 here=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
@@ -39,8 +40,9 @@ SESSIONS=${HANGAR_SESSIONS:-$HOME/hangar-sessions}
 STATE=${HANGAR_ROV_STATE:-$HOME/hangar-rov}
 ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 RELAY=${RELAY:-1}
+ENCODER=${ENCODER:-0}
 
-usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
 die() { echo "rov: $*" >&2; exit 1; }
 
@@ -58,6 +60,11 @@ lay_out() { # root profile
         sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$f" \
             > "$root/etc/hangar/modules/$(basename "$f")"
     done
+    # The encoder is opt-in: its manifest is encoder.module.off in the profile.
+    if [ "$ENCODER" = 1 ] && [ -e "$prof/encoder.module.off" ]; then
+        sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$prof/encoder.module.off" \
+            > "$root/etc/hangar/modules/encoder.module"
+    fi
     for f in "$prof"/*.conf "$prof"/*.params; do
         [ -e "$f" ] || continue
         b=$(basename "$f")
@@ -68,7 +75,8 @@ lay_out() { # root profile
                    -e "s|/var/lib/hangar/recorder/sessions|$SESSIONS|g" \
                    -e "s|/var/lib/hangar/|$root/var/lib/hangar/|g" \
                    -e "s|^Bind=192\.168\.2\.10:|Bind=$ROV_IP:|" \
-                   -e "s|^GCS=192\.168\.2\.1:|GCS=$GCS_IP:|" "$f" > "$root/etc/hangar/$b" ;;
+                   -e "s|^GCS=192\.168\.2\.1:|GCS=$GCS_IP:|" \
+                   -e "s|^Peer=192\.168\.2\.1:|Peer=$GCS_IP:|" "$f" > "$root/etc/hangar/$b" ;;
         esac
     done
 }
@@ -193,6 +201,11 @@ cmd_up() {
     for b in hangard hangar hangar-safety hangar-mux hangar-mavlink recorder dawn-patrold; do
         [ -x "$bin/$b" ] || die "missing $bin/$b (set HANGAR_BIN)"
     done
+    if [ "$ENCODER" = 1 ]; then
+        [ -x "$bin/hangar-encoder" ] || die "missing $bin/hangar-encoder (set HANGAR_BIN)"
+        [ ! -d "$RV/etc/hangar" ] || [ -e "$RV/etc/hangar/modules/encoder.module" ] ||
+            die "ENCODER=1, but the vehicle root was laid out without the encoder: rov.sh reset first"
+    fi
     relay_up
     [ -d "$RV/etc/hangar" ] || lay_out "$RV" "$profiles/rov-vehicle"
     [ -d "$RT/etc/hangar" ] || lay_out "$RT" "$profiles/rov-topside"
