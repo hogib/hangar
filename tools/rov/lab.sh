@@ -456,7 +456,9 @@ cmd_down() {
     tunnels_down
 
     if hangar_running; then
-        step "disarmed" rsh '"$B/hangar" call safety.disarm > /dev/null; sleep 3'
+        # The call's own status, not the sleep's (the three seconds are ArduSub's, to
+        # report itself disarmed before the restore asks).
+        step "disarmed" rsh '"$B/hangar" call safety.disarm > /dev/null; rc=$?; sleep 3; exit $rc'
     fi
     local backup; backup=$(sess_get params_backup)
     if [ -n "$backup" ]; then
