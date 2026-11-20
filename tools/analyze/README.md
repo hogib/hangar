@@ -75,8 +75,14 @@ cast, annotation or restructuring goes into the code to quiet a tool.
 
 ## What the tools did not see
 
-They agree with each other less than one would hope: of the three findings
-that were bugs, each was reported by exactly one tool. None of them reported any of
+They agree with each other less than one would hope: of the four findings
+that were bugs, each was reported by exactly one tool. And one of the four
+was first read as harmless: cppcheck's `wrongPrintfScanfArgNum` in
+`lib/nn/nn_ops.c` ("format string requires 2 parameters but 3 are given") was
+suppressed with "C ignores excess arguments", which is true of the call it
+names and not of its neighbour, where a `%s` was handed a number. The fuzzer
+crashed there the same night. A finding about one call site of a helper is a
+reason to read every call site. None of them reported any of
 the bugs the fuzzers found (integer overflow in a duration, a NaN converted to
 an integer, a request read one byte past its end in a static buffer). They
 model one translation unit at a time: what a function in another file
