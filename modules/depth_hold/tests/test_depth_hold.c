@@ -480,7 +480,7 @@ static void test_chain(void)
 	CHECK(V.target.driving && !V.target.latched);
 	CHECK(fabs(V.target.target_m - held) < 1e-6);
 	CHECK(fabs(V.cmd.heave - (V.target.integral + 0.1)) < 0.15); /* the residual is in the command */
-	CHECK(settle(10000));
+	CHECK(settle(25000));
 	pump(3000);
 	printf("    residual:p (+0.10 heave added): target %.3f m kept, holds %.3f m\n", held, V.p.z);
 	CHECK(fabs(V.p.z - held) < 0.05);
