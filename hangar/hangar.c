@@ -1211,14 +1211,13 @@ static int cmd_param(int argc, char **argv)
 		if (n != 3)
 			return fail("usage: hangar param load <module> <file>");
 		static char text[HG_SCHEMA_MAX * 4];
-		int fd = open(args[2], O_RDONLY | O_CLOEXEC);
-		if (fd < 0)
+		size_t len;
+		if (hg_params_file_read(args[2], text, sizeof text, &len) < 0) {
+			if (errno == EFBIG) /* not loaded cut: the cut line could parse, as another value */
+				return fail("%s is longer than %zu bytes, the most a parameter file holds", args[2], sizeof text - 1);
 			return fail("cannot read %s: %s", args[2], strerror(errno));
-		ssize_t len = read(fd, text, sizeof text - 1);
-		close(fd);
-		if (len < 0)
-			return fail("cannot read %s: %s", args[2], strerror(errno));
-		return param_apply(module, NULL, 0, text, (size_t)len, json);
+		}
+		return param_apply(module, NULL, 0, text, len, json);
 	}
 	if (strcmp(what, "reset") == 0)
 		return param_reset(module, n - 2, args + 2, json);

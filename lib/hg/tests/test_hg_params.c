@@ -7,6 +7,8 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "hg_params.h"
@@ -69,8 +71,68 @@ static void test_long_value_in_the_file(void)
 	CHECK(n >= (int)sizeof file);
 }
 
+/* A saved file is read to its end, however the reads come back, and a file
+ * longer than the buffer is refused: one read() took what it got as the
+ * whole file, and a file cut at the buffer's size can still parse ("kp =
+ * 1.25" cut after the 1). */
+static void test_file_read_whole_or_refused(void)
+{
+	char dir[] = "/tmp/hg-params-XXXXXX", path[64], fifo[64];
+	if (!mkdtemp(dir)) {
+		CHECK(!"mkdtemp");
+		return;
+	}
+	snprintf(path, sizeof path, "%s/params", dir);
+	snprintf(fifo, sizeof fifo, "%s/fifo", dir);
+	static char text[4096], buf[1024];
+	memset(text, '#', sizeof text);
+	size_t len = 77;
+	/* The longest file that fits a buffer of 1024 is 1023 bytes. */
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	CHECK(write(fd, text, 1023) == 1023);
+	close(fd);
+	CHECK_EQ_INT(hg_params_file_read(path, buf, sizeof buf, &len), 0);
+	CHECK_EQ_INT(len, 1023);
+	CHECK_EQ_INT(buf[1023], 0);
+	CHECK_EQ_INT(strlen(buf), 1023);
+	fd = open(path, O_WRONLY | O_APPEND);
+	CHECK(write(fd, "1", 1) == 1);
+	close(fd);
+	errno = 0;
+	CHECK_EQ_INT(hg_params_file_read(path, buf, sizeof buf, &len), -1);
+	CHECK_EQ_INT(errno, EFBIG);
+	CHECK_EQ_INT(truncate(path, 0), 0);
+	CHECK_EQ_INT(hg_params_file_read(path, buf, sizeof buf, &len), 0);
+	CHECK_EQ_INT(len, 0);
+	CHECK_EQ_INT(buf[0], 0);
+	unlink(path);
+	errno = 0;
+	CHECK_EQ_INT(hg_params_file_read(path, buf, sizeof buf, &len), -1);
+	CHECK_EQ_INT(errno, ENOENT);
+	/* Reads that come back short: a FIFO fed in two parts. */
+	CHECK_EQ_INT(mkfifo(fifo, 0600), 0);
+	pid_t pid = fork();
+	if (pid == 0) {
+		int w = open(fifo, O_WRONLY);
+		if (write(w, "kp = 1", 6) != 6)
+			_exit(1);
+		usleep(150000);
+		if (write(w, ".25\n", 4) != 4)
+			_exit(1);
+		_exit(0);
+	}
+	CHECK_EQ_INT(hg_params_file_read(fifo, buf, sizeof buf, &len), 0);
+	CHECK_EQ_INT(len, 10);
+	CHECK(strcmp(buf, "kp = 1.25\n") == 0);
+	int st;
+	waitpid(pid, &st, 0);
+	unlink(fifo);
+	rmdir(dir);
+}
+
 int main(void)
 {
 	RUN_TEST(test_long_value_in_the_file);
+	RUN_TEST(test_file_read_whole_or_refused);
 	TEST_MAIN_END();
 }

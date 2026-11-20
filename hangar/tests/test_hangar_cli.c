@@ -337,6 +337,81 @@ static void test_char_field_without_nul_refused(void)
 	CHECK(wait_new_pid("paramer", st.pid, "ready", 5000));
 }
 
+/* A parameter file of `total` bytes: the first line (may be ""), comment
+ * lines, and "kp = 1.25" placed so that byte `cut` falls after "kp = 1". */
+static void long_params_file(const char *path, const char *first, size_t cut)
+{
+	static char file[20000];
+	size_t n = (size_t)tfmt(file, sizeof file, "%s", first);
+	size_t at = cut - strlen("kp = 1");
+	while (n + 64 <= at) {
+		memset(file + n, '#', 63);
+		file[n + 63] = '\n';
+		n += 64;
+	}
+	if (at > n) {
+		memset(file + n, '#', at - n - 1);
+		file[at - 1] = '\n';
+		n = at;
+	}
+	n += (size_t)tfmt(file + n, sizeof file - n, "kp = 1.25\n");
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0 || write(fd, file, n) != (ssize_t)n)
+		printf("    cannot write %s\n", path);
+	if (fd >= 0)
+		close(fd);
+}
+
+/* D7: `hangar param load` and the module's loading at start took one
+ * read() of 14335 bytes as the whole file. A longer file was cut there, and
+ * a line cut inside a number still parses: the file said kp = 1.25 and the
+ * module ran with kp = 1. Both read to the end now and refuse a file that
+ * does not fit. */
+static void test_long_parameter_file_refused(void)
+{
+	size_t cut = HG_SCHEMA_MAX * 4 - 1;
+	char path[600], out[4096];
+	tfmt(path, sizeof path, "%s/long.params", T_root);
+	long_params_file(path, "", cut);
+	struct params_msg m;
+	CHECK_EQ_INT(read_params(&m), 0);
+	float kp0 = m.p.kp;
+	uint64_t v0 = m.version;
+	int rc = run_cli(out, sizeof out, 5000, "param", "load", "paramer", path, (char *)NULL);
+	sleep_ms(200);
+	CHECK_EQ_INT(read_params(&m), 0);
+	printf("    param load of a file 4 bytes too long, ending in kp = 1.25: exit %d, kp in force %g\n", rc, (double)m.p.kp);
+	CHECK_EQ_INT(rc, 1);
+	CHECK(m.p.kp == kp0 && m.version == v0);
+	/* One that fits is applied as written. */
+	long_params_file(path, "", cut - 4);
+	rc = run_cli(out, sizeof out, 5000, "param", "load", "paramer", path, (char *)NULL);
+	CHECK_EQ_INT(rc, 0);
+	sleep_ms(200);
+	CHECK_EQ_INT(read_params(&m), 0);
+	CHECK(m.p.kp == 1.25f && m.version == v0 + 1);
+	/* The module's side: its saved file, at start. */
+	CHECK(strncmp(ctl("stop paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "stopped", 5000));
+	long_params_file(params_file, "# hangar parameters: depth_hold_params\n", cut);
+	CHECK(strncmp(ctl("start paramer"), "ok", 2) == 0);
+	int failed = wait_state("paramer", "failed", 5000);
+	CHECK(failed);
+	CHECK(file_contains(T_log, "saved parameters refused: the file is longer than 14335 bytes"));
+	if (!failed) {
+		CHECK_EQ_INT(read_params(&m), 0);
+		printf("    paramer started from a saved file 4 bytes too long: kp %g\n", (double)m.p.kp);
+		CHECK(strncmp(ctl("stop paramer"), "ok", 2) == 0);
+		CHECK(wait_state("paramer", "stopped", 5000));
+	}
+	write_file(params_file, "# hangar parameters: depth_hold_params\n# version 9, set by admin:x, now\nkp = 1.5\n");
+	CHECK(strncmp(ctl("start paramer"), "ok", 2) == 0);
+	CHECK(wait_state("paramer", "ready", 5000));
+	for (int i = 0; i < 100 && (read_params(&m) < 0 || m.version != 9); i++)
+		sleep_ms(20);
+	CHECK_EQ_INT(m.version, 9);
+}
+
 static void test_manager_down(void)
 {
 	if (params_sub)
@@ -352,6 +427,7 @@ int main(void)
 	RUN_TEST(test_malformed_reply_stops_the_command);
 	RUN_TEST(test_manager_up);
 	RUN_TEST(test_char_field_without_nul_refused);
+	RUN_TEST(test_long_parameter_file_refused);
 	RUN_TEST(test_manager_down);
 	hd_teardown();
 	TEST_MAIN_END();

@@ -213,7 +213,10 @@ regardless.
 - a field missing from the file takes its default, and the log says so (a field added
   by an update);
 - an unknown field, a value that does not parse, a value out of range, or a refusal
-  by the module's validator stops the start.
+  by the module's validator stops the start;
+- a file longer than 14335 bytes, the most the library writes, stops the start: it is
+  never read cut, since a line cut inside a number still parses. `hangar param load`
+  refuses such a file the same way.
 
 A module whose saved parameters are refused exits with status 78 (`EX_CONFIG`) and the
 reason as its status line. The manager does not restart it: it is `failed`, with the

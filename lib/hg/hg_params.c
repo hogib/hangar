@@ -578,6 +578,39 @@ bad:
 	return -1;
 }
 
+int hg_params_file_read(const char *path, char *buf, size_t cap, size_t *len)
+{
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	size_t n = 0;
+	for (;;) {
+		/* Room for one byte past the longest file that fits: reading it
+		 * is how a longer file is told from one of exactly that length. */
+		ssize_t k = read(fd, buf + n, cap - n);
+		if (k < 0 && errno == EINTR)
+			continue;
+		if (k < 0) {
+			int e = errno;
+			close(fd);
+			errno = e;
+			return -1;
+		}
+		if (k == 0)
+			break;
+		n += (size_t)k;
+		if (n == cap) {
+			close(fd);
+			errno = EFBIG;
+			return -1;
+		}
+	}
+	close(fd);
+	buf[n] = 0;
+	*len = n;
+	return 0;
+}
+
 static void utc_now(char *out, size_t len)
 {
 	struct timespec ts;
@@ -928,8 +961,9 @@ int hg_params_open(const struct hg_type *type, void *P, hg_params_validate valid
 
 	/* Loading at start (docs/05 "Saved values"). */
 	static char text[HG_SCHEMA_MAX * 4];
-	int fd = open(M.path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0 && errno == ENOENT) {
+	size_t text_len = 0;
+	int rd = hg_params_file_read(M.path, text, sizeof text, &text_len);
+	if (rd < 0 && errno == ENOENT) {
 		/* The first start: the defaults, saved before the first publish. */
 		M.version = 1;
 		bfmt(M.changed_by, sizeof M.changed_by, "saved");
@@ -945,16 +979,15 @@ int hg_params_open(const struct hg_type *type, void *P, hg_params_validate valid
 		if (save_file(M.P, &hdr) < 0)
 			fail78("cannot write %s: %s", M.path, strerror(errno));
 		log_line("first start: defaults written to %s", M.path);
-	} else if (fd < 0) {
+	} else if (rd < 0 && errno == EFBIG) {
+		/* Never read cut: the cut line could still parse, as another value. */
+		fail78("saved parameters refused: the file is longer than %zu bytes (%s)", sizeof text - 1, M.path);
+	} else if (rd < 0) {
 		fail78("cannot read %s: %s", M.path, strerror(errno));
 	} else {
-		ssize_t n = read(fd, text, sizeof text - 1);
-		close(fd);
-		if (n < 0)
-			fail78("cannot read %s: %s", M.path, strerror(errno));
 		struct hg_params_header hdr;
 		unsigned char present[HG_SCHEMA_MAX_FIELDS];
-		if (hg_params_file_parse(type, text, (size_t)n, M.P, &hdr, present, 1, err, sizeof err) < 0)
+		if (hg_params_file_parse(type, text, text_len, M.P, &hdr, present, 1, err, sizeof err) < 0)
 			fail78("saved parameters refused: %s", err);
 		for (uint32_t i = 0; i < type->n_fields; i++)
 			if (!present[i])

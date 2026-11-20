@@ -104,6 +104,11 @@ struct hg_params_header {
 int hg_params_file_parse(const struct hg_type *t, const char *text, size_t len, unsigned char *dst,
 			 struct hg_params_header *hdr, unsigned char *present, int require_header,
 			 char *err, size_t errlen);
+/* Reads a saved file whole into buf (cap bytes), NUL-terminated, its
+ * length in *len: to the end of the file, whatever each read returns. 0,
+ * or -1 with errno; EFBIG for a file of cap bytes or more, which is never
+ * returned cut (a line cut inside a value can still parse). */
+int hg_params_file_read(const char *path, char *buf, size_t cap, size_t *len);
 /* Writes the file's text for the values at src. Returns the length it
  * needs, like snprintf. */
 int hg_params_file_format(const struct hg_type *t, const unsigned char *src, const struct hg_params_header *hdr,
