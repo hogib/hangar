@@ -23,6 +23,32 @@ SupplementaryGroups=hangar-admin
 # subscriptions). Nothing is waited on through it.
 [Subscribe *]
 
+# The vehicle's methods its buttons call, through this machine's manager as
+# admin; with the bridge (BRIDGE=1) the manager takes their types from these
+# lines (docs/08 "Calls across the tether"), the vehicle's manifests being
+# on the vehicle.
+[Call safety.arm]
+Request=empty
+Reply=empty
+[Call safety.disarm]
+Request=empty
+Reply=empty
+[Call safety.estop]
+Request=empty
+Reply=empty
+[Call safety.clear]
+Request=empty
+Reply=empty
+[Call safety.check]
+Request=empty
+Reply=check_rep
+[Call recorder.start]
+Request=recorder_start
+Reply=empty
+[Call recorder.stop]
+Request=empty
+Reply=empty
+
 # No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s tick.
 [Health]
 Watchdog=10s

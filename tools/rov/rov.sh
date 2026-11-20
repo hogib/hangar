@@ -13,6 +13,12 @@
 #   rov.sh params save [FILE] every Pixhawk parameter to FILE (default under $HANGAR_ROV_STATE)
 #   rov.sh params diff FILE   the parameters that differ from FILE now
 #   rov.sh params restore FILE  set back the ones that differ, then diff again (disarmed only)
+#   rov.sh topside up|down|status  on the laptop, with BRIDGE=1: the topside role there
+#
+# BRIDGE=1 (opt-in) replaces the shim with the tether bridge: `rov.sh up` on the Pi
+# runs the vehicle role alone, with the bridge, and `rov.sh topside up` on the laptop
+# the topside role, with its bridge (README "The topside on the laptop"). Both take
+# the key from $HANGAR_ROV_STATE/bridge.key (32 bytes; up on the Pi makes one).
 #
 # Environment: ROV_IP (192.168.2.10) and GCS_IP (192.168.2.1), the Pi's and the
 # laptop's addresses on the tether; FCU (/dev/ttyACM0:115200), the Pixhawk;
@@ -43,8 +49,9 @@ ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 RELAY=${RELAY:-1}
 ENCODER=${ENCODER:-0}
 ENCODER_SOURCE=${ENCODER_SOURCE:-}
+BRIDGE=${BRIDGE:-0}
 
-usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
 die() { echo "rov: $*" >&2; exit 1; }
 
@@ -81,6 +88,15 @@ lay_out() { # root profile
                    -e "s|^Peer=192\.168\.2\.1:|Peer=$GCS_IP:|" "$f" > "$root/etc/hangar/$b" ;;
         esac
     done
+    # The bridge is opt-in: bridge.module.off, bridge.conf and the shared key.
+    if [ "$BRIDGE" = 1 ] && [ -e "$prof/bridge.module.off" ]; then
+        sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$prof/bridge.module.off" \
+            > "$root/etc/hangar/modules/bridge.module"
+        sed -i -e "s|/usr/share/hangar/|$root/usr/share/hangar/|g" \
+               -e "s|^Peer=192\.168\.2\.1$|Peer=$GCS_IP|" -e "s|^Peer=192\.168\.2\.10$|Peer=$ROV_IP|" \
+            "$root/etc/hangar/bridge.conf"
+        install -m 600 "$STATE/bridge.key" "$root/etc/hangar/bridge.key"
+    fi
     if [ -n "$ENCODER_SOURCE" ] && [ -e "$root/etc/hangar/encoder.conf" ]; then
         sed -i "s|^Source=.*|Source=$ENCODER_SOURCE|" "$root/etc/hangar/encoder.conf"
     fi
@@ -88,15 +104,37 @@ lay_out() { # root profile
 
 running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
-start_manager() { # root peer-root
-    local root=$1 peer=$2
+start_manager() { # root [peer-root: the same-host shim]
+    local root=$1 peer=${2:-}
     if running "$root/hangard.pid"; then
         say "a manager already runs under $root (pid $(cat "$root/hangard.pid"))"
         return 0
     fi
-    HANGAR_ROOT=$root HANGAR_PEER_TOPIC_DIR=$peer/dev/shm/hangar \
-        setsid nohup "$bin/hangard" >> "$root/hangard.log" 2>&1 < /dev/null &
+    if [ -n "$peer" ]; then
+        HANGAR_ROOT=$root HANGAR_PEER_TOPIC_DIR=$peer/dev/shm/hangar \
+            setsid nohup "$bin/hangard" >> "$root/hangard.log" 2>&1 < /dev/null &
+    else
+        HANGAR_ROOT=$root setsid nohup "$bin/hangard" >> "$root/hangard.log" 2>&1 < /dev/null &
+    fi
     echo $! > "$root/hangard.pid"
+}
+
+# BRIDGE=1: the key both bridges share; made on the Pi if absent, copied to the
+# laptop by hand (README).
+need_key() { # make
+    [ -s "$STATE/bridge.key" ] && return 0
+    [ "$1" = make ] || die "no $STATE/bridge.key: copy the Pi's (scp $ROV_IP:hangar-rov/bridge.key $STATE/)"
+    mkdir -p "$STATE"
+    (umask 077; head -c 32 /dev/urandom > "$STATE/bridge.key")
+    say "made $STATE/bridge.key: copy it to the laptop's $STATE/"
+}
+
+# The roots must have been laid out the way this run wants them.
+same_layout() { # root
+    local has=0
+    [ -e "$1/etc/hangar/modules/bridge.module" ] && has=1
+    [ ! -d "$1/etc/hangar" ] || [ "$has" = "$BRIDGE" ] ||
+        die "$1 was laid out with BRIDGE=$has: rov.sh reset (or topside reset) first"
 }
 
 stop_manager() { # root
@@ -211,6 +249,23 @@ cmd_up() {
         [ ! -d "$RV/etc/hangar" ] || [ -e "$RV/etc/hangar/modules/encoder.module" ] ||
             die "ENCODER=1, but the vehicle root was laid out without the encoder: rov.sh reset first"
     fi
+    same_layout "$RV"
+    if [ "$BRIDGE" = 1 ]; then
+        [ -x "$bin/hangar-bridge" ] || die "missing $bin/hangar-bridge (set HANGAR_BIN)"
+        need_key make
+        relay_up
+        [ -d "$RV/etc/hangar" ] || lay_out "$RV" "$profiles/rov-vehicle"
+        start_manager "$RV"
+        sleep 1
+        cat <<MSG
+rov: the vehicle role is up on this Pi, with the bridge (Peer=$GCS_IP)
+  vehicle  $RV  safety, mux, mavlink, recorder, bridge, console on http://127.0.0.1:8080
+  topside  on the laptop: BRIDGE=1 tools/rov/rov.sh topside up (key: $STATE/bridge.key)
+  link     HANGAR_ROOT=$RV $bin/hangar status   (bridge: up <laptop>, rtt ...)
+MSG
+        return 0
+    fi
+    same_layout "$RT"
     relay_up
     [ -d "$RV/etc/hangar" ] || lay_out "$RV" "$profiles/rov-vehicle"
     [ -d "$RT/etc/hangar" ] || lay_out "$RT" "$profiles/rov-topside"
@@ -247,8 +302,37 @@ cmd_status() {
     if running "$STATE/relay.pid"; then echo "MAVROS pid $(cat "$STATE/relay.pid")"; else echo "not running"; fi
 }
 
+# On the laptop, BRIDGE=1: the topside role there, the vehicle's across the tether.
+cmd_topside() {
+    [ "$BRIDGE" = 1 ] || die "rov.sh topside runs the topside role on the laptop: BRIDGE=1 only"
+    case "${1:-}" in
+        up)
+            for b in hangard hangar hangar-mavlink hangar-bridge dawn-patrold; do
+                [ -x "$bin/$b" ] || die "missing $bin/$b (set HANGAR_BIN)"
+            done
+            need_key copy
+            same_layout "$RT"
+            [ -d "$RT/etc/hangar" ] || lay_out "$RT" "$profiles/rov-topside"
+            start_manager "$RT"
+            sleep 1
+            cat <<MSG
+rov: the topside role is up on this laptop, with the bridge (Peer=$ROV_IP)
+  topside  $RT  topside_mavlink -> QGroundControl at $GCS_IP:14550, console on :8081
+  link     HANGAR_ROOT=$RT $bin/hangar status   (bridge: up <Pi>, rtt ...)
+MSG
+            ;;
+        down) stop_manager "$RT"; say "topside down" ;;
+        status)
+            if running "$RT/hangard.pid"; then HANGAR_ROOT=$RT "$bin/hangar" status || true
+            else echo "no manager"; fi ;;
+        reset) stop_manager "$RT"; rm -rf "$RT"; say "topside root removed" ;;
+        *) usage 2 ;;
+    esac
+}
+
 case "${1:-}" in
     up) cmd_up ;;
+    topside) cmd_topside "${2:-}" ;;
     down) cmd_down ;;
     status) cmd_status ;;
     reset) cmd_down; rm -rf "$RV" "$RT"; say "roots removed" ;;

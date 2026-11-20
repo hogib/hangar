@@ -2,8 +2,9 @@
 
 How hangar drives the lab's vehicle in phase 1 (`docs/07`, `docs/10`): ArduSub held in
 MANUAL, hangar between QGroundControl and the autopilot. Both roles run on the
-vehicle's Pi until the bridge exists; `rov.sh` lays them out from `profiles/rov-vehicle`
-and `profiles/rov-topside` and starts them. In a release the script is
+vehicle's Pi by default; `rov.sh` lays them out from `profiles/rov-vehicle`
+and `profiles/rov-topside` and starts them. With `BRIDGE=1` the topside role runs on the
+laptop instead, joined by the tether bridge ("The topside on the laptop" below). In a release the script is
 `share/hangar/rov.sh` and this file `share/doc/ROV.md`.
 
 **A session from the laptop:** `tools/rov/lab.sh` (deploy, up, status, bench, down) does
@@ -124,6 +125,54 @@ without discovering a peer; its `"peer": "auto"` and `"camera_controls": "peer"`
 `hellion` on the vehicle, so the page's camera controls do nothing in this setup (the
 encoder has no control channel yet).
 
+## The topside on the laptop (the bridge, opt-in)
+
+With `BRIDGE=1` the shim is gone: the vehicle role runs alone on the Pi, the topside
+role on the laptop, and the tether bridge (`modules/bridge/README.md`; docs/08) joins
+them over UDP 5614. The default stays the shim, both roles on the Pi.
+
+```
+ laptop 192.168.2.1                                Pi 192.168.2.10
+ QGroundControl :14550 ◄── topside_mavlink            safety, mux, mavlink, recorder
+                            console :8081             console 127.0.0.1:8080
+                            bridge ◄──── UDP 5614 ────► bridge
+              pilot.wrench, pilot.buttons, calls ──►  ◄── safety.state, nav.*, ardusub.state, …
+```
+
+What crosses is `profiles/rov-vehicle/bridge.conf` (the same as
+`profiles/rov-topside/bridge.conf` but for `Peer=`): `safety.state`,
+`hangar.vehicle.system` and `.modules`, `nav.*`, `power.battery`, `mux.state`,
+`ardusub.state`, `recorder.status` (10 Hz), `video.index` and `ardusub.param` up;
+`pilot.wrench` and `pilot.buttons` down; calls to `safety.*`, `mux.*`, `recorder.*` and
+`mavlink.setup` across. The two copies must otherwise match, and both machines must run
+the same msg/ tree (the same commit), or `config_match` is false and nothing crosses.
+
+1. **On the Pi** (a checkout or a release, built at the same commit as the laptop):
+   `rov.sh reset` if the roots were laid out without the bridge, then
+   `BRIDGE=1 rov.sh up`. The first run makes `~/hangar-rov/bridge.key` (32 random
+   bytes, mode 600).
+2. **The key to the laptop**, once: `scp bluerov2@192.168.2.10:hangar-rov/bridge.key
+   ~/hangar-rov/` (`mkdir -p ~/hangar-rov` first), mode 600. Never in the repository.
+3. **On the laptop**, from the checkout: `make -j8 all`, then
+   `BRIDGE=1 tools/rov/rov.sh topside up`. It needs `hangard`, `hangar`,
+   `hangar-mavlink`, `hangar-bridge` and `dawn-patrold` in `builddir/`.
+4. **The link:** `HANGAR_ROOT=/dev/shm/hangar-topside builddir/hangar status` shows
+   `bridge  ready  up 192.168.2.10:5614, rtt … ms, offset … ms, N topics in, …` and
+   `topside_mavlink … link up`; the Pi's `hangar status` the same toward
+   `192.168.2.1:5614`. `config_match false: …` says what differs. `hangar echo
+   bridge.topside.link` has the counters (`rejected`, `retransmits`, `loss_rx`).
+5. **QGroundControl** on the laptop as before (UDP 14550, now from the laptop itself);
+   the topside console on http://127.0.0.1:8081, its buttons calling the vehicle's
+   `safety` and `recorder` across; `hangar call safety.check` on the laptop the same.
+6. **At the end:** `BRIDGE=1 tools/rov/rov.sh topside down` on the laptop, `rov.sh down`
+   on the Pi.
+
+`ROV_IP` and `GCS_IP` set the two addresses in both `bridge.conf` files at lay-out, as
+for the rest of the profile. A firewall on the laptop must let UDP 5614 in from the Pi.
+Run on loopback only (two roots, two ports, the lab profiles' real modules, no relay,
+2026-11-20): the link up, `topside_mavlink` `link up`, `hangar call safety.disarm`,
+`safety.check` and `recorder.stop` answered across. Not yet on the tether.
+
 ## Results, 2026-11-19
 
 The second visit, with the v0.1.1 release; props off, the battery connected.
@@ -201,3 +250,5 @@ The third visit, with main at `e559888` (the busy-loop fix and the encoder); pro
   control, the latency and the CPU against electric-eye's 0.91 of a core.
 - Signing against the real ArduSub (`Signing=no` here).
 - Driving with props on, in the tank.
+- The bridge (`BRIDGE=1`) across the tether: the topside on the laptop, pilot.wrench's
+  latency and the call round trip over the Fathom-X.
