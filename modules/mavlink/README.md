@@ -41,7 +41,10 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   and `arming` or `outputs_enabled`. When it closes, a disarm goes out and
   `ardusub.state.armed` is 2 (`disarming`) until ArduSub answers; three sends 100 ms
   apart unanswered, or a refused disarm, is reported as armed, a disagreement, and the
-  disarm is tried again every second. ArduSub armed outside the window, or out of
+  disarm is sent again, three times 100 ms apart, every 2.5 s for as long as ArduSub
+  stays armed: the next round starts when the wait for an answer to this one is over
+  (deviation 10), which is always later than the 1 s `DISARM_REPEAT_NS` asks for.
+  ArduSub armed outside the window, or out of
   MANUAL while armed, is disarmed at the first message and reported armed for the
   safety module's `autopilot` trigger. Each `ardusub.state` references the
   `safety.state` the gate judged.

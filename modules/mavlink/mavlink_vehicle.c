@@ -43,7 +43,7 @@
 #define DISARM_RETRY_NS 100000000ull
 #define DISARM_TRIES 3
 #define DISARM_ANSWER_NS 2500000000ull   /* two HEARTBEATs (1 Hz) and a margin before a disarm counts as unanswered */
-#define DISARM_REPEAT_NS 1000000000ull
+#define DISARM_REPEAT_NS 1000000000ull   /* the least time between two rounds of sends; DISARM_ANSWER_NS is the one that binds */
 #define CLOCK_BUCKETS 10               /* a 10 s window, one bucket per second */
 #define RATE_REQUEST_RETRY_NS 5000000000ull
 #define PARAM_RETRY_NS 300000000ull
@@ -838,7 +838,8 @@ static void tick(uint64_t now)
 			A.disarm_next_ns = now + DISARM_RETRY_NS; /* the answer may still come: the HEARTBEAT is 1 Hz */
 		} else if (A.armed != 0) {
 			/* Three sends and two heartbeat periods without ArduSub reporting
-			 * disarmed: a disagreement; try again in a second. */
+			 * disarmed: a disagreement; the next round of sends starts now,
+			 * 2.5 s after this one did. */
 			if (A.armed == 2)
 				mod_log(WHO, "disarm unanswered after %d sends: ArduSub reported armed", A.disarm_sends);
 			A.armed = 1;
