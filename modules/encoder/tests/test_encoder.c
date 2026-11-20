@@ -423,11 +423,21 @@ static void test_file_to_udp(void)
 	int nvi = 0, vi_ok = 1;
 	struct video_index m;
 	struct hg_info info;
-	while (vi && hg_next(vi, &m, sizeof m, &info) == HG_MSG) {
-		nvi++;
-		vi_ok &= m.frame_seq == (uint64_t)nvi && m.rtp_timestamp == (uint32_t)nvi * 900u && m.frame_topic_id == 0;
-		vi_ok &= m.keyframe == idr[nvi - 1] && m.params_added == (idr[nvi - 1] && nvi > 1) && m.bytes > 0;
-		vi_ok &= info.stamp_ns == m.capture_ns;
+	/* The module publishes a frame's index just after sending its packets, so
+	 * the last one can still be on its way when the last marker has arrived
+	 * here: read until all have come, or 2 s (a loaded machine read 39 of 40
+	 * when this read once). */
+	uint64_t t_vi = now_ms();
+	while (vi && nvi < FRAMES && now_ms() - t_vi < 2000) {
+		while (nvi < FRAMES && hg_next(vi, &m, sizeof m, &info) == HG_MSG) {
+			nvi++;
+			vi_ok &= m.frame_seq == (uint64_t)nvi && m.rtp_timestamp == (uint32_t)nvi * 900u &&
+				 m.frame_topic_id == 0;
+			vi_ok &= m.keyframe == idr[nvi - 1] && m.params_added == (idr[nvi - 1] && nvi > 1) && m.bytes > 0;
+			vi_ok &= info.stamp_ns == m.capture_ns;
+		}
+		if (nvi < FRAMES)
+			hg_wait(&vi, 1, 50);
 	}
 	CHECK_EQ_INT(nvi, FRAMES);
 	CHECK(vi_ok);
