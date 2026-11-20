@@ -523,7 +523,11 @@ static void test_idle_server_sleeps(void)
 	printf("    %d waits in 300 ms, %d of them on news\n", waits, ready);
 	CHECK(waits <= 12); /* six 50 ms timeouts, and room for news still owed */
 	CHECK(ready <= 2);
-	CHECK_EQ_INT(hg_wait_unread() - u0, 0);
+	/* A few, not none: hg_serve serves 8 requests a pass, in turn, so with a
+	 * backlog left by the children a topic the pass did not reach is returned
+	 * again at the same position (once under a parallel make check). The spin
+	 * counted 5000 here. */
+	CHECK(hg_wait_unread() - u0 <= 3);
 }
 
 static int child_actuator(void)
