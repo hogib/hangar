@@ -169,8 +169,8 @@ thrusters itself.
 | `Neutral` | — | Only with `Legacy=yes`, for a program that drives hardware (ArduSub): a command that puts that hardware to neutral by itself. The manager runs it whenever the module exits, as it runs an actuator's `[Actuator] Neutral` ([03-manager](03-manager.md#states)), and stops the module first in a shutdown. Same form as `Exec` |
 | `ExclusiveGroups` | `""` | Only with `Legacy=yes` and a `Neutral`, for a program that drives hardware: the groups that give access to that hardware (its buses, its GPIO), each also one of its `SupplementaryGroups`. No other module may be in them, as for an actuator's `[Actuator] Groups`; a udev rule gives the devices to these groups alone |
 | `Exec` | — (required) | The program and its arguments. The first word is an absolute path. Split on blanks; `"..."` keeps blanks inside one argument. No shell, no variables |
-| `Environment` | — | `NAME=value`; repeatable |
-| `User` | `hangar` | The user the module runs as. Required, and not shared with any other module, when the module publishes an actuator topic. Modules sharing a user are protected from each other only by being non-dumpable ([01-topics](01-topics.md#permissions)) |
+| `Environment` | — | `NAME=value`; repeatable. A name beginning `HANGAR_` is refused: those are the manager's to set |
+| `User` | `hangar` | The user the module runs as. Never root: a `User`, `Group` or `SupplementaryGroups` that names or resolves to id 0 is refused on any module that is not the `Privileged` one. Required, and not shared with any other module, when the module publishes an actuator topic. Modules sharing a user are protected from each other only by being non-dumpable ([01-topics](01-topics.md#permissions)) |
 | `Group` | `hangar` | The primary group. Every module is also in `hangar`, which can read every topic |
 | `SupplementaryGroups` | `""` | For device access: `i2c gpio video` |
 | `Capabilities` | none | Capabilities the module keeps after switching user, from the manager's own set only: `CAP_SYS_NICE` for a program that sets its own threads' priorities (ArduSub). Anything else is refused |

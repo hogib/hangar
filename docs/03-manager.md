@@ -493,13 +493,19 @@ a person, can read it:
 ```
 hangar-registry 2
 system: failsafe 98231544000000 thrusters given up
-depth 1234 98231544 ready 0 0.1
-thrusters 1240 98231551 failed 6 10
+depth 1234 98231544 ready 0 0.1 5d0c1e2f9a4b7c33 81f2a6c07d3e9b15 5 -
+thrusters 1240 98231551 stopping 6 10 02b7e4d19c6a5f80 c4490e1b7a2d3f68 0.5 stopped
 ```
 
 (The `system:` line: the system state, since when in `CLOCK_MONOTONIC` nanoseconds,
 and why, to the end of the line. Module lines: name, PID, start time in clock ticks
-from `/proc/<pid>/stat`, state, failures, current delay in seconds.)
+from `/proc/<pid>/stat`, state, failures, current delay in seconds, the hashes of the
+manifest and the wiring the instance was started with, the `StopTimeout` it was started
+with in seconds, and the state a stop under way leads to, `-` when none is. The last two
+are there so that a manager adopting a module stops it as its own manifest said, even
+when that manifest has since been changed or removed, and finishes a stop as the
+operator meant it. A line without them, from an older manager, is read: a `stopping`
+module stays down, an `unhealthy` one is restarted with the failure counted.)
 
 On start the manager opens a pidfd for each PID in it (`pidfd_open`), reads the start
 time again, and adopts the process only if both match; a PID now belonging to another
@@ -637,7 +643,7 @@ by the manager, on its own topic, and never by the process that asks.
   refused with any other; a policy module whose spec's `Name=` differs from its name
   refused.
 - Adoption: kill the manager under load; the modules keep publishing; a new manager
-  adopts them, flags the topics of a module that died meanwhile, and treats a registry
+  adopts them, flags the topics of a module that died meanwhile (every file whose header names the dead process as `writer_pid`, so the bridge's mirrored topics too), and treats a registry
   PID that now belongs to another process as dead.
 - An actuator killed with `SIGKILL` while the manager is stopped: the restarted manager
   runs its `Neutral` command before anything else.
