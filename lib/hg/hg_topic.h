@@ -132,6 +132,12 @@ hg_pub *hg_pub_open(const char *name, const struct hg_type *type, const struct h
 hg_pub *hg_pub_open_mirror(const char *name, const struct hg_type *type,
 			   const unsigned char origin_boot[16], uint64_t first_seq,
 			   const struct hg_pub_opts *opts);
+/* The same, naming the module that writes the topic on the sender's side as
+ * the header's writer (docs/01 "Mirrored topics"): a server reading a
+ * mirrored request topic names its caller <role>:<writer> from it (docs/04).
+ * writer: at most 31 characters; NULL is this module's name. */
+hg_pub *hg_pub_open_mirror_as(const char *name, const struct hg_type *type, const unsigned char origin_boot[16],
+			      uint64_t first_seq, const char *writer, const struct hg_pub_opts *opts);
 /* Publishes one message with a reference per Inputs topic. len must equal
  * the payload size: -1 with EINVAL otherwise, nothing published. */
 int hg_publish(hg_pub *p, const void *payload, size_t len, uint64_t stamp_ns);

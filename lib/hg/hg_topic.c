@@ -794,8 +794,8 @@ static int zero16(const unsigned char *b)
  * written, wake file created, renamed into place, the directory word bumped.
  * Fills p->h, slots, wake and seq; -1 with errno. */
 static int pub_open_managed(hg_pub *p, const char *name, const struct hg_type *type, int mirror,
-			    const unsigned char origin_boot[16], uint64_t first_seq,
-			    const char *wake_path)
+			    const unsigned char origin_boot[16], uint64_t first_seq, const char *writer,
+			    uint32_t slots, const char *wake_path)
 {
 	char req[HG_CONTROL_MAX];
 	int n = snprintf(req, sizeof req, "open %s hash=%016llx payload=%u schema=%u", name,
@@ -806,6 +806,10 @@ static int pub_open_managed(hg_pub *p, const char *name, const struct hg_type *t
 			snprintf(boot + 2 * i, 3, "%02x", origin_boot[i]);
 		n += snprintf(req + n, sizeof req - (size_t)n, " boot=%s first=%llu", boot,
 			      (unsigned long long)first_seq);
+		if (writer && *writer)
+			n += snprintf(req + n, sizeof req - (size_t)n, " writer=%s", writer);
+		if (slots)
+			n += snprintf(req + n, sizeof req - (size_t)n, " slots=%u", slots);
 	}
 	if (n < 0 || (size_t)n + 1 + type->schema_bytes > sizeof req) {
 		errno = EMSGSIZE;
@@ -942,7 +946,7 @@ static int resolve_open(const char *name, const struct hg_type *type, int mirror
  * header written, the wake file created, bit 2 on the old file, the rename,
  * the directory word. */
 static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror,
-			const unsigned char origin_boot[16], uint64_t first_seq,
+			const unsigned char origin_boot[16], uint64_t first_seq, const char *writer,
 			const struct hg_pub_opts *opts)
 {
 	char path[HG_PATH_MAX], tmp[HG_PATH_MAX], wake_path[HG_PATH_MAX], suffix[32];
@@ -988,7 +992,7 @@ static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror
 	 * topics"): the library asks over the control socket and maps what it
 	 * is handed. */
 	if (under_manager()) {
-		if (pub_open_managed(p, name, type, mirror, origin_boot, first_seq, wake_path) < 0) {
+		if (pub_open_managed(p, name, type, mirror, origin_boot, first_seq, writer, opts ? opts->slots : 0, wake_path) < 0) {
 			int e = errno;
 			free(p);
 			errno = e;
@@ -1043,7 +1047,7 @@ static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror
 	h->rate_mhz = op.rate_mhz;
 	h->type_hash = type->hash;
 	memcpy(h->name, name, strlen(name));
-	snprintf(h->writer, sizeof h->writer, "%s", module_name);
+	snprintf(h->writer, sizeof h->writer, "%s", writer && *writer ? writer : module_name);
 	h->writer_pid = (int32_t)getpid();
 	h->schema_bytes = type->schema_bytes;
 	h->created_real_ns = real_now_ns();
@@ -1102,7 +1106,7 @@ fail:
 
 hg_pub *hg_pub_open(const char *name, const struct hg_type *type, const struct hg_pub_opts *opts)
 {
-	return pub_open(name, type, 0, NULL, 0, opts);
+	return pub_open(name, type, 0, NULL, 0, NULL, opts);
 }
 
 hg_pub *hg_pub_open_mirror(const char *name, const struct hg_type *type,
@@ -1113,7 +1117,17 @@ hg_pub *hg_pub_open_mirror(const char *name, const struct hg_type *type,
 		errno = EINVAL;
 		return NULL;
 	}
-	return pub_open(name, type, 1, origin_boot, first_seq, opts);
+	return pub_open(name, type, 1, origin_boot, first_seq, NULL, opts);
+}
+
+hg_pub *hg_pub_open_mirror_as(const char *name, const struct hg_type *type, const unsigned char origin_boot[16],
+			      uint64_t first_seq, const char *writer, const struct hg_pub_opts *opts)
+{
+	if (writer && (!*writer || strlen(writer) > 31)) {
+		errno = EINVAL;
+		return NULL;
+	}
+	return pub_open(name, type, 1, origin_boot, first_seq, writer, opts);
 }
 
 uint64_t hg_pub_next_seq(const hg_pub *p)
