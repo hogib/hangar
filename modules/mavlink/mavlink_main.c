@@ -194,9 +194,22 @@ static void serial_flush(struct mav_link *l)
 	}
 }
 
-static int is_control(uint32_t msgid)
+/* What a message is to the queue. A COMMAND_LONG is a control frame only
+ * when it arms or disarms: the rate requests are COMMAND_LONGs too
+ * (MAV_CMD_SET_MESSAGE_INTERVAL, six of them every 5 s), and while they
+ * counted as control nothing could evict them: a line blocked for half a
+ * minute filled the queue with them and the next disarm found no room. */
+static int tx_kind(uint32_t msgid, const uint8_t *payload, size_t full_len)
 {
-	return msgid == MAV_MSG_ID_MANUAL_CONTROL || msgid == MAV_MSG_ID_COMMAND_LONG;
+	if (msgid == MAV_MSG_ID_MANUAL_CONTROL)
+		return MAV_TX_MANUAL_CONTROL;
+	if (msgid == MAV_MSG_ID_COMMAND_LONG && full_len <= MAV_MAX_PAYLOAD) {
+		struct mav_command_long c;
+		mav_unpack_command_long(payload, (uint8_t)full_len, &c);
+		if (c.command == MAV_CMD_COMPONENT_ARM_DISARM)
+			return c.param1 >= 0.5f ? MAV_TX_ARM : MAV_TX_DISARM;
+	}
+	return MAV_TX_OTHER;
 }
 
 /* The message into one slot of the queue, to be framed when its turn comes. */
@@ -209,6 +222,7 @@ static void txframe_set(struct mav_txframe *q, uint32_t msgid, const uint8_t *pa
 	q->msgid = msgid;
 	q->crc_extra = crc_extra;
 	q->framed = 0;
+	q->kind = (uint8_t)tx_kind(msgid, payload, full_len);
 }
 
 /* The queue's policy (mavlink.h, mav_link_send). Index i counts from the head;
@@ -216,24 +230,28 @@ static void txframe_set(struct mav_txframe *q, uint32_t msgid, const uint8_t *pa
 static int serial_enqueue(struct mav_link *l, uint32_t msgid, const uint8_t *payload, size_t full_len,
 			  uint8_t crc_extra)
 {
-	if (msgid == MAV_MSG_ID_MANUAL_CONTROL) {
+	int kind = tx_kind(msgid, payload, full_len);
+	if (kind == MAV_TX_MANUAL_CONTROL || kind == MAV_TX_DISARM) {
 		for (int i = l->tx_count - 1; i >= 0; i--) {
 			struct mav_txframe *q = &l->txq[(l->tx_head + i) % MAV_TXQ];
-			if (q->msgid == MAV_MSG_ID_MANUAL_CONTROL && q->off == 0) {
+			if (q->kind == kind && q->off == 0) {
 				/* In its place: it keeps its turn, and takes the sequence
-				 * number and the timestamp of that turn. */
+				 * number and the timestamp of that turn. A disarm sent
+				 * again while the first still waits is that disarm: the
+				 * queue holds one, however long the line stays blocked. */
 				txframe_set(q, msgid, payload, full_len, crc_extra);
-				l->tx_superseded++;
+				if (kind == MAV_TX_MANUAL_CONTROL)
+					l->tx_superseded++;
 				return 0;
 			}
 		}
 	}
 	if (l->tx_count == MAV_TXQ) {
 		int victim = -1;
-		if (is_control(msgid))
+		if (kind != MAV_TX_OTHER)
 			for (int i = l->tx_count - 1; i >= 1; i--) {
 				struct mav_txframe *q = &l->txq[(l->tx_head + i) % MAV_TXQ];
-				if (!is_control(q->msgid) && q->off == 0) {
+				if (q->kind == MAV_TX_OTHER && q->off == 0) {
 					victim = i;
 					break;
 				}

@@ -239,6 +239,72 @@ static void test_signed_in_the_order_written(void)
 	close_line();
 }
 
+static int queued_of(int kind)
+{
+	int n = 0;
+	for (int i = 0; i < L.tx_count; i++)
+		n += L.txq[(L.tx_head + i) % MAV_TXQ].kind == kind;
+	return n;
+}
+
+/* A minute of what the vehicle's module sends, into a line that stays
+ * blocked: per 5 s, 250 MANUAL_CONTROL, 6 rate requests
+ * (MAV_CMD_SET_MESSAGE_INTERVAL) and some parameter traffic, with a disarm's
+ * three sends in between. Every COMMAND_LONG used to be a control frame
+ * that nothing could evict: after 25 s the 32 places held rate requests and
+ * mav_link_send(disarm) returned -1. A disarm is never the frame dropped:
+ * rate requests are evictable, and a disarm sent again takes the place of
+ * the one still waiting, so that disarms cannot fill the queue either. */
+static void test_a_disarm_is_never_dropped(void)
+{
+	open_line(0);
+	block_line();
+	for (int round = 0; round < 12; round++) {
+		for (int i = 0; i < 6; i++)
+			send_cmd(MAV_CMD_SET_MESSAGE_INTERVAL, (float)(30 + i), 20000);
+		for (int i = 0; i < 250; i++)
+			CHECK_EQ_INT(send_mc(i), 0);
+		for (int i = 0; i < 5; i++)
+			send_hb();
+		if (round % 2)
+			for (int i = 0; i < 3; i++)
+				CHECK_EQ_INT(send_disarm(), 0);
+	}
+	CHECK_EQ_INT(L.tx_count, MAV_TXQ); /* full, of frames that may be evicted */
+	CHECK_EQ_INT(queued_of(MAV_TX_MANUAL_CONTROL), 1);
+	CHECK_EQ_INT(queued_of(MAV_TX_DISARM), 1);
+	CHECK_EQ_INT(queued_of(MAV_TX_OTHER), MAV_TXQ - 2);
+	CHECK(L.tx_dropped > 0);
+	/* The disarm that matters, into the full queue; and its two repeats. */
+	CHECK_EQ_INT(send_disarm(), 0);
+	CHECK_EQ_INT(send_disarm(), 0);
+	CHECK_EQ_INT(send_disarm(), 0);
+	CHECK_EQ_INT(send_mc(777), 0);
+	CHECK_EQ_INT(L.tx_count, MAV_TXQ);
+	/* With no disarm waiting (a queue of nothing but telemetry-side frames),
+	 * a disarm takes the place of the newest of them. */
+	close_line();
+	open_line(0);
+	block_line();
+	for (int i = 0; i < 100; i++)
+		send_cmd(MAV_CMD_SET_MESSAGE_INTERVAL, (float)(30 + i % 6), 20000);
+	CHECK_EQ_INT(L.tx_count, MAV_TXQ);
+	CHECK_EQ_INT(queued_of(MAV_TX_OTHER), MAV_TXQ);
+	uint64_t dropped = L.tx_dropped;
+	CHECK_EQ_INT(send_disarm(), 0);
+	CHECK_EQ_INT(L.tx_dropped, dropped + 1); /* the rate request it replaced */
+	CHECK_EQ_INT(queued_of(MAV_TX_DISARM), 1);
+	CHECK_EQ_INT(send_mc(5), 0);
+	CHECK_EQ_INT(send_cmd(MAV_CMD_SET_MESSAGE_INTERVAL, 30, 20000), -1); /* a rate request finds no room, and is none */
+	drain_and_decode();
+	CHECK_EQ_INT(R.refused, 0);
+	CHECK_EQ_INT(R.disarms, 1);
+	CHECK_EQ_INT(R.mc, 1);
+	CHECK_EQ_INT(R.last_mc_x, 5);
+	CHECK_EQ_INT(R.seq_backwards, 0);
+	close_line();
+}
+
 /* The tlog holds what went on the line, whole signed frames in the order
  * they went: a reader of it (pymavlink) must find every frame well formed. */
 static void test_tlog_is_what_went(void)
@@ -296,6 +362,7 @@ int main(void)
 	close(kfd);
 	snprintf(tlogfile, sizeof tlogfile, "%s.tlog", keyfile);
 	RUN_TEST(test_signed_in_the_order_written);
+	RUN_TEST(test_a_disarm_is_never_dropped);
 	RUN_TEST(test_tlog_is_what_went);
 	unlink(keyfile);
 	unlink(tlogfile);

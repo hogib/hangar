@@ -114,10 +114,15 @@ the same on both.
   (a frame signed when it was queued, then overtaken by a later-signed
   `MANUAL_CONTROL` in the place of an older one, is refused by a receiver that wants
   rising timestamps, and that frame could be the disarm). The tlog gets each frame
-  when its last byte went. When the queue is full: a new `MANUAL_CONTROL` replaces the
-  unsent one (only the newest matters); a control frame (`MANUAL_CONTROL`,
-  `COMMAND_LONG`: arming, disarming) evicts the newest unsent other frame; anything
-  else is dropped, and counted (`tx-dropped` in the status line). A frame partly
+  when its last byte went. A new `MANUAL_CONTROL` replaces the unsent one (only the
+  newest matters), and a disarm sent again replaces the disarm still waiting (it is
+  the same disarm), so the queue never holds more than a few control frames. When the
+  queue is full, a control frame (`MANUAL_CONTROL`, and a `COMMAND_LONG` that arms or
+  disarms) evicts the newest unsent other frame, of which there is then always one:
+  a disarm is never the frame dropped. The rate requests are `COMMAND_LONG`s too
+  (`MAV_CMD_SET_MESSAGE_INTERVAL`) and are not control frames: they are evicted like
+  parameter traffic. Anything else that finds the queue full is dropped, and counted
+  (`tx-dropped` in the status line). A frame partly
   written is always finished, so the stream stays framed. A reader that stops for
   1.5 s leaves the module running, publishing, and sending the current manual control
   the moment it reads again (`test_serial_backpressure`).
@@ -291,7 +296,10 @@ pseudo-terminal.
   a pseudo-terminal whose far end does not read until the test says so, signing on,
   the receiver the module's own verifier. A `MANUAL_CONTROL` replaced twice in the
   queue with a disarm and a rate request behind it: everything is accepted, sequence
-  numbers and timestamps in order, the newest manual control once; the tlog holds
+  numbers and timestamps in order, the newest manual control once; a minute of the module's traffic into a blocked line
+  (rate requests, manual control, a disarm's repeats), then a disarm: queued, the
+  queue holding one disarm and one manual control among evictable frames, and a
+  queue of nothing but rate requests gives one up for it; the tlog holds
   exactly the frames that went, each one whole and verifiable.
 - `make check-mavlink_vehicle` (20 s): the module against `fake_ardusub` (a UDP client
   like MAVProxy's `--out`, signing, a parameter table, scripted refusals, a control

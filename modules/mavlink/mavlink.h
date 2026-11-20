@@ -29,7 +29,9 @@ struct mav_txframe {
 	uint32_t msgid;
 	uint8_t crc_extra;
 	uint8_t framed;
+	uint8_t kind;                /* what it is to the queue: MAV_TX_* */
 };
+enum { MAV_TX_OTHER = 0, MAV_TX_MANUAL_CONTROL, MAV_TX_DISARM, MAV_TX_ARM };
 
 struct mav_link {
 	int fd;                      /* -1 while a serial line is closed */
@@ -82,12 +84,15 @@ void mav_link_close(struct mav_link *l);
  * Serial: the message joins the transmit queue and the queue is written as
  * far as the line takes it, never waiting; it is framed (sequence number,
  * signature) when its turn comes, and goes to the tlog when its last byte
- * went. MANUAL_CONTROL and COMMAND_LONG are
- * the control frames: a MANUAL_CONTROL replaces one still unsent in the queue
- * (the newest command is the one that matters), and with the queue full a
- * control frame takes the place of the newest unsent telemetry-side frame
- * (rate requests, parameter traffic); with nothing to evict, or for any other
- * frame, the new frame is dropped and counted. */
+ * went. MANUAL_CONTROL and the arm and disarm commands (COMMAND_LONG with
+ * MAV_CMD_COMPONENT_ARM_DISARM) are the control frames: a MANUAL_CONTROL or a
+ * disarm replaces one still unsent in the queue (the newest command is the
+ * one that matters; a repeated disarm is the same disarm), so the queue never
+ * holds more than a handful of them, and with the queue full a control frame
+ * takes the place of the newest unsent telemetry-side frame (rate requests,
+ * which are COMMAND_LONGs too, and parameter traffic): there is always one,
+ * so a disarm is never the frame dropped. Any other frame that finds the
+ * queue full is dropped and counted. */
 int mav_link_send(struct mav_link *l, uint32_t msgid, const uint8_t *payload, size_t full_len, uint8_t crc_extra);
 /* Receives every datagram waiting, decoding each frame and calling fn with
  * it; frames that fail their checks are counted, not delivered. The sender
