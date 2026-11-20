@@ -9,6 +9,7 @@
 #   make check-fuzz-corpus       part of check: every harness, without the fuzzer engine and with
 #                                $(CC), over its corpus in fuzz/corpus/<name>/
 #   make check-asan-fuzz-corpus  part of check-asan: the same under ASan and UBSan
+#   make fuzz-cov-<name>         what the corpus of a harness reaches: llvm-cov's table (needs llvm-cov)
 #   make fuzz-seeds              rewrites the generated seeds (fuzz/mkseeds.c)
 #
 # A harness is fuzz/fuzz_<name>.c. Per harness: fuzz_<name>_SRC (what it links),
@@ -129,6 +130,30 @@ $(FUZZ_RUNS): fuzz-run-%: $(FUZZ_DIR)/fuzz_%
 
 fuzz: $(FUZZ_RUNS)
 fuzz-http: fuzz-run-http
+
+# What the corpus reaches: make fuzz-cov-<name> replays the seeds and what the
+# runs have kept (builddir/fuzz/corpus-<name>/) through a build with clang's
+# source coverage, and prints llvm-cov's table of regions, functions and lines
+# per source file. The number that says how much weight "no crash" carries.
+define fuzz_cov_rule
+$(FUZZ_DIR)/cov_$(1): fuzz/fuzz_$(1).c fuzz/standalone.c $$(fuzz_$(1)_SRC) $$(fuzz_$(1)_DEPS) $$(FUZZ_HDRS)
+	@mkdir -p $$(dir $$@)
+	$$(FUZZ_CC) -g -O0 -fprofile-instr-generate -fcoverage-mapping $$(call fuzz_std,$(1)) $$(FUZZ_CPPFLAGS) \
+	  $$(fuzz_$(1)_CPPFLAGS) -o $$@ fuzz/fuzz_$(1).c fuzz/standalone.c $$(fuzz_$(1)_SRC) $$(fuzz_$(1)_LDLIBS) -pthread -lrt -lm
+endef
+$(foreach h,$(FUZZ_HARNESSES),$(eval $(call fuzz_cov_rule,$(h))))
+
+FUZZ_COVS := $(addprefix fuzz-cov-,$(FUZZ_HARNESSES))
+.PHONY: fuzz-cov $(FUZZ_COVS)
+$(FUZZ_COVS): fuzz-cov-%: $(FUZZ_DIR)/cov_%
+	@mkdir -p $(FUZZ_DIR)/corpus-$*
+	@LLVM_PROFILE_FILE=$(FUZZ_DIR)/$*.profraw $< fuzz/corpus/$* $(FUZZ_DIR)/corpus-$* > $(FUZZ_DIR)/cov_$*.log 2>&1 || \
+	  { echo "FAIL  fuzz-cov $*"; tail -20 $(FUZZ_DIR)/cov_$*.log; exit 1; }
+	@llvm-profdata merge -o $(FUZZ_DIR)/$*.profdata $(FUZZ_DIR)/$*.profraw
+	@echo "== $*: $$(tail -1 $(FUZZ_DIR)/cov_$*.log)"
+	@llvm-cov report $< -instr-profile=$(FUZZ_DIR)/$*.profdata -ignore-filename-regex='^fuzz/|/fuzz/|^msg/' 2>/dev/null | \
+	  awk 'NR<=2 || /TOTAL/ || $$2+0 > 0 { printf "%-44s regions %7s  functions %7s  lines %7s\n", $$1, $$4, $$7, $$10 }' | sed -n '3,$$p'
+fuzz-cov: $(FUZZ_COVS)
 
 # UBSAN_OPTIONS: in a sanitized build (check-asan-fuzz-corpus) the first
 # undefined operation ends the replay; it means nothing to a plain build.

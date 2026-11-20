@@ -1,5 +1,6 @@
 # hangar CI: every suite with gcc, clang and zig cc; the sanitizers; the
-# operator equivalence hashes; cross builds for the vehicle targets.
+# operator equivalence hashes; cross builds for the vehicle targets; a minute
+# of fuzzing per harness; the static analysers.
 #
 # The aarch64 job runs the suites natively on GitHub's arm64 runners (the
 # repository is public, so they are free): the futex suites cannot run under
@@ -75,6 +76,57 @@ jobs:
       - name: Suite logs on failure
         if: failure()
         run: for f in builddir/tsan/tests-*/*.log builddir/asan/tests-*/*.log; do [ -f "$f" ] && { echo "== $f"; cat "$f"; }; done; true
+
+  # Every harness of fuzz/ for a minute (fuzz/README.md). The corpora are
+  # replayed by `make check` and `make check-asan` in the jobs above; this job
+  # is the fuzzer itself, long enough to catch a change that breaks a parser
+  # outright, not a campaign.
+  fuzz:
+    name: fuzz (60 s per harness)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            build-essential clang libclang-rt-dev pkg-config
+      - name: Build the harnesses
+        run: make -j"$(nproc)" fuzz-build
+      - name: Fuzz
+        run: make -k -j"$(nproc)" fuzz FUZZ_SECONDS=60
+      - name: Logs on failure
+        if: failure()
+        run: for f in builddir/fuzz/*.log; do echo "== $f"; tail -80 "$f"; done
+      - name: Crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: builddir/fuzz/crashes-*/
+          if-no-files-found: ignore
+
+  # make analyze (tools/analyze/README.md). What the analysers report depends
+  # on their versions, and the suppressions were written against clang 23,
+  # gcc 16 and cppcheck 2.22 (2026-11-21), which is what Arch ships; Ubuntu
+  # 24.04's are older, and an older clang may not know every checker the set
+  # names. A new release of a tool can add findings nobody has read yet, so
+  # the job reports and does not fail the workflow: remove continue-on-error
+  # to make it binding.
+  analyze:
+    name: static analysis
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          pacman -Syu --noconfirm --needed clang cppcheck python pkgconf libjpeg-turbo ffmpeg x264
+      - name: Versions
+        run: clang --version | head -1; gcc --version | head -1; cppcheck --version; clang-tidy --version | head -2
+      - name: Analyze
+        run: make analyze
 
   aarch64:
     name: check (gcc, aarch64 native)
