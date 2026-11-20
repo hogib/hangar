@@ -8,6 +8,7 @@
  */
 #include "nn_ops.h"
 
+#include <stdarg.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -95,10 +96,20 @@ static bool attr_uint(const nn_attrs *a, uint32_t i, uint32_t lo, uint32_t hi,
   return true;
 }
 
-static int fail(char *reason, size_t len, const char *fmt, const char *a,
-                unsigned b, unsigned c) {
-  if (reason && len)
-    snprintf(reason, len, fmt, a, b, c);
+/* The reason of a refused op. The format is checked against its arguments by
+ * the compiler: it used to take a string and two numbers whatever the format
+ * said, so "is %s" was handed a dtype's number (a crash at the first weights
+ * file with a non-f32 input) and a format without %s printed the address of
+ * "" for its first number. */
+static int fail(char *reason, size_t len, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+static int fail(char *reason, size_t len, const char *fmt, ...) {
+  if (reason && len) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(reason, len, fmt, ap);
+    va_end(ap);
+  }
   return -1;
 }
 
@@ -114,12 +125,12 @@ static bool is_f32_mat(const nn_tdesc *d, uint32_t rows, uint32_t cols) {
 static int check_one_f32_input(const nn_op_sig *s, const char *op, char *r,
                                size_t rl) {
   if (s->n_inputs != 1)
-    return fail(r, rl, "%s takes 1 input, has %u", op, s->n_inputs, 0);
+    return fail(r, rl, "%s takes 1 input, has %u", op, s->n_inputs);
   if (s->inputs[0].dtype != NN_F32)
-    return fail(r, rl, "%s input must be f32, is %s", op,
-                (unsigned)s->inputs[0].dtype, 0);
+    return fail(r, rl, "%s input must be f32, is %s",
+                op, nn_dtype_name(s->inputs[0].dtype));
   if (nn_tdesc_numel(&s->inputs[0]) == 0)
-    return fail(r, rl, "%s input has no elements", op, 0, 0);
+    return fail(r, rl, "%s input has no elements", op);
   return 0;
 }
 
@@ -153,24 +164,24 @@ static void matvec(float *y, const float *W, const float *x, const float *b,
 static int dense_check(const nn_op_sig *s, nn_tdesc *out, char *r, size_t rl) {
   uint32_t in, o, bias;
   if (s->attrs->n != 3)
-    return fail(r, rl, "dense needs attrs in, out, bias; has %u", "", s->attrs->n, 0);
+    return fail(r, rl, "dense needs attrs in, out, bias; has %u", s->attrs->n);
   if (!attr_uint(s->attrs, 0, 1, 1u << 20, &in))
-    return fail(r, rl, "dense attr in out of range", "", 0, 0);
+    return fail(r, rl, "dense attr in out of range");
   if (!attr_uint(s->attrs, 1, 1, 1u << 20, &o))
-    return fail(r, rl, "dense attr out out of range", "", 0, 0);
+    return fail(r, rl, "dense attr out out of range");
   if (!attr_uint(s->attrs, 2, 0, 1, &bias))
-    return fail(r, rl, "dense attr bias must be 0 or 1", "", 0, 0);
+    return fail(r, rl, "dense attr bias must be 0 or 1");
   if (check_one_f32_input(s, "dense", r, rl) < 0)
     return -1;
   if (nn_tdesc_numel(&s->inputs[0]) != in)
-    return fail(r, rl, "dense input has %u elements, attr in is %u", "",
+    return fail(r, rl, "dense input has %u elements, attr in is %u",
                 (unsigned)nn_tdesc_numel(&s->inputs[0]), in);
   if (s->n_tensors != 1 + bias)
-    return fail(r, rl, "dense needs %u tensors, has %u", "", 1 + bias, s->n_tensors);
+    return fail(r, rl, "dense needs %u tensors, has %u", 1 + bias, s->n_tensors);
   if (!is_f32_mat(&s->tensors[0], o, in))
-    return fail(r, rl, "dense W must be f32 [%u, %u]", "", o, in);
+    return fail(r, rl, "dense W must be f32 [%u, %u]", o, in);
   if (bias && !is_f32_vec(&s->tensors[1], o))
-    return fail(r, rl, "dense b must be f32 [%u]", "", o, 0);
+    return fail(r, rl, "dense b must be f32 [%u]", o);
   out->dtype = NN_F32;
   out->ndim = 1;
   out->dims[0] = o;
@@ -195,33 +206,32 @@ static const nn_kernel dense_kernels[] = {
 static int lstm_check(const nn_op_sig *s, nn_tdesc *out, char *r, size_t rl) {
   uint32_t I, H, L, k;
   if (s->attrs->n != 3)
-    return fail(r, rl, "lstm needs attrs input, hidden, layers; has %u", "",
-                s->attrs->n, 0);
+    return fail(r, rl, "lstm needs attrs input, hidden, layers; has %u",
+                s->attrs->n);
   if (!attr_uint(s->attrs, 0, 1, 1u << 16, &I))
-    return fail(r, rl, "lstm attr input out of range", "", 0, 0);
+    return fail(r, rl, "lstm attr input out of range");
   if (!attr_uint(s->attrs, 1, 1, 1u << 16, &H))
-    return fail(r, rl, "lstm attr hidden out of range", "", 0, 0);
+    return fail(r, rl, "lstm attr hidden out of range");
   if (!attr_uint(s->attrs, 2, 1, NN_MAX_OP_TENSORS / 4, &L))
-    return fail(r, rl, "lstm attr layers must be 1 to %u", "",
-                NN_MAX_OP_TENSORS / 4, 0);
+    return fail(r, rl, "lstm attr layers must be 1 to %u", NN_MAX_OP_TENSORS / 4);
   if (check_one_f32_input(s, "lstm", r, rl) < 0)
     return -1;
   if (nn_tdesc_numel(&s->inputs[0]) != I)
-    return fail(r, rl, "lstm input has %u elements, attr input is %u", "",
+    return fail(r, rl, "lstm input has %u elements, attr input is %u",
                 (unsigned)nn_tdesc_numel(&s->inputs[0]), I);
   if (s->n_tensors != 4 * L)
-    return fail(r, rl, "lstm with %u layers needs %u tensors", "", L, 4 * L);
+    return fail(r, rl, "lstm with %u layers needs %u tensors", L, 4 * L);
   for (k = 0; k < L; k++) {
     uint32_t Ik = k == 0 ? I : H;
     const nn_tdesc *t = s->tensors + 4 * k;
     if (!is_f32_mat(&t[0], 4 * H, Ik))
-      return fail(r, rl, "lstm layer %u W_ih must be f32 [%u, %u]", "", k, 4 * H);
+      return fail(r, rl, "lstm layer %u W_ih must be f32 [%u, %u]", k, 4 * H, Ik);
     if (!is_f32_mat(&t[1], 4 * H, H))
-      return fail(r, rl, "lstm layer %u W_hh must be f32 [%u, H]", "", k, 4 * H);
+      return fail(r, rl, "lstm layer %u W_hh must be f32 [%u, H]", k, 4 * H);
     if (!is_f32_vec(&t[2], 4 * H))
-      return fail(r, rl, "lstm layer %u b_ih must be f32 [%u]", "", k, 4 * H);
+      return fail(r, rl, "lstm layer %u b_ih must be f32 [%u]", k, 4 * H);
     if (!is_f32_vec(&t[3], 4 * H))
-      return fail(r, rl, "lstm layer %u b_hh must be f32 [%u]", "", k, 4 * H);
+      return fail(r, rl, "lstm layer %u b_hh must be f32 [%u]", k, 4 * H);
   }
   out->dtype = NN_F32;
   out->ndim = 1;
@@ -284,16 +294,16 @@ static const nn_kernel lstm_kernels[] = {
 static int affine_check(const nn_op_sig *s, nn_tdesc *out, char *r, size_t rl) {
   uint32_t C;
   if (s->attrs->n != 0)
-    return fail(r, rl, "affine takes no attrs, has %u", "", s->attrs->n, 0);
+    return fail(r, rl, "affine takes no attrs, has %u", s->attrs->n);
   if (check_one_f32_input(s, "affine", r, rl) < 0)
     return -1;
   C = s->inputs[0].dims[0];
   if (s->n_tensors != 2)
-    return fail(r, rl, "affine needs tensors scale, shift; has %u", "", s->n_tensors, 0);
+    return fail(r, rl, "affine needs tensors scale, shift; has %u", s->n_tensors);
   if (!is_f32_vec(&s->tensors[0], C))
-    return fail(r, rl, "affine scale must be f32 [%u]", "", C, 0);
+    return fail(r, rl, "affine scale must be f32 [%u]", C);
   if (!is_f32_vec(&s->tensors[1], C))
-    return fail(r, rl, "affine shift must be f32 [%u]", "", C, 0);
+    return fail(r, rl, "affine shift must be f32 [%u]", C);
   *out = s->inputs[0];
   return 0;
 }
@@ -335,13 +345,13 @@ bool nn_cast_supports(uint32_t dtype) {
 static int cast_check(const nn_op_sig *s, nn_tdesc *out, char *r, size_t rl) {
   uint32_t from;
   if (s->attrs->n != 2)
-    return fail(r, rl, "cast needs attrs from, scale; has %u", "", s->attrs->n, 0);
+    return fail(r, rl, "cast needs attrs from, scale; has %u", s->attrs->n);
   if (!attr_uint(s->attrs, 0, 1, NN_DTYPE_COUNT - 1, &from) || !nn_cast_supports(from))
-    return fail(r, rl, "cast attr from names no castable type", "", 0, 0);
+    return fail(r, rl, "cast attr from names no castable type");
   if (!isfinite(s->attrs->v[1]))
-    return fail(r, rl, "cast attr scale is not finite", "", 0, 0);
+    return fail(r, rl, "cast attr scale is not finite");
   if (s->n_inputs != 1)
-    return fail(r, rl, "cast takes 1 input, has %u", "", s->n_inputs, 0);
+    return fail(r, rl, "cast takes 1 input, has %u", s->n_inputs);
   if (s->inputs[0].dtype != from) {
     if (r && rl)
       snprintf(r, rl, "cast input is %s, attr from says %s",
@@ -349,9 +359,9 @@ static int cast_check(const nn_op_sig *s, nn_tdesc *out, char *r, size_t rl) {
     return -1;
   }
   if (nn_tdesc_numel(&s->inputs[0]) == 0)
-    return fail(r, rl, "cast input has no elements", "", 0, 0);
+    return fail(r, rl, "cast input has no elements");
   if (s->n_tensors != 0)
-    return fail(r, rl, "cast takes no tensors, has %u", "", s->n_tensors, 0);
+    return fail(r, rl, "cast takes no tensors, has %u", s->n_tensors);
   *out = s->inputs[0];
   out->dtype = NN_F32;
   return 0;
@@ -420,11 +430,11 @@ static const nn_kernel cast_kernels[] = {
 static int elementwise_check(const nn_op_sig *s, nn_tdesc *out, const char *op,
                              char *r, size_t rl) {
   if (s->attrs->n != 0)
-    return fail(r, rl, "%s takes no attrs, has %u", op, s->attrs->n, 0);
+    return fail(r, rl, "%s takes no attrs, has %u", op, s->attrs->n);
   if (check_one_f32_input(s, op, r, rl) < 0)
     return -1;
   if (s->n_tensors != 0)
-    return fail(r, rl, "%s takes no tensors, has %u", op, s->n_tensors, 0);
+    return fail(r, rl, "%s takes no tensors, has %u", op, s->n_tensors);
   *out = s->inputs[0];
   return 0;
 }

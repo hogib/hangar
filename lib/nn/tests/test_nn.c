@@ -807,6 +807,37 @@ static void test_output_binding_must_be_f32(void) {
   free_golden(&g);
 }
 
+/* An op that takes f32 on a buffer of another type is refused at check 3 and
+ * says which type it found. The refusal used to hand the type's number to a
+ * %s: the load crashed instead of refusing (found by fuzz/fuzz_nn.c). The
+ * other reasons printed the address of an empty string for their first
+ * number; one of them is checked here. */
+static void test_op_input_must_be_f32(void) {
+  golden g, c;
+  nn_load_req req;
+  nn_hgw_file f;
+  if (!load_golden("dense_relu", &g)) {
+    CHECK(false);
+    return;
+  }
+  memset(&req, 0, sizeof req);
+  copy_golden(&g, &c);
+  nn_hgw_parse(c.data, c.size, &f, NULL, 0);
+  CHECK(strcmp(f.ops[0].type, "dense") == 0);
+  CHECK_EQ_INT(f.buffers[f.ops[0].inputs[0]].dtype, NN_F32);
+  ((nn_hgw_buffer *)&f.buffers[f.ops[0].inputs[0]])->dtype = NN_I16;
+  resign(&c);
+  expect_refused(&c, &req, 3, "dense input must be f32, is i16", "dense on an i16 buffer");
+  free_golden(&c);
+  copy_golden(&g, &c);
+  nn_hgw_parse(c.data, c.size, &f, NULL, 0);
+  ((nn_hgw_op *)&f.ops[0])->n_tensors = 1;
+  resign(&c);
+  expect_refused(&c, &req, 3, "dense needs 2 tensors, has 1", "dense with its bias tensor gone");
+  free_golden(&c);
+  free_golden(&g);
+}
+
 /* Check 6's tolerance came from the file with no upper limit: a header that
  * said 1e30 made any probe "reproduced". The runtime has its own limit now. */
 static void test_probe_tolerance_bounded(void) {
@@ -937,6 +968,7 @@ int main(void) {
   RUN_TEST(test_load_checks);
   RUN_TEST(test_probe_tolerance_bounded);
   RUN_TEST(test_output_binding_must_be_f32);
+  RUN_TEST(test_op_input_must_be_f32);
   RUN_TEST(test_load_path);
   RUN_TEST(test_timing);
   TEST_MAIN_END();
