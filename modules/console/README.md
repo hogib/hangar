@@ -83,6 +83,38 @@ comes back to it.
   neither header (`lib/net/http.c` sends `Content-Type`, `Content-Length`,
   `Cache-Control: no-store` and `Connection: close`, nothing else), so it frames.
 
+### Setup and Fly (issue #2)
+
+A switch in the header chooses the view; the choice is kept in `localStorage`
+like the tab, and a first visit opens **Setup**.
+
+- **Setup** is everything above: the four tabs, made for the bench, where the
+  operator has both hands free.
+- **Fly** is one screen for the dive, with nothing to scroll and nothing to tune,
+  and large targets for a tablet or a thumb:
+  - **the picture**, from the MJPEG URL `--preview` names (hellion's
+    `/stream?src=pilot` until hangar's own video modules), loaded only while Fly is
+    shown, and greyed with a notice when `video.index` stops (2 s);
+  - **an overlay**: the vehicle's state (`DISARMED`, `ARMED`, `FAILSAFE`, `ARMING`,
+    coloured), depth, heading, battery (volts and the fraction left), the video's
+    frame rate, the recording dot with the session and its size, ArduSub's mode;
+  - **a messages strip**: the last button's outcome (`ok`, or the server's status
+    and reason verbatim), then `safety.state`'s `by` and `reason` and ArduSub's
+    `arm_reason` and `failsafe` texts;
+  - **buttons**: **E-STOP** (red, always visible), **Arm**, **Disarm**, **Record**
+    (a toggle, showing `Stop rec` while the recorder records), **Snap** (disabled:
+    hangar has no snapshot call yet), and the five view presets **Normal**,
+    **Auto visibility**, **Edges**, **Sharpen**, **Low light**, present but
+    disabled: they set `vision`'s parameters, and `vision` is docs/11's stage B3;
+  - **keys**: `1`–`5` the presets (saying for now that they need `vision`), `R`
+    record, `S` snapshot; a legend sits under the buttons.
+
+  E-stop and disarm act at once; arm and stopping a recording ask once. **No stick
+  input passes through the page:** the sticks are the controller's own path
+  (QGroundControl today, the `joystick` module of #3 later), never a browser tab
+  that can be paused. Fly reads `/api/system` and `/api/fly` once a second and
+  nothing else.
+
 ## The API
 
 Every reply is JSON (`application/json`), `Connection: close`, `Cache-Control:
@@ -97,7 +129,9 @@ converted to ages by the console on the same machine.
 | `GET /api/topics` | `{"dir","topics":[...]}`: per file `name`, `type_hash` (16 hex), `topic_id`, `rate_hz` (declared, 0 for an event topic), `measured_hz` (`null` until two ticks have seen it), `age_ms` (`null` before the first message), `stale_after_ms`, `writer`, `writer_pid`, `slots`, `payload_bytes`, `schema_bytes`, `seq`, `first_seq`, `flags` (an array of `closed`, `died`, `replaced`, `stale`) |
 | `GET /api/topic/<name>` | the newest message: `topic`, `type_hash`, `writer`, `payload_bytes`, `present`; with a message `seq`, `stamp_ns`, `publish_ns`, `age_ms`, `stale` (computed from stale inputs), `gap`, and `fields`, an array of `{"name","type","count","comment","value"}` in schema order. `char[N]` is a string; an array of up to 64 elements is an array; a longer one (a frame's pixels) is its size as a string, `"u8[1382400]: 1382400 bytes"`; a float that is not finite is `null`. Without a message, `result` says `no message yet`, `closed` or `absent`. 404 for a name that is not a topic or has no file |
 | `GET /api/log[?lines=N]` | `{"journald","dir","note","files":[{"name","tail","bytes"}]}`: the last N lines (default 100, at most 1000, within the last 16 KB) of each `<dir>/<module>.log`; `journald` true and no files when the journald socket is there |
-| `GET /api/links` | `{"hellion":"<url>"}`: the URL the Hellion tab frames, as `--hellion` gave it (default `http://127.0.0.1:8091/`) |
+| `GET /api/links` | `{"hellion":"<url>","preview":"<url>"}`: the URL the Hellion tab frames, as `--hellion` gave it (default `http://127.0.0.1:8091/`), and the Fly view's picture, as `--preview` gave it (`""` without) |
+| `GET /api/fly` | `{"role","topics":{...}}`: for each of `safety.state`, `ardusub.state`, `nav.depth`, `nav.attitude`, `power.battery`, `recorder.status`, `video.index`, `{"present":false}` or `{"rate_hz" (measured, when the tick has it),"present":true,"age_ms","stale","v":{field: value, ...}}`, the fields by name as `/api/topic` decodes them |
+| `POST /api/call/<module>.<method>` | only `safety.arm`, `safety.disarm`, `safety.estop`, `safety.clear`, `recorder.start`, `recorder.stop` (404 otherwise): `method`, then `call` on the control socket, as `hangar call` does (all-zero bodies: `empty`, an empty note), answered when the server's reply comes: `{"ok","call","status","reason"}`, 200 for `HG_OK`, 409 for a refusal (`HG_E_REFUSED` with the server's reason, `HG_E_DENIED`, ...), 504 after 1.5 s without a reply; `"status":"refused by the manager"` (409, 502) when the call could not be made (no such module or method, the manager unreachable) |
 | `POST /api/module/<name>/start`, `/stop`, `/restart` | `start <name>` etc. on the control socket. `{"ok":true,"request","reply"}` (200); `{"ok":false,"request","error"}` with the manager's reason: 403 for `permission denied: hangar-admin required for restart`, 409 for any other refusal (`no module nobody`), 502 when the manager cannot be reached |
 | `POST /api/reload` | `reload` on the control socket, the same replies |
 
@@ -139,6 +173,7 @@ HANGAR_ROOT=$R builddir/dawn-patrold --listen 127.0.0.1:8080      # role from $R
 HANGAR_ROOT=$R builddir/dawn-patrold --listen 0.0.0.0:8080 --role topside
 HANGAR_ROOT=$R builddir/dawn-patrold --listen 127.0.0.1:0         # a free port; the log line says which
 HANGAR_ROOT=$R builddir/dawn-patrold --hellion http://192.168.2.2:8091/   # hellion elsewhere
+HANGAR_ROOT=$R builddir/dawn-patrold --preview 'http://127.0.0.1:8092/stream?src=pilot'   # Fly's picture
 curl -s http://127.0.0.1:8080/api/modules
 curl -s -X POST -H 'Content-Type: application/json' http://127.0.0.1:8080/api/module/talker/restart
 ```
@@ -225,6 +260,20 @@ status 2, and the module under the manager is untouched by all that; the manager
 shutdown takes the console with it. No hellion runs in the suite: the tab's frame is
 the browser's work, and the URL under test points at a port nobody listens on.
 
+The Fly view (`test_fly`) runs the real `hangar-safety` under the suite's manager,
+with no mux or mavlink, and a second talker as `nav.depth`: the page carries the
+Setup/Fly switch with Setup as the default, the Fly controls and the five presets
+disabled; `/api/links` carries `--preview`, and a `--preview` that is not an
+`http(s)` URL, or that would break out of an attribute, is refused at start;
+`/api/fly` reads `safety.state` (disarmed) and `nav.depth`, and says `ardusub.state`
+and `video.index` are not present; a disarm through `/api/call` is `HG_OK`; an arm
+is `HG_E_REFUSED` with safety's checklist verbatim (`mux not ready; mavlink not
+ready; vehicle.leak absent; ...`); an e-stop is `HG_OK` and `/api/fly` then shows
+failsafe; `talker.echo`, `safety.check` and a GET are refused, `recorder.start`
+with no recorder is the manager's refusal, a call without the JSON content type is
+403; the console then idles at under 5 % of a core (0.0 % measured): the call
+timer stops with the last call.
+
 ## Deviations from the docs, with reasons
 
 1. **`restarts` is the console's own count**, beside the manager's `failures`.
@@ -288,3 +337,25 @@ the browser's work, and the URL under test points at a port nobody listens on.
     from the process: whether it answers is the browser's business, and the
     topside's copy of the manifest names a port the sim demo gives to the vehicle's
     console (`profiles/sim-topside/console.module` says so).
+13. **The Fly view is the console's, not docs/11's `pilot_console` yet.** docs/11
+    gives the pilot's controls to a `pilot_console` module on the topside, calling
+    as `topside:pilot_console` over the bridge. Until the bridge, the console calls
+    through its own manager, as `hangar call` does: the caller is `admin:<user>`
+    (the module's `hangar-admin` group), which safety's and the recorder's `Allow`
+    lists name. On the topside role, a call to the vehicle's safety goes through the
+    topside's manager and the same-host shim like any other.
+14. **Only six calls, by name.** `/api/call/` takes `safety.arm`, `disarm`, `estop`,
+    `clear` and `recorder.start`, `stop`, with all-zero bodies, and refuses any
+    other: a page that could call anything with any body would be a remote
+    `hangar call` open to whatever reaches the port. The view presets will add
+    `vision.set_params` with a body of their own when `vision` exists (docs/11 B3).
+15. **The picture is an MJPEG URL, not a topic, and Snapshot is disabled.** Until
+    hangar's own video modules (docs/11 B2–B5), the Fly view shows what an MJPEG
+    server gives (hellion's `/stream`), and the video's rate and stall come from
+    `video.index` (the encoder's), not from the picture itself. hangar has no
+    snapshot call: the button is there, disabled, saying so.
+16. **A call is answered when its reply comes, without blocking the loop.** The
+    request stays open while the call is in flight; the server's `.rep` topic is
+    read on a 20 ms timer that runs only while a call is pending (none in the
+    console's wait set, hangar#1), and 1.5 s without a reply is 504. An e-stop
+    pressed while an arm waits for its answer goes out at once.

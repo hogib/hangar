@@ -68,6 +68,54 @@
   #hellion-state.down { color: #ff9e9e; }
   #hellion-frame { display: block; width: 100%; height: calc(100vh - 150px); min-height: 480px; border: 1px solid #2c3036;
                    border-radius: 6px; background: #000; }
+  /* The view switch, and the Fly view: one screen, nothing to scroll, big
+     targets for a tablet or a thumb, nothing to tune. */
+  .views { display: flex; gap: 0; }
+  .views button { padding: 4px 14px; font-size: 13px; border-radius: 0; }
+  .views button:first-child { border-radius: 4px 0 0 4px; }
+  .views button:last-child { border-radius: 0 4px 4px 0; }
+  .views button.active { background: #2f5d34; border-color: #4caf50; color: #fff; }
+  body.fly nav.tabs, body.fly main, body.fly #reload { display: none; }
+  #fly { display: none; }
+  body.fly #fly { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 10px; padding: 10px;
+                  height: calc(100vh - 54px); box-sizing: border-box; }
+  @media (max-width: 800px) { body.fly #fly { grid-template-columns: 1fr; height: auto; } }
+  #fly-left { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; min-height: 0; }
+  #fly-pic { position: relative; background: #000; border: 1px solid #2c3036; border-radius: 8px; overflow: hidden;
+             min-height: 240px; }
+  #fly-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #fly-pic.stalled #fly-img { filter: grayscale(1) brightness(.45); }
+  #fly-notice { position: absolute; left: 0; right: 0; top: 42%; text-align: center; font-size: 18px; color: #ffd27a;
+                padding: 0 20px; text-shadow: 0 1px 3px #000; }
+  .hud { position: absolute; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; pointer-events: none; }
+  .hud.top { top: 0; left: 0; right: 0; }
+  .hud.bottom { bottom: 0; left: 0; right: 0; }
+  .hud span { background: rgba(10, 12, 14, .72); border-radius: 6px; padding: 4px 9px; font-size: 16px;
+              font-variant-numeric: tabular-nums; }
+  .hud .big { font-size: 20px; font-weight: 700; }
+  .hud .armed { background: #b3261e; color: #fff; }
+  .hud .disarmed { background: #2f5d34; color: #fff; }
+  .hud .failsafe { background: #e6a700; color: #111; }
+  .hud .rec { color: #ff6b6b; font-weight: 700; }
+  .hud .warn { color: #ffd27a; }
+  #fly-msgs { background: #1b1e22; border: 1px solid #2c3036; border-radius: 6px; padding: 6px 10px; font-size: 15px;
+              min-height: 1.4em; color: #c9ced6; }
+  #fly-msgs .err { color: #ff9e9e; }
+  #fly-right { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; }
+  #fly-right button { font-size: 18px; padding: 14px 10px; border-radius: 8px; font-weight: 600; }
+  #fly-right .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #fly-estop { background: #b3261e; border-color: #ff5a4f; color: #fff; font-size: 22px !important; padding: 18px 10px !important; }
+  #fly-estop:hover { background: #d0342b; }
+  #fly-disarm { background: #6b1f1a; border-color: #b3261e; color: #fff; }
+  #fly-arm { background: #2a3a2c; border-color: #4caf50; }
+  #fly-record.on { background: #7a1d1d; border-color: #ff6b6b; color: #fff; }
+  #fly-right h3 { margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8a919c; }
+  .presets { display: grid; grid-template-columns: 1fr; gap: 6px; }
+  .presets button { font-size: 15px !important; padding: 10px !important; text-align: left; }
+  .presets button.active { background: #2f5d34; border-color: #4caf50; color: #fff; }
+  .presets kbd, #fly-right kbd { font: 12px ui-monospace, monospace; background: #111; border: 1px solid #3a4048;
+                                 border-radius: 3px; padding: 0 5px; margin-right: 6px; color: #b8c4d6; }
+  #fly-keys { color: #8a919c; font-size: 12px; line-height: 1.7; }
 </style>
 </head>
 <body>
@@ -77,6 +125,10 @@
   <span id="sysinfo" class="muted"></span>
   <span id="conn" class="muted">connecting</span>
   <span style="flex:1"></span>
+  <span class="views" id="views">
+    <button data-view="setup" title="the bench: modules, topics, log, hellion">Setup</button><button
+      data-view="fly" title="the flight: picture, state, arm, e-stop, record">Fly</button>
+  </span>
   <button id="reload" title="hangar reload: read the manifests again">Reload manifests</button>
   <nav class="tabs" id="tabs">
     <button data-tab="modules">Modules</button>
@@ -143,6 +195,51 @@
   <iframe id="hellion-frame" title="hellion" hidden></iframe>
   </section>
 </main>
+
+<!-- The Fly view: what a pilot with a controller in both hands needs, and no
+     more. The sticks never pass through this page: they are the controller's
+     own path (QGroundControl today, the joystick module later). -->
+<section id="fly">
+  <div id="fly-left">
+    <div id="fly-pic">
+      <img id="fly-img" alt="">
+      <div id="fly-notice"></div>
+      <div class="hud top">
+        <span id="hud-state" class="big">?</span>
+        <span id="hud-depth">depth -</span>
+        <span id="hud-heading">heading -</span>
+        <span id="hud-battery">battery -</span>
+      </div>
+      <div class="hud bottom">
+        <span id="hud-video">video -</span>
+        <span id="hud-rec"></span>
+        <span id="hud-mode"></span>
+      </div>
+    </div>
+    <div id="fly-msgs"></div>
+  </div>
+  <div id="fly-right">
+    <button id="fly-estop" title="e-stop: neutral and disarmed at once, no question asked">E-STOP</button>
+    <div class="row">
+      <button id="fly-arm" title="arm: through safety's checklist, as any call">Arm</button>
+      <button id="fly-disarm" title="disarm, at once">Disarm</button>
+    </div>
+    <div class="row">
+      <button id="fly-record" title="start or stop the recorder's session"><kbd>R</kbd>Record</button>
+      <button id="fly-snapshot" disabled title="no snapshot call in hangar yet"><kbd>S</kbd>Snap</button>
+    </div>
+    <h3>View <span class="muted" style="text-transform:none;letter-spacing:0">needs vision (B3)</span></h3>
+    <div class="presets" id="presets">
+      <button disabled data-preset="1"><kbd>1</kbd>Normal</button>
+      <button disabled data-preset="2"><kbd>2</kbd>Auto visibility</button>
+      <button disabled data-preset="3"><kbd>3</kbd>Edges</button>
+      <button disabled data-preset="4"><kbd>4</kbd>Sharpen</button>
+      <button disabled data-preset="5"><kbd>5</kbd>Low light</button>
+    </div>
+    <div id="fly-keys"><kbd>1</kbd>–<kbd>5</kbd>view &nbsp; <kbd>R</kbd>record &nbsp; <kbd>S</kbd>snapshot<br>
+      E-stop and disarm act at once; arm and stopping a recording ask once.</div>
+  </div>
+</section>
 <script>
 (function () {
   'use strict';
@@ -367,6 +464,146 @@
     try { return localStorage.getItem(TAB_KEY); } catch (e) { return null; }
   }
 
+  /* ---- The views: Setup (the default; the tabs) and Fly ---------------------- */
+
+  var VIEWS = ['setup', 'fly'], VIEW_KEY = 'dawn-patrol.view', view = 'setup';
+  var previewUrl = '', recording = false, flyMsg = null;
+
+  function storedView() {
+    try { return localStorage.getItem(VIEW_KEY); } catch (e) { return null; }
+  }
+  function showView(name) {
+    if (VIEWS.indexOf(name) < 0) name = 'setup';
+    view = name;
+    document.body.className = name === 'fly' ? 'fly' : '';
+    var bs = $('views').querySelectorAll('button[data-view]');
+    for (var i = 0; i < bs.length; i++)
+      bs[i].className = bs[i].getAttribute('data-view') === name ? 'active' : '';
+    try { localStorage.setItem(VIEW_KEY, name); } catch (e) { /* not kept */ }
+    if (name === 'fly') {
+      hellionHide();
+      flyPicture();
+      getJSON('/api/fly').then(renderFly, function () {});
+    } else {
+      flyPictureOff();
+      showTab(tab || storedTab());
+    }
+  }
+
+  /* The picture: an MJPEG URL the server was given (--preview), shown only in
+     the Fly view, so it does not keep flowing behind the Setup view. */
+  function flyPicture() {
+    var img = $('fly-img');
+    if (!previewUrl) {
+      img.removeAttribute('src');
+      $('fly-notice').textContent = 'No picture: start dawn-patrold with --preview <an MJPEG URL> ' +
+        '(hellion\'s /stream?src=pilot, until hangar\'s own video modules).';
+      return;
+    }
+    $('fly-notice').textContent = '';
+    if (img.getAttribute('src') !== previewUrl) img.src = previewUrl;
+  }
+  function flyPictureOff() {
+    var img = $('fly-img');
+    if (img.getAttribute('src')) img.src = '';
+    img.removeAttribute('src');
+  }
+
+  function deg(rad) { var d = rad * 180 / Math.PI; return ((d % 360) + 360) % 360; }
+  function topic(d, name) { return d.topics && d.topics[name] && d.topics[name].present ? d.topics[name] : null; }
+
+  function renderFly(d) {
+    var st = $('hud-state'), s = topic(d, 'safety.state');
+    var names = ['DISARMED', 'ARMED', 'FAILSAFE', 'ARMING'], cls = ['disarmed', 'armed', 'failsafe', 'failsafe'];
+    if (s) { st.textContent = names[s.v.state] || '?'; st.className = 'big ' + (cls[s.v.state] || ''); }
+    else { st.textContent = 'no safety.state'; st.className = 'big warn'; }
+    var dep = topic(d, 'nav.depth'), att = topic(d, 'nav.attitude'), bat = topic(d, 'power.battery');
+    $('hud-depth').textContent = dep && dep.v.depth_m != null ? 'depth ' + dep.v.depth_m.toFixed(2) + ' m' : 'depth -';
+    $('hud-heading').textContent = att && att.v.yaw != null ? 'heading ' + deg(att.v.yaw).toFixed(0) + '°' : 'heading -';
+    var bt = 'battery -';
+    if (bat && bat.v.voltage_v != null) {
+      bt = 'battery ' + bat.v.voltage_v.toFixed(1) + ' V';
+      if (bat.v.remaining != null && bat.v.remaining >= 0) bt += ' ' + Math.round(bat.v.remaining * 100) + '%';
+    }
+    $('hud-battery').textContent = bt;
+    // The video: video.index's rate and age (the encoder's frames), and the
+    // picture greyed when they stop.
+    var vid = d.topics && d.topics['video.index'], vs = 'video -', stalled = false;
+    if (vid && vid.present) {
+      stalled = vid.age_ms > 2000;
+      vs = 'video ' + (vid.rate_hz != null ? vid.rate_hz.toFixed(0) + ' fps' : '') +
+        (stalled ? ', stalled ' + fmtAge(vid.age_ms) : '');
+    }
+    var hv = $('hud-video');
+    hv.textContent = vs; hv.className = stalled ? 'warn' : '';
+    $('fly-pic').className = stalled ? 'stalled' : '';
+    if (stalled && previewUrl) $('fly-notice').textContent = 'video stalled ' + fmtAge(vid.age_ms) + ' ago';
+    else if (previewUrl) $('fly-notice').textContent = '';
+    var rec = topic(d, 'recorder.status');
+    recording = !!(rec && rec.v.state === 1);
+    $('hud-rec').textContent = recording ? '● REC ' + (rec.v.session || '') + ' ' + (rec.v.bytes_written / 1048576).toFixed(0) + ' MB' : '';
+    $('hud-rec').className = recording ? 'rec' : '';
+    $('fly-record').className = recording ? 'on' : '';
+    $('fly-record').lastChild.textContent = recording ? 'Stop rec' : 'Record';
+    var ap = topic(d, 'ardusub.state');
+    $('hud-mode').textContent = ap ? 'ArduSub ' + (ap.v.mode === 19 ? 'MANUAL' : 'mode ' + ap.v.mode) +
+      (ap.v.armed === 1 ? ', armed' : ap.v.armed === 2 ? ', disarming' : '') : '';
+    // The messages: the last call's outcome, then safety's and ArduSub's.
+    var lines = [];
+    if (flyMsg) lines.push('<span class="' + (flyMsg.ok ? '' : 'err') + '">' + esc(flyMsg.text) + '</span>');
+    if (s && (s.v.reason || s.v.by)) lines.push(esc((s.v.by ? s.v.by + ': ' : '') + (s.v.reason || '')));
+    if (ap && ap.v.arm_reason) lines.push(esc('ArduSub: ' + ap.v.arm_reason));
+    if (ap && ap.v.failsafe) lines.push('<span class="err">' + esc('ArduSub failsafe: ' + ap.v.failsafe) + '</span>');
+    $('fly-msgs').innerHTML = lines.join(' &nbsp;·&nbsp; ') || '<span class="muted">no messages</span>';
+  }
+
+  /* A call through the console: its outcome, ok or the refusal verbatim. */
+  function call(target, label) {
+    flyMsg = { ok: true, text: label + ': sent' };
+    return fetch('/api/call/' + target, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        flyMsg = { ok: j.ok, text: label + ': ' + (j.ok ? 'ok' : j.status + (j.reason ? ', ' + j.reason : '') + (j.error ? ' ' + j.error : '')) };
+      }, function (e) { flyMsg = { ok: false, text: label + ': ' + e }; })
+      .then(function () { getJSON('/api/fly').then(renderFly, function () {}); });
+  }
+  function toggleRecord() {
+    if (recording) {
+      if (window.confirm('Stop the recording?')) call('recorder.stop', 'stop recording');
+    } else {
+      call('recorder.start', 'record');
+    }
+  }
+  function noVision(n) {
+    flyMsg = { ok: false, text: 'view ' + n + ': needs the vision module (docs/11, stage B3)' };
+  }
+
+  $('views').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-view]');
+    if (b) showView(b.getAttribute('data-view'));
+  });
+  $('fly-estop').addEventListener('click', function () { call('safety.estop', 'E-STOP'); });
+  $('fly-disarm').addEventListener('click', function () { call('safety.disarm', 'disarm'); });
+  $('fly-arm').addEventListener('click', function () {
+    if (window.confirm('Arm the vehicle?')) call('safety.arm', 'arm');
+  });
+  $('fly-record').addEventListener('click', toggleRecord);
+  $('fly-img').addEventListener('error', function () {
+    if (view === 'fly' && previewUrl)
+      $('fly-notice').textContent = 'the picture does not answer at ' + previewUrl;
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (view !== 'fly' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    var t = ev.target.tagName;
+    if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
+    var k = ev.key.toLowerCase();
+    if (k >= '1' && k <= '5') noVision(k);
+    else if (k === 'r') toggleRecord();
+    else if (k === 's') flyMsg = { ok: false, text: 'snapshot: no snapshot call in hangar yet' };
+    else return;
+    ev.preventDefault();
+  });
+
   function setConn(ok, why) {
     var c = $('conn');
     c.className = ok ? 'muted' : 'down';
@@ -377,10 +614,14 @@
      (small), the selected topic's message, and the log every two seconds
      while its tab is shown. */
   function poll() {
-    var jobs = [getJSON('/api/system').then(renderSystem), getJSON('/api/modules').then(renderModules),
-                getJSON('/api/topics').then(renderTopics)];
-    if (selected && tab === 'topics') jobs.push(getJSON('/api/topic/' + encodeURIComponent(selected)).then(renderDetail));
-    if (cycle++ % 2 === 0 && tab === 'log') jobs.push(getJSON('/api/log?lines=200').then(renderLog));
+    var jobs = [getJSON('/api/system').then(renderSystem)];
+    if (view === 'fly') {
+      jobs.push(getJSON('/api/fly').then(renderFly));
+    } else {
+      jobs.push(getJSON('/api/modules').then(renderModules), getJSON('/api/topics').then(renderTopics));
+      if (selected && tab === 'topics') jobs.push(getJSON('/api/topic/' + encodeURIComponent(selected)).then(renderDetail));
+      if (cycle++ % 2 === 0 && tab === 'log') jobs.push(getJSON('/api/log?lines=200').then(renderLog));
+    }
     Promise.all(jobs).then(function () { setConn(true); }, function (e) { setConn(false, e.message); })
       .then(function () { setTimeout(poll, 1000); });
   }
@@ -417,8 +658,13 @@
     logFile = this.value;
     getJSON('/api/log?lines=200').then(renderLog);
   });
-  getJSON('/api/links').then(function (l) { hellionUrl = l.hellion; hellionHead(); }, function () {});
+  getJSON('/api/links').then(function (l) {
+    hellionUrl = l.hellion; hellionHead();
+    previewUrl = l.preview || '';
+    if (view === 'fly') flyPicture();
+  }, function () {});
   showTab(storedTab());
+  showView(storedView() || 'setup');
   poll();
 })();
 </script>

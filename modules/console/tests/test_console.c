@@ -9,7 +9,15 @@
  * without the JSON content type is refused, a restart through the control
  * socket raises the console's restart count, stop and start work, the
  * fallback log is served, the page has its Hellion tab and /api/links says
- * what --hellion gave it (and its default without it). Under 30 s. */
+ * what --hellion gave it (and its default without it). The Fly view (#2):
+ * the page has its Setup/Fly switch and Fly's controls; /api/links says what
+ * --preview gave; /api/fly reads safety.state and nav.depth (the real
+ * hangar-safety module, and a talker as the depth); /api/call goes through
+ * the manager to safety: a disarm answered ok, an arm refused by safety's
+ * checklist with its reason verbatim, an e-stop that puts safety in
+ * failsafe; a call the console does not make is refused, one to a module
+ * that is not there is the manager's refusal; the console idles at under 5 %
+ * of a core once its calls are done. Under 30 s. */
 #include "hd_test.h"
 #include "http.h"
 
@@ -18,9 +26,10 @@
 static pid_t mgr;
 static int port;
 static char hostport[64];
-static const char *T_console;
+static const char *T_console, *T_safety;
 
 #define HELLION_TEST_URL "http://127.0.0.1:9/" /* nothing listens there; the console only passes it on */
+#define PREVIEW_TEST_URL "http://127.0.0.1:9/stream?src=pilot"
 
 /* A port nobody listens on right now (the console binds it a moment later). */
 static int free_port(void)
@@ -117,21 +126,48 @@ static char body[65536];
 static void test_start(void)
 {
 	T_console = getenv("DAWN_PATROLD_BIN");
-	if (!T_console) {
-		printf("    DAWN_PATROLD_BIN is not set\n");
+	T_safety = getenv("SAFETY_BIN");
+	if (!T_console || !T_safety) {
+		printf("    DAWN_PATROLD_BIN and SAFETY_BIN must be set\n");
 		exit(2);
 	}
 	port = free_port();
 	CHECK(port > 0);
 	tfmt(hostport, sizeof hostport, "127.0.0.1:%d", port);
+	/* The types the real safety module needs beyond the harness's own. */
+	const char *src = getenv("HANGAR_MSG_SRC");
+	const char *more[] = { "safety_params", "check_rep", NULL };
+	for (int i = 0; more[i]; i++) {
+		char from[1024], to[1024];
+		tfmt(from, sizeof from, "%s/%s.msg", src ? src : "msg", more[i]);
+		tfmt(to, sizeof to, "%s/%s.msg", T_msg, more[i]);
+		CHECK_EQ_INT(copy_file(from, to), 0);
+	}
 	manifest("talker", "[Module]\nDescription=toy talker\nExec=%s/talker --topic test.depth --rate 50\n"
 			   "[Publish test.depth]\nType=depth\nRate=50\n", T_toys);
+	manifest("navdepth", "[Module]\nDescription=toy talker as the depth\nExec=%s/talker --topic nav.depth --rate 10\n"
+			     "[Publish nav.depth]\nType=depth\nRate=10\n", T_toys);
+	/* The real safety module, without an autopilot (no [Call mavlink.arm]):
+	 * its checklist wants mux and mavlink ready, neither of which runs here,
+	 * so an arm is refused with its reason. */
+	manifest("safety", "[Module]\nDescription=Vehicle state\nExec=%s\n"
+			   "[Subscribe hangar.vehicle.modules]\n[Subscribe hangar.vehicle.system]\n[Subscribe vehicle.leak]\n"
+			   "[Subscribe power.battery]\n[Subscribe nav.depth]\n[Subscribe ardusub.state]\n[Subscribe mux.params]\n"
+			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
+			   "[Params]\nType=safety_params\nAllow=admin\n"
+			   "[Serve arm]\nRequest=empty\nReply=empty\nAllow=admin\n"
+			   "[Serve disarm]\nRequest=empty\nReply=empty\nAllow=* admin\n"
+			   "[Serve estop]\nRequest=empty\nReply=empty\nAllow=* admin\n"
+			   "[Serve clear]\nRequest=empty\nReply=empty\nAllow=admin\n"
+			   "[Serve check]\nRequest=empty\nReply=check_rep\nAllow=* admin\n",
+		 T_safety);
 	manifest("console", "[Module]\nDescription=Dawn Patrol: the operator's page\n"
-			    "Exec=%s --listen 127.0.0.1:%d --hellion " HELLION_TEST_URL "\n"
+			    "Exec=%s --listen 127.0.0.1:%d --hellion " HELLION_TEST_URL " --preview " PREVIEW_TEST_URL "\n"
 			    "[Subscribe hangar.vehicle.system]\n[Subscribe hangar.vehicle.modules]\n[Subscribe *]\n"
 			    "[Health]\nWatchdog=10s\n", T_console, port);
 	mgr = manager_start();
 	CHECK(wait_state("talker", "ready", 5000));
+	CHECK(wait_state("safety", "ready", 5000));
 	// The console is a module like any other: ready by hg_ready, its status
 	// line says where it listens.
 	CHECK(wait_state("console", "ready", 5000));
@@ -239,7 +275,7 @@ static void test_page_and_errors(void)
 	CHECK(strstr(body, "/api/links") != NULL);
 	CHECK(strstr(body, "localStorage") != NULL);
 	CHECK_EQ_INT(api("GET", "/api/links", body, sizeof body), 200);
-	CHECK(strstr(body, "{\"hellion\":\"" HELLION_TEST_URL "\"}") != NULL);
+	CHECK(strstr(body, "{\"hellion\":\"" HELLION_TEST_URL "\",\"preview\":\"" PREVIEW_TEST_URL "\"}") != NULL);
 	CHECK_EQ_INT(api("POST", "/api/links", body, sizeof body), 405);
 	CHECK_EQ_INT(api("GET", "/nope", body, sizeof body), 404);
 	CHECK(strstr(body, "no such page") != NULL);
@@ -332,7 +368,7 @@ static void test_hellion_default(void)
 	char saved[64];
 	memcpy(saved, hostport, sizeof saved);
 	tfmt(hostport, sizeof hostport, "%s", listen);
-	CHECK(wait_api("/api/links", "{\"hellion\":\"http://127.0.0.1:8091/\"}", 5000, body, sizeof body));
+	CHECK(wait_api("/api/links", "{\"hellion\":\"http://127.0.0.1:8091/\",\"preview\":\"\"}", 5000, body, sizeof body));
 	CHECK_EQ_INT(api("GET", "/api/system", body, sizeof body), 200);
 	CHECK(strstr(body, "\"role\":\"vehicle\"") != NULL);
 	memcpy(hostport, saved, sizeof saved);
@@ -342,9 +378,69 @@ static void test_hellion_default(void)
 	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--hellion", "ftp://127.0.0.1/"), 2);
 	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--hellion", "http://x/\"><script>"), 2);
 	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--hellion", NULL), 2);
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--preview", "file:///etc/passwd"), 2);
+	CHECK_EQ_INT(run_console(&pid, "--listen", listen, "--preview", "http://x/\"onerror=\"x"), 2);
 	// The module under the manager is untouched by all that.
 	CHECK_EQ_INT(api("GET", "/api/links", body, sizeof body), 200);
 	CHECK(strstr(body, HELLION_TEST_URL) != NULL);
+}
+
+/* The Fly view (#2): the page, the readings, and the calls through the
+ * manager to the real safety module. */
+static void test_fly(void)
+{
+	// The page: the Setup/Fly switch (Setup the default), the controls, the
+	// presets present but disabled until vision exists, the key legend.
+	CHECK_EQ_INT(api("GET", "/", body, sizeof body), 200);
+	CHECK(strstr(body, "data-view=\"setup\"") != NULL && strstr(body, "data-view=\"fly\"") != NULL);
+	CHECK(strstr(body, "storedView() || 'setup'") != NULL);
+	CHECK(strstr(body, "id=\"fly-estop\"") != NULL && strstr(body, "id=\"fly-arm\"") != NULL);
+	CHECK(strstr(body, "id=\"fly-disarm\"") != NULL && strstr(body, "id=\"fly-record\"") != NULL);
+	CHECK(strstr(body, "<button disabled data-preset=\"3\"><kbd>3</kbd>Edges</button>") != NULL);
+	CHECK(strstr(body, "/api/fly") != NULL && strstr(body, "/api/call/") != NULL);
+	// The readings: safety.state from the real module, nav.depth from the
+	// talker, a topic nobody publishes here as not present.
+	CHECK(wait_api("/api/fly", "\"temp_c\":20", 5000, body, sizeof body)); /* nav.depth, attached and read */
+	const char *s = strstr(body, "\"safety.state\":{");
+	CHECK(s && strstr(s, "\"present\":true") != NULL);
+	CHECK(s && strstr(s, "\"v\":{\"state\":0,") != NULL); /* disarmed */
+	const char *d = strstr(body, "\"nav.depth\":{");
+	CHECK(d && strstr(d, "\"present\":true") != NULL && strstr(d, "\"temp_c\":20") != NULL);
+	CHECK(strstr(body, "\"ardusub.state\":{\"present\":false}") != NULL);
+	CHECK(strstr(body, "\"video.index\":{\"present\":false}") != NULL);
+	// A disarm, answered ok through the manager's call path.
+	CHECK_EQ_INT(api("POST", "/api/call/safety.disarm", body, sizeof body), 200);
+	CHECK(strstr(body, "\"ok\":true,\"call\":\"safety.disarm\",\"status\":\"HG_OK\"") != NULL);
+	// An arm, refused by safety's own checklist, the reason verbatim.
+	CHECK_EQ_INT(api("POST", "/api/call/safety.arm", body, sizeof body), 409);
+	CHECK(strstr(body, "\"ok\":false,\"call\":\"safety.arm\",\"status\":\"HG_E_REFUSED\"") != NULL);
+	CHECK(strstr(body, "\"reason\":\"\"") == NULL);
+	printf("    arm refused: %s", body);
+	// An e-stop: answered, and safety goes to failsafe.
+	CHECK_EQ_INT(api("POST", "/api/call/safety.estop", body, sizeof body), 200);
+	CHECK(strstr(body, "\"status\":\"HG_OK\"") != NULL);
+	CHECK(wait_api("/api/fly", "\"v\":{\"state\":2,", 3000, body, sizeof body));
+	// Calls the console does not make, and one to a module that is not here.
+	CHECK_EQ_INT(api("POST", "/api/call/talker.echo", body, sizeof body), 404);
+	CHECK(strstr(body, "not a call the console makes") != NULL);
+	CHECK_EQ_INT(api("POST", "/api/call/safety.check", body, sizeof body), 404);
+	CHECK_EQ_INT(api("GET", "/api/call/safety.estop", body, sizeof body), 404);
+	CHECK_EQ_INT(api("POST", "/api/call/recorder.start", body, sizeof body), 409);
+	CHECK(strstr(body, "\"ok\":false,\"call\":\"recorder.start\",\"status\":\"refused by the manager\"") != NULL);
+	// A call without the JSON content type (a cross-site form) is refused.
+	const char *r = RAW("POST /api/call/safety.estop HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+	CHECK(strncmp(r, "HTTP/1.1 403", 12) == 0);
+	// Its calls done, the console idles: the call timer stopped with them.
+	struct mstat m;
+	CHECK(module_status("console", &m) && m.pid > 0);
+	long long t0 = th_cpu_ticks(m.pid);
+	uint64_t a = now_ms();
+	sleep_ms(1000);
+	double pct = th_cpu_percent(t0, th_cpu_ticks(m.pid), (long)(now_ms() - a));
+	printf("    console at rest: %.1f %% of a core\n", pct);
+	CHECK(pct >= 0 && pct < 5);
+	// safety, still running (in the failsafe the e-stop latched).
+	CHECK(module_status("safety", &m) && strcmp(m.state, "ready") == 0);
 }
 
 static void test_log(void)
@@ -389,6 +485,7 @@ int main(void)
 	RUN_TEST(test_page_and_errors);
 	RUN_TEST(test_restart_stop_start);
 	RUN_TEST(test_hellion_default);
+	RUN_TEST(test_fly);
 	RUN_TEST(test_log);
 	RUN_TEST(test_shutdown);
 	hd_teardown();
