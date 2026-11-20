@@ -2,7 +2,7 @@
 
 The pure-arithmetic core of `hangar-policy` (docs/09-learning.md, "The runtime"),
 version 1: a model is a graph of ops over named buffers in a fixed order, read from a
-`.hgw` weights file that is mapped and used in place, with one arena allocated at load
+`.hgw` weights file that is read into private memory and used in place, with one arena allocated at load
 and nothing allocated per tick. No topics and no module here; the policy module comes
 later over lib/hg. C11, libc and libm only. LGPL-3.0-or-later, since a policy module
 links it.

@@ -48,7 +48,7 @@ typedef struct nn_op_inst {
 } nn_op_inst;
 
 typedef struct nn_model {
-  const void *map; /* the file, mapped or caller-owned */
+  const void *map; /* the file's bytes: nn_hgw_map's private copy, or caller-owned */
   size_t map_size;
   bool owns_map;
   nn_hgw_file file;

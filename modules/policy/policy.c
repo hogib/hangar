@@ -450,7 +450,9 @@ static struct {
 	char path[PATH_LEN + 128];
 	uint8_t digest[32];
 	int have_digest;
-	char keep_from[PATH_LEN + 128]; /* JOB_KEEP_LOAD: the new current.hgw's source */
+	char keep_from[PATH_LEN + 128]; /* JOB_KEEP_LOAD: the incoming file the new model came from */
+	const void *keep_cur, *keep_prev; /* the bytes of the running and of the previous model, as checked */
+	size_t keep_cur_size, keep_prev_size;
 	uint64_t keep_hash;
 	char session[256];
 } W;
@@ -540,6 +542,33 @@ static int copy_file(const char *from, const char *to)
 	return rc;
 }
 
+/* bytes to path, through a temporary name and a rename. */
+static int write_bytes(const char *to, const void *data, size_t size)
+{
+	char tmp[PATH_LEN + 160];
+	mod_fmt(tmp, sizeof tmp, "%s.tmp", to);
+	int out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
+	if (out < 0)
+		return -1;
+	int rc = 0;
+	for (size_t off = 0; off < size && rc == 0;) {
+		ssize_t n = write(out, (const char *)data + off, size - off);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			rc = -1;
+		else
+			off += (size_t)n;
+	}
+	if (close(out) < 0)
+		rc = -1;
+	if (rc == 0 && rename(tmp, to) < 0)
+		rc = -1;
+	if (rc < 0)
+		unlink(tmp);
+	return rc;
+}
+
 static void *worker(void *arg)
 {
 	(void)arg;
@@ -558,6 +587,8 @@ static void *worker(void *arg)
 		int have_digest = W.have_digest;
 		double budget = W.budget_ns;
 		uint64_t keep_hash = W.keep_hash;
+		const void *keep_cur = W.keep_cur, *keep_prev = W.keep_prev;
+		size_t keep_cur_size = W.keep_cur_size, keep_prev_size = W.keep_prev_size;
 		memcpy(path, W.path, sizeof path);
 		memcpy(keep_from, W.keep_from, sizeof keep_from);
 		memcpy(session, W.session, sizeof session);
@@ -588,15 +619,23 @@ static void *worker(void *arg)
 			req.n_output_fields = 6;
 			nn_load(path, &req, &m, &rep);
 		} else if (job == JOB_KEEP_LOAD) {
-			/* The files: the old current.hgw becomes previous.hgw, the new
-			 * file current.hgw; and a copy into the recorder's session. */
+			/* The files: previous.hgw and current.hgw written from the two
+			 * models' own bytes, the ones the checks judged and the ticks
+			 * run on, not moved from files that anybody may have written
+			 * since (a restart would load, with no hash to hold them to,
+			 * whatever those held); the incoming file removed; and a copy
+			 * into the recorder's session. The models stay allocated while
+			 * this runs: a load, the one thing that frees one, is refused
+			 * while the worker is busy, and so is a revert. */
 			char cur[PATH_LEN + 32], old[PATH_LEN + 32];
 			mod_fmt(cur, sizeof cur, "%s/current.hgw", state_dir);
 			mod_fmt(old, sizeof old, "%s/previous.hgw", state_dir);
-			if (access(cur, F_OK) == 0 && strcmp(keep_from, cur) != 0 && rename(cur, old) < 0)
-				mod_log(WHO, "keep: %s -> %s: %s", cur, old, strerror(errno));
-			if (strcmp(keep_from, cur) != 0 && rename(keep_from, cur) < 0 && copy_file(keep_from, cur) < 0)
-				mod_log(WHO, "keep: %s -> %s: %s", keep_from, cur, strerror(errno));
+			if (keep_prev && write_bytes(old, keep_prev, keep_prev_size) < 0)
+				mod_log(WHO, "keep: %s: %s", old, strerror(errno));
+			if (write_bytes(cur, keep_cur, keep_cur_size) < 0)
+				mod_log(WHO, "keep: %s: %s", cur, strerror(errno));
+			else if (strcmp(keep_from, cur) != 0)
+				unlink(keep_from);
 			if (session[0]) {
 				char dir[300], to[400];
 				mod_fmt(dir, sizeof dir, "%s/weights", session);
@@ -785,6 +824,10 @@ static void swap_in(void)
 	if (cause == CAUSE_LOAD) {
 		pthread_mutex_lock(&wl);
 		mod_fmt(W.keep_from, sizeof W.keep_from, "%s", L.path);
+		W.keep_cur = run.m->map;
+		W.keep_cur_size = run.m->map_size;
+		W.keep_prev = have_prev ? prev.m->map : NULL;
+		W.keep_prev_size = have_prev ? prev.m->map_size : 0;
 		W.keep_hash = run.hash;
 		session_path(W.session, sizeof W.session);
 		pthread_mutex_unlock(&wl);

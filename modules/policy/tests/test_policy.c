@@ -703,6 +703,71 @@ static void test_recurrent_spec(void)
 	hg_sub_close(l2);
 }
 
+/* The running weights are the bytes the checks judged, whatever happens to
+ * the file afterwards. The model used to run from a MAP_PRIVATE mapping of
+ * the file, the same inode the keep job renamed to current.hgw: four bytes
+ * written into that file in place changed the running weights, under a hash
+ * that still named the checked file and with no load message; truncating it
+ * killed the policy with SIGBUS. And the next load moved the files as it
+ * found them: a damaged current.hgw became previous.hgw. Running here: good_b
+ * (heave = -a + 0.1), previous good_a. */
+static void test_weights_are_private(void)
+{
+	struct mstat m0, m1;
+	CHECK(module_status("policy_toy", &m0) && m0.pid > 0);
+	pump(100);
+	CHECK(O.active.hash == hash_b);
+	CHECK(near(O.out.heave, -T.a + 0.1f) && near(O.out.surge, 2 * T.t));
+	uint64_t actives = O.actives, loads = O.loads;
+	char cur[700], old[700], hex[65];
+	tfmt(cur, sizeof cur, "%s/current.hgw", state);
+	tfmt(old, sizeof old, "%s/previous.hgw", state);
+	/* Another process writes over the tensor data, in place: the last 64
+	 * bytes of the file, which are the weights. */
+	int fd = open(cur, O_WRONLY);
+	CHECK(fd >= 0);
+	struct stat st;
+	CHECK(fstat(fd, &st) == 0 && st.st_size > 4096);
+	unsigned char junk[64];
+	memset(junk, 0x41, sizeof junk); /* 12.08 as an f32, in every weight and bias */
+	CHECK(pwrite(fd, junk, sizeof junk, st.st_size - (off_t)sizeof junk) == (ssize_t)sizeof junk);
+	close(fd);
+	uint64_t o0 = O.outs;
+	pump(300);
+	CHECK(O.outs > o0 + 5);
+	CHECK(near(O.out.heave, -T.a + 0.1f) && near(O.out.surge, 2 * T.t));
+	if (!near(O.out.heave, -T.a + 0.1f))
+		printf("    heave %.3f after the file was written to; the model checked gives %.3f\n", (double)O.out.heave,
+		       (double)(-T.a + 0.1f));
+	CHECK(O.actives == actives && O.loads == loads);
+	/* And truncates it. */
+	CHECK_EQ_INT(truncate(cur, 0), 0);
+	o0 = O.outs;
+	pump(400);
+	CHECK(module_status("policy_toy", &m1) && m1.pid == m0.pid && strcmp(m1.state, "ready") == 0);
+	CHECK(O.outs > o0 + 5);
+	CHECK(near(O.out.heave, -T.a + 0.1f));
+	/* The next load writes both files from the models' own bytes: good_b,
+	 * whose file was just destroyed, is previous.hgw as it was checked. */
+	uint32_t v = 0;
+	uint64_t h = 0;
+	CHECK_EQ_INT(load("good_a", NULL, &v, NULL), HG_OK);
+	CHECK_EQ_INT(wait_load(v, 5000), 3);
+	pump(300);
+	CHECK(digest_hex(cur, hex, &h) == 0 && h == hash_a);
+	CHECK(digest_hex(old, hex, &h) == 0 && h == hash_b);
+	char inc[800];
+	tfmt(inc, sizeof inc, "%s/good_a.hgw", incoming);
+	CHECK(access(inc, F_OK) < 0); /* the incoming file is gone, as when it was renamed */
+	/* Back to good_b running and good_a previous, for the tests that follow. */
+	CHECK_EQ_INT(load("good_b", NULL, &v, NULL), HG_OK);
+	CHECK_EQ_INT(wait_load(v, 5000), 3);
+	pump(300);
+	CHECK(O.active.hash == hash_b);
+	CHECK(digest_hex(cur, hex, &h) == 0 && h == hash_b);
+	CHECK(digest_hex(old, hex, &h) == 0 && h == hash_a);
+}
+
 static void test_warmup_overrun(void)
 {
 	char path[700];
@@ -1023,6 +1088,7 @@ int main(void)
 	RUN_TEST(test_load_swap);
 	RUN_TEST(test_checks_fail);
 	RUN_TEST(test_recurrent_spec);
+	RUN_TEST(test_weights_are_private);
 	RUN_TEST(test_warmup_overrun);
 	RUN_TEST(test_features);
 	RUN_TEST(test_features_vs_pairer);

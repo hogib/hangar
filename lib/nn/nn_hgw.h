@@ -338,8 +338,10 @@ int nn_load_mem(const void *data, size_t size, const nn_load_req *req,
 int nn_load(const char *path, const nn_load_req *req, struct nn_model **out,
             nn_report *report);
 
-/* Map a whole file read-only (nn_load does this); unmap what nn_hgw_map
- * returned. */
+/* A whole file read into read-only memory of the process's own (nn_load
+ * does this): not a mapping of the file, so nothing written to the file
+ * afterwards, and no truncation of it, reaches a loaded model. nn_hgw_unmap
+ * releases what nn_hgw_map returned. */
 const void *nn_hgw_map(const char *path, size_t *size, char *reason,
                        size_t reason_len);
 void nn_hgw_unmap(const void *data, size_t size);

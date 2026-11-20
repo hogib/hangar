@@ -314,7 +314,8 @@ once, since its output skipped a tick ([07-safety](07-safety.md#the-mux)).
 
 ## The weights file (`.hgw`)
 
-Self-describing, mapped into memory and read in place:
+Self-describing, read into the policy's own memory and used in place (not a mapping
+of the file: a later write to the file must not reach the weights that were checked):
 
 ```
 [ header: 4096 bytes ][ section directory ][ sections ][ tensor data, 64-byte aligned ]

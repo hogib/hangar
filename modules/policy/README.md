@@ -66,7 +66,9 @@ with the running model untouched and named by the outputs, check 4 also for a mo
 trained at another tick period than the anchor's (`slow10hz`); a recurrent model
 (one LSTM layer) refused by check 4 on a spec without `Filter=mask`, `Missing=flag`
 and `Rate=every:1`, and loaded on the same spec with them (`test_recurrent_spec`, two
-more policy modules); a second load refused; a
+more policy modules); `current.hgw` overwritten in place and then truncated under the
+running model, whose outputs do not change and whose process lives, and the next
+load writing `previous.hgw` back as it was checked (`test_weights_are_private`); a second load refused; a
 warm-up overrun (check 8); the features and the stale flag, then against the pairer's
 rows; revert; a restart's reload of both files and revert after it; a non-finite output
 unpublished and counted; Allow, and the manager's refusals of a misnamed policy and of
@@ -92,6 +94,13 @@ hash a model was trained on with the one it builds the same way.
   the L2 estimator, and closed-loop runs for sim_vehicle.
 
 ## Deviations from docs/09
+
+- The weights file is not mapped: it is read once into read-only memory of the
+  process's own, and checks 1, 5 and 6 judge, and the ticks run on, exactly those
+  bytes. `current.hgw` and `previous.hgw` are written from the two models' bytes at
+  each load (docs/09 has the file "mapped into memory and read in place", and is
+  corrected: a mapping, even a private one, shows later writes to the file and dies
+  of a truncation). The incoming file is removed once `current.hgw` is written.
 
 - "For a recurrent model, the spec has `Filter=mask`, `Missing=flag` and
   `Rate=every:1`" (check 4) is implemented as written, with "recurrent" meaning any

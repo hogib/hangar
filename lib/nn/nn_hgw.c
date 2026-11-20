@@ -6,6 +6,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "nn_hgw.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
@@ -336,12 +337,32 @@ const void *nn_hgw_map(const char *path, size_t *size, char *r, size_t rl) {
     close(fd);
     return NULL;
   }
-  p = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
+  /* Read into memory of the process's own, not mapped: a MAP_PRIVATE
+   * mapping of the file still shows what another process writes into the
+   * file afterwards (the pages are the file's until this process writes
+   * them, which it never does), and a truncation is a SIGBUS at the next
+   * step. The hash, the finiteness check and the probes judged the file
+   * once; the model must run from exactly the bytes they judged. */
+  p = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (p == MAP_FAILED) {
-    set_reason(r, rl, "cannot map %s", path);
+    set_reason(r, rl, "no memory for the %lld bytes of %s", (long long)st.st_size, path);
+    close(fd);
     return NULL;
   }
+  for (size_t got = 0; got < (size_t)st.st_size;) {
+    ssize_t n = pread(fd, (char *)p + got, (size_t)st.st_size - got, (off_t)got);
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0) { /* an error, or the file shrank under the read */
+      set_reason(r, rl, "cannot read %s (%zu of %lld bytes)", path, got, (long long)st.st_size);
+      munmap(p, (size_t)st.st_size);
+      close(fd);
+      return NULL;
+    }
+    got += (size_t)n;
+  }
+  close(fd);
+  (void)mprotect(p, (size_t)st.st_size, PROT_READ);
   *size = (size_t)st.st_size;
   return p;
 }
