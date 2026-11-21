@@ -197,6 +197,53 @@ class FromFile(unittest.TestCase):
         self.assertRaises(learn.LearnError, learn.open_dataset, self.PATH, inputs=["t.b.0.gyro"])
         self.assertRaises(learn.LearnError, learn.open_dataset, self.PATH, inputs=["t.b.0.gyro[9]"])
 
+    def test_no_loss_from_a_missing_part(self):
+        # Row 3 of the fixture passed Where (flags 0) and its label part t.s
+        # is missing: the label is the zeros of docs/06 "The row", nothing
+        # anything published. It had loss weight 1.
+        from hangar import dataset
+        ds = dataset.open_dataset(self.PATH)
+        r3 = ds.row(3)
+        self.assertEqual((r3["flags"], r3["missing"], r3["t.s._count"]), (0, 1 << ds.parts().index("t.s"), 0))
+        arr = ds.array()
+        s = learn.open_dataset(self.PATH, batch=4, seq_len=5)
+        self.assertEqual(s.replay.at(3).y[2], 0.0)
+        self.assertTrue(s.replay.at(3).partial)
+        self.assertFalse(s.replay.at(3).loss)
+        ch = s._chunker
+        ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 0, True, False
+        self.assertEqual(float(ch.next().mask[0, 3]), 0.0)
+        # A stream that does not read t.s takes the row.
+        t = learn.open_dataset(self.PATH, batch=4, inputs=["t.a.depth_m"], labels=["t.c.heave"])
+        self.assertTrue(t.replay.at(3).loss)
+        self.assertEqual([r.partial for r in t.replay.rows], [False] * len(arr))
+        # with_loss(): the same rule over the rows as an array.
+        for st in (s, t):
+            self.assertEqual(list(learn.with_loss(arr, st.input_fields + st.label_fields)),
+                             [r.loss for r in st.replay.rows])
+        self.assertEqual(int(learn.with_loss(arr, s.input_fields + s.label_fields).sum()),
+                         int(((arr["flags"] & learn.MASKED == 0) & (arr["missing"] == 0)).sum()))
+        # In a batch of single rows too.
+        flat = learn.open_dataset(self.PATH, batch=64)
+        flat.replay.draw = lambda: 3
+        self.assertEqual(float(flat.next_chunk().mask.sum()), 0.0)
+        ds.close()
+
+    def test_no_loss_from_a_window_not_yet_full(self):
+        # t.b is a window of 3, message 2 the newest; the fixture's first
+        # rows hold 1, 2 and 3 messages of it. Message 0 is zeros until the
+        # count is 3, message 1 until it is 2.
+        from hangar import dataset
+        ds = dataset.open_dataset(self.PATH)
+        arr = ds.array()
+        self.assertEqual(list(arr["t.b._count"][:3]), [1, 2, 3])
+        ds.close()
+        for field, partial in (("t.b.0.gyro[2]", [True, True, False]), ("t.b.1.gyro[0]", [True, False, False]),
+                               ("t.b.2.gyro[1]", [False, False, False]), ("t.b._count", [False, False, False])):
+            s = learn.open_dataset(self.PATH, batch=2, inputs=[field], labels=["t.c.heave"])
+            self.assertEqual([s.replay.at(i).partial for i in range(3)], partial, field)
+            self.assertEqual(list(learn.joined(arr, [field])[:3]), [not p for p in partial], field)
+
     def test_probes_from_a_run_start(self):
         s = learn.open_dataset(self.PATH, batch=2, seq_len=3)
         p = s.probes(4)

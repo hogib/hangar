@@ -550,6 +550,7 @@ batches of single rows and has nothing to carry; the example below is one, and
 |---|---|
 | `stream(topic, batch, seq_len=None, replay="10min")` | rows from the live topic, through a replay buffer. With `seq_len`, stateful chunks for recurrent models (below) |
 | `open_dataset(file, batch, seq_len=None)` | the same over a built dataset file |
+| `with_loss(rows, fields)` | per row of a numpy array of rows: whether a stream reading `fields` gives it loss (`chunk.mask`'s rule, below) |
 | `carry(state, fresh)` | the recurrent state, detached from the graph, zeroed for the slots marked fresh |
 | `export(model, file, stream, outputs)` | the `.hgw` file: graph, tensors, bindings to the stream's input fields and to `outputs`, probes and lineage from the stream's buffer, checked against the vehicle's `runtime_info` |
 | `deploy(model or file, policy, stream, outputs)` | export, `bridge.send`, `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
@@ -562,8 +563,17 @@ row with `reset` set; the slot's next chunk starts from zero state (`chunk.fresh
 the rest of the short chunk is padding with no loss. This is the vehicle's own rule, so
 the state a model meets in training is the state it carries on the vehicle. A row with
 `masked` set (it failed the spec's `Where`) is stepped through like any other, and
-carries no loss. `chunk.mask` is 0 on masked rows and on padding
-([06-recorder](06-recorder.md#the-spec)). A row lost on the tether, or skipped by a
+carries no loss. Nor does a row in which a field the stream reads, input or label, is
+not what was joined but the zeros of a missing part, or of a window its `_count` does
+not fill ([06-recorder](06-recorder.md#the-row)): a zero label is nothing the vehicle
+did, and on a missing input the policy's output is flagged and drives nothing
+([Features at run time](#features-at-run-time)). The model is stepped through these
+rows too, on the zeros the policy hands it. `chunk.mask` is 0 on all of them and on
+padding ([06-recorder](06-recorder.md#the-spec)), in a batch of single rows as in a
+chunk; `learn.with_loss(rows, fields)` gives the same rule over an array of rows, for an
+analysis that reads a dataset itself. A stale part is the last values published, and
+keeps its loss; the offline build's `late` flag is in the row's `flags` for a trainer
+that wants those rows out. A row lost on the tether, or skipped by a
 trainer slower than the rows, also ends the chunk, as a fresh start the vehicle did not
 make; `stream` counts them and reports the count.
 

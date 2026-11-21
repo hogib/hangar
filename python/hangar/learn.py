@@ -14,9 +14,12 @@
 stream() reads the live dataset.<name> topic in place (hangar.topic) into a
 replay buffer; open_dataset() does the same over a built dataset file.
 Chunks are numpy arrays: inputs [batch, seq_len, n_in], labels [batch,
-seq_len, n_label], mask [batch, seq_len] (0 on masked rows, padding and a
-warm-up chunk), fresh [batch] (the slot starts from zero state). Without
-seq_len a chunk is `batch` rows drawn from the buffer, [batch, n].
+seq_len, n_label], mask [batch, seq_len] (0 on masked rows, on rows in which
+a field the stream reads is the zeros of a missing part or of a window not
+yet full, on padding and on a warm-up chunk), fresh [batch] (the slot starts
+from zero state). Without seq_len a chunk is `batch` rows drawn from the
+buffer, [batch, n]. with_loss(rows, fields) is the mask's rule over a numpy
+array of rows, for an analysis that reads a dataset itself.
 
 export() writes the .hgw with lib/nn's exporter (hangar.nn.export_torch):
 bindings to the stream's fields, probes from the reference, the lineage of
@@ -49,6 +52,8 @@ from . import topic as _topic
 
 RESET = _dataset.RESET
 MASKED = _dataset.MASKED
+LATE = _dataset.LATE
+OFF_MISSING = 32
 OFF_FLAGS = 36
 
 Chunk = namedtuple("Chunk", "inputs labels mask fresh")
@@ -76,6 +81,85 @@ def _duration_ns(text):
 
 # ---- Rows ------------------------------------------------------------------------
 
+_PART_HEADER = ("_seq", "_stamp_ns", "_count", "_flags")
+
+
+class _Joined(object):
+    """What a set of row fields needs of the row's parts to be what was
+    joined and not the zeros of docs/06 "The row": a part's missing bit
+    clear and, for message k of a window of K (k = K-1 the newest, the
+    window filled from there back), `_count` at least K - k. The anchor's
+    fields, the row's header and a part's own header fields need nothing.
+
+    names: the row's field names in the row's order (a layout's, or a numpy
+    dtype's); a part's fields are those from its `._seq` to the next part's."""
+
+    def __init__(self, names, fields):
+        where, windows, parts = {}, {}, []
+        for n in names:
+            if n.endswith("._seq"):
+                parts.append(n[:-5])
+                continue
+            if not parts or not n.startswith(parts[-1] + "."):
+                continue
+            rest = n[len(parts[-1]) + 1:]
+            if rest in _PART_HEADER:
+                continue
+            head, dot, _ = rest.partition(".")
+            k = int(head) if dot and head.isdigit() else None
+            where[n] = (len(parts) - 1, k)
+            if k is not None:
+                windows[len(parts) - 1] = max(windows.get(len(parts) - 1, 0), k + 1)
+        need = {}
+        for f in fields:
+            base = f[:-1].partition("[")[0] if f.endswith("]") and "[" in f else f
+            if base not in where:
+                continue
+            i, k = where[base]
+            need[i] = max(need.get(i, 0), 1 if k is None else windows[i] - k)
+        # (the part's place in `missing`, its name, the count its fields need)
+        self.need = [(i, parts[i], c) for i, c in sorted(need.items())]
+
+    def offsets(self, by_name):
+        """[(place in `missing`, offset of the part's _count, count needed)]
+        for payload()."""
+        return [(i, by_name[p + "._count"].offset, c) for i, p, c in self.need]
+
+    @staticmethod
+    def payload(offsets, payload):
+        """Whether one row's bytes hold the fields as joined."""
+        missing = struct.unpack_from("<I", payload, OFF_MISSING)[0]
+        for i, off, c in offsets:
+            if missing >> i & 1 or struct.unpack_from("<I", payload, off)[0] < c:
+                return False
+        return True
+
+    def array(self, rows):
+        """The same per row of a numpy structured array of rows."""
+        np = _np()
+        ok = np.ones(len(rows), np.bool_)
+        for i, part, c in self.need:
+            ok &= ((rows["missing"] >> i) & 1 == 0) & (rows[part + "._count"] >= c)
+        return ok
+
+
+def joined(rows, fields):
+    """Per row of a numpy structured array of dataset rows (hangar.dataset's
+    array(), a recording's): True where every one of `fields` (row field
+    names, `field[i]` for an element) is what was joined, not the zeros of a
+    missing part or of a window its `_count` does not fill (docs/06 "The
+    row")."""
+    return _Joined(rows.dtype.names, fields).array(rows)
+
+
+def with_loss(rows, fields):
+    """Per row of a numpy structured array of dataset rows: True where a
+    stream reading `fields` (its inputs and labels) gives the row loss: not
+    `masked`, and joined(rows, fields). The rule of chunk.mask, for an
+    analysis that reads the rows itself."""
+    return (rows["flags"] & MASKED == 0) & joined(rows, fields)
+
+
 class _RowCodec(object):
     """A row type's input and label fields as vectors (the row schema's
     role= comments, docs/06 "The row")."""
@@ -101,6 +185,7 @@ class _RowCodec(object):
                 ("._seq", "._stamp_ns", "._count", "._flags"))]
         self._in = [self._locate(by_name, n) for n in self.inputs]
         self._lab = [self._locate(by_name, n) for n in self.labels]
+        self._joined = _Joined([f.name for f in layout.fields], self.inputs + self.labels).offsets(by_name)
 
     @staticmethod
     def _locate(by_name, n):
@@ -124,17 +209,26 @@ class _RowCodec(object):
         flags = struct.unpack_from("<I", payload, OFF_FLAGS)[0]
         x = [struct.unpack_from(c, payload, o)[0] for o, c in self._in]
         y = [struct.unpack_from(c, payload, o)[0] for o, c in self._lab]
-        return _Row(seq, stamp, boot, flags, x, y, lost_before)
+        return _Row(seq, stamp, boot, flags, x, y, lost_before, not _Joined.payload(self._joined, payload))
 
 
 class _Row(object):
-    __slots__ = ("seq", "stamp", "boot", "flags", "x", "y", "starts_run")
+    __slots__ = ("seq", "stamp", "boot", "flags", "x", "y", "starts_run", "partial")
 
-    def __init__(self, seq, stamp, boot, flags, x, y, lost_before):
+    def __init__(self, seq, stamp, boot, flags, x, y, lost_before, partial=False):
         self.seq, self.stamp, self.boot, self.flags, self.x, self.y = seq, stamp, boot, flags, x, y
+        # One of x, y is the zeros of a missing part, or of a window its
+        # count does not fill, not a value anything published.
+        self.partial = partial
         # A run starts at a reset, after a row lost (a fresh start the vehicle
         # did not make), and at a change of boot (set by the buffer).
         self.starts_run = bool(flags & RESET) or lost_before
+
+    @property
+    def loss(self):
+        """Whether the row carries loss (chunk.mask): it passed the spec's
+        Where, and every field read from it was joined."""
+        return not (self.flags & MASKED or self.partial)
 
 
 # ---- The replay buffer and the chunks ------------------------------------------
@@ -242,7 +336,7 @@ class Chunker(object):
                     break
                 X[b, t] = r.x
                 Y[b, t] = r.y
-                M[b, t] = 0.0 if (s.warm or r.flags & MASKED) else 1.0
+                M[b, t] = 0.0 if (s.warm or not r.loss) else 1.0
                 t += 1
                 i += 1
             if ended:
@@ -302,7 +396,7 @@ class _Stream(object):
         rows = [self.replay.at(i) for i in idx]
         X = np.array([r.x for r in rows], np.float32).reshape(self.batch, len(self.codec.inputs))
         Y = np.array([r.y for r in rows], np.float32).reshape(self.batch, len(self.codec.labels))
-        M = np.array([0.0 if r.flags & MASKED else 1.0 for r in rows], np.float32)
+        M = np.array([1.0 if r.loss else 0.0 for r in rows], np.float32)
         return Chunk(X, Y, M, np.ones((self.batch,), np.bool_))
 
     def _wait(self):

@@ -622,7 +622,8 @@ ds = hangar.open_dataset("depth_ff.hgr")                     # file, memmap
 
 with a PyTorch `IterableDataset` over either, which steps a recurrent model through
 the rows in order: its state starts over where `reset` is set, and `masked` rows carry
-no loss ([09-learning](09-learning.md#training)). The Python package is for the
+no loss, nor do rows in which a field it reads is the zeros of a missing part or of a
+window `_count` does not fill ([09-learning](09-learning.md#training)). The Python package is for the
 topside and for training; nothing on the vehicle needs it.
 
 ## The topside
