@@ -452,7 +452,12 @@ ArduSub's GCS failsafe watches, so that failsafe acts `FS_GCS_TIMEOUT` after the
 stops sending: when it dies, and when it stops on purpose, once `bridge.vehicle.link`
 has reported no packet from the topside for `tether_timeout`
 ([10-mavlink](10-mavlink.md#arming-and-failsafe)). On tether loss it therefore stands
-behind hangar's `tether` trigger, whatever hangar did.
+behind hangar's `tether` trigger, whatever hangar did. *As built (2026-11-21): the
+safety module's `tether` trigger reads the link; the `mavlink` module does not yet
+stop `MANUAL_CONTROL` at `tether_timeout` (`modules/mavlink/README.md`, "Until the
+bridge"). With the default action, `neutral`, hangar disarms ArduSub on tether loss
+and nothing more is needed; with `action_tether` set to `surface` or `hold`, ArduSub's
+GCS failsafe does not stand behind the trigger until the module does.*
 
 If the vehicle's `mavlink` module dies, its `Neutral` command sends ArduSub neutral
 manual control and a disarm, and ArduSub, no longer hearing from its ground station,
