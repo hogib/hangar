@@ -17,7 +17,10 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   neutral, at once), `clear` (refused while a trigger is active; sends the manager
   `clear-failsafe` when `module` is the only one, and passes its refusal on), `check`
   (the checklist without arming: `check_rep.ok` and `detail`, what `hangar check`
-  prints).
+  prints). An `arm` or a `clear` published before the module's own process started
+  (it waited in its caller's ring through a restart, and the call library serves a
+  restarted server what waited in time) is refused, "safety restarted after this arm
+  was sent: send it again": docs/07 "A request from before a restart".
 - The checklist: every module of `required` ready in `hangar.vehicle.modules`, no
   trigger active, `vehicle.leak` fresh and dry, `power.battery` fresh and above
   `battery_min`, `nav.depth` fresh, and, with an autopilot behind the actuators,
@@ -141,3 +144,7 @@ and the log, `arm` refused until `clear`, which removes the file. It started
 the module killed 2 s and 4 s into the hold with the inputs flowing: it comes back in
 the hold each time and the hold ends 6.0 s after it began (10.2 s before: each start
 began it again), and an ended hold stays ended across a third restart.
+`test_request_from_before_start`: `hangar call safety.arm` sent while the module is
+stopped, the module then killed: the instance the manager starts refuses it and stays
+disarmed, with no `mavlink.arm` (it armed before); the same for `clear` in a latched
+failsafe, which stays; `estop` sent the same way is served.

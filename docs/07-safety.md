@@ -60,6 +60,16 @@ In phase 1 it also needs ArduSub disarmed, in MANUAL, and reporting the paramete
 ([10-mavlink](10-mavlink.md#arming-and-failsafe)). A refused `arm` says which check
 failed.
 
+**A request from before a restart.** The call library serves a restarted server the
+requests that waited for it in time ([04-calls](04-calls.md#the-two-topics)). The
+safety module refuses two of them: an `arm` or a `clear` whose request was published
+before the module's own process started, with the reason "safety restarted after this
+arm was sent: send it again". The instance before may have crashed in the middle of
+that request, or answered it in a reply the new one cannot see, and the operator sent
+it against a state that the restart has changed (a restart comes back disarmed, or in
+the latched failsafe). `disarm`, `estop` and `check` are served whenever they were
+sent.
+
 Arming is asynchronous. `safety.arm` runs the checklist and answers `accepted` at once,
 or refuses. On `accepted`, `safety` first publishes `safety.state` with state
 `arming`, with `outputs_enabled` off, and only then calls `mavlink.arm` with
@@ -479,6 +489,9 @@ The bench tests above, and in CI:
 - the latch: a safety module restarted in failsafe comes back in failsafe; `clear`
   refused while a module given up with `OnGiveUp=failsafe` is still failed, and
   accepted once it runs again;
+- a request from before a restart: `arm` and `clear` sent while the module was stopped
+  and served by the instance started after it are refused, the state unchanged;
+  `estop` sent the same way is served;
 - `Allow`: a module not listed is denied `safety.arm`, `safety.clear` and
   `safety.set_params`; any module of either side, `topside:topside_mavlink` included,
   may call `safety.disarm`, `safety.estop` and `safety.check`;

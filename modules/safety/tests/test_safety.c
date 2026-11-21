@@ -818,12 +818,10 @@ static void test_latch_unreadable(void)
 		CHECK_EQ_INT(call("estop"), 0);
 		CHECK(wait_safety(2, 0, 2000));
 		CHECK(file_contains(path, "state 2"));
-		/* The calls made so far expire (2 s for `hangar call` here) before
-		 * the crash: a server restarted twice within a request's deadline
-		 * serves it again (docs/04 "While the server restarts": only its
-		 * direct predecessor's replies are known to it), and the `clear`
-		 * of the round before would undo what this one looks at. */
-		pump(2300);
+		/* No wait for the calls made so far to expire: the second round's
+		 * crash is the second restart within the deadline of the first
+		 * round's `clear`, which was served again then and undid what this
+		 * round looks at (docs/04 "While the server restarts"). */
 		CHECK(crash_and_restart(contents[i]));
 		CHECK(wait_latched(0, 5000));
 		CHECK(!last_state.outputs_enabled);
@@ -840,6 +838,88 @@ static void test_latch_unreadable(void)
 	char log[1024];
 	tfmt(log, sizeof log, "%s/run/hangar/log/safety.log", T_root);
 	CHECK(file_contains(log, "is there but it has no `state 2` line: starting in failsafe"));
+}
+
+/* `hangar call safety.<method>` sent while the module is stopped, and the
+ * module then killed: the request waits in the admin topic for the instance
+ * the manager starts. What that instance answers, in out. */
+static void call_across_restart(const char *method, char *out, size_t outlen)
+{
+	char target[64], path[700];
+	tfmt(target, sizeof target, "safety.%s", method);
+	tfmt(path, sizeof path, "%s/across.out", T_root);
+	unlink(path);
+	out[0] = 0;
+	struct mstat before, m;
+	if (!module_status("safety", &before) || before.pid <= 0)
+		return;
+	kill(before.pid, SIGSTOP);
+	pid_t cli = fork();
+	if (cli == 0) {
+		int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd >= 0) {
+			dup2(fd, 1);
+			dup2(fd, 2);
+		}
+		execl(T_hangar, T_hangar, "call", target, (char *)NULL);
+		_exit(127);
+	}
+	pump(200); /* the manager has published the request; nothing reads it */
+	kill(before.pid, SIGKILL);
+	uint64_t t0 = now_ms();
+	int st, done = 0;
+	while (!done && now_ms() - t0 < 6000) {
+		pump(20);
+		done = waitpid(cli, &st, WNOHANG) == cli;
+	}
+	if (!done) {
+		kill(cli, SIGKILL);
+		waitpid(cli, &st, 0);
+	}
+	tfmt(out, outlen, "%s", read_file(path));
+	t0 = now_ms();
+	while (now_ms() - t0 < 15000) {
+		pump(20);
+		if (module_status("safety", &m) && m.pid > 0 && m.pid != before.pid && strcmp(m.state, "ready") == 0)
+			break;
+	}
+}
+
+/* An `arm` or a `clear` that waited through a restart of the module is not
+ * served by the new instance: it knows nothing of what the one before did
+ * with it, and starts in another state than the one the operator saw. The
+ * library serves what waited, in time, for a restarted server (docs/04);
+ * the module armed from it, and left a failsafe by it. */
+static void test_request_from_before_start(void)
+{
+	CHECK_EQ_INT(last_state.state, 0);
+	int arms = T.arms_served;
+	T.arm_mode = 0;
+	T.ap_result = 255;
+	call_across_restart("arm", cli_out, sizeof cli_out);
+	printf("    arm sent before the restart: %s", cli_out);
+	CHECK(strstr(cli_out, "HG_E_REFUSED") != NULL);
+	CHECK(strstr(cli_out, "safety restarted after this arm was sent") != NULL);
+	pump(300);
+	CHECK_EQ_INT(last_state.state, 0);
+	CHECK_EQ_INT(T.arms_served, arms);
+	/* In failsafe, with nothing active: the latch brings the new instance
+	 * back in it, and the `clear` from before does not end it. */
+	CHECK_EQ_INT(call("estop"), 0);
+	CHECK(wait_safety(2, 0, 2000));
+	call_across_restart("clear", cli_out, sizeof cli_out);
+	printf("    clear sent before the restart: %s", cli_out);
+	CHECK(strstr(cli_out, "safety restarted after this clear was sent") != NULL);
+	CHECK(wait_latched(0, 5000));
+	pump(300);
+	CHECK_EQ_INT(last_state.state, 2);
+	/* estop is served whenever it was sent. */
+	clear_ok();
+	call_across_restart("estop", cli_out, sizeof cli_out);
+	CHECK(strstr(cli_out, "HG_OK") != NULL);
+	CHECK(wait_safety(2, 0, 3000));
+	pump(300);
+	clear_ok();
 }
 
 /* A hold lasts hold_time from when it began. hold_since was not latched, so
@@ -997,6 +1077,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_latch);
 	RUN_TEST(test_not_a_number);
 	RUN_TEST(test_latch_unreadable);
+	RUN_TEST(test_request_from_before_start);
 	RUN_TEST(test_hold_across_restarts);
 	RUN_TEST(test_module_trigger);
 	RUN_TEST(test_allow);

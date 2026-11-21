@@ -657,11 +657,33 @@ static int checklist(uint64_t now, char *detail, size_t len)
 
 /* ---- The calls ------------------------------------------------------------------- */
 
+/* When this process began: no instance before it was running after that. */
+static uint64_t started_ns;
+
+/* A request that was already in its topic when this instance started waited
+ * through a restart of the module. What the instance before did about it is
+ * not known here: it may have crashed in the middle of it, or answered it in
+ * a reply that is gone (docs/04 "While the server restarts"), and it was
+ * made against the state of before. The two requests that raise the
+ * vehicle's state, `arm` and `clear`, are not served from it; the operator
+ * sends them again. `disarm`, `estop` and `check` are served as they come. */
+static int from_before_start(const hg_call_ctx *c, char *reason)
+{
+	if (c->published_ns >= started_ns)
+		return 0;
+	mod_fmt(reason, HG_CALL_REASON, "safety restarted after this %s was sent: send it again", c->method);
+	mod_log(WHO, "%s by %s refused: sent %llu ms before this start", c->method, c->caller,
+		(unsigned long long)((started_ns - c->published_ns) / 1000000u));
+	return 1;
+}
+
 static int on_arm(const hg_call_ctx *c, const void *req, void *rep, char *reason)
 {
 	(void)req;
 	(void)rep;
 	uint64_t now = hg_now_ns();
+	if (from_before_start(c, reason))
+		return HG_E_REFUSED;
 	if (S.state == ST_FAILSAFE) {
 		char t[80];
 		mod_fmt(reason, HG_CALL_REASON, "failsafe (%s): clear first", trigger_names(S.triggers, t, sizeof t));
@@ -753,6 +775,8 @@ static int on_clear(const hg_call_ctx *c, const void *req, void *rep, char *reas
 	(void)req;
 	(void)rep;
 	uint64_t now = hg_now_ns();
+	if (from_before_start(c, reason))
+		return HG_E_REFUSED;
 	if (S.state != ST_FAILSAFE)
 		return HG_OK;
 	read_inputs(now);
@@ -923,6 +947,7 @@ int main(int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
+	started_ns = hg_now_ns();
 	mod_init(WHO);
 	const struct hg_wiring *w = hg_wiring();
 	if (w)
