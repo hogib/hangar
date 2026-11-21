@@ -26,16 +26,19 @@ def check(cond, what):
         print("    FAIL", what)
 
 
-def deploy_when_free(path, policy, seconds=10.0):
-    """learn.deploy, asked again while the policy refuses with "a load is in
-    progress": its worker may still be putting the last load's files away
-    (modules/policy/policy.c, on_load_weights), which a caller waits out."""
+def when_free(fn, *args, seconds=10.0):
+    """fn(*args), asked again while the policy refuses because the last load
+    is not over for it: "a load is in progress", or "the last load's files
+    are still being written: ask again" (modules/policy/policy.c: its worker
+    has one job at a time). A caller waits those out; any other refusal is
+    the test's to see."""
     t0 = time.monotonic()
     while True:
         try:
-            return learn.deploy(path, policy)
+            return fn(*args)
         except learn.LearnError as e:
-            if "a load is in progress" not in str(e) or time.monotonic() - t0 > seconds:
+            busy = "a load is in progress" in str(e) or "ask again" in str(e)
+            if not busy or time.monotonic() - t0 > seconds:
                 raise
             time.sleep(0.05)
 
@@ -85,11 +88,11 @@ def main():
     print("    deploy (file to swap, through hangar call): %.0f ms, version %d" % (dt * 1000, r["version"]))
 
     # revert: good_a back.
-    rv = learn.revert("toy")
+    rv = when_free(learn.revert, "toy")
     check(int(rv["hash"]) == hash_a, "revert: %r, want hash %016x" % (rv, hash_a))
 
     # A probe that does not reproduce: rejected by check 6, good_a still running.
-    r = deploy_when_free(os.path.join(models, "bad_probe.hgw"), "toy")
+    r = when_free(learn.deploy, os.path.join(models, "bad_probe.hgw"), "toy")
     check(r["state"] == "rejected" and r["check"] == 6, "deploy bad_probe: %r" % r)
     try:
         learn.call("policy_toy.no_such_method")
