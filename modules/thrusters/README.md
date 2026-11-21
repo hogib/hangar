@@ -25,5 +25,16 @@ directly. C11 over lib/hg; static for musl.
 `make check-thrusters`: the mixing against lib/sim's `sim_applied_wrench`, the
 simulator's own command path: neutral and non-finite inputs give 1500 µs; each axis at
 0.5 pushes the right way (heave up is −z, yaw clockwise is +Mz), with no force across;
-heave is monotonic; a saturated mix is scaled to stay within 1100 to 1900 µs. The
-module under a manager is exercised by `tools/sim/e2e-depth-ff.sh`.
+heave is monotonic; a saturated mix is scaled to stay within 1100 to 1900 µs.
+
+`make check-thrusters_run` (10 s): the binary under a manager with the real safety
+module and no autopilot, the suite publishing `ctl.wrench` and reading `thr.cmd`.
+Disarmed, 1500 µs whatever the command; `arm` leads to `armed` at once; armed, heave
+0.5 moves the four vertical thrusters and the message references `ctl.wrench`; the
+command stopped, neutral after 216 ms (`CommandTimeout` 200 ms and a period); the
+safety module stopped with `SIGSTOP`, neutral after 296 ms (`SafetyTimeout` 300 ms
+from its last message); a disarm; `hangar stop thrusters` while driving leaves a
+neutral last message and the system nominal. Every neutral message names no input
+(`HG_NO_REFS`): before this suite the module published them with `hg_publish`, so
+each referenced the `ctl.wrench` it had not acted on. The whole stack runs in
+`tools/sim/e2e-depth-ff.sh`.

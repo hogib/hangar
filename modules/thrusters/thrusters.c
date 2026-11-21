@@ -85,8 +85,13 @@ int main(int argc, char **argv)
 		}
 		struct thruster_out o;
 		memcpy(o.pwm, c.pwm, sizeof o.pwm);
-		hg_publish(pub_cmd, &c, sizeof c, now);
-		hg_publish(pub_out, &o, sizeof o, now);
+		/* A neutral output with the gate closed has no input behind it and
+		 * names none (docs/07 "The actuator gate", docs/01 "Provenance"):
+		 * otherwise it would reference the command it did not act on, and
+		 * carry that command's stale flag. */
+		unsigned flags = w ? 0 : HG_NO_REFS;
+		hg_publish_with(pub_cmd, &c, sizeof c, now, flags, NULL, 0);
+		hg_publish_with(pub_out, &o, sizeof o, now, flags, NULL, 0);
 		char line[160];
 		if (w)
 			mod_fmt(line, sizeof line, "gate open; %llu ticks open, %llu scaled down", open_ticks, scaled);
@@ -101,7 +106,7 @@ int main(int argc, char **argv)
 	}
 	struct thruster_cmd c;
 	neutral(c.pwm);
-	hg_publish(pub_cmd, &c, sizeof c, hg_now_ns());
+	hg_publish_with(pub_cmd, &c, sizeof c, hg_now_ns(), HG_NO_REFS, NULL, 0);
 	mod_log(WHO, "stopping: neutral sent");
 	return 0;
 }
