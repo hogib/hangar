@@ -194,15 +194,43 @@ HANGAR/1 role=vehicle name=rov-1 pair=default port=5614 id=1a2b3c4d tag=9f0c…
 ```
 
 `tag` is the keyed hash of the rest of the line, under the shared key. `id` is random,
-drawn when the bridge starts. Beacons with the same `id` are one candidate, from
-whatever address they come. A bridge with `Peer=auto` connects to the one candidate of
-the opposite role and the same pair heard in the last 5 s: it tries the handshake at
-each address it heard that `id` from, and keeps the first that completes. With two or
-more candidates it chooses none and says so (`ambiguous`).
+drawn when the bridge starts.
 
-A beacon only starts a connection attempt; whether the other side holds the key is
-settled by the handshake, so a replayed beacon gains nothing, and a beacon never
-changes the peer of a link that is up.
+**A beacon decides nothing.** Its tag is under the shared key, which never changes,
+and nothing in the line says when it was made: a recorded beacon checks for as long
+as the key is in use, from whatever address it is sent. So a beacon whose tag checks,
+of the opposite role and the same pair, makes a *candidate*: an `id` and the address
+it came from (with the line's `port`), kept for 5 s after it was last heard. The same
+`id` from two addresses is two candidates. At most 8 are kept; a ninth takes the
+place of the one heard longest ago. A candidate is somewhere to send a hello, and no
+more:
+
+- a bridge with `Peer=auto` and no link sends its hello to a candidate when that
+  candidate's beacon arrives, at most twice a second to each (a candidate that was
+  replaced and is heard again is a new one: one hello for one beacon is the most);
+- whoever is there and holds the key answers it, and the handshake goes on with the
+  address that answered ([The link](#the-link)). The peer is who completes it: its
+  address is set by the first datagram that checks under the session keys;
+- no beacon sets the peer or its address, changes anything of a link that is up, or
+  keeps a link from being made. A replayed one costs the hellos sent to it.
+
+**Two peers.** That somebody is there now is shown by a hello that echoes the nonce
+this side offers now ([The link](#the-link)), and by nothing in a beacon. A bridge
+with `Peer=auto` and no link notes the `id` of every such hello. When two `id`s have
+echoed the same nonce, two machines hold the key and answer: the bridge chooses
+none, drops the handshake it had begun, and acts on no hello while they both answer
+and for 5 s after they last did. The state is `ambiguous`, and `detail` says `two
+peers hold the key and answer: none chosen`. Beacons of two `id`s are not that: one
+may be a recording, or the peer's bridge before it restarted. But while candidates
+of two `id`s are kept, the first hello that echoes the nonce is not acted on until
+500 ms after it came, so that a second peer, if there is one, has answered before
+keys are made with the first; the handshake goes on with the next such hello, which
+the next beacon brings. A replayed beacon can thereby delay a link by about a
+second, and cannot do more.
+
+This holds for peers heard before the link is made. A second peer whose beacon first
+arrives after the handshake with the first has completed is not looked for: beacons
+change nothing of a link that is up.
 
 ## The link
 
@@ -242,8 +270,17 @@ hello whose tag checks:
 
 No hello sets the peer's address. With `Peer=auto` the peer is where the last
 datagram came from whose tag checked under a session key and whose `packet_seq` was
-new; a hello, whatever its source, is answered to the peer while a link is up (and
-always with a fixed `Peer=`), and to its source only when there is no link to keep.
+new; a hello, whatever its source, is answered to the peer while a link is up, and to
+its source only when there is no link to keep.
+
+**A fixed peer.** With `Peer=<address>` the peer is that address and port (`Port`
+when the key names none; a host name is looked up once, when the bridge starts), and
+nothing changes it. A datagram from any other address or port is dropped before
+anything of it is read: no tag is computed, nothing is answered, and nothing moves
+but the count of refused datagrams (`rejected`). So the other side has to send from
+the address `Peer=` names. This is a rule about addresses, not a second
+authentication: a datagram that carries the peer's address is judged by its tag and
+its `packet_seq`, as every datagram is.
 
 From the two nonces, `n_v` the vehicle's and `n_t` the topside's, each side derives
 one key per direction:
@@ -272,7 +309,11 @@ second time, and the keys it leads to are those the peer holds. What such a pers
 can still do: delay or drop datagrams if they sit in the path (a link cut, which the
 staleness of every mirrored topic shows), and make each side send one hello per
 replayed hello: to its peer while the link is up, and, with `Peer=auto` and no link,
-back to the address the replay came from. They cannot bring a link up, move one that
+back to the address the replay came from. With `Peer=auto` and no link, a replayed
+beacon is answered with a hello too, sent to the address it came from, and beacons
+of two `id`s delay the link by about a second ([Discovery](#discovery)). With a fixed
+`Peer=`, a replay is read only if it carries the peer's address and port. They cannot
+bring a link up, keep one from being made, move one that
 is up to other keys or to another address, or put a message on a topic. And a link made of replayed datagrams, were there one,
 would get no clock estimate (its pongs answer no ping of this link), so nothing it
 carried would be published ([Clocks](#clocks)).
@@ -550,7 +591,7 @@ down this way, sent by the topside's `trainer` module
 
 | Field | |
 |---|---|
-| `state` | `off`, `searching`, `connecting`, `up`, `ambiguous`, `refused` |
+| `state` | `off`, `searching`, `connecting`, `up`, `ambiguous` (two peers answer, none chosen: [Discovery](#discovery)), `refused` |
 | `peer` | address, name and `id` |
 | `peer_boot_id` | the other machine's boot id, from the handshake |
 | `last_rx_ns` | when the last datagram whose tag and `packet_seq` checked arrived (on the vehicle, the safety module's `tether` trigger) |
@@ -640,5 +681,13 @@ them. The topside's recorder is a module of another name than the vehicle's
   `caller` field on any other topic ignored.
 - Files: resume after the link drops; a corrupted file never becomes visible.
 - Dataset rows with a `cam.nn` frame under 1% datagram loss: every row arrives whole.
-- Discovery: one `id` heard from two addresses (a replayed beacon): the handshake picks
-  the address that completes; two candidates, no choice; another pair, refused.
+- Discovery, `Peer=auto` on both sides: with beacons of nine earlier `id`s of each
+  side replayed from another address, with the beacons on the air sent again from
+  another address, and with old hellos sent at both sides, a link is made, its peer
+  the address that answered, and no state is `ambiguous`; two vehicles that hold the
+  key and both answer: the topside links with neither and says `ambiguous`, and links
+  once one is gone; the peer's bridge restarted, and the peer off for 3.5 s and back:
+  linked again, never `ambiguous`; another pair, refused.
+- A fixed `Peer=`: a recorded hello, and a datagram of the session itself with a
+  `packet_seq` far ahead, each from another port: refused and counted, nothing sent,
+  the replay window where it was, the link up.

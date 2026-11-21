@@ -23,7 +23,7 @@ all: $(BRIDGE_BIN)
 # The suite: two managers in two roots on loopback, with the toy modules of
 # hangard/tests/modules on either side, and a UDP forwarder in the test
 # process between the two bridges (loss, replay, a changed byte, a forged
-# hello, a recorded session sent again). About 45 s; one run alone with
+# hello, a recorded session sent again). About 80 s; one run alone with
 # test_bridge --only <run> (modules/bridge/README.md "Tests").
 $(BRIDGE_TEST): $(OBJDIR)/modules/bridge/tests/test_bridge.o $(OBJDIR)/modules/bridge/blake2s.o \
 		$(OBJDIR)/msg/bridge_link.o $(OBJDIR)/msg/depth.o $(call obj,$(HG_SRC))

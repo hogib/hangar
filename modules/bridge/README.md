@@ -100,11 +100,18 @@ and calls to the other side).
   `[Call]` of it (`profiles/rov-topside/console.module` declares the console's).
 - **Discovery.** `Peer=auto`: a beacon on `DiscoveryPort` (5613) each second,
   `HANGAR/1 role= pair= port= id= tag=`, the tag keyed BLAKE2s-128 under the shared
-  key; the one candidate of the opposite role heard in the last 5 s is the peer, two
-  is `ambiguous`. `Peer=<address>[:port]` fixes it (the lab: `192.168.2.10` and
-  `192.168.2.1`). With `Peer=auto` the peer's address follows the datagrams that
-  check under a session key and pass the replay window, and nothing else: a hello
-  never moves it, and is answered to the peer while the link is up.
+  key, to the IPv4 broadcast address. A beacon decides nothing (it can be recorded
+  and sent again): each id and address heard in the last 5 s is a candidate (8 kept),
+  and with no link a candidate is sent a hello when its beacon comes, at most twice a
+  second. The peer is who completes the handshake. `ambiguous` is two ids that both
+  echo the nonce offered now: none is chosen until 5 s after they last both did; with
+  beacons of two ids heard, the first answer waits 500 ms for the other, and the
+  link is made on the next (about a second later).
+  `Peer=<address>[:port]` fixes the peer (the lab: `192.168.2.10` and `192.168.2.1`):
+  a datagram from any other address or port is dropped unread and counted in
+  `rejected`. With `Peer=auto` the peer's address follows the datagrams that check
+  under a session key and pass the replay window, and nothing else: a hello never
+  moves it, and is answered to the peer while the link is up.
 - **`bridge.<role>.link`** at 10 Hz: state, `config_match`, the peer's role, id, boot
   id and address, last heard, round trip (now and least), the counters (`loss_rx`,
   `rejected`, `retransmits`, `clamped`, `dropped_old`, `dropped_late`, messages each
@@ -166,14 +173,15 @@ bridge's line: `up <peer>, rtt …, offset …, N topics in, …`. On the lab's 
 `BRIDGE=1 rov.sh up` on the Pi and `BRIDGE=1 tools/rov/rov.sh topside up` on the
 laptop (`tools/rov/README.md`).
 
-## Tests (`make check-bridge`, about 45 s)
+## Tests (`make check-bridge`, about 80 s)
 
 Two managers, a vehicle and a topside, in two roots with two topic directories, each
 with a bridge, and no `HANGAR_PEER_TOPIC_DIR`; between the bridges a UDP forwarder in
 the test process that drops, replays, changes and forges datagrams on demand, holds
 back one kind of datagram, and records what the topside sends so that a run can send
-it again. Eight runs, each with managers of its own; `test_bridge --only <run>` runs
-one (`main`, `mismatch`, `clocks`, `hold`, `replay`, `auto`, `writer`, `limits`).
+it again. Ten runs, each with managers of its own; `test_bridge --only <run>` runs
+one (`main`, `mismatch`, `clocks`, `hold`, `replay`, `auto`, `writer`, `limits`,
+`beacon`, `peer`).
 
 `main`: the topside's bridge runs with a fake 5 s clock offset on the wire. Checked,
 as one run printed them (2026-11-20, loopback, this laptop):
@@ -236,6 +244,29 @@ The other runs, each written for a review finding and seen to fail before its fi
   (the environment sets it; the real one is 32 MB) a topic of 256 slots is mirrored
   with 16.
 
+- `beacon`: `Peer=auto` on both sides, the beacons written by the suite and sent to
+  each side's `DiscoveryPort` (2026-11-21, loopback, this laptop). Link up 1.1 s
+  after the managers' start. The peer's bridge restarted: linked again in 1.0 s,
+  the link never down. The peer off for 3.5 s and back: link up 0.5 s after its
+  manager's start (before: the same, with the vehicle `ambiguous` for 0.4 s of it).
+  Then, with both bridges started again each time: beacons of nine earlier ids of
+  each side at 10 Hz from 127.0.0.2: link up in 1.7 s, never `ambiguous`, 302 hellos
+  sent to 127.0.0.2 meanwhile (before: `ambiguous` on both sides for the 8 s of the
+  replay, and no link in the 12 s after it stopped, the table of 8 full of ids that
+  never left it); the two beacons on the air sent again from 127.0.0.2: link up in
+  0.6 s, the peer 127.0.0.1 (before: no link in 8 s, the hellos going to
+  127.0.0.2); an old hello of each side at the other at 10 Hz: link up in 0.7 s
+  (before: none in 8 s, each answer putting off the bridge's own hello); a second
+  vehicle with the key, answering: the topside up in none of 348 samples over 7 s
+  and `ambiguous` in 318, and linked 8.2 s after the second was gone (before: up
+  with the first vehicle at once, the second never asked);
+- `peer`: a fixed `Peer=` on both sides. The topside's recorded hello from another
+  port, 50 times: 50 counted in `rejected`, no hello sent (before: none refused, 50
+  hellos sent to the peer). A ping of the session with a `packet_seq` a million
+  ahead, made with the key, from another port: refused, the link up (before: taken,
+  every datagram of the real peer refused as old after it, the link down 3 s
+  later).
+
 The manifest suite (`check-hangard_manifest`) covers the manager's side: no
 `BridgeConf`, a bad one, a second `[Bridge]`, the wiring derived from a conf, and the
 shipped example on both roles.
@@ -244,12 +275,15 @@ shipped example on both roles.
 
 - **The lab's tether.** Run on loopback only; not between the Pi and the laptop.
   `tools/rov/README.md` says how to try it.
-- **`Peer=auto`'s discovery.** The beacons are written and parsed, but no run has
-  two bridges find each other by them: broadcast on loopback does not reach a second
-  socket. The `auto` run has `Peer=auto` on one side only, which learns its peer from
-  the other's hello. A replayed beacon can still make a second candidate
-  (`ambiguous`, no hello sent while the link is down): the candidate table is not
-  aged or bounded by anything but its 8 entries.
+- **`Peer=auto`'s discovery over broadcast.** No run has two bridges hear each
+  other's beacons as they send them, to the broadcast address: on loopback that
+  reaches a second socket on some hosts and not on others. The `beacon` run writes
+  the lines the bridges send and delivers them to each side's `DiscoveryPort`; what
+  the bridges do with a beacon, and the handshake that follows, are the real ones.
+- **A second peer that appears late.** Two peers are told apart only before the
+  link is made, and only when both have been heard or have answered by then
+  (docs/08 "Discovery"). A second vehicle switched on after the topside linked
+  with the first is not reported.
 - **A new link with reliable topics resuming** from the oldest unacknowledged
   message: the `writer` run takes the link down and back on the same keys, and the
   restarts of the other runs make new links, but no run checks a reliable topic
