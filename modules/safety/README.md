@@ -179,7 +179,7 @@ trigger still active; the shallow side of the depth band; the combination rule i
 full (surface, then hold joins and wins, then neutral wins). `test_tether`, with `tether_timeout` 1 s and the
 suite publishing `bridge.vehicle.link`: enabled with no link topic, and with a link
 `searching`, `check` and `arm` refuse by name; with the link up the vehicle arms and
-stays armed; a 500 ms outage, and four 400 ms outages in a row, fire nothing; the link
+stays armed; a 400 ms outage, and four 300 ms outages in a row, fire nothing; the link
 down while armed is `tether`, neutral, 0.9 s after it went down, `clear` refused until
 it is back; down for 2.5 s while disarmed is no failsafe and a refused `arm`; the
 topic stopped while armed (a dead bridge) is `input` after 0.2 to 0.3 s and `tether`

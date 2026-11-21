@@ -342,6 +342,22 @@ static void test_depth_band(void)
 	pump(300);
 	CHECK(near(last_cmd.heave, 0.5f));
 	CHECK(!(last_st.limits & (1u << 12)));
+	/* The shallow side, depth_min 2: at 1 m a command pushing up (heave > 0)
+	 * is zeroed with the same bit, and a command down passes. Each value is
+	 * waited for, up to 3 s. */
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "mux", "depth_min=2", (char *)NULL), 0);
+	T.depth_m = 1.0f;
+	T.pilot.heave = 0.5f;
+	for (uint64_t t0 = now_ms(); !(near(last_cmd.heave, 0) && (last_st.limits & (1u << 12))) && now_ms() - t0 < 3000;)
+		pump(20);
+	CHECK(near(last_cmd.heave, 0));
+	CHECK(last_st.limits & (1u << 12));
+	T.pilot.heave = -0.5f;
+	for (uint64_t t0 = now_ms(); !(near(last_cmd.heave, -0.5f) && !(last_st.limits & (1u << 12))) && now_ms() - t0 < 3000;)
+		pump(20);
+	CHECK(near(last_cmd.heave, -0.5f));
+	CHECK(!(last_st.limits & (1u << 12)));
+	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "mux", "depth_min=0", (char *)NULL), 0);
 	T.depth_m = 2.0f;
 	T.pilot.heave = 0;
 	pump(1200); /* the override hold ends */

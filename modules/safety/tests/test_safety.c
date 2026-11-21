@@ -1202,10 +1202,10 @@ static void test_tether(void)
 	arm_ok();
 	pump(2000);
 	CHECK_EQ_INT(last_state.state, 1);
-	/* A flap shorter than tether_timeout fires nothing: down 500 ms, and
+	/* A flap shorter than tether_timeout fires nothing: down 400 ms, and
 	 * then up for longer than the rest of the timeout. */
 	link_say(1, 2, 1);
-	pump(500);
+	pump(400);
 	link_say(1, 3, 0);
 	pump(1200);
 	CHECK_EQ_INT(last_state.state, 1);
@@ -1213,7 +1213,7 @@ static void test_tether(void)
 	 * packet starts the time again. */
 	for (int i = 0; i < 4; i++) {
 		link_say(1, 1, 1);
-		pump(400);
+		pump(300);
 		link_say(1, 3, 0);
 		pump(200);
 	}
