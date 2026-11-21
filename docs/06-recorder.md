@@ -20,12 +20,16 @@ learning loop ([09-learning](09-learning.md)); this doc provides its data.
   the file; an input the pairer could not find is flagged missing in the row. A
   dataset never claims more than it has.
 - **A sample is defined once.** The same dataset spec drives the live pairer, the
-  offline build, and the inputs of a policy running on the vehicle. Live and offline
-  rows are identical except where a row says otherwise: the offline row's `late` flag,
-  when a message it would have joined, by its stamp, was published after the live row
-  was emitted; a part `missing` in one row alone, when it had left its ring before the
-  live pairer read it, or the recorder lost it ([Joins](#joins)). A model sees at run
-  time the features it was trained on.
+  offline build, and the inputs of a policy running on the vehicle. The live row and
+  the offline row of an anchor message are the same bytes, except in the cases listed
+  under [Where live and offline rows differ](#where-live-and-offline-rows-differ). In
+  the two that concern a message joined, the row says so: the offline row's `late`
+  flag, when a message it joined by its stamp was published after the live row was
+  emitted; a part `missing` in one row alone, when it had left its ring before the
+  live pairer read it, or the recorder lost it. The others are at the edges of a
+  recording and of a ring, and each is told elsewhere: by a `_count`, by a gap in the
+  recording, by the pairer's status. A model sees at run time the features it was
+  trained on.
 - **Every file is an array.** Records and rows are fixed-size, so a file opens with
   `numpy.memmap` and nothing is parsed.
 - **A session describes itself**: the wiring graph, parameters, software versions and
@@ -240,7 +244,8 @@ their files with mode 0640: on the vehicle `encoder`, `mavlink` and the policy m
 it stops. Each time the text is written to `session.ini.tmp`, synced, and renamed over
 `session.ini`, so the file is always one of the two whole texts: a write that fails (a
 full disk, which is when `MinFree` stops a session) leaves the file of the start,
-with the session's id, boot id and start times, and is counted in `WriteErrors`.
+with the session's id, boot id and start times, and is counted among the recorder's
+write errors (its status line).
 `session.ini` is the only file the recorder syncs; the records are left to the
 kernel's writeback, and after a power cut a topic's file ends at its last whole record
 that reached the disk.
@@ -478,10 +483,10 @@ that wait, computed from recorded times alone, so the offline build knows it too
 before it, or marks the part missing. The offline build, which has every recorded
 message, joins it by its stamp and sets the row's `late` flag (bit 2). The live row
 never carries the flag: at `emitted_ns` nothing is known about what is published
-later. Live and offline rows are therefore identical except where `late` is set, and
-where a part had left its ring before the live pairer read it, which the live row
-marks `missing` and the build, with every recorded message, joins
-([Live: the pairer](#live-the-pairer), [Offline](#offline-the-same-rows-from-a-recording)).
+later. A part that had left its ring before the live pairer read it is marked
+`missing` in the live row and joined by the build, which has every recorded message.
+These are the two differences a row itself declares; all of them are listed under
+[Where live and offline rows differ](#where-live-and-offline-rows-differ).
 
 **Specs a policy can run on.** A policy builds its inputs at the moment of the anchor
 and cannot wait. A spec is usable by a policy only if every `input`-role `asof` join
@@ -679,11 +684,70 @@ part's topic must have been recorded `full` in the session: a part recorded `met
 `every:N`, `rate:<Hz>` or not at all would join other messages than the pairer did
 live, so `hangar dataset check <spec> <session>` names it and `build` refuses. The
 build computes each row's `emitted_ns` as the pairer did, and sets `late` on a row in
-which it joined a message published after it ([Joins](#joins)). Live and offline rows
-are then identical except where `late` is set, where one of the two missed a message,
-which that row alone marks `missing` (the pairer, one that had left its ring; the
-build, one the recorder lost), and in the build's first row, whose `reset` flag is
-always set; a test checks this on every build.
+which it joined a message published after it ([Joins](#joins)). It reads one file per
+topic, `<topic>.hgr`: a session that holds a `<topic>+1.hgr` for the anchor or a part
+(a new epoch, or a writer that restarted with another type,
+[Draining](#draining)) is refused by `check` and `build`, which name the topic.
+
+#### Where live and offline rows differ
+
+The live row and the offline row of the same anchor message (same `boot_id` and
+`anchor_seq`) are the same bytes, except:
+
+1. **`late`** (flags bit 2, set by the build alone). The build joined, by its stamp, a
+   message published after the row's `emitted_ns`. The rows may differ in that part
+   (its header, its fields, its `missing` bit) and in nothing else. The flag is also
+   set when the live row did join the message, having read its anchor after the
+   message was published; then the two rows differ in the flag alone.
+2. **A part `missing` in one row alone.** Live: the message had left its ring before
+   the pairer read it. Offline: the recorder lost it, and the file has a gap there.
+3. **`reset` (flags bit 0) near a difference of 1 or 2, and at the start.** The flag
+   follows from how long an `input` part has been missing or stale
+   ([The reset flag](#the-row)), so a part that one side alone has, or has stale, may
+   move the flag on that row and the rows that follow it. Each side sets it on its own first row: the
+   pairer's when it bound the dataset, the build's at the first anchor record of the
+   session. And the build starts counting `ResetAfter` at its first row, so for
+   `ResetAfter` after the start of a recording its flag differs from the pairer's
+   wherever an `input` part was already missing or stale before the recording began.
+4. **`_count` of a window at an edge.** A window takes the messages before the joined
+   one that are there to read, and `_count` says how many; a short window sets no
+   `missing` bit. Offline it is short where it reaches before the start of the
+   recording or across a gap in the file; live, where it reaches past what the ring
+   still held. The rows then differ in `_count` and in the window's zeroed messages.
+5. **Rows that only one side has.** The build makes a row for every anchor record in
+   the file; the pairer for every anchor message it read. An anchor message the pairer
+   lost (a gap in the anchor as it read it) has an offline row and no live one; one the
+   recorder lost, a live row and no offline one; anchors from before the session, or
+   from before the pairer bound the dataset, belong to one side. The first row after
+   such a loss carries `reset` on the side that had the loss.
+6. **Rows the pairer closed early.** With more anchors waiting than `Pending` holds,
+   the pairer joins the oldest row's waiting parts before its `emitted_ns`
+   ([Live: the pairer](#live-the-pairer)); the build may join a later message,
+   published before `emitted_ns`, and then neither row carries a flag. The pairer
+   counts these rows (`closed_early` in `pairer.status`) and logs them; a rated anchor
+   whose wait cannot fit in `Pending` is refused at start, so this happens only on an
+   event-topic anchor or when the anchor runs above its declared rate. A dataset
+   compared with its live rows must have `closed_early` at 0.
+7. **A topic whose stamps go back.** An `asof` join supposes that a topic's stamps do
+   not decrease as its sequence numbers rise ([Joins](#joins)). Where they do, the
+   ring is searched from its newest message down and the file by bisection, and the
+   two may join different messages, unflagged.
+8. **A topic that changed its type.** The pairer drops the rows that were waiting and
+   goes on with a row type of another hash ([Live: the pairer](#live-the-pairer)); the
+   build refuses the session.
+9. **`boot_id` of a session without a `BootId`.** For a local anchor the build takes
+   the boot id from the session's `session.ini` ([The row](#the-row)); a session that
+   names none gets zeros, with a warning.
+
+Everything else is equal: the anchor's fields, each joined part's header and fields,
+`emitted_ns`, `masked`, and `reset` away from the cases of 3 and 5.
+
+A test checks this on every build of the source (`rec_pairer`): the pairer and the
+recorder run beside the same publisher, started together, on one machine; the
+session is built; every live row is compared with the offline row of its anchor, and
+must be equal outside cases 1 to 4; the build is then repeated with the session's
+`BootId` rewritten to another boot's, which every row must carry. Cases 5 to 9 are not
+produced by that run; 6 and 8 have tests of their own on the live side.
 
 ### Reading datasets
 
@@ -755,8 +819,11 @@ is in [08-bridge](08-bridge.md).
   name the part.
 - Live and offline: run the pairer during a recorded session and build the same spec
   from the recording; rows identical wherever the build set no `late` flag and neither
-  flagged a miss, apart from the build's first `reset` flag; every row in which the
-  two differ otherwise carries `late`.
+  flagged a miss, apart from the first rows' `reset` flags and the windows that reach
+  before the start of the recording; every row in which the two differ otherwise
+  carries `late`; the rows of a session built under another `BootId` carry it; an
+  `asof` join on a topic published without stamps picks the same message from the ring
+  and from the file.
 - Calls recorded: a `<caller>.req` and a `<server>.rep` topic taken in by the glob,
   the reply's provenance naming its request, and the newest of each kept at the start
   of a session.

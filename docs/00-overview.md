@@ -25,12 +25,16 @@ input messages it was computed from (**provenance**). The record of those
 input→output pairs, time-aligned across the vehicle, is the dataset that higher-level
 neural networks learn from ([06-recorder](06-recorder.md)), and not only after the
 dive: the same samples stream live to a trainer on the topside GPU, and what it learns
-is deployed back to the vehicle while it runs ([09-learning](09-learning.md)). The rows
-the trainer sees live and the rows built afterwards from the recording are identical,
-except where a row says otherwise: the offline row's `late` flag, when a message it
-would have joined was published after the live row was emitted; or a part marked
-`missing` in one row alone, gone from its ring before the live pairer read it, or lost
-by the recorder. That loop, from provenance-joined samples to a model
+is deployed back to the vehicle while it runs ([09-learning](09-learning.md)). The row
+the trainer sees live and the row built afterwards from the recording, for the same
+message, are the same bytes, except in a short list of cases
+([06-recorder](06-recorder.md#where-live-and-offline-rows-differ)). Where a joined
+message differs the row says so: the offline row's `late` flag, when a message it
+joined was published after the live row was emitted; or a part marked `missing` in
+one row alone, gone from its ring before the live pairer read it, or lost by the
+recorder. The rest are at the edges (the first rows of a recording, a window that
+reaches before it, rows only one side has, rows the pairer closed early under load,
+which it counts) and each is told by a count or a gap. That loop, from provenance-joined samples to a model
 running on the vehicle, is what hangar is for; everything else exists to make it cheap
 and trustworthy. In its first version the deployed model is a bounded correction to a
 classical controller (`residual:<name>`); a model that holds a whole axis comes later.

@@ -163,7 +163,8 @@ hangar dataset pairs <session> <module>
 `<spec>` is a name (`DatasetDir/<name>.dataset`, `DatasetDir` from `hangard.conf`
 under `$HANGAR_ROOT`, else `/etc/hangar/datasets`) or a path ending in `.dataset`.
 `hangar dataset <spec> <session>` alone is a `build`. `build` opens `<session>/<anchor>.hgr` and each part's file, refuses a part recorded
-other than `full` (naming it) and a topic with more than one epoch in the session,
+other than `full` (naming it) and a topic with more than one file in the session (a
+new epoch, or a writer that restarted with another type),
 binds the row type from the files' headers, runs the join over every anchor record in
 order with the recordings as sources, sets `late` where it joined a message published
 after the row's `emitted_ns`, and writes the rows as a recording of `dataset.<name>`
@@ -186,8 +187,9 @@ python3 -c 'import hangar.dataset as d; ds = d.open_dataset("depth_ff.hgr"); pri
 
 ## Live and offline
 
-docs/06 promises the live and the offline rows identical except where a row says
-otherwise, and the `rec_pairer` suite checks it on one run: the toy chain publishes,
+docs/06 lists where the live and the offline rows differ ("Where live and offline
+rows differ", nine cases; this section's list was the only one until 2026-11-21), and
+the `rec_pairer` suite checks the rest on one run: the toy chain publishes,
 the recorder records a session and the pairer writes its sink at the same time; the
 build then runs over the session and every live row is compared with the offline row
 of the same anchor. They are identical except: rows the build flags `late` (there
