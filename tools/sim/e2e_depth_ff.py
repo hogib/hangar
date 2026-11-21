@@ -849,7 +849,7 @@ def rows(s, ev, res, trainer=None):
                           + [ds["thr.out.pwm"][:, ch][:, None].astype(numpy.float64) for ch in sorted(depth_ff.VERTICAL)], 1)
     short = depth_ff.residual(Y)
     trim = depth_ff.applied_heave(Y) + depth_ff.FF * ds["ctl.depth_hold.target.accel_z"]
-    keep = ds["flags"] & learn.MASKED == 0
+    keep = learn.with_loss(ds, depth_ff.INPUTS + depth_ff.label_fields())   # the trainer's rule (chunk.mask)
     lab = {}
     spans = [("train", events(ev, "phase", what="train"), events(ev, "deploy.begin", model="M1"))]
     spans += [(b[0], events(ev, "block.begin", tag=b[0]), events(ev, "block.end", tag=b[0])) for b in BLOCKS]
