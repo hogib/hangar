@@ -728,8 +728,9 @@ The live row and the offline row of the same anchor message (same `boot_id` and
    the file; the pairer for every anchor message it read. An anchor message the pairer
    lost (a gap in the anchor as it read it) has an offline row and no live one; one the
    recorder lost, a live row and no offline one; anchors from before the session, or
-   from before the pairer bound the dataset, belong to one side. The first row after
-   such a loss carries `reset` on the side that had the loss.
+   from before the pairer bound the dataset, belong to one side, as do the rows still
+   waiting for their `emitted_ns` when the pairer stops, which it does not publish.
+   The first row after such a loss carries `reset` on the side that had the loss.
 6. **Rows the pairer closed early.** With more anchors waiting than `Pending` holds,
    the pairer joins the oldest row's waiting parts before its `emitted_ns`
    ([Live: the pairer](#live-the-pairer)); the build may join a later message,

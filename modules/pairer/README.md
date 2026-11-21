@@ -140,6 +140,12 @@ with the same type changes nothing, except that the rows' `boot_id` is taken aga
 from the anchor's new file (a mirrored anchor's new epoch; before, the rows kept the
 first sender's boot id).
 
+**At exit** the rows whose `emitted_ns` has passed are published and the others are
+not (logged with their number). Until 2026-11-21 they were all closed at exit, the
+waiting ones before their `emitted_ns` with what had arrived: the last row of a run
+could differ from the build's with no flag (`rec_pairer` under AddressSanitizer,
+where the pairer is slower to stop, showed it: `chain.s` one message older live).
+
 **A dataset that is not bound yet** (one of its topics does not exist) has its anchor
 and the parts that do exist skipped on each pass too: unread in the wait set they kept
 the loop from ever sleeping, 96 % of a core measured for as long as the topic stayed

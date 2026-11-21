@@ -478,11 +478,11 @@ static void note_forced(struct dataset *d, uint64_t now, int at_exit)
 }
 
 /* Pending rows whose wait is over, in order. */
-static void flush(struct dataset *d, uint64_t now, int all)
+static void flush(struct dataset *d, uint64_t now)
 {
 	while (d->pcount) {
 		struct pending *p = &d->pend[d->phead];
-		if (!all && p->emitted_ns > now)
+		if (p->emitted_ns > now)
 			break;
 		const char *which;
 		if (emit(d, p, &which) < 0) {
@@ -724,7 +724,7 @@ int main(int argc, char **argv)
 			}
 			read_anchor(d);
 			if (d->bound)
-				flush(d, hg_now_ns(), 0);
+				flush(d, hg_now_ns());
 			/* The parts are read by stamp and sequence (hg_find_stamp,
 			 * hg_read_seq), which leave hg_next where it was: in the wait set
 			 * unskipped, a part was news from its first message on and hg_wait
@@ -744,7 +744,15 @@ int main(int argc, char **argv)
 		struct dataset *d = &D[k];
 		if (!d->bound)
 			continue;
-		flush(d, 0, 1);
+		/* The rows whose wait is over. The others are not published: closed
+		 * now, they would be joined before their emitted_ns, with what had
+		 * arrived, and could differ from the build's rows with no flag to
+		 * say so (the last row of a run did, when the pairer was slow to
+		 * stop: seen under AddressSanitizer). A row that is not there claims
+		 * nothing. */
+		flush(d, hg_now_ns());
+		if (d->bound && d->pcount)
+			logf_("%s: %d rows still waiting for their emitted_ns are not published", d->name, d->pcount);
 		if (d->forced) {
 			note_forced(d, hg_now_ns(), 1);
 			logf_("%s: %llu rows in all were closed before their emitted_ns", d->name, (unsigned long long)d->forced);
