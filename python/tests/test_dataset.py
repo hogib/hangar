@@ -81,6 +81,53 @@ class Spec(unittest.TestCase):
         self.refuse("[Dataset]\nAnchor=a.b\n[Input x]\nJoin=provenance\n[Input x]\nJoin=provenance\n", "twice")
         self.refuse("[Dataset]\nAnchor=a.b\nthis is not a key\n", "expected [Section] or Key=Value")
 
+    def test_what_the_c_parser_refuses(self):
+        # lib/hg/hg_dataset.c refuses each of these (on_key, split_fields,
+        # hg_valid_name, hg_parse_duration); parse() took them, so a spec
+        # checked here was not thereby one the vehicle would load.
+        d = "[Dataset]\nAnchor=a.b\n"
+        p = d + "[Input x]\nJoin=provenance\n"
+        self.refuse(d + "Lateness=-5ms\n", "Lateness")
+        self.refuse(d + "ResetAfter=-200ms\n", "ResetAfter")
+        self.refuse(d + "Lateness=+5ms\n", "Lateness")
+        self.refuse(d + "Lateness=5\n", "Lateness")               # only a bare 0 needs no unit
+        self.refuse(d + "Lateness=1.5ns\n", "Lateness")           # more precision than the unit holds
+        self.refuse(d + "Lateness=1.0000000005s\n", "Lateness")
+        self.refuse("[Dataset]\nAnchor=Nav.State\n", "not a topic name")
+        self.refuse("[Dataset]\nAnchor=a..b\n", "not a topic name")
+        self.refuse("[Dataset]\nAnchor=a b\n", "not a topic name")
+        self.refuse("[Dataset]\nAnchor=%s\n" % ("a" * 48), "not a topic name")
+        self.refuse(d + "[Input x]\nJoin=provenance\nTopic=a/b\n", "not a topic name")
+        self.refuse(d + "Rate=every:0\n", "every:N needs N from 1")
+        self.refuse(d + "Rate=every:-2\n", "every:N needs N from 1")
+        self.refuse(d + "Rate=every:two\n", "every:N needs N from 1")
+        self.refuse(d + "Rate=rate:0\n", "a rate above 0")
+        self.refuse(d + "Rate=rate:-5\n", "a rate above 0")
+        self.refuse(d + "Rate=rate:1e3\n", "a rate above 0")
+        self.refuse(d + "Fields=surge heave surge\n", "listed twice")
+        self.refuse(p + "Fields=gyro gyro\n", "listed twice")
+        self.refuse(d + "Fields=\n", "Fields= is empty")
+        self.refuse(d + "Fields=Surge\n", "bad field name")
+        self.refuse(d + "Fields=" + " ".join("f%d" % k for k in range(33)) + "\n", "more than 32 fields")
+        self.refuse(p + "Window= 3x\n", "Window")
+        self.refuse(d + "".join("[Input p%d]\nJoin=provenance\n" % k for k in range(17)), "more than 16 parts")
+        self.refuse(d + "Where=%s\n" % ("a.b.c == 1 or " * 40 + "a.b.c == 1"), "Where: longer")
+
+    def test_durations_as_the_c_parser_reads_them(self):
+        # hg_parse_duration reads a decimal at the unit's scale, exactly:
+        # 1.5s and 1.1ms are whole nanoseconds. Through a float, 1.1ms was
+        # 1100000.0000000002 ns and refused.
+        d = "[Dataset]\nAnchor=a.b\nLateness=%s\nResetAfter=%s\n[Input x]\nJoin=asof:%s\n"
+        for text, ns in (("1.5s", 1500 * 10 ** 6), ("1.1ms", 1100000), ("0.3s", 300 * 10 ** 6), ("0", 0),
+                         ("2min", 120 * 10 ** 9), ("0.5min", 30 * 10 ** 9), ("250us", 250000), ("7ns", 7),
+                         (".5s", 500 * 10 ** 6), ("5.s", 5 * 10 ** 9), ("1.500s", 1500 * 10 ** 6)):
+            s = dataset.DatasetSpec.parse(d % (text, text, "-" + text), "x")
+            self.assertEqual((s.lateness_ns, s.reset_after_ns, s.parts[0].offset_ns), (ns, ns, -ns), text)
+        s = dataset.DatasetSpec.parse(d % ("0", "0", "+20ms"), "x")
+        self.assertEqual(s.parts[0].offset_ns, 20 * 10 ** 6)
+        s = dataset.DatasetSpec.parse("[Dataset]\nAnchor=a.b\nRate=rate:12.5\n", "x")
+        self.assertEqual(s.rate, ("rate", 12.5))
+
 
 class Rows(unittest.TestCase):
     def setUp(self):
