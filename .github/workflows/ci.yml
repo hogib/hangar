@@ -129,18 +129,15 @@ jobs:
           path: builddir/fuzz/crashes-*/
           if-no-files-found: ignore
 
-  # make analyze (tools/analyze/README.md). What the analysers report depends
-  # on their versions, and the suppressions were written against clang 23,
-  # gcc 16 and cppcheck 2.22 (2026-11-21), which is what Arch ships; Ubuntu
-  # 24.04's are older, and an older clang may not know every checker the set
-  # names. A new release of a tool can add findings nobody has read yet, so
-  # the job reports and does not fail the workflow: remove continue-on-error
-  # to make it binding.
+  # make analyze (tools/analyze/README.md). Binding since 2026-11-21. What the
+  # analysers report depends on their versions, and the suppressions were
+  # written against clang 23, gcc 16 and cppcheck 2.22, which is what Arch
+  # ships; a new release of a tool can add findings nobody has read yet: read
+  # them, then fix the code or add a suppression with its reason.
   analyze:
     name: static analysis
     runs-on: ubuntu-24.04
     container: archlinux:base-devel
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Packages
