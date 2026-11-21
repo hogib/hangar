@@ -7,13 +7,15 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay, auto, writer, limits, beacon, peer).
+ * clocks, hold, replay, auto, writer, limits, beacon, peer, files, filestall,
+ * filerekey).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
 #include "../../../hangard/tests/hd_test.h"
 
 #include "blake2s.h"
+#include "bridge_file.h"
 #include "bridge_link.h"
 #include "depth.h"
 #include "hg_call.h"
@@ -1795,6 +1797,484 @@ static void peer_run(void)
 	close(atk);
 }
 
+/* ---- Files (docs/08 "Files") --------------------------------------------------- */
+
+static const char *FILES_CONF = "[Bridge]\nFileRate=800kbit\n"
+				"[Files weights]\nDirection=down\nMaxSize=512KB\nMaxFiles=3\nAllow=admin\n"
+				"[Files closed]\nDirection=down\nAllow=nobody\n"
+				"[Files logs]\nDirection=up\nAllow=admin\n";
+static const char *SERVE_SEND = "[Serve send]\nRequest=bridge_send_req\nReply=bridge_send_rep\n";
+
+/* n bytes that no two offsets share a run of. */
+static unsigned char *pattern(size_t n, unsigned seed)
+{
+	unsigned char *p = malloc(n);
+	unsigned x = seed * 2654435761u + 1;
+	for (size_t i = 0; p && i < n; i++) {
+		x = x * 1664525u + 1013904223u;
+		p[i] = (unsigned char)(x >> 24);
+	}
+	return p;
+}
+
+static void outbox_put(const struct side *s, const char *name, const unsigned char *d, size_t n)
+{
+	char p[1024];
+	tfmt(p, sizeof p, "%s/var/lib/hangar/bridge/outbox/%s", s->root, name);
+	int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0640);
+	if (fd >= 0 && write(fd, d, n) != (ssize_t)n)
+		printf("    short write of %s\n", p);
+	if (fd >= 0)
+		close(fd);
+}
+
+static void arrived_path(const struct side *s, const char *dest, const char *name, char *out, size_t len)
+{
+	tfmt(out, len, "%s/var/lib/hangar/bridge/files/%s/%s", s->root, dest, name);
+}
+
+/* 1 if the file is there with exactly these bytes. */
+static int arrived_is(const struct side *s, const char *dest, const char *name, const unsigned char *d, size_t n)
+{
+	char p[1024];
+	arrived_path(s, dest, name, p, sizeof p);
+	struct stat st;
+	if (stat(p, &st) < 0 || (size_t)st.st_size != n)
+		return 0;
+	unsigned char *got = malloc(n);
+	int fd = open(p, O_RDONLY);
+	int same = got && fd >= 0 && read(fd, got, n) == (ssize_t)n && memcmp(got, d, n) == 0;
+	if (fd >= 0)
+		close(fd);
+	free(got);
+	return same;
+}
+
+/* What the directory of a destination holds: files under their names, and
+ * the bytes of the one hidden name a transfer under way has. */
+static void arrived_dir(const struct side *s, const char *dest, int *visible, int *hidden, long *part_bytes)
+{
+	char p[1024];
+	tfmt(p, sizeof p, "%s/var/lib/hangar/bridge/files/%s", s->root, dest);
+	*visible = *hidden = 0;
+	*part_bytes = 0;
+	DIR *d = opendir(p);
+	struct dirent *e;
+	while (d && (e = readdir(d))) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+			continue;
+		if (e->d_name[0] != '.') {
+			(*visible)++;
+			continue;
+		}
+		(*hidden)++;
+		char f[1300];
+		struct stat st;
+		tfmt(f, sizeof f, "%s/%s", p, e->d_name);
+		if (stat(f, &st) == 0)
+			*part_bytes = (long)st.st_size;
+	}
+	if (d)
+		closedir(d);
+}
+
+/* hangar call bridge.send on a side: the id, or 0 with the command's output. */
+static uint64_t send_file(const struct side *s, const char *dest, const char *name, char *out, size_t outlen)
+{
+	char a[80], b[160];
+	use(s);
+	tfmt(a, sizeof a, "dest=%s", dest);
+	tfmt(b, sizeof b, "name=%s", name);
+	int rc = run_cli(out, outlen, 5000, "call", "bridge.send", a, b, "--timeout", "2000", (char *)NULL);
+	if (rc != 0 || !strstr(out, "HG_OK"))
+		return 0;
+	return strtoull(cli_field(out, "id"), NULL, 0);
+}
+
+static hg_sub *files_sub(const struct side *s)
+{
+	char name[48];
+	use(s);
+	tfmt(name, sizeof name, "bridge.%s.files", s->role);
+	uint64_t t0 = now_ms();
+	hg_sub *sub;
+	while (!(sub = hg_sub_open_from(name, &BRIDGE_FILE_TYPE, HG_OLDEST)) && now_ms() - t0 < 5000)
+		sleep_ms(20);
+	return sub;
+}
+
+/* The event of a transfer, by id (0: the next one). */
+static int wait_file(hg_sub *sub, uint64_t id, long ms, struct bridge_file *out)
+{
+	uint64_t t0 = now_ms();
+	struct hg_info in;
+	memset(out, 0, sizeof *out);
+	if (!sub)
+		return 0;
+	do {
+		while (hg_next(sub, out, sizeof *out, &in) == HG_MSG)
+			if (!id || out->id == id)
+				return 1;
+		sleep_ms(10);
+	} while (now_ms() - t0 < (uint64_t)ms);
+	memset(out, 0, sizeof *out);
+	return 0;
+}
+
+static void hash_hex(const unsigned char *d, size_t n, char out[65])
+{
+	unsigned char h[32];
+	blake2s(h, 32, NULL, 0, d, n);
+	for (int i = 0; i < 32; i++)
+		tfmt(out + 2 * i, 3, "%02x", h[i]);
+}
+
+/* Until the hidden file of the transfer under way holds `bytes`. */
+static long wait_part(const struct side *s, const char *dest, long bytes, long ms)
+{
+	uint64_t t0 = now_ms();
+	int vis, hid;
+	long part = 0;
+	do {
+		arrived_dir(s, dest, &vis, &hid, &part);
+		if (part >= bytes)
+			return part;
+		sleep_ms(10);
+	} while (now_ms() - t0 < (uint64_t)ms);
+	return part;
+}
+
+static void files_run(void)
+{
+	char out[1024], p[1024], hex[65];
+	setup_side(&V, "files", FILES_CONF);
+	manifest("bridge", "[Module]\nExec=%s %s\n[Bridge]\n%s", bridge_bin, V.conf, SERVE_SEND);
+	setup_side(&T, "files", FILES_CONF);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_FILE_CORRUPT=bad.bin %s %s\n[Bridge]\n%s", bridge_bin,
+		 T.conf, SERVE_SEND);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	hg_sub *ev = files_sub(&V), *et = files_sub(&T);
+	EXPECT(up && ev && et, "link up; bridge.vehicle.files and bridge.topside.files exist");
+	if (!up || !ev || !et)
+		return;
+	struct bridge_file fv, ft;
+
+	/* One file down: nothing under its name until it is whole and checked. */
+	size_t na = 150000;
+	unsigned char *a = pattern(na, 1);
+	outbox_put(&T, "a.hgw", a, na);
+	uint64_t t0 = now_ms();
+	uint64_t id = send_file(&T, "weights", "a.hgw", out, sizeof out);
+	long part = wait_part(&V, "weights", 20000, 5000);
+	arrived_path(&V, "weights", "a.hgw", p, sizeof p);
+	int early = access(p, F_OK) == 0;
+	int got_v = wait_file(ev, id, 8000, &fv), got_t = wait_file(et, id, 3000, &ft);
+	uint64_t took = now_ms() - t0;
+	hash_hex(a, na, hex);
+	struct stat st;
+	int mode = stat(p, &st) == 0 ? (int)(st.st_mode & 0777) : -1;
+	int vis, hid;
+	long pb;
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	tfmt(p, sizeof p, "%s/var/lib/hangar/bridge/outbox/a.hgw", T.root);
+	EXPECT(id && part >= 20000 && !early && got_v && got_t && fv.state == 2 && ft.state == 1 && fv.size == na &&
+		       !strcmp(fv.blake2s, hex) && !strcmp(ft.blake2s, hex) && !strcmp(fv.name, "a.hgw") &&
+		       !strcmp(fv.dest, "weights") && !strncmp(fv.from, "admin:", 6) && arrived_is(&V, "weights", "a.hgw", a, na) &&
+		       mode == 0640 && vis == 1 && hid == 0 && access(p, F_OK) < 0,
+	       "bridge.send of 150 KB down: with %ld bytes of it there, no a.hgw; then received (state %u) and sent (state %u), "
+	       "the same bytes, the hash both sides name is the file's, from %s, mode %o, taken from the outbox; %llu ms at "
+	       "FileRate=800kbit%s%s",
+	       part, fv.state, ft.state, fv.from, mode, (unsigned long long)took, id ? "" : ": ", id ? "" : out);
+	/* FileRate holds it: 150 KB at 100 KB/s is 1.5 s. */
+	EXPECT(took >= 1200, "FileRate=800kbit: 150 KB took %llu ms (1500 at the rate)", (unsigned long long)took);
+
+	/* The tether cut midway, for longer than the link's timeout, and mended. */
+	size_t nb = 300000;
+	unsigned char *b = pattern(nb, 2);
+	outbox_put(&T, "b.hgw", b, nb);
+	pid_t pv = pid_of(&V, "bridge"), pt = pid_of(&T, "bridge");
+	id = send_file(&T, "weights", "b.hgw", out, sizeof out);
+	part = wait_part(&V, "weights", 60000, 5000);
+	atomic_store(&fwd_drop_pct, 100);
+	t0 = now_ms();
+	int down = 0;
+	while (!down && now_ms() - t0 < 6000) {
+		down = read_link(&V, &lv) == 0 && lv.state != 3 && read_link(&T, &lt) == 0 && lt.state != 3;
+		sleep_ms(20);
+	}
+	long held;
+	arrived_dir(&V, "weights", &vis, &hid, &held);
+	arrived_path(&V, "weights", "b.hgw", p, sizeof p);
+	early = access(p, F_OK) == 0;
+	atomic_store(&fwd_drop_pct, 0);
+	got_v = wait_file(ev, id, 12000, &fv);
+	got_t = wait_file(et, id, 3000, &ft);
+	EXPECT(id && part >= 60000 && down && !early && hid == 1 && held < (long)nb && got_v && got_t && fv.state == 2 &&
+		       ft.state == 1 && arrived_is(&V, "weights", "b.hgw", b, nb) && pid_of(&V, "bridge") == pv &&
+		       pid_of(&T, "bridge") == pt,
+	       "the tether cut with %ld of 300000 bytes across, both links down, %ld bytes kept under a hidden name and no "
+	       "b.hgw; mended (the same keys, the same stream, resent from what was not acknowledged): received (state %u) "
+	       "and sent (state %u), the same bytes, neither bridge restarted",
+	       part, held, fv.state, ft.state);
+
+	/* The receiving bridge restarted midway: what it had is gone with it,
+	 * and the file comes again from its first byte. */
+	size_t nc = 200000;
+	unsigned char *c = pattern(nc, 3);
+	outbox_put(&T, "c.hgw", c, nc);
+	id = send_file(&T, "weights", "c.hgw", out, sizeof out);
+	part = wait_part(&V, "weights", 60000, 5000);
+	use(&V);
+	pv = pid_of(&V, "bridge");
+	ctl("restart bridge");
+	int back = wait_new_pid("bridge", pv, "ready", 5000);
+	hg_sub *ev2 = files_sub(&V); /* the topic is the new instance's */
+	got_t = wait_file(et, id, 15000, &ft);
+	got_v = wait_file(ev2, id, 3000, &fv);
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	EXPECT(id && part >= 60000 && back && got_t && ft.state == 1 && got_v && fv.state == 2 &&
+		       arrived_is(&V, "weights", "c.hgw", c, nc) && hid == 0,
+	       "the vehicle's bridge restarted with %ld of 200000 bytes across: the file sent again from the start, received "
+	       "(state %u), the same bytes, nothing left under a hidden name",
+	       part, fv.state);
+	if (ev2) {
+		hg_sub_close(ev);
+		ev = ev2;
+	}
+
+	/* A byte changed on the way (the topside's bridge changes it after
+	 * hashing, told to by its environment): never visible. */
+	unsigned char *bad = pattern(40000, 4);
+	outbox_put(&T, "bad.bin", bad, 40000);
+	id = send_file(&T, "weights", "bad.bin", out, sizeof out);
+	got_v = wait_file(ev, id, 8000, &fv);
+	got_t = wait_file(et, id, 3000, &ft);
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	arrived_path(&V, "weights", "bad.bin", p, sizeof p);
+	EXPECT(id && got_v && got_t && fv.state == 4 && ft.state == 3 && strstr(fv.reason, "hash") && strstr(ft.reason, "hash") &&
+		       access(p, F_OK) < 0 && hid == 0,
+	       "a file with one byte changed on the way: the vehicle says '%s' (state %u), the topside is told (state %u, '%s'); "
+	       "no bad.bin, nothing hidden left",
+	       fv.reason, fv.state, ft.state, ft.reason);
+
+	/* Two sends at once: both taken, one after the other. And MaxFiles=3:
+	 * a.hgw, b.hgw, c.hgw are there, so the two oldest go. */
+	unsigned char *d1 = pattern(50000, 5), *d2 = pattern(30000, 6);
+	outbox_put(&T, "d1.hgw", d1, 50000);
+	outbox_put(&T, "d2.hgw", d2, 30000);
+	uint64_t id1 = send_file(&T, "weights", "d1.hgw", out, sizeof out);
+	uint64_t id2 = send_file(&T, "weights", "d2.hgw", out, sizeof out);
+	struct bridge_file f1, f2;
+	int g1 = wait_file(ev, 0, 8000, &f1), g2 = wait_file(ev, 0, 8000, &f2);
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	arrived_path(&V, "weights", "a.hgw", p, sizeof p);
+	int a_gone = access(p, F_OK) < 0;
+	arrived_path(&V, "weights", "b.hgw", p, sizeof p);
+	int b_gone = access(p, F_OK) < 0;
+	EXPECT(id1 && id2 && id1 != id2 && g1 && g2 && f1.id == id1 && f2.id == id2 && f1.state == 2 && f2.state == 2 &&
+		       arrived_is(&V, "weights", "d1.hgw", d1, 50000) && arrived_is(&V, "weights", "d2.hgw", d2, 30000),
+	       "two sends, the second while the first is under way: both received, in the order asked, each its own bytes");
+	EXPECT(vis == 3 && a_gone && b_gone && arrived_is(&V, "weights", "c.hgw", c, nc),
+	       "MaxFiles=3: %d files kept on the vehicle, the two oldest (a.hgw, b.hgw) removed", vis);
+
+	/* What send refuses, and why. */
+	struct refusal {
+		const char *dest, *name, *want, *what;
+	} ref[] = {
+		{ "weights", "../x.hgw", "name:", "a name with a path" },
+		{ "weights", ".hidden", "name:", "a hidden name" },
+		{ "weights", "absent.hgw", "No such file", "a file that is not in the outbox" },
+		{ "weights", "big.hgw", "MaxSize", "a file over the section's MaxSize" },
+		{ "weights", "link.hgw", "outbox/link.hgw", "a symbolic link in the outbox (to the bridge's key)" },
+		{ "nosuch", "x.hgw", "no such [Files]", "a destination bridge.conf does not have" },
+		{ "logs", "x.hgw", "no such [Files]", "a destination that goes the other way" },
+		{ "closed", "x.hgw", "Allow", "a destination whose Allow= does not name the caller" },
+	};
+	unsigned char *big = pattern(600000, 7);
+	outbox_put(&T, "big.hgw", big, 600000);
+	outbox_put(&T, "x.hgw", d2, 100);
+	char key[1024], link[1024];
+	tfmt(key, sizeof key, "%s/etc/hangar/bridge.key", T.root);
+	tfmt(link, sizeof link, "%s/var/lib/hangar/bridge/outbox/link.hgw", T.root);
+	if (symlink(key, link) < 0)
+		printf("    symlink: %s\n", strerror(errno));
+	int refused = 0;
+	char last[200] = "";
+	for (size_t i = 0; i < sizeof ref / sizeof ref[0]; i++) {
+		id = send_file(&T, ref[i].dest, ref[i].name, out, sizeof out);
+		if (!id && strstr(out, "HG_E_REFUSED") && strstr(out, ref[i].want))
+			refused++;
+		else
+			tfmt(last, sizeof last, "%s: %.150s", ref[i].what, out);
+	}
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	tfmt(p, sizeof p, "%s/var/lib/hangar/bridge/outbox/x.hgw", T.root);
+	int quiet = vis == 3 && hid == 0 && access(p, F_OK) == 0 && access(link, F_OK) == 0;
+	EXPECT(refused == (int)(sizeof ref / sizeof ref[0]) && quiet,
+	       "send refuses, each with its reason: a name with a path, a hidden name, a missing file, one over MaxSize, a "
+	       "symbolic link, an unknown destination, one of the other direction, a caller the section does not allow "
+	       "(%d of %zu%s%s); nothing was taken from the outbox, nothing arrived",
+	       refused, sizeof ref / sizeof ref[0], last[0] ? "; " : "", last);
+
+	/* And up: the vehicle sends, the topside keeps. */
+	outbox_put(&V, "dive.log", d1, 50000);
+	id = send_file(&V, "logs", "dive.log", out, sizeof out);
+	got_t = wait_file(et, id, 8000, &ft);
+	got_v = wait_file(ev, id, 3000, &fv);
+	EXPECT(id && got_t && got_v && ft.state == 2 && fv.state == 1 && arrived_is(&T, "logs", "dive.log", d1, 50000),
+	       "a file up ([Files logs] Direction=up): received on the topside (state %u), sent (state %u), the same bytes%s%s",
+	       ft.state, fv.state, id ? "" : ": ", id ? "" : out);
+
+	/* The link was never without its pings while files moved. */
+	read_link(&V, &lv);
+	EXPECT(lv.state == 3 && lv.rtt_ns < 50000000ull, "after the files: the link up, round trip %.2f ms",
+	       (double)lv.rtt_ns / 1e6);
+	free(a);
+	free(b);
+	free(c);
+	free(bad);
+	free(d1);
+	free(d2);
+	free(big);
+	hg_sub_close(ev);
+	hg_sub_close(et);
+}
+
+/* A transfer that cannot end. Both bridges give a file up after 1.5 s without
+ * progress here (60 s in use). The sender gone midway (its bridge restarted:
+ * the queue is the process's): the receiver drops what it had. The link
+ * down for longer than that: the sender says so. Neither leaves a file. */
+static void filestall_run(void)
+{
+	char out[1024], p[1024];
+	setup_side(&V, "fstall", FILES_CONF);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_FILE_STALL_MS=1500 %s %s\n[Bridge]\n%s", bridge_bin,
+		 V.conf, SERVE_SEND);
+	setup_side(&T, "fstall", FILES_CONF);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_FILE_STALL_MS=1500 %s %s\n[Bridge]\n%s", bridge_bin,
+		 T.conf, SERVE_SEND);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	hg_sub *ev = files_sub(&V), *et = files_sub(&T);
+	if (!up || !ev || !et) {
+		EXPECT(0, "link up, the files topics there");
+		return;
+	}
+	struct bridge_file fv, ft;
+	size_t n = 300000;
+	unsigned char *a = pattern(n, 9);
+	outbox_put(&T, "a.hgw", a, n);
+	uint64_t id = send_file(&T, "weights", "a.hgw", out, sizeof out);
+	long part = wait_part(&V, "weights", 50000, 5000);
+	use(&T);
+	pid_t pt = pid_of(&T, "bridge");
+	ctl("restart bridge");
+	int back = wait_new_pid("bridge", pt, "ready", 5000);
+	int got_v = wait_file(ev, id, 8000, &fv);
+	int vis, hid;
+	long pb;
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	EXPECT(id && part >= 50000 && back && got_v && fv.state == 4 && vis == 0 && hid == 0,
+	       "the sending bridge restarted with %ld of 300000 bytes across: the vehicle gives the file up (state %u, '%s'); "
+	       "nothing visible, nothing hidden left",
+	       part, fv.state, fv.reason);
+
+	/* The link down from before the send until past the wait. */
+	hg_sub *et2 = files_sub(&T);
+	wait_link(&T, 1, 8000, &lt);
+	atomic_store(&fwd_drop_pct, 100);
+	outbox_put(&T, "b.hgw", a, n);
+	id = send_file(&T, "weights", "b.hgw", out, sizeof out);
+	int got_t = wait_file(et2, id, 8000, &ft);
+	atomic_store(&fwd_drop_pct, 0);
+	int relinked = wait_link(&V, 1, 10000, &lv) && wait_link(&T, 1, 10000, &lt);
+	/* What was on the stream when the link went (the begin, then the
+	 * abort) may still come: the vehicle drops it as it reads it. */
+	outbox_put(&T, "c.hgw", a, 20000);
+	uint64_t idc = send_file(&T, "weights", "c.hgw", out, sizeof out);
+	struct bridge_file fc;
+	int got_c = wait_file(et2, idc, 8000, &fc);
+	arrived_dir(&V, "weights", &vis, &hid, &pb);
+	arrived_path(&V, "weights", "b.hgw", p, sizeof p);
+	EXPECT(id && got_t && ft.state == 3 && relinked && access(p, F_OK) < 0,
+	       "the tether cut for longer than the wait: the topside's send ends failed (state %u, '%s'); with the link back, "
+	       "no b.hgw on the vehicle",
+	       ft.state, ft.reason);
+	EXPECT(idc && got_c && fc.state == 1 && arrived_is(&V, "weights", "c.hgw", a, 20000) && vis == 1 && hid == 0,
+	       "the next file after both failures: sent (state %u), the same bytes; it is the one file there, nothing hidden",
+	       fc.state);
+	free(a);
+	hg_sub_close(ev);
+	hg_sub_close(et);
+	if (et2)
+		hg_sub_close(et2);
+}
+
+/* A link made anew under a file, with both bridges alive. In use a link that
+ * comes back keeps its keys and its streams, and a file goes on by the
+ * stream's own resends (files_run). Here both bridges forget their keys when
+ * the link goes down (told to by the environment), so the link that returns
+ * is a new one with new streams: the sender begins the file again and goes
+ * on from the byte the receiver says it has. */
+static void filerekey_run(void)
+{
+	char out[1024];
+	setup_side(&V, "frekey", FILES_CONF);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_FORGET_KEYS=1 %s %s\n[Bridge]\n%s", bridge_bin, V.conf,
+		 SERVE_SEND);
+	setup_side(&T, "frekey", FILES_CONF);
+	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_FORGET_KEYS=1 %s %s\n[Bridge]\n%s", bridge_bin, T.conf,
+		 SERVE_SEND);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	hg_sub *ev = files_sub(&V), *et = files_sub(&T);
+	if (!up || !ev || !et) {
+		EXPECT(0, "link up, the files topics there");
+		return;
+	}
+	struct bridge_file fv, ft;
+	size_t n = 300000;
+	unsigned char *a = pattern(n, 11);
+	outbox_put(&T, "a.hgw", a, n);
+	pid_t pv = pid_of(&V, "bridge"), pt = pid_of(&T, "bridge");
+	uint64_t id = send_file(&T, "weights", "a.hgw", out, sizeof out);
+	long part = wait_part(&V, "weights", 60000, 5000);
+	atomic_store(&fwd_drop_pct, 100);
+	uint64_t t0 = now_ms();
+	int down = 0;
+	while (!down && now_ms() - t0 < 6000) {
+		down = read_link(&V, &lv) == 0 && lv.state != 3 && read_link(&T, &lt) == 0 && lt.state != 3;
+		sleep_ms(20);
+	}
+	int vis, hid;
+	long held;
+	arrived_dir(&V, "weights", &vis, &hid, &held);
+	atomic_store(&fwd_drop_pct, 0);
+	int got_v = wait_file(ev, id, 15000, &fv), got_t = wait_file(et, id, 3000, &ft);
+	char lp[1024];
+	tfmt(lp, sizeof lp, "%s/run/hangar/log/bridge.log", T.root);
+	const char *log = read_file(lp);
+	const char *from = log ? strstr(log, ": on from byte ") : NULL;
+	long at = from ? atol(from + 15) : -1;
+	EXPECT(id && part >= 60000 && down && got_v && got_t && fv.state == 2 && ft.state == 1 &&
+		       arrived_is(&V, "weights", "a.hgw", a, n) && pid_of(&V, "bridge") == pv && pid_of(&T, "bridge") == pt,
+	       "the tether cut with %ld of 300000 bytes across and the keys forgotten on both sides; a new link: received "
+	       "(state %u) and sent (state %u), the same bytes, neither bridge restarted",
+	       part, fv.state, ft.state);
+	EXPECT(at > 0 && at == held, "the sender began again on the new link and went on from byte %ld, what the vehicle had (%ld)",
+	       at, held);
+	free(a);
+	hg_sub_close(ev);
+	hg_sub_close(et);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -1809,6 +2289,9 @@ static const struct run {
 	{ "limits", limits_run },
 	{ "beacon", beacon_run },
 	{ "peer", peer_run },
+	{ "files", files_run },
+	{ "filestall", filestall_run },
+	{ "filerekey", filerekey_run },
 };
 
 int main(int argc, char **argv)

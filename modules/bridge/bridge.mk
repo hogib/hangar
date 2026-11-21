@@ -8,7 +8,7 @@
 #   make check-bridge    the suite (part of check): two managers, two topic
 #                        directories, two bridges on loopback
 
-BRIDGE_LIB_SRC := msg/bridge_link.c lib/hg/hg_ini.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c
+BRIDGE_LIB_SRC := msg/bridge_link.c msg/bridge_file.c msg/bridge_send_req.c msg/bridge_send_rep.c lib/hg/hg_ini.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c
 BRIDGE_BIN := $(BUILDDIR)/hangar-bridge
 BRIDGE_TEST := $(TESTDIR)/test_bridge
 
@@ -26,7 +26,7 @@ all: $(BRIDGE_BIN)
 # hello, a recorded session sent again). About 80 s; one run alone with
 # test_bridge --only <run> (modules/bridge/README.md "Tests").
 $(BRIDGE_TEST): $(OBJDIR)/modules/bridge/tests/test_bridge.o $(OBJDIR)/modules/bridge/blake2s.o \
-		$(OBJDIR)/msg/bridge_link.o $(OBJDIR)/msg/depth.o $(call obj,$(HG_SRC))
+		$(OBJDIR)/msg/bridge_link.o $(OBJDIR)/msg/bridge_file.o $(OBJDIR)/msg/depth.o $(call obj,$(HG_SRC))
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
 

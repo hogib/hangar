@@ -1908,7 +1908,9 @@ static int allow_names(const struct mf_serve *sv, const struct mf_module *server
 /* 1 if [Calls] Remote= names one of m's methods (set_params with [Params]). */
 static int serves_remote(const struct mf_set *s, const struct mf_module *m)
 {
-	if (!s->bridge)
+	/* The bridge's own method, send, is never the other side's to call,
+	 * whatever Remote= matches: bridge.rep is not mirrored (docs/08). */
+	if (!s->bridge || m->bridge)
 		return 0;
 	for (int i = 0; i < m->n_serves; i++)
 		if (bc_remote_matches(s->bridge, m->name, m->serves[i].method))
@@ -1964,6 +1966,18 @@ static void derive_bridge(struct mf_set *s, struct mf_module *b)
 		return;
 	p->rate_mhz = 10000;
 	p->stale_after_ns = 300000000ull;
+	/* bridge.<role>.files, an event topic: the files sent and received
+	 * (docs/08 "Files"), when bridge.conf lets any cross. */
+	if (c->n_files) {
+		t = resolve_type(s, "bridge_file", why, sizeof why);
+		if (t < 0) {
+			refuse(b, module_line(b), "bridge_file: %s", why);
+			return;
+		}
+		mf_fmt(topic, sizeof topic, "bridge.%s.files", s->role);
+		if (!add_pub(b, topic, t, 16))
+			return;
+	}
 	for (int i = 0; i < c->n_mirrors; i++) {
 		const struct bc_mirror *mi = &c->mirrors[i];
 		for (int k = 0; k < mi->n_patterns; k++) {

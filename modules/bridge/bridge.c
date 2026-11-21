@@ -13,7 +13,10 @@
 #define _GNU_SOURCE
 #include "blake2s.h"
 #include "bridge_conf.h"
+#include "bridge_file.h"
 #include "bridge_link.h"
+#include "bridge_send_rep.h"
+#include "bridge_send_req.h"
 #include "hg_call.h"
 #include "hg_type.h"
 #include "hg_wiring.h"
@@ -26,6 +29,7 @@
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/timerfd.h>
 
@@ -64,7 +68,7 @@
 #define WINDOW_NS 10000000000ull  /* the clock's sample window */
 
 enum { K_HELLO = 1, K_CONFIRM, K_PING, K_PONG, K_DATA, K_ACK, K_MSG };
-enum { R_INFO = 1, R_SCHEMA, R_MSG };
+enum { R_INFO = 1, R_SCHEMA, R_MSG, R_FBEGIN, R_FDATA, R_FEND, R_FABORT, R_FSTATUS };
 enum { ST_OFF, ST_SEARCHING, ST_CONNECTING, ST_UP, ST_AMBIGUOUS, ST_REFUSED };
 
 struct tx_topic {
@@ -858,6 +862,18 @@ static void conf_of(const char *name, int up, int *reliable, int *prio, uint32_t
 	}
 }
 
+/* The wiring's sub lines are what this side sends, and since the bridge
+ * serves a method (send) they also hold the request topics it reads as a
+ * server. Its own reply topic never crosses (docs/08 "The bridge module"),
+ * and a request topic only when calls do ([Calls] Remote=) or a [Mirror]
+ * names it. */
+static int never_sent(const char *name)
+{
+	if (strcmp(name, "bridge.rep") == 0 || strcmp(name, "bridge.req") == 0)
+		return 1;
+	return is_call_topic(name) && !B.conf.n_remote && !bc_find(&B.conf, name, B.vehicle);
+}
+
 static int add_tx(const char *name, hg_sub *s)
 {
 	if (B.ntx == MAX_TX)
@@ -1093,7 +1109,7 @@ static void pump_tx(void)
 			for (int j = 0; j < B.ntx; j++)
 				if (B.tx[j].sub == s)
 					have = 1;
-			if (!have && local_topic(s))
+			if (!have && local_topic(s) && !never_sent(hg_sub_name(s)))
 				add_tx(hg_sub_name(s), s);
 		}
 	}
@@ -1288,6 +1304,650 @@ static void on_message(const unsigned char *b, size_t n)
 	B.st.msgs_rx++;
 }
 
+/* ---- Files (docs/08 "Files") ------------------------------------------------ */
+
+/* bridge.send: a file of this machine's outbox to the other side, as records
+ * on the reliable stream. One file at a time, the rest queued:
+ *
+ *   sender                                receiver
+ *   R_FBEGIN id size dest name from  -->  the [Files <dest>] of its own
+ *                                         bridge.conf, the name, the size;
+ *                                    <--  R_FSTATUS ready, at the offset it has
+ *   R_FDATA id offset bytes ...      -->  written to a hidden name, hashed
+ *   R_FEND id blake2s                -->  the hash of what was written is the
+ *                                         sender's: renamed to <name>;
+ *                                    <--  R_FSTATUS done (or failed, and why)
+ *
+ * A new link is a new stream: the sender begins again and the receiver says
+ * where it is, so a file goes on from there. Nothing of a file is under its
+ * name before its hash has checked. The directory is the receiver's (its
+ * state directory, files/<dest>/); the sender gives a name, which is checked
+ * on both sides (bc_file_name_ok), and never a path. */
+
+#define FILE_CHUNK 1024u          /* a data record fits one datagram */
+#define FILE_AHEAD (16u << 10)    /* file bytes on the stream ahead of whatever comes next: a call waits behind at most this */
+#define FILE_QUEUE 8              /* files accepted and not yet ended */
+#define FILE_STALL_NS 60000000000ull /* a transfer that moves nothing for this long is given up, on either side */
+#define FILE_SYNC_BYTES (1u << 20)
+
+enum { X_NEW, X_WAIT, X_SEND, X_ENDED };
+enum { FS_READY = 1, FS_DONE, FS_FAILED };
+enum { FE_SENT = 1, FE_RECEIVED, FE_SEND_FAILED, FE_RECV_FAILED };
+
+struct xfer {
+	uint64_t id, size, pos, hashed, progress_ns;
+	int fd, state, corrupt;
+	const struct bc_files *fc;
+	char name[BC_FILE_NAME], from[HG_CALL_CALLER];
+	struct blake2s h;        /* of the bytes below `hashed`, as first read */
+	unsigned char hash[32];  /* once hashed == size */
+};
+
+static struct {
+	char dir[800];           /* the state directory: outbox/, files/<dest>/ */
+	int ready;
+	hg_pub *pub;             /* bridge.<role>.files */
+	uint64_t stall_ns;
+	/* Sending. */
+	struct xfer q[FILE_QUEUE];
+	int nq;
+	double tokens;           /* bytes FileRate= allows now */
+	uint64_t tok_ns;
+	/* Receiving: one file, the one the peer is sending. */
+	struct {
+		int active, fd, dirfd;
+		uint64_t id, size, have, synced, progress_ns;
+		const struct bc_files *fc;
+		char name[BC_FILE_NAME], from[HG_CALL_CALLER], tmp[40];
+		struct blake2s h;
+	} in;
+	uint64_t done[4];        /* the last files made visible: a begin for one of them is answered done */
+	int ndone;
+	/* A status the backlog had no room for: tried again on the timer. */
+	struct {
+		int have, state;
+		uint64_t id, off;
+		char reason[HG_CALL_REASON];
+	} st;
+} F = { .in = { .fd = -1, .dirfd = -1 } };
+
+static void hex32(const unsigned char *h, char out[65])
+{
+	for (int i = 0; i < 32; i++)
+		snprintf(out + 2 * i, 3, "%02x", h[i]);
+}
+
+static void file_event(int state, uint64_t id, const char *dest, const char *name, uint64_t size,
+		       const unsigned char *hash, const char *from, const char *reason)
+{
+	struct bridge_file e;
+	memset(&e, 0, sizeof e);
+	e.id = id;
+	e.size = size;
+	e.at_ns = now_ns();
+	e.state = (uint8_t)state;
+	snprintf(e.dest, sizeof e.dest, "%s", dest);
+	snprintf(e.name, sizeof e.name, "%s", name);
+	if (hash)
+		hex32(hash, e.blake2s);
+	snprintf(e.from, sizeof e.from, "%s", from);
+	snprintf(e.reason, sizeof e.reason, "%s", reason ? reason : "");
+	static const char *what[] = { "", "sent", "received", "not sent", "not received" };
+	mod_log(WHO, "file %016llx %s/%s, %llu bytes, from %s: %s%s%s", (unsigned long long)id, dest, name,
+		(unsigned long long)size, from[0] ? from : "?", what[state], reason && *reason ? ": " : "",
+		reason ? reason : "");
+	if (F.pub)
+		hg_publish(F.pub, &e, sizeof e, e.at_ns);
+}
+
+/* The directory files of a [Files] section arrive in, made if missing; an fd
+ * on it, or -1. Never through a symbolic link in its last two parts. */
+static int files_dir(const struct bc_files *fc)
+{
+	char p[900];
+	snprintf(p, sizeof p, "%s/files", F.dir);
+	(void)mkdir(p, 0750);
+	snprintf(p, sizeof p, "%s/files/%s", F.dir, fc->dest);
+	(void)mkdir(p, 0750);
+	return open(p, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+}
+
+/* What a transfer left unfinished under a hidden name. */
+static void files_sweep(int dirfd)
+{
+	int d2 = dup(dirfd);
+	DIR *d = d2 >= 0 ? fdopendir(d2) : NULL;
+	if (!d) {
+		if (d2 >= 0)
+			close(d2);
+		return;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)))
+		if (strncmp(e->d_name, ".part-", 6) == 0)
+			(void)unlinkat(dirfd, e->d_name, 0);
+	closedir(d);
+}
+
+/* At most MaxFiles= files of a destination are kept: past that the oldest
+ * goes, never the one that just came. Whoever reads the directory needs no
+ * right to write in it. */
+static void files_prune(int dirfd, const struct bc_files *fc, const char *keep)
+{
+	for (int round = 0; round < 1024; round++) {
+		int d2 = dup(dirfd);
+		DIR *d = d2 >= 0 ? fdopendir(d2) : NULL;
+		if (!d) {
+			if (d2 >= 0)
+				close(d2);
+			return;
+		}
+		rewinddir(d);
+		uint32_t count = 0;
+		char oldest[256] = "";
+		struct timespec ot = { 0, 0 };
+		struct dirent *e;
+		while ((e = readdir(d))) {
+			struct stat st;
+			if (e->d_name[0] == '.' || fstatat(dirfd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) < 0 ||
+			    !S_ISREG(st.st_mode))
+				continue;
+			count++;
+			if (strcmp(e->d_name, keep) == 0)
+				continue;
+			if (!oldest[0] || st.st_mtim.tv_sec < ot.tv_sec ||
+			    (st.st_mtim.tv_sec == ot.tv_sec && st.st_mtim.tv_nsec < ot.tv_nsec)) {
+				snprintf(oldest, sizeof oldest, "%s", e->d_name);
+				ot = st.st_mtim;
+			}
+		}
+		closedir(d);
+		if (count <= fc->max_files || !oldest[0] || unlinkat(dirfd, oldest, 0) < 0)
+			return;
+		mod_log(WHO, "files/%s: %s removed, the oldest of %u (MaxFiles=%u)", fc->dest, oldest, count,
+			fc->max_files);
+	}
+}
+
+static void f_status_put(uint64_t id, int state, uint64_t off, const char *reason)
+{
+	unsigned char b[8 + 1 + 8 + 1 + HG_CALL_REASON];
+	size_t rl = reason ? strnlen(reason, HG_CALL_REASON - 1) : 0;
+	put64(b, id);
+	b[8] = (unsigned char)state;
+	put64(b + 9, off);
+	b[17] = (unsigned char)rl;
+	if (rl)
+		memcpy(b + 18, reason, rl);
+	if (B.up && s_append(R_FSTATUS, b, 18 + rl, -1, 0) == 0) {
+		F.st.have = 0;
+		s_pump();
+		return;
+	}
+	F.st.have = 1;
+	F.st.id = id;
+	F.st.state = state;
+	F.st.off = off;
+	snprintf(F.st.reason, sizeof F.st.reason, "%s", reason ? reason : "");
+}
+
+/* The file being received is dropped: nothing of it stays. */
+static void in_discard(const char *why, int tell)
+{
+	if (!F.in.active)
+		return;
+	if (F.in.fd >= 0)
+		close(F.in.fd);
+	if (F.in.dirfd >= 0) {
+		(void)unlinkat(F.in.dirfd, F.in.tmp, 0);
+		close(F.in.dirfd);
+	}
+	F.in.fd = F.in.dirfd = -1;
+	F.in.active = 0;
+	file_event(FE_RECV_FAILED, F.in.id, F.in.fc->dest, F.in.name, F.in.size, NULL, F.in.from, why);
+	if (tell)
+		f_status_put(F.in.id, FS_FAILED, 0, why);
+}
+
+/* A length byte and that many bytes, as a string; an empty one too. */
+static int take_str(const unsigned char **p, size_t *n, char *out, size_t cap)
+{
+	if (*n < 1)
+		return -1;
+	size_t l = (*p)[0];
+	if (l >= cap || *n < 1 + l || memchr(*p + 1, 0, l))
+		return -1;
+	memcpy(out, *p + 1, l);
+	out[l] = 0;
+	*p += 1 + l;
+	*n -= 1 + l;
+	return 0;
+}
+
+static void on_fbegin(const unsigned char *b, size_t n)
+{
+	char dest[BC_DEST], name[BC_FILE_NAME], from[HG_CALL_CALLER];
+	if (n < 16)
+		return;
+	uint64_t id = get64(b), size = get64(b + 8);
+	b += 16;
+	n -= 16;
+	if (!id || take_str(&b, &n, dest, sizeof dest) < 0 || take_str(&b, &n, name, sizeof name) < 0 ||
+	    take_str(&b, &n, from, sizeof from) < 0)
+		return;
+	for (int i = 0; i < F.ndone; i++)
+		if (F.done[i] == id) {
+			f_status_put(id, FS_DONE, size, NULL); /* it came whole on the link before this one */
+			return;
+		}
+	if (F.in.active && F.in.id == id) {
+		if (F.in.size != size || strcmp(F.in.name, name) != 0 || strcmp(F.in.fc->dest, dest) != 0) {
+			in_discard("begun again as another file", 1);
+			return;
+		}
+		F.in.progress_ns = now_ns();
+		f_status_put(id, FS_READY, F.in.have, NULL); /* a new link: on from here */
+		return;
+	}
+	/* The peer sends one file at a time: a begin for another is the end of
+	 * the one before, which it gave up or lost with a restart. */
+	in_discard("the sender began another file", 0);
+	/* What this side's own configuration lets in, whatever the peer's says. */
+	const struct bc_files *fc = bc_files_find(&B.conf, dest, !B.vehicle);
+	const char *why = NULL;
+	if (!F.ready)
+		why = "no state directory on the receiving side";
+	else if (!fc)
+		why = "no such [Files] section toward the receiving side";
+	else if (!bc_file_name_ok(name))
+		why = "not a file name";
+	else if (size < 1 || size > fc->max_size)
+		why = "empty, or over the section's MaxSize";
+	if (why) {
+		mod_log(WHO, "file %016llx refused: %s", (unsigned long long)id, why);
+		f_status_put(id, FS_FAILED, 0, why);
+		return;
+	}
+	int dirfd = files_dir(fc);
+	char tmp[40];
+	snprintf(tmp, sizeof tmp, ".part-%016llx", (unsigned long long)id);
+	int fd = -1;
+	if (dirfd >= 0) {
+		(void)unlinkat(dirfd, tmp, 0);
+		fd = openat(dirfd, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0640);
+	}
+	if (fd < 0) {
+		char r[HG_CALL_REASON];
+		snprintf(r, sizeof r, "the receiving directory: %s", strerror(errno));
+		mod_log(WHO, "file %016llx, files/%s: %s", (unsigned long long)id, dest, strerror(errno));
+		if (dirfd >= 0)
+			close(dirfd);
+		f_status_put(id, FS_FAILED, 0, r);
+		return;
+	}
+	memset(&F.in, 0, sizeof F.in);
+	F.in.active = 1;
+	F.in.fd = fd;
+	F.in.dirfd = dirfd;
+	F.in.id = id;
+	F.in.size = size;
+	F.in.fc = fc;
+	F.in.progress_ns = now_ns();
+	snprintf(F.in.name, sizeof F.in.name, "%s", name);
+	snprintf(F.in.from, sizeof F.in.from, "%s", from);
+	snprintf(F.in.tmp, sizeof F.in.tmp, "%s", tmp);
+	blake2s_init(&F.in.h, 32, NULL, 0);
+	f_status_put(id, FS_READY, 0, NULL);
+}
+
+static void on_fdata(const unsigned char *b, size_t n)
+{
+	if (n < 17 || !F.in.active || get64(b) != F.in.id)
+		return; /* of a file given up: still on its way when the status went */
+	uint64_t off = get64(b + 8);
+	b += 16;
+	n -= 16;
+	if (off != F.in.have || n > F.in.size - F.in.have) {
+		in_discard("data out of place", 1);
+		return;
+	}
+	size_t done = 0;
+	while (done < n) {
+		ssize_t w = write(F.in.fd, b + done, n - done);
+		if (w < 0 && errno == EINTR)
+			continue;
+		if (w <= 0) {
+			char r[HG_CALL_REASON];
+			snprintf(r, sizeof r, "writing: %s", w < 0 ? strerror(errno) : "nothing written");
+			in_discard(r, 1);
+			return;
+		}
+		done += (size_t)w;
+	}
+	blake2s_update(&F.in.h, b, n);
+	F.in.have += n;
+	F.in.progress_ns = now_ns();
+	if (F.in.have - F.in.synced >= FILE_SYNC_BYTES) {
+		(void)fdatasync(F.in.fd); /* a megabyte at a time: the last sync is then short */
+		F.in.synced = F.in.have;
+	}
+}
+
+static void on_fend(const unsigned char *b, size_t n)
+{
+	if (n < 40 || !F.in.active || get64(b) != F.in.id)
+		return;
+	unsigned char mine[32];
+	struct blake2s h = F.in.h;
+	blake2s_final(&h, mine);
+	if (F.in.have != F.in.size) {
+		in_discard("ended short of its size", 1);
+		return;
+	}
+	if (!tag_eq(mine, b + 8, 32)) {
+		in_discard("the hash of what arrived is not the sender's", 1);
+		return;
+	}
+	if (fdatasync(F.in.fd) < 0 || renameat(F.in.dirfd, F.in.tmp, F.in.dirfd, F.in.name) < 0) {
+		char r[HG_CALL_REASON];
+		snprintf(r, sizeof r, "keeping it: %s", strerror(errno));
+		in_discard(r, 1);
+		return;
+	}
+	(void)fsync(F.in.dirfd);
+	close(F.in.fd);
+	files_prune(F.in.dirfd, F.in.fc, F.in.name);
+	close(F.in.dirfd);
+	F.in.fd = F.in.dirfd = -1;
+	F.in.active = 0;
+	if (F.ndone < (int)(sizeof F.done / sizeof F.done[0]))
+		F.ndone++;
+	memmove(F.done + 1, F.done, (size_t)(F.ndone - 1) * sizeof F.done[0]);
+	F.done[0] = F.in.id;
+	file_event(FE_RECEIVED, F.in.id, F.in.fc->dest, F.in.name, F.in.size, mine, F.in.from, NULL);
+	f_status_put(F.in.id, FS_DONE, F.in.size, NULL);
+}
+
+static void on_fabort(const unsigned char *b, size_t n)
+{
+	if (n >= 8 && F.in.active && get64(b) == F.in.id)
+		in_discard("the sender gave it up", 0);
+}
+
+/* The first file of the queue has ended. */
+static void x_pop(int state, const char *reason)
+{
+	struct xfer *x = &F.q[0];
+	file_event(state, x->id, x->fc->dest, x->name, x->size, x->hashed == x->size ? x->hash : NULL, x->from, reason);
+	close(x->fd);
+	F.nq--;
+	memmove(F.q, F.q + 1, (size_t)F.nq * sizeof F.q[0]);
+}
+
+static void x_fail(const char *reason)
+{
+	struct xfer *x = &F.q[0];
+	if (B.up && x->state != X_NEW) {
+		unsigned char b[8];
+		put64(b, x->id);
+		(void)s_append(R_FABORT, b, 8, -1, 0);
+	}
+	x_pop(FE_SEND_FAILED, reason);
+}
+
+static void on_fstatus(const unsigned char *b, size_t n)
+{
+	if (n < 18 || !F.nq || get64(b) != F.q[0].id)
+		return;
+	struct xfer *x = &F.q[0];
+	int state = b[8];
+	uint64_t off = get64(b + 9);
+	size_t rl = b[17];
+	char reason[HG_CALL_REASON] = "";
+	if (rl < sizeof reason && n >= 18 + rl) {
+		memcpy(reason, b + 18, rl);
+		for (size_t i = 0; i < rl; i++)
+			if ((unsigned char)reason[i] < 0x20 || (unsigned char)reason[i] > 0x7e)
+				reason[i] = '?';
+	}
+	x->progress_ns = now_ns();
+	if (state == FS_READY && x->state == X_WAIT) {
+		/* Where the other side is: never past what was read and hashed here. */
+		if (off > x->hashed) {
+			x_fail("the other side is ahead of what was sent");
+			return;
+		}
+		if (off)
+			mod_log(WHO, "file %016llx: on from byte %llu of %llu", (unsigned long long)x->id,
+				(unsigned long long)off, (unsigned long long)x->size);
+		x->pos = off;
+		x->state = X_SEND;
+	} else if (state == FS_DONE && x->hashed == x->size) {
+		x_pop(FE_SENT, NULL);
+	} else if (state == FS_FAILED) {
+		x_pop(FE_SEND_FAILED, reason[0] ? reason : "refused by the other side");
+	}
+}
+
+/* A new stream: the file under way is begun again, and goes on from where
+ * the other side says it is. */
+static void files_generation(void)
+{
+	if (F.nq && F.q[0].state != X_NEW)
+		F.q[0].state = X_NEW;
+	F.st.have = 0; /* the status was for the stream before: the begin that comes asks again */
+}
+
+static void files_tick(void)
+{
+	uint64_t now = now_ns();
+	if (F.in.active && now - F.in.progress_ns > F.stall_ns)
+		in_discard("nothing of it came for too long", B.up);
+	if (F.st.have && B.up)
+		f_status_put(F.st.id, F.st.state, F.st.off, F.st.reason);
+	/* FileRate=: what has accrued since the last tick, at most 20 ms of it
+	 * (and one chunk), so that a pause is not made up for in a burst. */
+	double rate = (double)B.conf.file_rate_bps / 8.0, cap = rate / 50.0;
+	if (cap < FILE_CHUNK + 64)
+		cap = FILE_CHUNK + 64;
+	if (F.tok_ns)
+		F.tokens += (double)(now - F.tok_ns) * rate / 1e9;
+	F.tok_ns = now;
+	if (F.tokens > cap)
+		F.tokens = cap;
+	if (!F.nq)
+		return;
+	struct xfer *x = &F.q[0];
+	if (now - x->progress_ns > F.stall_ns) {
+		x_fail(B.up ? "nothing of it moved for too long" : "no link for too long");
+		return;
+	}
+	if (!B.up || !B.mirror_ok)
+		return;
+	if (x->state == X_NEW) {
+		unsigned char b[16 + 3 + BC_DEST + BC_FILE_NAME + HG_CALL_CALLER];
+		size_t k = 16;
+		put64(b, x->id);
+		put64(b + 8, x->size);
+		const char *parts[3] = { x->fc->dest, x->name, x->from };
+		for (int i = 0; i < 3; i++) {
+			size_t l = strlen(parts[i]);
+			b[k++] = (unsigned char)l;
+			memcpy(b + k, parts[i], l);
+			k += l;
+		}
+		if (s_append(R_FBEGIN, b, k, -1, 0) == 0)
+			x->state = X_WAIT;
+	}
+	/* Bulk: a chunk goes on the stream only while little is waiting on it,
+	 * so a request or a reply published now has at most FILE_AHEAD of file
+	 * in front of it. */
+	while (x->state == X_SEND && x->pos < x->size && F.tokens >= FILE_CHUNK + 64 && s_used() < FILE_AHEAD) {
+		unsigned char b[16 + FILE_CHUNK];
+		size_t want = x->size - x->pos < FILE_CHUNK ? (size_t)(x->size - x->pos) : FILE_CHUNK;
+		ssize_t r = pread(x->fd, b + 16, want, (off_t)x->pos);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r <= 0) {
+			x_fail(r < 0 ? "reading it failed" : "shorter than when it was taken");
+			return;
+		}
+		if (x->pos + (uint64_t)r > x->hashed) {
+			size_t skip = (size_t)(x->hashed - x->pos);
+			blake2s_update(&x->h, b + 16 + skip, (size_t)r - skip);
+			x->hashed = x->pos + (uint64_t)r;
+			if (x->hashed == x->size) {
+				struct blake2s h = x->h;
+				blake2s_final(&h, x->hash);
+			}
+		}
+		if (x->corrupt && x->pos == 0)
+			b[16] ^= 0x01; /* tests: a byte changed on the way, after the hash was taken */
+		put64(b, x->id);
+		put64(b + 8, x->pos);
+		if (s_append(R_FDATA, b, 16 + (size_t)r, -1, 0) < 0)
+			break;
+		x->pos += (uint64_t)r;
+		x->progress_ns = now;
+		F.tokens -= (double)r + 64;
+	}
+	if (x->state == X_SEND && x->pos == x->size) {
+		unsigned char b[40];
+		put64(b, x->id);
+		memcpy(b + 8, x->hash, 32);
+		if (s_append(R_FEND, b, sizeof b, -1, 0) == 0)
+			x->state = X_ENDED;
+	}
+	s_pump();
+}
+
+/* bridge.send {dest, name}: <name> of the outbox, to where the other side
+ * keeps the files of <dest>. The caller is one the section's Allow= names;
+ * the file is taken (opened, and its name removed from the outbox) before
+ * the reply, and what becomes of it is on bridge.<role>.files. */
+static int on_send(const hg_call_ctx *c, const void *req_, void *rep_, char *reason)
+{
+	const struct bridge_send_req *req = req_;
+	struct bridge_send_rep *rep = rep_;
+	char dest[BC_DEST + 1], name[BC_FILE_NAME + 1];
+	memcpy(dest, req->dest, sizeof req->dest);
+	dest[sizeof req->dest] = 0;
+	memcpy(name, req->name, sizeof req->name);
+	name[sizeof req->name] = 0;
+	const struct bc_files *fc = strlen(dest) < BC_DEST ? bc_files_find(&B.conf, dest, B.vehicle) : NULL;
+	if (!fc) {
+		mod_fmt(reason, HG_CALL_REASON, "dest: no such [Files] section from this side");
+		return HG_E_REFUSED;
+	}
+	if (!F.ready) {
+		mod_fmt(reason, HG_CALL_REASON, "the bridge has no state directory");
+		return HG_E_REFUSED;
+	}
+	if (!hg_call_allowed(c->caller, fc->allow, fc->n_allow)) {
+		mod_fmt(reason, HG_CALL_REASON, "the caller is not in [Files %s] Allow=", fc->dest);
+		return HG_E_REFUSED;
+	}
+	if (!bc_file_name_ok(name)) {
+		mod_fmt(reason, HG_CALL_REASON, "name: 1 to 64 of A-Z a-z 0-9 . _ -, no leading '.'");
+		return HG_E_REFUSED;
+	}
+	if (F.nq == FILE_QUEUE) {
+		mod_fmt(reason, HG_CALL_REASON, "%d files are waiting already", FILE_QUEUE);
+		return HG_E_REFUSED;
+	}
+	char p[900];
+	snprintf(p, sizeof p, "%s/outbox", F.dir);
+	int od = open(p, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	int fd = od >= 0 ? openat(od, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) : -1;
+	struct stat st;
+	if (fd < 0 || fstat(fd, &st) < 0) {
+		mod_fmt(reason, HG_CALL_REASON, "outbox/%.20s: %s", name, strerror(errno));
+	} else if (!S_ISREG(st.st_mode)) {
+		mod_fmt(reason, HG_CALL_REASON, "outbox/%.20s: not a regular file", name);
+	} else if (st.st_size < 1 || (uint64_t)st.st_size > fc->max_size) {
+		mod_fmt(reason, HG_CALL_REASON, "empty, or over MaxSize= (%llu bytes)", (unsigned long long)fc->max_size);
+	} else {
+		struct xfer *x = &F.q[F.nq++];
+		memset(x, 0, sizeof *x);
+		do
+			random_bytes(&x->id, sizeof x->id);
+		while (!x->id);
+		x->fd = fd;
+		x->size = (uint64_t)st.st_size;
+		x->fc = fc;
+		x->progress_ns = now_ns();
+		snprintf(x->name, sizeof x->name, "%.64s", name);
+		snprintf(x->from, sizeof x->from, "%s", c->caller);
+		blake2s_init(&x->h, 32, NULL, 0);
+		const char *bad = getenv("HANGAR_BRIDGE_TEST_FILE_CORRUPT"); /* tests: this name arrives changed */
+		x->corrupt = bad && strcmp(bad, name) == 0;
+		(void)unlinkat(od, name, 0); /* taken: the fd is the file from here on */
+		close(od);
+		rep->id = x->id;
+		mod_log(WHO, "send %s/%s by %s: %llu bytes, file %016llx, %d waiting", fc->dest, name, c->caller,
+			(unsigned long long)x->size, (unsigned long long)x->id, F.nq);
+		return HG_OK;
+	}
+	if (fd >= 0)
+		close(fd);
+	if (od >= 0)
+		close(od);
+	return HG_E_REFUSED;
+}
+
+/* The state directory: the outbox when a [Files] section leaves this side,
+ * files/<dest>/ for each that arrives here, emptied of what an earlier run
+ * left unfinished. */
+static void files_init(void)
+{
+	const char *sm = getenv("HANGAR_BRIDGE_TEST_FILE_STALL_MS"); /* tests: a wait a test can sit through */
+	F.stall_ns = sm ? strtoull(sm, NULL, 10) * 1000000ull : FILE_STALL_NS;
+	F.in.fd = F.in.dirfd = -1;
+	if (!B.conf.n_files)
+		return;
+	if (mod_state_dir(F.dir, sizeof F.dir) < 0) {
+		mod_log(WHO, "state directory %s: %s: no files sent or received", F.dir, strerror(errno));
+		return;
+	}
+	F.ready = 1;
+	for (int i = 0; i < B.conf.n_files; i++) {
+		const struct bc_files *fc = &B.conf.files[i];
+		if (fc->up == B.vehicle) {
+			char p[900];
+			snprintf(p, sizeof p, "%s/outbox", F.dir);
+			if (mkdir(p, 0770) == 0)
+				(void)chmod(p, 0770); /* whoever may write there is in the bridge's group */
+		} else {
+			int d = files_dir(fc);
+			if (d >= 0) {
+				files_sweep(d);
+				close(d);
+			}
+		}
+	}
+}
+
+/* tests and the fuzz harness: as before any file. */
+static void files_reset(void) __attribute__((unused));
+static void files_reset(void)
+{
+	if (F.in.active) {
+		if (F.in.fd >= 0)
+			close(F.in.fd);
+		if (F.in.dirfd >= 0) {
+			(void)unlinkat(F.in.dirfd, F.in.tmp, 0);
+			close(F.in.dirfd);
+		}
+	}
+	for (int i = 0; i < F.nq; i++)
+		close(F.q[i].fd);
+	hg_pub *pub = F.pub;
+	memset(&F, 0, sizeof F);
+	F.pub = pub;
+	F.in.fd = F.in.dirfd = -1;
+	F.stall_ns = FILE_STALL_NS;
+}
+
 static void send_info(void)
 {
 	unsigned char b[32 * 3];
@@ -1344,6 +2004,18 @@ static void handle_record(int type, const unsigned char *b, size_t n)
 		on_schema(b, n);
 	else if (type == R_MSG)
 		on_message(b, n);
+	else if (!B.mirror_ok)
+		return; /* files, as topics: only between two sides that match */
+	else if (type == R_FBEGIN)
+		on_fbegin(b, n);
+	else if (type == R_FDATA)
+		on_fdata(b, n);
+	else if (type == R_FEND)
+		on_fend(b, n);
+	else if (type == R_FABORT)
+		on_fabort(b, n);
+	else if (type == R_FSTATUS)
+		on_fstatus(b, n);
 }
 
 /* A new link: new streams, the info exchange again, and every reliable topic
@@ -1367,6 +2039,7 @@ static void reset_generation(void)
 	}
 	for (int i = 0; i < B.nrx; i++)
 		B.rx[i].refused = 0;
+	files_generation();
 	B.up = 1;
 	B.last_rx_ns = now_ns();
 	send_info();
@@ -1780,6 +2453,8 @@ int main(int argc, char **argv)
 	for (int i = 0; w && i < w->n_subs; i++) {
 		int rel, prio;
 		uint32_t rate;
+		if (never_sent(w->subs[i].topic))
+			continue;
 		conf_of(w->subs[i].topic, B.vehicle, &rel, &prio, &rate);
 		hg_sub *s = hg_sub_open_from(w->subs[i].topic, NULL, rel ? HG_OLDEST : HG_NEWEST);
 		if (!s) {
@@ -1800,6 +2475,20 @@ int main(int argc, char **argv)
 	if (!B.link_pub) {
 		mod_log(WHO, "%s: %s", link, strerror(errno));
 		return 3;
+	}
+
+	/* Files: the event topic and the method, when the manifest has them. */
+	files_init();
+	int serves = hg_serve_method("send", on_send, NULL) == 0;
+	if (B.conf.n_files) {
+		char ft[48];
+		snprintf(ft, sizeof ft, "bridge.%s.files", B.role);
+		F.pub = hg_pub_open(ft, &BRIDGE_FILE_TYPE, NULL);
+		if (!F.pub)
+			mod_log(WHO, "%s: %s: files move without their events", ft, strerror(errno));
+		if (!serves)
+			mod_log(WHO, "send is not served (%s): the manifest needs [Serve send]; files are received only",
+				strerror(errno));
 	}
 
 	B.sock = udp_socket(B.conf.port, 0);
@@ -1884,6 +2573,10 @@ int main(int argc, char **argv)
 			pump_tx();
 		if (!tick)
 			continue;
+		if (serves)
+			(void)hg_serve(); /* send: answered within a tick */
+		if (B.conf.n_files)
+			files_tick();
 		uint64_t now = now_ns();
 		if (B.dsock >= 0 && now - last_beacon >= 1000000000ull) {
 			beacon();
@@ -1892,6 +2585,11 @@ int main(int argc, char **argv)
 		if (B.up && now - B.last_rx_ns > LINK_TIMEOUT_NS) {
 			B.up = 0;
 			mod_log(WHO, "link down: nothing heard for %.1f s", (double)(now - B.last_rx_ns) / 1e9);
+			/* tests: the link that comes back is a new one, with both
+			 * bridges alive (in use the keys are kept, and it is the
+			 * same link). */
+			if (getenv("HANGAR_BRIDGE_TEST_FORGET_KEYS"))
+				B.keyed = 0;
 		}
 		choose_peer();
 		if (B.nonce_since && now - B.nonce_since > NONCE_NS)

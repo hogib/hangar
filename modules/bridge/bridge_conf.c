@@ -27,13 +27,15 @@ int bc_is_glob(const char *p)
 	return strpbrk(p, "*?") != NULL;
 }
 
-enum { SEC_NONE, SEC_BRIDGE, SEC_MIRROR, SEC_CALLS };
+enum { SEC_NONE, SEC_BRIDGE, SEC_MIRROR, SEC_CALLS, SEC_FILES };
 
 struct walk {
 	struct bridge_conf *c;
 	int sec;
 	struct bc_mirror *m;
 	int have_dir, have_expect, have_stale;
+	struct bc_files *f;
+	int f_have_dir, have_file_rate;
 };
 
 static int copy_word(char *dst, size_t cap, const char *src, size_t n)
@@ -77,11 +79,106 @@ static int finish_mirror(struct walk *w, char *err, size_t errlen)
 	return 0;
 }
 
+static int finish_files(struct walk *w, char *err, size_t errlen)
+{
+	struct bc_files *f = w->f;
+	if (!f)
+		return 0;
+	if (!w->f_have_dir) {
+		ferr(err, errlen, "[Files %s] at line %d: Direction= is required", f->dest, f->line);
+		return -1;
+	}
+	if (!f->n_allow)
+		snprintf(f->allow[f->n_allow++], HG_WIRING_NAME, "admin");
+	w->f = NULL;
+	return 0;
+}
+
+int bc_file_name_ok(const char *name)
+{
+	size_t n = strlen(name);
+	if (n < 1 || n >= BC_FILE_NAME || name[0] == '.')
+		return 0;
+	for (size_t i = 0; i < n; i++) {
+		char ch = name[i];
+		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.' ||
+		      ch == '_' || ch == '-'))
+			return 0;
+	}
+	return 1;
+}
+
+static int dest_ok(const char *d)
+{
+	size_t n = strlen(d);
+	if (n < 1 || n >= BC_DEST)
+		return 0;
+	for (size_t i = 0; i < n; i++)
+		if (!((d[i] >= 'a' && d[i] <= 'z') || (d[i] >= '0' && d[i] <= '9') || d[i] == '_'))
+			return 0;
+	return 1;
+}
+
+/* "16MB", "512KB", "4096": bytes, from 1 to BC_FILE_SIZE_MAX. */
+static int size_of(const char *v, uint64_t *out)
+{
+	char *e;
+	if (*v < '0' || *v > '9')
+		return -1;
+	errno = 0;
+	unsigned long long n = strtoull(v, &e, 10);
+	if (errno)
+		return -1;
+	unsigned long long mul = strcmp(e, "MB") == 0 ? 1ull << 20 : strcmp(e, "KB") == 0 ? 1ull << 10 : *e == 0 ? 1 : 0;
+	if (!mul || n == 0 || n > BC_FILE_SIZE_MAX / mul)
+		return -1;
+	*out = n * mul;
+	return 0;
+}
+
+static int bit_rate_of(const char *value, uint64_t *out)
+{
+	char *e;
+	double r = strtod(value, &e);
+	double mul = strcmp(e, "Mbit") == 0 ? 1e6 : strcmp(e, "kbit") == 0 ? 1e3 : strcmp(e, "bit") == 0 ? 1 : -1;
+	/* A number above zero that fits the field: nan, inf and 2e58Mbit
+	 * are not rates, and their conversion is not defined. */
+	if (!(r > 0) || mul < 0 || !(r * mul < 1e18))
+		return -1;
+	*out = (uint64_t)(r * mul);
+	return 0;
+}
+
 static int on_section(void *ctx, const char *section, const char *arg, int line, char *err, size_t errlen)
 {
 	struct walk *w = ctx;
-	if (finish_mirror(w, err, errlen) < 0)
+	if (finish_mirror(w, err, errlen) < 0 || finish_files(w, err, errlen) < 0)
 		return -1;
+	if (strcmp(section, "Files") == 0) {
+		if (!dest_ok(arg)) {
+			ferr(err, errlen, "[Files %.40s]: a name of 1 to %d of a-z, 0-9 and _", arg, BC_DEST - 1);
+			return -1;
+		}
+		for (int i = 0; i < w->c->n_files; i++)
+			if (strcmp(w->c->files[i].dest, arg) == 0) {
+				ferr(err, errlen, "[Files %s] twice", arg);
+				return -1;
+			}
+		if (w->c->n_files == BC_MAX_FILES) {
+			ferr(err, errlen, "more than %d [Files] sections", BC_MAX_FILES);
+			return -1;
+		}
+		struct bc_files *f = &w->c->files[w->c->n_files++];
+		memset(f, 0, sizeof *f);
+		snprintf(f->dest, sizeof f->dest, "%s", arg);
+		f->max_size = BC_FILE_SIZE_DEFAULT;
+		f->max_files = 4;
+		f->line = line;
+		w->sec = SEC_FILES;
+		w->f = f;
+		w->f_have_dir = 0;
+		return 0;
+	}
 	if (strcmp(section, "Bridge") == 0 && !*arg) {
 		w->sec = SEC_BRIDGE;
 	} else if (strcmp(section, "Calls") == 0 && !*arg) {
@@ -160,14 +257,12 @@ static int on_key(void *ctx, const char *key, const char *value, int line, char 
 			if (copy_word(c->peer, sizeof c->peer, value, strlen(value)) < 0)
 				goto bad;
 		} else if (strcmp(key, "MaxRate") == 0) {
-			char *e;
-			double r = strtod(value, &e);
-			double mul = strcmp(e, "Mbit") == 0 ? 1e6 : strcmp(e, "kbit") == 0 ? 1e3 : strcmp(e, "bit") == 0 ? 1 : -1;
-			/* A number above zero that fits the field: nan, inf and 2e58Mbit
-			 * are not rates, and their conversion is not defined. */
-			if (!(r > 0) || mul < 0 || !(r * mul < 1e18))
+			if (bit_rate_of(value, &c->max_rate_bps) < 0)
 				goto bad;
-			c->max_rate_bps = (uint64_t)(r * mul);
+		} else if (strcmp(key, "FileRate") == 0) {
+			if (bit_rate_of(value, &c->file_rate_bps) < 0)
+				goto bad;
+			w->have_file_rate = 1;
 		} else if (strcmp(key, "MsgDir") == 0) {
 			if (copy_word(c->msg_dir, sizeof c->msg_dir, value, strlen(value)) < 0)
 				goto bad;
@@ -199,6 +294,57 @@ static int on_key(void *ctx, const char *key, const char *value, int line, char 
 			}
 			c->n_remote++;
 			p = q;
+		}
+		return 0;
+	}
+	if (w->sec == SEC_FILES) {
+		struct bc_files *f = w->f;
+		if (strcmp(key, "Direction") == 0) {
+			if (strcmp(value, "up") == 0)
+				f->up = 1;
+			else if (strcmp(value, "down") == 0)
+				f->up = 0;
+			else
+				goto bad;
+			w->f_have_dir = 1;
+		} else if (strcmp(key, "MaxSize") == 0) {
+			if (size_of(value, &f->max_size) < 0)
+				goto bad;
+		} else if (strcmp(key, "MaxFiles") == 0) {
+			char *e;
+			long n = strtol(value, &e, 10);
+			if (*e || n < 1 || n > 1024)
+				goto bad;
+			f->max_files = (uint32_t)n;
+		} else if (strcmp(key, "Allow") == 0) {
+			/* Callers of the sending machine, as [Serve]'s Allow names
+			 * them there: a module, `*`, `admin`. send is never called
+			 * from the other side, so no token names it. */
+			const char *p = value;
+			f->n_allow = 0;
+			while (*p) {
+				while (*p == ' ' || *p == '\t')
+					p++;
+				const char *q = p;
+				while (*q && *q != ' ' && *q != '\t')
+					q++;
+				if (q == p)
+					break;
+				if (f->n_allow == BC_MAX_ALLOW ||
+				    copy_word(f->allow[f->n_allow], HG_WIRING_NAME, p, (size_t)(q - p)) < 0 ||
+				    strchr(f->allow[f->n_allow], ':')) {
+					ferr(err, errlen, "Allow=: at most %d callers of the sending machine (a module, *, admin)",
+					     BC_MAX_ALLOW);
+					return -1;
+				}
+				f->n_allow++;
+				p = q;
+			}
+			if (!f->n_allow)
+				goto bad;
+		} else {
+			ferr(err, errlen, "[Files] has no key %s", key);
+			return -1;
 		}
 		return 0;
 	}
@@ -308,7 +454,14 @@ int bc_parse(const char *text, size_t len, struct bridge_conf *c, char *err, siz
 	struct walk w = { .c = c };
 	if (hg_ini_parse(text, len, on_section, on_key, &w, err, errlen) < 0)
 		return -1;
-	if (finish_mirror(&w, err, errlen) < 0) {
+	if (finish_mirror(&w, err, errlen) < 0 || finish_files(&w, err, errlen) < 0) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (!w.have_file_rate)
+		c->file_rate_bps = c->max_rate_bps / 4 ? c->max_rate_bps / 4 : 1;
+	if (w.have_file_rate && (c->file_rate_bps < 1 || c->file_rate_bps > c->max_rate_bps)) {
+		ferr(err, errlen, "FileRate= is above MaxRate=, or under 1 bit");
 		errno = EINVAL;
 		return -1;
 	}
@@ -340,6 +493,14 @@ int bc_remote_matches(const struct bridge_conf *c, const char *module, const cha
 		if (hg_glob_match(c->remote[i], full))
 			return 1;
 	return 0;
+}
+
+const struct bc_files *bc_files_find(const struct bridge_conf *c, const char *dest, int up)
+{
+	for (int i = 0; i < c->n_files; i++)
+		if (c->files[i].up == up && strcmp(c->files[i].dest, dest) == 0)
+			return &c->files[i];
+	return NULL;
 }
 
 const struct bc_mirror *bc_find(const struct bridge_conf *c, const char *topic, int up)
