@@ -130,10 +130,42 @@ caller times out, and the recording shows the request and its fate.
 them for the server. At start the library reads each request topic from the oldest
 message still in its ring, and its own `.rep` topic from the oldest reply still there:
 a request already answered is skipped, an expired one is published `HG_E_EXPIRED`, the
-rest are served. A request answered before the restart whose reply has since left the
-`.rep` ring, and which is still in time, is served again. Methods should therefore be
-**idempotent** where they can be (`arm` when armed answers `HG_OK`), so that a repeat,
-by the server or by a caller after `HG_E_TIMEOUT`, is harmless.
+rest are served.
+
+**A request answered once is not served again while it is in time, however often the
+server restarts.** Opening the `.rep` topic replaces its file with an empty ring
+([01-topics](01-topics.md#writing)), and the instance after this one reads only this
+one's. So, before anything else of the module runs, the library publishes again every
+reply of the old ring whose request is still in its caller's ring with its deadline
+not passed: the same payload, envelope and reply, with the same stamp and the same
+reference to the request, as the first messages of the new ring. The request is looked
+up through the reply's reference; a reply that carries none (a wiring the manager did
+not write) is published again at each start while it is in the ring. And while it
+runs, the library publishes a reply again just before the ring would overwrite it, if
+its request's deadline has not passed: a start answers `HG_E_EXPIRED` to every old
+request in every caller's ring whose reply is gone, more replies than the ring holds,
+and they would push out the ones just kept. The ring so holds the reply to every
+request that is still in time, up to 15 of them. A caller passes the copies over like
+any reply to a call it has not in flight (one that had not read the reply yet gets
+it); in a recording a copy is the same envelope with a later `seq`. A reply whose
+request has expired is not published again: the request is skipped by the instance
+that read the reply, and published `HG_E_EXPIRED`, unexecuted, by a later one that
+still finds it in the ring.
+
+Three ways are left in which a request still in time is served a second time:
+
+- sixteen replies to requests still in time at once: the oldest leaves the 16-slot
+  ring (logged), which takes more than one caller;
+- the handler ran and the server died before the reply was published;
+- the server was killed between replacing the file and publishing the copies (a
+  moment inside the library's first use; no code of the module runs in it).
+
+Methods should therefore be **idempotent** where they can be (`arm` when armed answers
+`HG_OK`), so that a repeat, by the server or by a caller after `HG_E_TIMEOUT`, is
+harmless. A method that cannot be, across a restart that loses the state the request
+changed, refuses a request published before its module started: the handler is given
+`published_ns` for that, and `safety.arm` and `safety.clear` do so
+([07-safety](07-safety.md#vehicle-states)).
 
 ## The envelopes
 
@@ -208,8 +240,10 @@ module's loop for up to the timeout: the library refuses it in a module with an
 actuator output, and the safety and `mavlink` modules do not use it; the bridge makes
 no calls at all. A handler
 returns `HG_OK` and fills the reply, or `HG_E_REFUSED` with a reason ("not armed:
-depth sensor stale"); `c` carries the caller's token, the call id, the deadline, and
-the request's reference `req`, `{topic_id, seq}`, for `hg_publish_with`. A module
+depth sensor stale"); `c` carries the caller's token, the call id, the deadline, when
+the request was published on this machine (`published_ns`: before the module's start
+for a request that waited through a restart), and the request's reference `req`,
+`{topic_id, seq}`, for `hg_publish_with`. A module
 driven by a timer, or waiting through `hg_wait_fd`, calls `hg_serve()` and
 `hg_call_poll()` once per iteration, at least every 10 ms when its wiring holds
 `subglob *.req` ([01-topics](01-topics.md#reading)); each is a read of a ring, with no
@@ -300,8 +334,10 @@ it is back, by then expired; the caller has had `HG_E_TIMEOUT` meanwhile.
   serves at most 8 requests; two callers' request topics taken in turn.
 - Server restart: a request waiting in the ring is answered when in time and published
   `HG_E_EXPIRED` unexecuted when not; a request already answered, whose reply is still
-  in the `.rep` ring, is not run again; a request to another server in the same ring is
-  skipped. An unknown request or reply type gives `HG_E_BADTYPE`; a declared call that
+  in the `.rep` ring, is not run again, nor after a second and a third restart within
+  its deadline, the last ring holding the first instance's reply once, with its
+  reference; a reply to an expired request not published again; a request to another
+  server in the same ring is skipped. An unknown request or reply type gives `HG_E_BADTYPE`; a declared call that
   nothing on either side serves gives `HG_E_NOROUTE` at once.
 - Callers: allowed and denied modules sharing one user; a module opening another's
   `.req` refused by the manager; deny-by-default for an actuator module; `admin` from a

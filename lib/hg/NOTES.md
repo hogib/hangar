@@ -285,13 +285,22 @@ name and renamed, with no fsync.
     the library does not rely on); `hangar run` sets the first so a module run by
     hand has a writable file beside its private topics.
 
-21. **Replies left behind by a restart are only as old as the ring.** The manager
+21. **The replies to requests still in time are published again.** The manager
     creates a fresh file at each restart (`write_seq` continued, slots empty), so
-    a restarted server sees only its predecessor's replies, not the one before:
-    a request answered two restarts ago, still in time, is served again. docs/04
-    allows exactly this ("whose reply has since left the ring, and which is still
-    in time, is served again") and asks for idempotent methods; the suites had to
-    wait out request deadlines before restarting a module twice.
+    a restarted server sees only its predecessor's ring, not the one before: a
+    request answered two restarts ago, still in time, was served again (safety's
+    `estop` and `clear` after a second crash; the suites waited out request
+    deadlines before restarting a module twice). `server_init` now opens the
+    request topics first, reads the old ring, looks each reply's request up
+    through the reply's reference (`hg_read_seq`), opens the `.rep` and publishes
+    the replies whose requests are in their rings and in time again, the same
+    bytes, stamp and reference, before anything else: the buffer for them is
+    allocated and freed there, at start. `serve_one` does the same for one reply
+    before the ring overwrites it (`keep_live_replies`, read back through a
+    subscription to the module's own `.rep`): the `HG_E_EXPIRED` replies a start
+    gives every old request would otherwise push the copies out. What is left is
+    in docs/04 "While the server restarts". `hg_call_ctx.published_ns` is new,
+    for a handler that must not act on a request from before its module's start.
 
 22. **`hg_serve_method` refuses a method the wiring does not list** (`EACCES`), as
     `hg_pub_open` refuses an undeclared topic; a served method with no handler

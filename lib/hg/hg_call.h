@@ -106,14 +106,18 @@ hg_call_result hg_call(const char *target, const struct hg_type *req_type, const
 /* What a handler is given. caller is the token docs/04 "Callers" derives
  * from the request topic: `<module>`, `<role>:<module>`, `admin:<user>`,
  * `<role>:admin:<user>`. req is the request message, `{topic_id, seq}`,
- * for hg_publish_with on an output that acts on the call. ctx is the
- * pointer hg_serve_method was given. */
+ * for hg_publish_with on an output that acts on the call. published_ns is
+ * when the request entered its topic on this machine: a request published
+ * before the module started waited through a restart, and what an earlier
+ * instance did about it this one cannot know (docs/04 "While the server
+ * restarts"). ctx is the pointer hg_serve_method was given. */
 typedef struct hg_call_ctx {
 	const char *caller;
 	const char *method;
 	uint64_t call_id;
 	uint64_t deadline_ns;
 	uint64_t received_ns;
+	uint64_t published_ns;
 	struct hg_input req;
 	void *ctx;
 } hg_call_ctx;

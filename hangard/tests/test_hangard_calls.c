@@ -347,7 +347,7 @@ static void test_server_restart(void)
 	struct depth d = { .depth_m = 11 }, r;
 	hg_pending *longs[2], *shorts[2];
 	for (int i = 0; i < 2; i++)
-		CHECK_EQ_INT(hg_call_start("server.echo", &DEPTH_TYPE, &d, &DEPTH_TYPE, &longs[i], 5000), HG_OK);
+		CHECK_EQ_INT(hg_call_start("server.echo", &DEPTH_TYPE, &d, &DEPTH_TYPE, &longs[i], 15000), HG_OK);
 	for (int i = 0; i < 2; i++)
 		CHECK_EQ_INT(hg_call_start("server.echo", &DEPTH_TYPE, &d, &DEPTH_TYPE, &shorts[i], 200), HG_OK);
 	sleep_ms(400);
@@ -387,20 +387,39 @@ static void test_server_restart(void)
 	// replies in server.rep; none is run or answered again. (Older requests
 	// whose replies have left the 16-slot ring, the raw ones among them, are
 	// read again and, expired by now, published HG_E_EXPIRED: docs/04.) The
-	// new instance's .rep file holds only what it published.
-	CHECK(strncmp(ctl("restart server"), "ok", 2) == 0);
-	sleep_ms(100);
-	CHECK(wait_state("server", "ready", 5000));
-	sleep_ms(400);
-	CHECK(file_contains(slog_path(), "replies of the previous instance found in the ring"));
-	scan_server_rep(&sc);
-	for (int i = 0; i < 2; i++) {
-		CHECK_EQ_INT(count_replies(&sc, me, short_ids[i]), 0);
-		CHECK_EQ_INT(count_replies(&sc, me, long_ids[i]), 0);
+	// new instance's .rep file begins with the replies to the two requests
+	// still in time, as the instance before published them; and so does the
+	// file of the instance after that one, which found an empty ring before
+	// and ran the two again. Whatever else in a new ring is not an
+	// HG_E_EXPIRED is such a copy too (the earlier tests' calls, some still
+	// in time), received before the restart. The two that timed out are
+	// skipped by the first restart, which knows their HG_E_EXPIRED from the
+	// ring, and published HG_E_EXPIRED again by the second.
+	for (int round = 0; round < 2; round++) {
+		uint64_t before = hg_now_ns();
+		CHECK(strncmp(ctl("restart server"), "ok", 2) == 0);
+		sleep_ms(100);
+		CHECK(wait_state("server", "ready", 5000));
+		sleep_ms(400);
+		CHECK(file_contains(slog_path(), "replies of the previous instance found in the ring"));
+		scan_server_rep(&sc);
+		int copies = 0;
+		for (int i = 0; i < 2; i++) {
+			CHECK_EQ_INT(count_replies(&sc, me, short_ids[i]), round);
+			CHECK_EQ_INT(count_replies(&sc, me, long_ids[i]), 1);
+		}
+		for (int i = 0; i < sc.n; i++) {
+			int copy = sc.env[i].caller_id == me &&
+				   (sc.env[i].call_id == long_ids[0] || sc.env[i].call_id == long_ids[1]);
+			copies += copy;
+			CHECK(!copy || sc.env[i].status == HG_OK);
+			CHECK(sc.env[i].status == HG_E_EXPIRED || sc.env[i].received_ns < before); /* nothing ran */
+		}
+		CHECK_EQ_INT(copies, 2);
+		printf("    restart %d: served %d; %d replies in the new ring, %d of them copies\n", round + 1,
+		       server_status("served "), sc.n, copies);
+		CHECK_EQ_INT(server_status("served "), 0);
 	}
-	for (int i = 0; i < sc.n; i++)
-		CHECK(sc.env[i].status == HG_E_EXPIRED); /* nothing ran: only expired leftovers */
-	CHECK_EQ_INT(server_status("served "), 0);
 	// A new call after the restart is answered: the server reads on.
 	hg_call_result res = hg_call("server.echo", &DEPTH_TYPE, &d, &DEPTH_TYPE, &r, 1000);
 	CHECK_EQ_INT(res.status, HG_OK);

@@ -489,6 +489,16 @@ struct answered {
 	uint64_t received_ns;
 };
 
+/* A reply this instance published, by its seq: until when its request can
+ * be served (0 when that is not known), and what it was published with. */
+struct sent {
+	uint64_t seq;
+	uint64_t deadline_ns;
+	uint64_t stamp_ns;
+	struct hg_input ref;
+	int has_ref;
+};
+
 static struct {
 	int inited;
 	int failed;
@@ -503,6 +513,10 @@ static struct {
 	int n_methods;
 	struct answered answered[ANSWERED_MAX];
 	int n_answered;
+	hg_sub *own;            /* the module's `.rep`, read back (keep_live_replies) */
+	uint32_t slots;         /* of the `.rep` ring; 0: replies are not kept */
+	struct sent sent[ANSWERED_MAX];
+	int full_logged;
 	int rr;                 /* the topic the next pass starts with */
 	int no_ref_logged;
 	/* 8-aligned: a handler's request and reply are message structs with
@@ -525,20 +539,76 @@ static struct method *find_method(const char *name)
 	return NULL;
 }
 
+/* The subscription a request topic is read through: a named one, or a match
+ * of the glob. NULL when the module reads no topic of that id. */
+static hg_sub *request_sub(uint32_t topic_id)
+{
+	for (int i = 0; i < S.n_subs; i++)
+		if (hg_sub_topic_id(S.subs[i]) == topic_id)
+			return S.subs[i];
+	int k = S.glob ? hg_glob_count(S.glob) : 0;
+	for (int i = 0; i < k; i++)
+		if (hg_sub_topic_id(hg_glob_at(S.glob, i)) == topic_id)
+			return hg_glob_at(S.glob, i);
+	return NULL;
+}
+
+/* Whether the request a predecessor's reply answered could still be served:
+ * it is in its caller's ring and its deadline has not passed. The reply's
+ * reference names it. 0 only where that is known not to be so: a reply
+ * with no reference (a wiring the manager did not write) or a read that
+ * fails counts as live. */
+static int request_live(const struct hg_call_reply_envelope *rep, const struct hg_info *info, uint64_t now,
+			uint64_t *deadline_ns)
+{
+	*deadline_ns = 0;
+	if (info->n_inputs != 1)
+		return 1;
+	hg_sub *s = request_sub(info->inputs[0].topic_id);
+	if (!s)
+		return 0;
+	struct hg_info ri;
+	enum hg_result r = hg_read_seq(s, info->inputs[0].seq, S.req, sizeof S.req, &ri);
+	if (r == HG_GONE || r == HG_ABSENT)
+		return 0;
+	if (r != HG_MSG || hg_sub_payload_bytes(s) < HG_CALL_REQ_ENVELOPE)
+		return 1;
+	struct hg_call_request_envelope env;
+	memcpy(&env, S.req, sizeof env);
+	*deadline_ns = env.deadline_ns;
+	return env.call_id == rep->call_id && env.target_id == S.topic_id && now <= env.deadline_ns;
+}
+
+/* A reply of the predecessor that the new `.rep` file is to begin with. */
+struct carried {
+	uint64_t stamp_ns;
+	uint64_t deadline_ns;
+	struct hg_input ref;
+	int has_ref;
+};
+
 /* A restarted server: the replies its predecessor left in the `.rep` ring
  * say which requests are already answered (docs/04 "While the server
- * restarts"). */
-static void read_own_replies(const char *topic)
+ * restarts"). The file is replaced when this instance opens it, and the
+ * instance after this one reads only this one's: the replies whose requests
+ * are still live are copied to *bodies (allocated here, n of them, each
+ * `payload` bytes) to be published again into the new file. Without that a
+ * server restarted twice within a request's deadline ran it twice. */
+static int read_own_replies(const char *topic, uint32_t payload, unsigned char **bodies, struct carried *meta)
 {
+	*bodies = NULL;
 	hg_sub *own = hg_sub_open_own(topic, NULL, HG_OLDEST);
 	if (!own)
-		return;
+		return 0;
 	struct hg_info info;
+	uint64_t now = hg_now_ns();
+	int n = 0, lost = 0;
 	for (;;) {
 		enum hg_result r = hg_next(own, S.rep, sizeof S.rep, &info);
 		if (r != HG_MSG)
 			break;
-		if (hg_sub_payload_bytes(own) < HG_CALL_REP_ENVELOPE)
+		uint32_t pl = hg_sub_payload_bytes(own);
+		if (pl < HG_CALL_REP_ENVELOPE)
 			continue;
 		struct hg_call_reply_envelope env;
 		memcpy(&env, S.rep, sizeof env);
@@ -548,11 +618,113 @@ static void read_own_replies(const char *topic)
 		a->caller_id = env.caller_id;
 		a->call_id = env.call_id;
 		a->received_ns = env.received_ns;
+		uint64_t deadline;
+		if (!request_live(&env, &info, now, &deadline))
+			continue;
+		/* Twice in the ring (keep_live_replies): once in the new one. */
+		int twice = 0;
+		for (int i = 0; i < n && !twice; i++)
+			twice = memcmp(*bodies + (size_t)i * payload, &env, sizeof env) == 0;
+		if (twice)
+			continue;
+		if (!*bodies)
+			*bodies = calloc(ANSWERED_MAX, payload);
+		if (!*bodies || n == ANSWERED_MAX) {
+			lost++;
+			continue;
+		}
+		memcpy(*bodies + (size_t)n * payload, S.rep, pl < payload ? pl : payload);
+		meta[n].stamp_ns = info.stamp_ns;
+		meta[n].deadline_ns = deadline;
+		meta[n].has_ref = info.n_inputs == 1;
+		meta[n].ref = (struct hg_input){ .topic_id = info.inputs[0].topic_id, .flags = 0, .seq = info.inputs[0].seq };
+		n++;
 	}
 	hg_sub_close(own);
 	if (S.n_answered)
 		log_line("%s: %d replies of the previous instance found in the ring; their requests are not run again",
 			 topic, S.n_answered);
+	if (lost)
+		log_line("%s: %d replies to requests still in time could not be kept for the next instance", topic, lost);
+	return n;
+}
+
+/* Publishes one reply, with its reference to the request when it has one,
+ * and notes it for keep_live_replies. 1 if the reference was refused and
+ * the reply went out without it. */
+static int publish_reply(const unsigned char *payload, uint64_t stamp_ns, const struct hg_input *ref,
+			 uint64_t deadline_ns)
+{
+	uint32_t len = S.schema.type.payload_bytes;
+	uint64_t seq = hg_pub_next_seq(S.pub);
+	int unreferenced = 0;
+	if (!ref || hg_publish_with(S.pub, payload, len, stamp_ns, 0, ref, 1) < 0) {
+		unreferenced = ref != NULL;
+		if (hg_publish_with(S.pub, payload, len, stamp_ns, HG_NO_REFS, NULL, 0) < 0)
+			return unreferenced;
+	}
+	struct sent *e = &S.sent[seq % ANSWERED_MAX];
+	memset(e, 0, sizeof *e);
+	e->seq = seq;
+	e->deadline_ns = deadline_ns;
+	e->stamp_ns = stamp_ns;
+	if (ref) {
+		e->ref = *ref;
+		e->has_ref = 1;
+	}
+	return unreferenced;
+}
+
+/* Before a reply is published: a reply whose request is still in time is
+ * published again while the ring still holds it, one publish before the one
+ * that overwrites it (the copy takes the slot of the reply before it, which
+ * this function passed over or copied a call earlier; the original is never
+ * the slot being written). The ring so holds the reply to every request that
+ * could be served again, as long as they are fewer than its slots: what a
+ * later instance, which knows the answered requests from the ring alone,
+ * needs to find there. A start publishes HG_E_EXPIRED for every old request
+ * in every caller's ring whose reply is gone, more than a ring of them:
+ * without this they pushed out the replies read_own_replies had just kept. */
+static void keep_live_replies(void)
+{
+	if (!S.slots || !S.own)
+		return;
+	uint64_t now = hg_now_ns();
+	for (uint32_t k = 0; k < S.slots; k++) {
+		uint64_t next = hg_pub_next_seq(S.pub);
+		if (next < S.slots)
+			return;
+		uint64_t out = next - S.slots + 1; /* what the publish after the next one overwrites */
+		const struct sent *e = &S.sent[out % ANSWERED_MAX];
+		if (e->seq != out || now > e->deadline_ns)
+			return;
+		if (k == S.slots - 1) {
+			/* Every reply in the ring answers a request still in time. */
+			if (!S.full_logged)
+				log_line("%u replies to requests still in time, all the ring holds: the oldest is not kept",
+					 S.slots);
+			S.full_logged = 1;
+			return;
+		}
+		struct hg_info info;
+		struct sent keep = *e;
+		if (hg_read_seq(S.own, out, S.rep, sizeof S.rep, &info) != HG_MSG)
+			return;
+		(void)publish_reply(S.rep, keep.stamp_ns, keep.has_ref ? &keep.ref : NULL, keep.deadline_ns);
+	}
+}
+
+/* The predecessor's replies to requests still live, published again as they
+ * were, each with its reference: the first messages of the new file. */
+static void carry_replies(const char *topic, uint32_t payload, unsigned char *bodies, const struct carried *meta, int n)
+{
+	for (int i = 0; i < n; i++)
+		(void)publish_reply(bodies + (size_t)i * payload, meta[i].stamp_ns, meta[i].has_ref ? &meta[i].ref : NULL,
+				    meta[i].deadline_ns);
+	free(bodies);
+	if (n)
+		log_line("%s: %d of them answer requests still in time: published again, for the instance after this one",
+			 topic, n);
 }
 
 static int already_answered(uint32_t caller_id, uint64_t call_id, uint64_t request_publish_ns)
@@ -605,16 +777,7 @@ static int server_init(void)
 		S.failed = errno = EPROTOTYPE;
 		return -1;
 	}
-	/* What the predecessor answered, before the file is replaced. */
-	read_own_replies(topic);
-	S.pub = hg_pub_open(topic, &S.schema.type, NULL);
-	if (!S.pub) {
-		int e = errno;
-		log_line("cannot open %s: %s", topic, strerror(e));
-		S.failed = errno = e;
-		return -1;
-	}
-	S.topic_id = hg_pub_topic_id(S.pub);
+	S.topic_id = hg_topic_id(topic);
 	/* The request topics: every named `.req` subscription, from the oldest
 	 * request still in its ring, and the glob of mirrored ones. */
 	for (int i = 0; i < w->n_subs; i++) {
@@ -631,6 +794,24 @@ static int server_init(void)
 	}
 	if (hg_wiring_find_glob(w, "*.req"))
 		S.glob = hg_sub_open_from("*.req", NULL, HG_OLDEST);
+	/* What the predecessor answered, before the file is replaced; and what
+	 * of it the new file begins with, nothing else of this module having run
+	 * between the two: a kill between them is the one way left to lose it. */
+	uint32_t payload = S.schema.type.payload_bytes;
+	unsigned char *bodies;
+	struct carried meta[ANSWERED_MAX];
+	int n_carried = read_own_replies(topic, payload, &bodies, meta);
+	S.pub = hg_pub_open(topic, &S.schema.type, NULL);
+	if (!S.pub) {
+		int e = errno;
+		log_line("cannot open %s: %s", topic, strerror(e));
+		free(bodies);
+		S.failed = errno = e;
+		return -1;
+	}
+	S.slots = line->slots && line->slots <= ANSWERED_MAX ? line->slots : 0;
+	S.own = hg_sub_open_own(topic, NULL, HG_NEWEST);
+	carry_replies(topic, payload, bodies, meta, n_carried);
 	S.inited = 1;
 	return 0;
 }
@@ -750,6 +931,7 @@ static void serve_one(hg_sub *s, const struct hg_info *info)
 	const struct hg_wiring *w = hg_wiring();
 	struct hg_call_request_envelope env;
 	memcpy(&env, S.req, sizeof env);
+	keep_live_replies();
 	uint64_t received = hg_now_ns();
 	char method[33];
 	bfmt(method, sizeof method, "%.32s", env.method);
@@ -798,6 +980,7 @@ static void serve_one(hg_sub *s, const struct hg_info *info)
 				  .call_id = env.call_id,
 				  .deadline_ns = env.deadline_ns,
 				  .received_ns = received,
+				  .published_ns = info->publish_ns,
 				  .req = { .topic_id = hg_sub_topic_id(s), .flags = 0, .seq = info->seq },
 				  .ctx = m->ctx };
 		char reason[HG_CALL_REASON];
@@ -817,15 +1000,11 @@ static void serve_one(hg_sub *s, const struct hg_info *info)
 	memcpy(S.rep, &rep, sizeof rep);
 	uint64_t now = hg_now_ns();
 	struct hg_input ref = { .topic_id = hg_sub_topic_id(s), .flags = 0, .seq = info->seq };
-	if (hg_publish_with(S.pub, S.rep, S.schema.type.payload_bytes, now, 0, &ref, 1) < 0) {
+	if (publish_reply(S.rep, now, &ref, env.deadline_ns) && !S.no_ref_logged) {
 		/* The request topic is not among the output's Sources (a wiring
 		 * the manager did not write): the reply goes out unreferenced. */
-		if (!S.no_ref_logged) {
-			log_line("%s is not a Source of %s.rep: replies to it carry no reference",
-				 hg_sub_name(s), w->module);
-			S.no_ref_logged = 1;
-		}
-		hg_publish_with(S.pub, S.rep, S.schema.type.payload_bytes, now, HG_NO_REFS, NULL, 0);
+		log_line("%s is not a Source of %s.rep: replies to it carry no reference", hg_sub_name(s), w->module);
+		S.no_ref_logged = 1;
 	}
 	if (ran && line && now - received > line->deadline_ns)
 		log_line("%s: handler overran its deadline: %llu ms, deadline %llu ms (call %llu from %s)", method,

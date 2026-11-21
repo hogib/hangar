@@ -7,7 +7,8 @@
 // module `hangar`); hg_call refused in an actuator module; the parameter
 // grammar; hg_params_open, set_params through the library, @restart with
 // no manager, the restarted instance publishing the requester's name, and
-// exit status 78 on a bad saved file.
+// exit status 78 on a bad saved file. A server restarted more than once
+// within a request's deadline (children re-executed as the module `ghost`).
 #include "hg_test.h"
 
 #include <fcntl.h>
@@ -41,7 +42,7 @@ struct dh {
 static struct hg_schema dh_parsed, sp_parsed, spr_parsed, req_parsed, rep_parsed, adm_parsed;
 static const struct hg_type *DH, *SP;
 static char wiring_self[600], wiring_hangar[600], wiring_pilot[600], wiring_act[600], state_dir[600];
-static char wiring_tiny[600];
+static char wiring_tiny[600], wiring_ghost[600];
 static char self_dir[600];
 
 /* The parent writes the wiring files once; a re-executed child runs build()
@@ -149,6 +150,20 @@ static void build(void)
 	write_text(wiring_pilot, "hangar-wiring 1\nmodule pilot\nrole topside\nmirror pilot.req type=any\n");
 	snprintf(wiring_tiny, sizeof wiring_tiny, "%s/tiny.wiring", topic_dir);
 	write_text(wiring_tiny, "hangar-wiring 1\nmodule tiny\nrole topside\nmirror tiny.req type=any\n");
+	/* The server of self's `call ghost.echo`, absent until the restart test
+	 * runs it: self.req is its one request topic. */
+	static struct hg_schema ghost_rep;
+	n = hg_call_rep_schema("ghost", 16, text, sizeof text);
+	if (hg_schema_parse(text, (size_t)n, &ghost_rep, NULL, 0) < 0)
+		exit(2);
+	snprintf(full, sizeof full,
+		 "hangar-wiring 1\nmodule ghost\nrole vehicle\n"
+		 "sub self.req type=req:self hash=%016llx slots=16 implicit\n"
+		 "pub ghost.rep type=rep:ghost hash=%016llx slots=16 sources=self.req implicit\n"
+		 "serve echo req=depth hash=%016llx size=16 rep=depth hash=%016llx size=16 deadline=100ms allow=self\n",
+		 rq, (unsigned long long)ghost_rep.type.hash, d, d);
+	snprintf(wiring_ghost, sizeof wiring_ghost, "%s/ghost.wiring", topic_dir);
+	write_text(wiring_ghost, full);
 	snprintf(state_dir, sizeof state_dir, "%s/state", topic_dir);
 	mkdir(state_dir, 0755);
 	snprintf(self_dir, sizeof self_dir, "%s", topic_dir);
@@ -639,6 +654,212 @@ static void test_idle_server_sleeps(void)
 	CHECK(hg_wait_unread() - u0 <= 3);
 }
 
+/* ghost's echo: the requests of the restart test are counted, not what the
+ * tests before it left in self.req for a server that was not there (depth 1,
+ * the last of them in time for another second). */
+static int on_ghost_echo(const hg_call_ctx *c, const void *req, void *rep, char *reason)
+{
+	(void)c;
+	(void)reason;
+	memcpy(rep, req, sizeof(struct depth));
+	if (((const struct depth *)req)->depth_m != 1)
+		echo_calls++;
+	return HG_OK;
+}
+
+/* One instance of the server `ghost`: serves what self.req holds for it for
+ * `ms` (or until it has run `until` handlers), writes how many handlers it
+ * ran, and is gone without closing anything, as a crash leaves it. */
+static int child_ghost(const char *out, int ms, int until)
+{
+	setenv("HANGAR_WIRING_FILE", wiring_ghost, 1);
+	unsetenv("HANGAR_CONTROL");
+	if (hg_init() < 0) {
+		fprintf(stderr, "child ghost: hg_init: %s\n", hg_init_error());
+		return 3;
+	}
+	if (hg_serve_method("echo", on_ghost_echo, NULL) < 0)
+		return 4;
+	hg_sub *subs[16];
+	int n = hg_call_subs(subs, 16);
+	if (n < 0)
+		return 5;
+	uint64_t t0 = hg_now_ns();
+	while (ms_since(t0) < (uint64_t)ms && !(until && echo_calls >= until)) {
+		hg_wait(subs, n, 10);
+		hg_serve();
+	}
+	FILE *f = fopen(out, "w");
+	if (!f)
+		return 6;
+	fprintf(f, "%d\n", echo_calls);
+	fclose(f);
+	_exit(0);
+}
+
+/* Runs one instance; the number of handlers it ran, or -1. */
+static pid_t ghost_start(int ms, int until)
+{
+	char out[700];
+	snprintf(out, sizeof out, "%s/ghost.out", state_dir);
+	unlink(out);
+	char a[16], b[16];
+	snprintf(a, sizeof a, "%d", ms);
+	snprintf(b, sizeof b, "%d", until);
+	pid_t pid = fork();
+	if (pid == 0) {
+		int fd = open("/dev/null", O_WRONLY);
+		if (fd >= 0 && !getenv("HG_TEST_GHOST_LOG"))
+			dup2(fd, 2);
+		execl("/proc/self/exe", "test_hg_call", "--ghost", out, a, b, (char *)NULL);
+		_exit(127);
+	}
+	return pid;
+}
+
+static int ghost_instance(int ms, int until)
+{
+	char out[700], line[32] = "";
+	snprintf(out, sizeof out, "%s/ghost.out", state_dir);
+	if (wait_child(ghost_start(ms, until)) != 0)
+		return -1;
+	FILE *f = fopen(out, "r");
+	if (!f)
+		return -1;
+	if (!fgets(line, sizeof line, f))
+		line[0] = 0;
+	fclose(f);
+	return line[0] ? atoi(line) : -1;
+}
+
+/* How many replies to self's call `id` ghost.rep holds now, and the last of
+ * them. */
+static int ghost_replies(uint64_t id, struct hg_call_reply_envelope *last, struct hg_info *last_info)
+{
+	hg_sub *rep = hg_sub_open_from("ghost.rep", NULL, HG_OLDEST);
+	unsigned char buf[96 + 256];
+	struct hg_info info;
+	int n = 0;
+	while (rep && hg_next(rep, buf, sizeof buf, &info) == HG_MSG) {
+		struct hg_call_reply_envelope env;
+		memcpy(&env, buf, sizeof env);
+		if (env.caller_id != hg_topic_id("self.req") || env.call_id != id)
+			continue;
+		n++;
+		*last = env;
+		*last_info = info;
+	}
+	hg_sub_close(rep);
+	return n;
+}
+
+/* A request answered once is not served again while it is in time, however
+ * often the server restarts. A starting server learned what was answered
+ * from the `.rep` ring its predecessor left, which its own start replaced
+ * with an empty one: the instance after it found nothing there and ran the
+ * request again (safety's `estop` and `clear` after a second crash,
+ * 2026-11-20). The replies to requests still live are now the first
+ * messages of the new ring. */
+static void test_server_restarted_twice(void)
+{
+	struct depth d = { .depth_m = 9.5f }, r = { 0 };
+	hg_pending *pc;
+	// A request that waits for its server, in time for all that follows.
+	CHECK_EQ_INT(hg_call_start("ghost.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &pc, 20000), HG_OK);
+	CHECK_EQ_INT(ghost_instance(2000, 1), 1);
+	hg_call_result res = hg_call_poll(pc, &r);
+	CHECK_EQ_INT(res.status, HG_OK);
+	CHECK(r.depth_m == 9.5f);
+	struct hg_call_reply_envelope first, env;
+	struct hg_info first_info, info;
+	memset(&first, 0, sizeof first);
+	memset(&env, 0, sizeof env);
+	memset(&first_info, 0, sizeof first_info);
+	memset(&info, 0, sizeof info);
+	CHECK_EQ_INT(ghost_replies(res.call_id, &first, &first_info), 1);
+	// Restarted once: the reply is in the predecessor's ring.
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	// Restarted again, and again: each ring began empty before the fix, and
+	// the third instance ran the request a second time.
+	int again = ghost_instance(150, 0);
+	printf("    the third instance ran %d handlers for a request the first had answered\n", again);
+	CHECK_EQ_INT(again, 0);
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	// What the last instance's ring holds: the first instance's reply, as it
+	// was, with its reference to the request; once.
+	CHECK_EQ_INT(ghost_replies(res.call_id, &env, &info), 1);
+	CHECK(memcmp(&env, &first, sizeof env) == 0);
+	CHECK(info.seq > first_info.seq && info.stamp_ns == first_info.stamp_ns);
+	CHECK(info.n_inputs == 1 && info.inputs[0].topic_id == hg_topic_id("self.req") &&
+	      info.inputs[0].seq == first_info.inputs[0].seq);
+	// The caller passes the copies over: no call of its own is in flight.
+	hg_serve();
+	// A request made while no instance runs is served by the next one, with
+	// the first still in its ring; and neither by the one after.
+	d.depth_m = 3;
+	CHECK_EQ_INT(hg_call_start("ghost.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &pc, 20000), HG_OK);
+	CHECK_EQ_INT(ghost_instance(2000, 1), 1);
+	hg_call_result res2 = hg_call_poll(pc, &r);
+	CHECK_EQ_INT(res2.status, HG_OK);
+	CHECK(r.depth_m == 3 && res2.call_id != res.call_id);
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	CHECK_EQ_INT(ghost_replies(res.call_id, &env, &info), 1);
+	CHECK_EQ_INT(ghost_replies(res2.call_id, &env, &info), 1);
+	// A request past its deadline is not kept: answered once, in time, by one
+	// instance; the next knows it from the ring; the one after that finds it
+	// expired and says so, without the handler, as for any request that
+	// waited too long.
+	uint64_t t0 = hg_now_ns();
+	CHECK_EQ_INT(hg_call_start("ghost.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &pc, 1500), HG_OK);
+	CHECK_EQ_INT(ghost_instance(1400, 1), 1);
+	hg_call_result res3 = hg_call_poll(pc, &r);
+	CHECK_EQ_INT(res3.status, HG_OK);
+	while (ms_since(t0) < 1600)
+		sleep_ms(20);
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	CHECK_EQ_INT(ghost_replies(res3.call_id, &env, &info), 0);
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	CHECK_EQ_INT(ghost_replies(res3.call_id, &env, &info), 1);
+	CHECK_EQ_INT(env.status, HG_E_EXPIRED);
+	CHECK_EQ_INT(ghost_replies(res.call_id, &env, &info), 1);
+	CHECK_EQ_INT(env.status, HG_OK);
+	// Later replies do not push one out of the ring while its request is in
+	// time: an instance answers a request with a long deadline, then
+	// eighteen with short ones, each expired before the next, and is killed.
+	// Its 16-slot ring held the last sixteen replies, the first not among
+	// them.
+	CHECK_EQ_INT(hg_call_start("ghost.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &pc, 20000), HG_OK);
+	pid_t g = ghost_start(30000, 0);
+	hg_call_result res4;
+	t0 = hg_now_ns();
+	do {
+		sleep_ms(5);
+		res4 = hg_call_poll(pc, &r);
+	} while (res4.status == HG_PENDING && ms_since(t0) < 5000);
+	CHECK_EQ_INT(res4.status, HG_OK);
+	for (int i = 0; i < 18; i++) {
+		uint64_t t = hg_now_ns();
+		(void)hg_call("ghost.echo", DEPTH_TYPE, &d, DEPTH_TYPE, &r, 60);
+		while (ms_since(t) < 70)
+			sleep_ms(5);
+	}
+	kill(g, SIGKILL);
+	waitpid(g, NULL, 0);
+	int held = ghost_replies(res4.call_id, &env, &info);
+	printf("    after eighteen later replies the ring holds %d replies to the first request\n", held);
+	CHECK(held >= 1);
+	CHECK_EQ_INT(env.status, HG_OK);
+	// (With one caller the request has left self.req by then, sixteen
+	// requests later, so no instance could run it again and the next one
+	// does not keep its reply: the ring is what this part looks at. Two
+	// callers, or the HG_E_EXPIRED replies of a start, fill a `.rep` ring
+	// while a request is still in its own: hangard_calls restarts a server
+	// with several callers twice.)
+	CHECK_EQ_INT(ghost_instance(150, 0), 0);
+	CHECK_EQ_INT(ghost_replies(res4.call_id, &env, &info), 0);
+}
+
 static int child_actuator(void)
 {
 	setenv("HANGAR_WIRING_FILE", wiring_act, 1);
@@ -964,6 +1185,8 @@ int main(int argc, char **argv)
 			return child_tiny();
 		if (strcmp(argv[1], "--actuator") == 0)
 			return child_actuator();
+		if (strcmp(argv[1], "--ghost") == 0 && argc > 4)
+			return child_ghost(argv[2], atoi(argv[3]), atoi(argv[4]));
 		if (strcmp(argv[1], "--params") == 0 && argc > 2)
 			return child_params(argv[2]);
 		return 2;
@@ -977,6 +1200,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_idle_server_sleeps);
 	RUN_TEST(test_short_request);
 	RUN_TEST(test_call_interrupted);
+	RUN_TEST(test_server_restarted_twice);
 	RUN_TEST(test_actuator_refuses_hg_call);
 	RUN_TEST(test_param_grammar);
 	RUN_TEST(test_params);
