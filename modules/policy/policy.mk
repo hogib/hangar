@@ -44,3 +44,8 @@ check-policy: $(POLICY_TEST) $(POLICY_BIN) $(BUILDDIR)/hangard $(BUILDDIR)/hanga
 	else \
 	  echo "FAIL  policy"; cat $(TESTDIR)/policy.log; exit 1; \
 	fi
+
+# The Python suite, which check-msggen runs, has python/tests/test_deploy_tether.py:
+# hangar.learn.deploy from a topside root to this policy on a vehicle root,
+# across two bridges on loopback (docs/09 "Tests"). It needs these built.
+check-msggen: $(POLICY_BIN) $(BUILDDIR)/hangar-bridge $(BUILDDIR)/hangard $(BUILDDIR)/hangar $(HANGARD_TOYDIR)/talker

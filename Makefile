@@ -410,6 +410,9 @@ clean:
 # or PyTorch skip without them, and the line it prints says how many and
 # why; with HANGAR_PYTHON_NO_SKIP=1 in the environment a skip fails, which
 # is what CI's gcc job sets, with PYTHON= a python that has both).
+# One of them, python/tests/test_deploy_tether.py, runs two managers, two
+# bridges and a policy: modules/policy/policy.mk makes this target depend on
+# those programs, and the test skips, saying which, where they are not built.
 # The generator is C11 and runs during the build, so HOSTCC builds it. The
 # suite compiles the generated .c against tools/msggen/tests/hg_type.h, a
 # stand-in with the three ABI types, so it does not depend on lib/hg.
@@ -470,7 +473,8 @@ check-msggen: $(TESTDIR)/test_msggen $(MSGGEN) $(TESTDIR)/hg_schema_hash
 	else echo "FAIL  msggen hashes: msggen (<) and Python (>) or lib/hg (>) differ:"; \
 	  diff $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt; \
 	  diff $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-hg.txt; exit 1; fi
-	@$(PYTHON) python/tests/run.py --log $(TESTDIR)/python.log
+	@HANGAR_BUILDDIR=$(abspath $(BUILDDIR)) HANGARD_TOYS=$(abspath $(TESTDIR)/hangard-modules) \
+	  $(PYTHON) python/tests/run.py --log $(TESTDIR)/python.log
 
 
 # lib/sim: the vehicle simulator's physics (lib/sim/README.md; GPL-3.0-or-later).

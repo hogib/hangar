@@ -543,6 +543,29 @@ static void test_graph_refusals(void)
 	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
 	add("bridge", MOD "[Bridge]\n");
 	expect_graph("bridge", 3, "Direction");
+	// [Files] (docs/08 "Files"): what bridge.conf may not say.
+	const char *bad_files[][2] = {
+		{ "[Files weights]\nMaxSize=1MB\n", "Direction" },
+		{ "[Files ../etc]\nDirection=down\n", "[Files" },
+		{ "[Files Weights]\nDirection=down\n", "[Files" },
+		{ "[Files weights]\nDirection=down\n[Files weights]\nDirection=up\n", "twice" },
+		{ "[Files weights]\nDirection=down\nMaxSize=1GB\n", "MaxSize" },
+		{ "[Files weights]\nDirection=down\nMaxSize=257MB\n", "MaxSize" },
+		{ "[Files weights]\nDirection=down\nMaxSize=0\n", "MaxSize" },
+		{ "[Files weights]\nDirection=down\nMaxFiles=0\n", "MaxFiles" },
+		{ "[Files weights]\nDirection=down\nAllow=topside:trainer\n", "Allow" },
+		{ "[Files weights]\nDirection=down\nDir=/etc\n", "no key Dir" },
+		{ "[Bridge]\nMaxRate=1Mbit\nFileRate=2Mbit\n", "FileRate" },
+	};
+	for (size_t i = 0; i < sizeof bad_files / sizeof bad_files[0]; i++) {
+		char text[512];
+		snprintf(text, sizeof text, "[Bridge]\nPair=lab\n%s", bad_files[i][0]);
+		write_file(conf, text);
+		fresh_set();
+		snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+		add("bridge", MOD "[Bridge]\n");
+		expect_graph("bridge", 3, bad_files[i][1]);
+	}
 	write_file(conf, "[Bridge]\nPair=lab\n");
 	fresh_set();
 	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
@@ -599,6 +622,35 @@ static void test_bridge(void)
 		printf("    safety's wiring lacks 'subglob *.req':\n%s", text);
 		CHECK(0);
 	}
+	CHECK(strstr(text, "bridge.vehicle.files") == NULL); // no [Files]: no topic for them
+	// Files (docs/08 "Files"): with a [Files] section the bridge publishes
+	// bridge.<role>.files; its method send is never the other side's to call,
+	// whatever Remote= matches: no `subglob *.req` in its wiring, and its
+	// reply topic is not among what it sends.
+	const char *types[] = { "bridge_file", "bridge_send_req", "bridge_send_rep" };
+	for (int i = 0; i < 3; i++) {
+		snprintf(from, sizeof from, "%s/%s.msg", src && *src ? src : "msg", types[i]);
+		snprintf(to, sizeof to, "%s/%s.msg", T_msg, types[i]);
+		copy_file(from, to);
+	}
+	write_file(conf, "[Bridge]\nPair=lab\n[Calls]\nRemote=*.*\n"
+			 "[Files weights]\nDirection=down\nMaxSize=1MB\nAllow=trainer admin\n");
+	fresh_set();
+	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+	add("bridge", MOD "[Bridge]\n[Serve send]\nRequest=bridge_send_req\nReply=bridge_send_rep\n");
+	add("trainer", MOD "[Call bridge.send]\n");
+	ok = mf_set_check(&set);
+	for (int i = 0; i < set.n_modules; i++)
+		if (set.modules[i]->refused)
+			printf("    %s\n", set.modules[i]->reason);
+	CHECK_EQ_INT(ok, 2);
+	len = wiring_text(&set, mf_find(&set, "bridge"), text, sizeof text);
+	CHECK(len > 0);
+	CHECK(strstr(text, "pub bridge.vehicle.files type=bridge_file") != NULL);
+	CHECK(strstr(text, "pub bridge.rep") != NULL);
+	CHECK(strstr(text, "sub trainer.req") != NULL); // its caller's requests, read as a server
+	CHECK(strstr(text, "subglob *.req") == NULL);
+	CHECK(strstr(text, "sub bridge.rep") == NULL);
 	// The shipped example (modules/bridge/bridge.conf, the docs' own), on
 	// both roles: the vehicle sends its own bridge.vehicle.link up.
 	char example[1024];

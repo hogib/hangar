@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "hg_type.h"
 typedef struct load_weights_req {
-    char name[96];     // the file's name in the policy's incoming directory (no '/'); until the
+    char name[96];     // the file's name in the policy's incoming directory (no '/'): put there by
     char blake2s[65];  // BLAKE2s-256 of the whole file, 64 hex digits (check 1)
     uint8_t _pad0[7];  // padding
 } load_weights_req;

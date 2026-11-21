@@ -46,6 +46,7 @@ _OFF_FIRST_SEQ = 168
 _OFF_STALE_AFTER = 176
 _OFF_WRITE_SEQ = 200
 _OFF_LAST_PUBLISH = 208
+_OFF_ORIGIN_BOOT = 256
 _OFF_SCHEMA = 512
 # A slot's.
 _SL_SEQ = 0
@@ -114,6 +115,11 @@ class Topic(object):
         self.type_hash = _u64(m, _OFF_TYPE_HASH)
         self.writer = m[_OFF_WRITER:_OFF_WRITER + 32].split(b"\0", 1)[0].decode("utf-8", "replace")
         self.stale_after_ns = _u64(m, _OFF_STALE_AFTER)
+        # The boot id of the machine it was published on, when the bridge
+        # mirrors it here from the other side (docs/08 "Mirrored topics");
+        # zeros for a topic of this machine.
+        self.origin_boot = bytes(m[_OFF_ORIGIN_BOOT:_OFF_ORIGIN_BOOT + 16])
+        self.mirrored = any(self.origin_boot)
         self.generation = _u64(m, _OFF_GENERATION)
         n = _u32(m, _OFF_SCHEMA_BYTES)
         self.schema = m[_OFF_SCHEMA:_OFF_SCHEMA + n].split(b"\0", 1)[0].decode("utf-8")

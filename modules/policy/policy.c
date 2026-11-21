@@ -55,6 +55,7 @@ static struct {
 	char name[32];
 	char dataset[32];
 	char dataset_dir[PATH_LEN];
+	char incoming[PATH_LEN]; /* Incoming=: where load_weights finds its files; empty: <state>/incoming */
 	uint64_t arch;
 	double tick_budget; /* share of the tick period */
 	int have_name, have_dataset, have_arch;
@@ -119,6 +120,12 @@ static int spec_key(void *ctx, const char *key, const char *value, int line, cha
 		S.tick_budget = v / 100.0;
 	} else if (strcmp(key, "DatasetDir") == 0) {
 		mod_fmt(S.dataset_dir, sizeof S.dataset_dir, "%s", value);
+	} else if (strcmp(key, "Incoming") == 0) {
+		if (value[0] != '/' || strlen(value) >= sizeof S.incoming) {
+			mod_fmt(err, errlen, "Incoming: an absolute path of a directory");
+			return -1;
+		}
+		mod_fmt(S.incoming, sizeof S.incoming, "%s", value);
 	} else {
 		mod_fmt(err, errlen, "unknown key %s", key);
 		return -1;
@@ -1180,8 +1187,16 @@ int main(int argc, char **argv)
 		mod_log(WHO, "state directory %s: %s", state_dir, strerror(errno));
 		return 73;
 	}
-	mod_fmt(incoming_dir, sizeof incoming_dir, "%s/incoming", state_dir);
-	mkdir(incoming_dir, 0770);
+	/* Where load_weights finds the file it names: the policy's own
+	 * incoming directory, or the one the spec gives: the directory the
+	 * bridge keeps this policy's files in (docs/08 "Files"), which the
+	 * policy reads and has no need to write. */
+	if (S.incoming[0]) {
+		mod_fmt(incoming_dir, sizeof incoming_dir, "%s", S.incoming);
+	} else {
+		mod_fmt(incoming_dir, sizeof incoming_dir, "%s/incoming", state_dir);
+		mkdir(incoming_dir, 0770);
+	}
 
 	pthread_t th;
 	if (pthread_create(&th, NULL, worker, NULL) != 0) {
@@ -1195,8 +1210,8 @@ int main(int argc, char **argv)
 	int nc = hg_call_subs(subs + n, HG_MAX_WAIT - n);
 	if (nc > 0)
 		n += nc;
-	mod_log(WHO, "%s on %s (anchor %s), Arch %016llx, TickBudget %.0f%%, state %s", S.name, S.dataset, DS.anchor,
-		(unsigned long long)S.arch, S.tick_budget * 100, state_dir);
+	mod_log(WHO, "%s on %s (anchor %s), Arch %016llx, TickBudget %.0f%%, state %s, incoming %s", S.name, S.dataset,
+		DS.anchor, (unsigned long long)S.arch, S.tick_budget * 100, state_dir, incoming_dir);
 	uint64_t last_status = 0;
 	int started = 0;
 	while (!mod_stop) {

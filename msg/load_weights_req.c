@@ -3,7 +3,7 @@
 #include "load_weights_req.h"
 
 static const struct hg_field load_weights_req_fields[2] = {
-    {"name", HG_CHAR, 96, 0, "the file's name in the policy's incoming directory (no '/'); until the"},
+    {"name", HG_CHAR, 96, 0, "the file's name in the policy's incoming directory (no '/'): put there by"},
     {"blake2s", HG_CHAR, 65, 96, "BLAKE2s-256 of the whole file, 64 hex digits (check 1)"},
 };
 
@@ -12,11 +12,11 @@ const struct hg_type LOAD_WEIGHTS_REQ_TYPE = {
     .schema =
         "# msg/load_weights_req.msg: policy_<name>.load_weights (docs/09-learning.md,\n"
         "# \"Loading weights\"): the weights file to check, warm up and swap in.\n"
-        "char name[96]       # the file's name in the policy's incoming directory (no '/'); until the\n"
-        "                    # bridge, the trainer writes it there (python/hangar/learn.py, deploy)\n"
+        "char name[96]       # the file's name in the policy's incoming directory (no '/'): put there by\n"
+        "                    # the bridge (docs/08 \"Files\") or, on the policy's own machine, by the trainer\n"
         "char blake2s[65]    # BLAKE2s-256 of the whole file, 64 hex digits (check 1)\n"
         ,
-    .schema_bytes = 408,
+    .schema_bytes = 419,
     .hash = 0xa749266a3976dba2ull,   // FNV-1a 64 of the canonical form
     .payload_bytes = 168,
     .n_fields = 2,

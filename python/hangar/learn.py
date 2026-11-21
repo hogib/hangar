@@ -28,12 +28,15 @@ run on the probes and the export refused unless the file's graph gives the
 model's outputs: the exporter reads a model's child modules in order, not
 its forward().
 
-until the bridge: deploy() puts the file in the policy's incoming
-directory itself (`<HANGAR_ROOT>/var/lib/hangar/policy_<name>/incoming/`),
-which only works where trainer and policy share a file system (the bench,
-the sim); the bridge's bridge.send replaces that copy (docs/08). Calls go
-through `hangar call` (the manager, as admin), as a script run from a shell
-does (docs/12 "The python package").
+deploy() gets the file to the policy one of two ways. On the policy's own
+machine (the bench, the sim) it copies it into the policy's incoming
+directory (`<HANGAR_ROOT>/var/lib/hangar/policy_<name>/incoming/`). From the
+other side of the tether it sends it with the bridge's bridge.send (docs/08
+"Files"): into the bridge's outbox here, across, into the directory the
+other side's bridge keeps for the policy, which the policy's spec names as
+its Incoming=. deploy_route() says which and why. Calls go through `hangar
+call` (the manager, as admin), as a script run from a shell does (docs/12
+"The python package").
 
 numpy for the stream; PyTorch only for carry() and for exporting a model.
 """
@@ -676,12 +679,142 @@ def recording_session(directory=None):
         t.close()
 
 
+def bridge_dir():
+    """The state directory of this machine's bridge: outbox/ is where a file
+    waits for bridge.send (docs/08 "Files")."""
+    root = os.environ.get("HANGAR_ROOT", "")
+    return os.path.join(root + "/var/lib/hangar" if root else "/var/lib/hangar", "bridge")
+
+
+def _own_topic(pattern, directory=None):
+    """(role, Topic) for this machine's own `pattern % role` topic (not one
+    mirrored here from the other side), or (None, None)."""
+    for role in ("topside", "vehicle"):
+        try:
+            t = _topic.Topic(pattern % role, directory, start="oldest")
+        except (OSError, ValueError):
+            continue
+        if not t.mirrored:
+            return role, t
+        t.close()
+    return None, None
+
+
+def local_modules(directory=None):
+    """The names of the modules this machine's manager runs, from its
+    hangar.<role>.modules topic; None when there is no such topic here."""
+    role, t = _own_topic("hangar.%s.modules", directory)
+    if t is None:
+        return None
+    try:
+        return {t.decode(m)["name"] for m in t.read()}
+    finally:
+        t.close()
+
+
+def deploy_route(policy, directory=None, incoming=None, via=None):
+    """How deploy() gets the file to the policy, and why: ("local" | "bridge",
+    reason). In this order: `via` when given; "local" when `incoming` names
+    the directory; "local" when this machine's manager lists policy_<name>
+    among its modules, or (a root without a manager's topics) the policy's
+    incoming directory is here; "bridge" when this machine's bridge keeps
+    files (it publishes bridge.<role>.files). Otherwise LearnError: nothing
+    here says where the policy is."""
+    if via not in (None, "local", "bridge"):
+        raise LearnError("via=%r: \"local\" or \"bridge\"" % (via,))
+    if via:
+        return via, "via=%r" % via
+    if incoming:
+        return "local", "incoming= names the directory"
+    mods = local_modules(directory)
+    if mods is not None and "policy_" + policy in mods:
+        return "local", "policy_%s is a module of this machine" % policy
+    if os.path.isdir(os.path.join(state_dir(policy), "incoming")):
+        return "local", "the policy's incoming directory is on this machine"
+    role, t = _own_topic("bridge.%s.files", directory)
+    if t is not None:
+        t.close()
+        return "bridge", "policy_%s is not a module of this machine, and its bridge (%s) sends files" % (policy, role)
+    raise LearnError("policy_%s is not a module of this machine and its incoming directory is not here, and no "
+                     "bridge here sends files (bridge.<role>.files: [Files] in bridge.conf, docs/08): "
+                     "pass via=\"local\" with incoming=, or via=\"bridge\"" % policy)
+
+
+def send_file(path, dest, name=None, timeout=120.0, directory=None, outbox=None):
+    """A file to the other side of the tether with bridge.send (docs/08
+    "Files"): copied into the bridge's outbox, sent, and waited for until the
+    other side has it whole, its BLAKE2s-256 checked, under `name` in the
+    directory it keeps for `dest`. The event of bridge.<role>.files as a
+    dict; LearnError when the bridge refuses the call, reports the transfer
+    failed, or says nothing within `timeout` seconds."""
+    with open(path, "rb") as f:
+        data = f.read()
+    return _send_bytes(data, dest, name or os.path.basename(path), timeout, directory, outbox)
+
+
+def _send_bytes(data, dest, name, timeout, directory, outbox):
+    role, tf = _own_topic("bridge.%s.files", directory)
+    if tf is None:
+        raise LearnError("no bridge.<role>.files here: this machine's bridge is not running, or its bridge.conf "
+                         "has no [Files] section")
+    try:
+        tf.read()  # from now on
+        box = outbox or os.path.join(bridge_dir(), "outbox")
+        tmp = os.path.join(box, "." + name + ".tmp")  # hidden: send refuses such a name
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.rename(tmp, os.path.join(box, name))
+        except OSError as e:
+            raise LearnError("the bridge's outbox %s: %s" % (box, e))
+        try:
+            rep = call("bridge.send", 5.0, dest=dest, name=name)
+        except LearnError:
+            try:
+                os.unlink(os.path.join(box, name))  # not taken
+            except OSError:
+                pass
+            raise
+        fid = rep.get("id", 0)
+        fid = int(fid, 0) if isinstance(fid, str) else int(fid)
+        digest = hashlib.blake2s(data, digest_size=32).hexdigest()
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            for m in tf.read():
+                d = tf.decode(m)
+                if int(d["id"]) != fid:
+                    continue
+                if int(d["state"]) == 1:
+                    if d["blake2s"] != digest:
+                        raise LearnError("%s/%s: the other side has a file of another hash (%s, not %s)"
+                                         % (dest, name, d["blake2s"], digest))
+                    return d
+                raise LearnError("%s/%s was not sent: %s" % (dest, name, d.get("reason") or "state %d" % d["state"]))
+            time.sleep(0.01)
+        raise LearnError("%s/%s: the bridge did not say how the transfer ended within %.0f s" % (dest, name, timeout))
+    finally:
+        tf.close()
+
+
 def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeout=60.0, directory=None,
-           incoming=None, steps=None, parent_hash=None, session=None, run=None):
-    """Export (unless given a file), send, load_weights, and wait for the
-    load's end: {"version", "state" ("done" | "rejected"), "check", "reason",
-    "hash"}. until the bridge: the file is copied into the policy's incoming
-    directory, not sent with bridge.send.
+           incoming=None, steps=None, parent_hash=None, session=None, run=None, via=None, dest=None,
+           send_timeout=120.0, outbox=None):
+    """Export (unless given a file), get the file to the policy, load_weights,
+    and wait for the load's end: {"version", "state" ("done" | "rejected"),
+    "check", "reason", "hash", "via"}.
+
+    The file goes one of two ways, and "via" in the result says which:
+    "local", copied into the policy's incoming directory (`incoming`, by
+    default the one in its state directory), for a policy on this machine;
+    or "bridge", sent across the tether with bridge.send to the destination
+    `dest` (by default "policy_<name>", a [Files] section of bridge.conf),
+    waited for until the other side has it (`send_timeout` seconds at most),
+    for a policy on the other machine, whose spec names the bridge's
+    directory as its Incoming=. `via` chooses; left None, deploy_route()
+    decides from what this machine shows, and raises when nothing does.
+    load_weights and the wait on policy.<name>.load are the same either way:
+    across the tether the call goes through the bridge and the topic is the
+    mirrored one.
 
     The lineage a model is exported with: `steps`, the training steps so far
     (the caller counts them; 0 when not given); `parent_hash`, by default the
@@ -691,11 +824,12 @@ def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeou
     "live" whatever the trainer knew: the header had the fields and deploy()
     had no way to fill them."""
     exported = not isinstance(model_or_file, (str, os.PathLike))
+    if exported and (stream is None or outputs is None):
+        raise LearnError("deploying a model needs the stream and the output fields")
+    route, _why = deploy_route(policy, directory, incoming, via)
     if not exported:
         path = str(model_or_file)
     else:
-        if stream is None or outputs is None:
-            raise LearnError("deploying a model needs the stream and the output fields")
         rt = runtime_info(policy)
         import tempfile
         fd, path = tempfile.mkstemp(suffix=".hgw")
@@ -714,22 +848,43 @@ def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeou
         except AttributeError:
             pass
     name = "%016x.hgw" % h64
-    inc = incoming or os.path.join(state_dir(policy), "incoming")  # until the bridge
-    tmp = os.path.join(inc, "." + name + ".tmp")
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.rename(tmp, os.path.join(inc, name))
-    tl = _topic.open_topic("policy.%s.load" % policy, directory, timeout=5.0)
-    tl.read()  # from now on
-    rep = call("policy_%s.load_weights" % policy, 5.0, name=name, blake2s=digest)
-    version = int(rep.get("version", 0))
-    end = time.monotonic() + timeout
-    states = {1: "checking", 2: "warming", 3: "done", 4: "rejected"}
-    while time.monotonic() < end:
-        for m in tl.read():
-            d = tl.decode(m)
-            if int(d["version"]) == version and int(d["state"]) in (3, 4):
-                return {"version": version, "state": states[int(d["state"])], "check": int(d["check"]),
-                        "reason": d.get("reason", ""), "hash": h64}
-        time.sleep(0.01)
+    if route == "bridge":
+        _send_bytes(data, dest or "policy_" + policy, name, send_timeout, directory, outbox)
+    else:
+        inc = incoming or os.path.join(state_dir(policy), "incoming")
+        tmp = os.path.join(inc, "." + name + ".tmp")
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.rename(tmp, os.path.join(inc, name))
+    # The load's progress, from now on. Across the tether the topic is the
+    # mirrored one, which is not there before the policy's first load.
+    load_name = "policy.%s.load" % policy
+    try:
+        tl = _topic.open_topic(load_name, directory, timeout=0.0 if route == "bridge" else 5.0)
+        tl.read()
+    except _topic.TopicError:
+        if route != "bridge":
+            raise
+        tl = None
+    try:
+        rep = call("policy_%s.load_weights" % policy, 5.0, name=name, blake2s=digest)
+        version = int(rep.get("version", 0))
+        end = time.monotonic() + timeout
+        states = {1: "checking", 2: "warming", 3: "done", 4: "rejected"}
+        while time.monotonic() < end:
+            if tl is None:
+                try:
+                    tl = _topic.Topic(load_name, directory, start="oldest")
+                except _topic.TopicError:
+                    time.sleep(0.01)
+                    continue
+            for m in tl.read():
+                d = tl.decode(m)
+                if int(d["version"]) == version and int(d["state"]) in (3, 4):
+                    return {"version": version, "state": states[int(d["state"])], "check": int(d["check"]),
+                            "reason": d.get("reason", ""), "hash": h64, "via": route}
+            time.sleep(0.01)
+    finally:
+        if tl is not None:
+            tl.close()
     raise LearnError("policy_%s: load of version %d did not end within %.0f s" % (policy, version, timeout))
