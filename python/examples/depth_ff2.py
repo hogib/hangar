@@ -179,6 +179,27 @@ def plant_xy(chunk):
 # ---- The simulator's heave axis, for the oracle and for --synthetic -------------
 
 MASS, D_LIN, D_QUAD = 11.5 + 14.57, 5.18, 36.99   # lib/sim: mass and added mass, heave damping
+# The changed vehicle of the adaptation experiment (bench/e2e-depth-ff/README.md,
+# "Adaptation"): a payload that weighs nothing in water, 10 kg more to move
+# and five times the heave drag. The trim stays where it was, so none of the
+# policy's three inputs says the payload is there. As sim_vehicle's parameters
+# (payload_params) and as the oracle's (PAYLOAD).
+PAYLOAD_KG, PAYLOAD_DRAG = 10.0, 5.0
+PAYLOAD = dict(mass=MASS + PAYLOAD_KG, d_lin=PAYLOAD_DRAG * D_LIN, d_quad=PAYLOAD_DRAG * D_QUAD)
+SIM_GRAVITY, SIM_BUOYANCY = 9.81, 114.8             # lib/sim's g and msg/sim_vehicle_params.msg's buoyancy
+SIM_D_LIN = [4.03, 6.22, D_LIN, 0.07, 0.07, 0.07]   # msg/sim_vehicle_params.msg's dampings, all six axes:
+SIM_D_QUAD = [18.18, 21.66, D_QUAD, 1.55, 1.55, 1.55]   # an array parameter is set whole
+
+
+def payload_params(on):
+    """sim_vehicle's parameters with the payload on or off, for `hangar
+    param set sim_vehicle`: its mass, the buoyancy that carries exactly its
+    weight, and the two dampings with the heave axis's (index 2) changed."""
+    k = PAYLOAD_DRAG if on else 1.0
+    kg = PAYLOAD_KG if on else 0.0
+    arr = lambda v: ",".join("%g" % (k * x if i == 2 else x) for i, x in enumerate(v))  # noqa: E731
+    return ["payload_mass=%g" % kg, "buoyancy=%.4f" % (SIM_BUOYANCY + kg * SIM_GRAVITY),
+            "d_lin=" + arr(SIM_D_LIN), "d_quad=" + arr(SIM_D_QUAD)]
 _TABLE = {}
 
 
@@ -207,29 +228,30 @@ def up_force(h, voltage=16.0):
     return -4.0 * numpy.interp(PWM_STOP - PWM_FULL * numpy.clip(h, -1, 1), pwm, n)
 
 
-def sim_plant(P, voltage=16.0):
+def sim_plant(P, voltage=16.0, mass=MASS, d_lin=D_LIN, d_quad=D_QUAD):
     """The simulator's own answer to the plant's question: the acceleration
     (m/s^2 down) at heave P[..., 0] with the vehicle trimmed at P[..., 1],
     moving at P[..., 2]: thrust at rest less thrust applied less drag, over
-    mass and added mass."""
+    mass and added mass. mass, d_lin, d_quad: a vehicle other than lib/sim's
+    default (PAYLOAD)."""
     import numpy
     P = numpy.asarray(P, numpy.float64)
     w = P[..., 2]
-    return (up_force(P[..., 1], voltage) - up_force(P[..., 0], voltage) - D_LIN * w - D_QUAD * numpy.abs(w) * w) / MASS
+    return (up_force(P[..., 1], voltage) - up_force(P[..., 0], voltage) - d_lin * w - d_quad * numpy.abs(w) * w) / mass
 
 
-def oracle(X, voltage=16.0, ff=FF, bound=None):
+def oracle(X, voltage=16.0, ff=FF, bound=None, mass=MASS, d_lin=D_LIN, d_quad=D_QUAD):
     """The residual the simulator's own model asks for, per row of X (accel
     wanted, vel_z, I): the heave whose thrust is the trim's (the thrust at I)
     less the drag at vel_z less mass x accel, less the controller's command
     I - ff x accel. Zero at accel 0, vel_z 0. Within the deadband the nearer
-    edge is taken."""
+    edge is taken. mass, d_lin, d_quad: as sim_plant's."""
     import numpy
     X = numpy.asarray(X, numpy.float64)
     a, w, i = X[..., A], X[..., W], X[..., I]
     hg = numpy.linspace(-1, 1, 8001)
     ug = up_force(hg, voltage)
-    want = up_force(i, voltage) - D_LIN * w - D_QUAD * numpy.abs(w) * w - MASS * a
+    want = up_force(i, voltage) - d_lin * w - d_quad * numpy.abs(w) * w - mass * a
     lo = hg[numpy.clip(numpy.searchsorted(ug, want, side="left"), 0, len(hg) - 1)]     # first h with U >= want
     hi = hg[numpy.clip(numpy.searchsorted(ug, want, side="right") - 1, 0, len(hg) - 1)]  # last h with U <= want
     h = numpy.where(want > 1e-6, lo, numpy.where(want < -1e-6, hi, numpy.clip(i, hi.min(), lo.max())))
@@ -445,9 +467,10 @@ class Learner(object):
             self.step_policy(trims)
 
 
-def fit_oracle(model, steps=6000, seed=0, voltage=16.0, lr=3e-3, log=None):
+def fit_oracle(model, steps=6000, seed=0, voltage=16.0, lr=3e-3, log=None, **vehicle):
     """The policy fitted to oracle(): the ceiling of what this architecture
-    and bound can do with the simulator's own numbers."""
+    and bound can do with the simulator's own numbers. vehicle: oracle()'s
+    mass, d_lin, d_quad (PAYLOAD)."""
     import numpy
     import torch
     rng = numpy.random.default_rng(seed)
@@ -455,7 +478,7 @@ def fit_oracle(model, steps=6000, seed=0, voltage=16.0, lr=3e-3, log=None):
     sched = torch.optim.lr_scheduler.StepLR(opt, max(1, steps // 3), 0.3)
     for step in range(1, steps + 1):
         X = policy_samples(256, rng)
-        y = oracle(X, voltage, bound=BOUND).astype(numpy.float32)
+        y = oracle(X, voltage, bound=BOUND, **vehicle).astype(numpy.float32)
         loss = policy_loss(model, torch.from_numpy(X), torch.from_numpy(y))
         opt.zero_grad()
         loss.backward()

@@ -205,6 +205,44 @@ class Oracle(unittest.TestCase):
             total = depth_ff2.oracle(X) + i0 - depth_ff2.FF * a
             self.assertLessEqual(float(numpy.diff(total).max()), 1e-9)
 
+    def test_another_vehicle(self):
+        import depth_ff2
+        # The payload: more to move and more drag, so more heave for the same
+        # acceleration and to keep a velocity; nothing more with the vehicle still.
+        X = numpy.array([[0.3, 0.0, -0.085], [0.0, 0.2, -0.085], [0.0, 0.0, -0.085]])
+        bare, loaded = depth_ff2.oracle(X), depth_ff2.oracle(X, **depth_ff2.PAYLOAD)
+        self.assertLess(float(loaded[0]), float(bare[0]) - 0.005)
+        self.assertLess(float(loaded[1]), float(bare[1]) - 0.005)
+        self.assertEqual(float(loaded[2]), 0.0)
+        # The plant's side of it, and the parameters sim_vehicle is given: the
+        # payload's weight is carried by the buoyancy, so the trim does not move.
+        P = [[-0.2, -0.085, 0.2]]
+        self.assertGreater(float(depth_ff2.sim_plant(P)[0]), float(depth_ff2.sim_plant(P, **depth_ff2.PAYLOAD)[0]))
+        on = dict(x.split("=") for x in depth_ff2.payload_params(True))
+        off = dict(x.split("=") for x in depth_ff2.payload_params(False))
+        self.assertAlmostEqual(float(on["buoyancy"]) - float(off["buoyancy"]),
+                               float(on["payload_mass"]) * depth_ff2.SIM_GRAVITY, places=3)
+        self.assertEqual((float(off["payload_mass"]), float(off["buoyancy"])), (0.0, 114.8))
+        # The dampings as msg/sim_vehicle_params.msg has them, but for the heave axis.
+        with open(os.path.join(REPO, "msg", "sim_vehicle_params.msg")) as f:
+            msg = {ln.split("=")[0].split()[1]: ln.split("=")[1].split("#")[0].split("[")[0] for ln in f
+                   if ln.startswith("f32 d_") or ln.startswith("f32 buoyancy")}
+        for name in ("d_lin[6]", "d_quad[6]"):
+            want = [float(x) for x in msg[name].split(",")]
+            self.assertEqual([float(x) for x in off[name[:-3]].split(",")], want)
+            loaded = [float(x) for x in on[name[:-3]].split(",")]
+            self.assertAlmostEqual(loaded[2], 5 * want[2])
+            self.assertEqual(loaded[:2] + loaded[3:], want[:2] + want[3:])
+        self.assertEqual(float(off["buoyancy"]), float(msg["buoyancy"]))
+
+    def test_the_payload_leaves_a_later_model_something_to_gain(self):
+        import depth_ff2_offline
+        r = depth_ff2_offline.adaptation(1)
+        both = {k: v[0]["both steps: IAE (m s)"] for k, v in r.items()}
+        self.assertLess(both["the oracle of the vehicle without the payload"], 0.8 * both["the controller alone"])
+        self.assertLess(both["the oracle of the vehicle with it"],
+                        both["the oracle of the vehicle without the payload"] - 0.2)
+
     def test_bound(self):
         import depth_ff2
         X = depth_ff2.policy_samples(2000, numpy.random.default_rng(0))
@@ -292,6 +330,57 @@ class Model(unittest.TestCase):
             self.assertGreater(f(-1.0, trim), 0.12)        # wants up: across the deadband
             self.assertLess(f(1.0, trim), -0.02)           # wants down: more of the same side,
             self.assertGreater(f(1.0, trim), -0.16)        # and less of it
+
+
+@unittest.skipUnless(HAVE_TORCH, "PyTorch is not installed")
+class AdaptationCriterion(unittest.TestCase):
+    """tools/sim/e2e_depth_ff2.py's adapt_verdict: the criterion of
+    bench/e2e-depth-ff/README.md, "Adaptation", on reports made up here."""
+
+    @staticmethod
+    def run_(seed, p1, p2, p3, variant="learned", **over):
+        blk = lambda j: {"down": {"iae_m_s": 0.4 * j}, "up": {"iae_m_s": 0.6 * j}}  # noqa: E731
+        r = {"variant": variant, "seed": seed, "blocks": {"P1": blk(p1), "P2": blk(p2), "P3": blk(p3)},
+             "deploys": {"M1": {"hash": "aa"}, "M2": {"hash": "bb"}},
+             "block_models": {"A2": ["aa"], "P1": ["aa"], "P3": ["aa"], "P2": ["bb"], "N2": ["bb"]},
+             "residual_share_pct": {b: 100.0 for b in ("A2", "P1", "P2", "N2", "P3")},
+             "demotions": {"demotions": []}}
+        r.update(over)
+        return r
+
+    def runs(self, rows, variant="learned"):
+        return [self.run_(k + 1, *row, variant=variant) for k, row in enumerate(rows)]
+
+    def test_shown_not_shown_undecided(self):
+        import e2e_depth_ff2 as e2e
+        apart = [(4.7, 4.3, 4.7), (4.6, 4.3, 4.7), (4.7, 4.4, 4.6), (4.7, 4.3, 4.7), (4.6, 4.2, 4.7)]
+        same = [(4.7, 4.7, 4.7), (4.6, 4.7, 4.7), (4.7, 4.6, 4.6), (4.7, 4.6, 4.7), (4.6, 4.6, 4.7)]
+        oracle = self.runs(apart, "oracle")
+        self.assertEqual(e2e.adapt_verdict(self.runs(apart), oracle)[0], "shown")
+        self.assertEqual(e2e.adapt_verdict(self.runs(same), oracle)[0], "not shown")
+        # Lower in every run, but one run's M2 is above another run's M1: the ranges overlap.
+        over = [(4.7, 4.3, 4.7), (4.6, 4.3, 4.7), (4.7, 4.4, 4.6), (4.7, 4.3, 4.7), (4.95, 4.65, 4.9)]
+        self.assertEqual(e2e.adapt_verdict(self.runs(over), oracle)[0], "not shown")
+        # Lower than before, not than after, in one run.
+        drift = [(4.7, 4.3, 4.7), (4.6, 4.3, 4.7), (4.7, 4.4, 4.6), (4.7, 4.3, 4.7), (4.7, 4.5, 4.45)]
+        self.assertEqual(e2e.adapt_verdict(self.runs(drift), oracle)[0], "not shown")
+        # The oracles themselves do not differ: nothing could have been seen.
+        self.assertEqual(e2e.adapt_verdict(self.runs(apart), self.runs(same, "oracle"))[0], "undecided")
+        self.assertEqual(e2e.adapt_verdict(self.runs(apart)[:4], oracle)[0], "undecided")
+
+    def test_an_unfit_run_leaves_it_undecided(self):
+        import e2e_depth_ff2 as e2e
+        apart = [(4.7, 4.3, 4.7)] * 5
+        oracle = self.runs(apart, "oracle")
+        for over in ({"block_models": {"A2": ["aa"], "P1": ["aa"], "P3": ["bb"], "P2": ["bb"], "N2": ["bb"]}},
+                     {"residual_share_pct": {"A2": 100.0, "P1": 100.0, "P2": 62.5, "N2": 100.0, "P3": 100.0}},
+                     {"demotions": {"demotions": [{"t_s": 1.0}]}},
+                     {"deploys": {"M1": {"hash": "aa"}, "M2": {"hash": "aa"}}}):
+            rs = self.runs(apart)
+            rs[2].update(over)
+            verdict, why = e2e.adapt_verdict(rs, oracle)
+            self.assertEqual(verdict, "undecided")
+            self.assertTrue(any(x.startswith("Unfit: learned, seed 3") for x in why), why)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,10 @@ before any model drove (bench/e2e-depth-ff/README.md, "Second design"):
      fitted directly (the command from the acceleration it made), the design
      this check ruled out. The live runs measure the first three again; this
      says whether to make them.
+
+    depth_ff2_offline.py --adaptation       the same few-line loop for the adaptation
+                                            experiment's payload: what a later model
+                                            could gain over an earlier one, at best
 """
 import argparse
 import json
@@ -222,10 +226,14 @@ def direct_inverse(sessions, steps, seed=0):
 
 # ---- A heave axis in a few lines ----------------------------------------------------
 
-def closed_loop(policy, seed=0, voltage=16.8, gains=None):
+def closed_loop(policy, seed=0, voltage=16.8, gains=None, vehicle=None):
     """depth_hold's law on the simulator's heave axis at 200 Hz, the command
     three ticks late: a 3 m hold, steps to 4 m and back, buoyancy -4 N, the
-    steps again. policy(rows of accel wanted, vel_z, I) -> residual, or None."""
+    steps again. policy(rows of accel wanted, vel_z, I) -> residual, or None.
+    vehicle: mass, d_lin, d_quad of another vehicle than lib/sim's default
+    (depth_ff2.PAYLOAD), from the start."""
+    veh = dict(mass=depth_ff2.MASS, d_lin=depth_ff2.D_LIN, d_quad=depth_ff2.D_QUAD)
+    veh.update(vehicle or {})
     g = dict(kp=4.0, kd=4.0, accel_max=4.0, ff=0.1, ki=0.1, i_max=0.3, i_band=0.6, max_thrust=0.6)
     g.update(gains or {})
     rng = numpy.random.default_rng(seed)
@@ -266,7 +274,7 @@ def closed_loop(policy, seed=0, voltage=16.8, gains=None):
             queue.append(out)
             happ = queue.pop(0)
         thrust += (1 - math.exp(-dt / 0.05)) * (float(numpy.interp(happ, hg, ug)) - thrust)
-        acc = (-net_up - thrust - depth_ff2.D_LIN * w - depth_ff2.D_QUAD * abs(w) * w) / depth_ff2.MASS
+        acc = (-net_up - thrust - veh["d_lin"] * w - veh["d_quad"] * abs(w) * w) / veh["mass"]
         w += acc * dt
         z += w * dt
         zs.append(z)
@@ -300,13 +308,47 @@ def line(r):
                 r["ticks beyond the envelope"]))
 
 
+def adaptation(seeds=3):
+    """Whether the adaptation experiment's change leaves a later model
+    anything to gain (bench/e2e-depth-ff/README.md, "Adaptation"): on the
+    vehicle with the payload, the controller alone, the oracle of the vehicle
+    without it (what a model from before the change can be at best) and the
+    oracle of the vehicle with it (what a model trained since can be), both
+    within the bound; the two 1 m steps of the loop above."""
+    pay = depth_ff2.PAYLOAD
+    out = {}
+    for name, p in (("the controller alone", None),
+                    ("the oracle of the vehicle without the payload", lambda X: depth_ff2.oracle(X, 16.8, bound=depth_ff2.BOUND)),
+                    ("the oracle of the vehicle with it", lambda X: depth_ff2.oracle(X, 16.8, bound=depth_ff2.BOUND, **pay))):
+        rs = [closed_loop(p, seed, vehicle=pay) for seed in range(seeds)]
+        out[name] = [{"3 to 4 m": r["nominal 3 to 4 m"], "4 to 3 m": r["nominal 4 to 3 m"],
+                      "both steps: IAE (m s)": round(r["nominal 3 to 4 m"]["iae_m_s"] + r["nominal 4 to 3 m"]["iae_m_s"], 2)}
+                     for r in rs]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("sessions", nargs="+")
+    ap.add_argument("sessions", nargs="*")
+    ap.add_argument("--adaptation", action="store_true",
+                    help="no sessions: the oracles with and without the payload on the vehicle with it")
     ap.add_argument("--steps", type=int, default=6000, help="training steps of each fitted network")
     ap.add_argument("--seeds", type=int, default=3, help="closed-loop runs per variant")
     ap.add_argument("--out", help="write the result here too (json)")
     a = ap.parse_args()
+    if a.adaptation:
+        res = adaptation(a.seeds)
+        for name, rs in res.items():
+            print(name)
+            for r in rs:
+                print("   3 to 4 m: %.2f m s, %.1f %%; 4 to 3 m: %.2f m s, %.1f %%; both: %.2f m s" % (
+                    r["3 to 4 m"]["iae_m_s"], r["3 to 4 m"]["overshoot_pct"], r["4 to 3 m"]["iae_m_s"],
+                    r["4 to 3 m"]["overshoot_pct"], r["both steps: IAE (m s)"]))
+        if a.out:
+            open(a.out, "w").write(json.dumps(res, indent=1) + "\n")
+        return 0
+    if not a.sessions:
+        ap.error("a session, or --adaptation")
     res = {"sessions": a.sessions}
     res["the plant's target"] = target_check(a.sessions, a.steps)
     res["acceleration"] = accel_check(a.sessions[0])

@@ -897,7 +897,7 @@ def fmt(x, nd=1):
 def markdown(res):
     L = []
     b = res.get("blocks", {})
-    L += ["| Block | Mode asked | Model | Buoyancy | Residual in the command (% of ticks) | Hold: mean / rms (cm) | "
+    L += ["| Block | Mode asked | Model | Vehicle | Residual in the command (% of ticks) | Hold: mean / rms (cm) | "
           "3 to 4 m: IAE (m s), overshoot, within 5 cm | 4 to 3 m: IAE (m s), overshoot, within 5 cm |",
           "|---|---|---|---|---|---|---|---|"]
     for tag, mode, model, buoy in BLOCKS:
