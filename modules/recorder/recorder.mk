@@ -12,7 +12,8 @@
 #   make check-recording    the four suites (part of check): rec_hgr, rec_dataset, rec_recorder, rec_pairer
 #                           (the root Makefile has a legacy `recorder` suite, electric-eye's)
 #   make check-tsan-recording / check-asan-recording
-#                           the hgr and dataset suites under a sanitizer (run by check-tsan/check-asan)
+#                           the four suites under a sanitizer, the recorder and the pairer built with
+#                           it too (run by check-tsan/check-asan)
 
 HGR_SRC := lib/hg/hg_record.c lib/hg/hg_dataset.c lib/hg/hg_ini.c
 RECORDER_SRC := modules/recorder/recorder.c modules/recorder/recorder_conf.c modules/recorder/writer.c \
@@ -27,7 +28,11 @@ PAIRER_BIN := $(BUILDDIR)/pairer
 RECORDER_TOYDIR := $(TESTDIR)/recorder-modules
 RECORDER_TOYS := prov_chain retype
 RECORDER_TESTS := rec_hgr rec_dataset rec_recorder rec_pairer
-RECORDER_LIB_TESTS := rec_hgr rec_dataset
+# What check-asan and check-tsan run again: the library's two suites, and
+# the two that drive the recorder and the pairer as processes, built with the
+# sanitizer like everything they start (the toys, hangar). A report on a
+# child's stderr fails its suite (rec_test.h, rec_check_logs).
+RECORDER_SAN_TESTS := $(RECORDER_TESTS)
 
 $(OBJDIR)/modules/recorder/%.o: EE_CFLAGS := $(HG_CFLAGS)
 $(OBJDIR)/modules/recorder/%.o: EE_CPPFLAGS := $(RECORDER_CPPFLAGS)
@@ -116,21 +121,27 @@ check-rec_hgr32:
 	else echo "skip  rec_hgr32: $(CC) cannot build with -m32"; fi
 check-recording: check-rec_hgr32
 
-# The library-side suites under the sanitizers, as check-tsan/check-asan run
-# lib/hg's (same probe, same flags, same build directories).
+# The suites under the sanitizers, as check-tsan/check-asan run lib/hg's (same
+# probe, same flags, same build directories). The recorder and the pairer
+# run as processes in two of them: until 2026-11-21 only the library's two
+# suites ran here, and a heap overrun in the recorder (a topic whose writer
+# restarted with a larger type) was in code no sanitizer had executed. The
+# two process suites add about 25 s of wall time to each target, most of it
+# the suites' own waits; they run one after the other in each make, beside
+# hangard's.
 check-tsan-recording:
 	@mkdir -p $(BUILDDIR); \
 	if echo 'int main(void){return 0;}' | $(CC) -fsanitize=thread -x c - -o $(BUILDDIR)/.san-probe-tsan >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/tsan \
 	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=thread" LDFLAGS="-fsanitize=thread" \
-	    $(addprefix check-,$(RECORDER_LIB_TESTS)); \
+	    $(addprefix check-,$(RECORDER_SAN_TESTS)); \
 	else echo "skip  tsan recording: $(CC) cannot build with -fsanitize=thread"; fi
 check-asan-recording:
 	@mkdir -p $(BUILDDIR); \
 	if echo 'int main(void){return 0;}' | $(CC) -fsanitize=address,undefined -x c - -o $(BUILDDIR)/.san-probe-asan >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/asan \
 	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined" \
-	    $(addprefix check-,$(RECORDER_LIB_TESTS)); \
+	    $(addprefix check-,$(RECORDER_SAN_TESTS)); \
 	else echo "skip  asan recording: $(CC) cannot build with -fsanitize=address,undefined"; fi
 check-tsan: check-tsan-recording
 check-asan: check-asan-recording

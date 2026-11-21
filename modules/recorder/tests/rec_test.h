@@ -187,8 +187,44 @@ static inline void rec_setup(const char *tag)
 	unsetenv("HANGAR_WIRING_FILE");
 }
 
+/* The children's logs, <root>/<name>.log, for a sanitizer's report: built
+ * with -fsanitize (make check-asan, check-tsan) a recorder or a pairer says
+ * what it found on its stderr and, when the finding is not fatal (UBSan, a
+ * leak at exit, a data race), goes on, and its suite would pass over it. A
+ * report in any log fails the suite. */
+static inline void rec_check_logs(void)
+{
+	DIR *d = opendir(R_root);
+	if (!d)
+		return;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		size_t n = strlen(e->d_name);
+		if (n < 5 || strcmp(e->d_name + n - 4, ".log") != 0)
+			continue;
+		char p[1024], line[512];
+		rfmt(p, sizeof p, "%s/%s", R_root, e->d_name);
+		FILE *f = fopen(p, "r");
+		if (!f)
+			continue;
+		int shown = 0;
+		while (fgets(line, sizeof line, f)) {
+			if (!shown && !strstr(line, "Sanitizer") && !strstr(line, "runtime error:"))
+				continue;
+			if (!shown)
+				printf("    %s: a sanitizer's report:\n", e->d_name);
+			if (shown++ < 40)
+				printf("      %s", line);
+		}
+		fclose(f);
+		CHECK(!shown);
+	}
+	closedir(d);
+}
+
 static inline void rec_teardown(void)
 {
+	rec_check_logs();
 	if (getenv("REC_KEEP"))
 		return;
 	rm_tree(R_root);
