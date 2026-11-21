@@ -584,7 +584,11 @@ that reaches the newest row, or a `reset`, starts again at a point drawn from th
 buffer, half of the draws from its last 2 minutes. A slot that starts inside a run,
 rather than at a `reset`, runs its first chunk without loss, so that the state it
 learns from has seen `seq_len` rows. Rows from earlier dives' recordings, through
-`open_dataset`, may be mixed in; a change of vehicle boot is a `reset`.
+`open_dataset`, may be mixed in; a change of vehicle boot is a `reset`. The rows' stamps
+are the vehicle's clock, which starts again at a reboot, so the buffer's span and its
+last 2 minutes are measured on a time of its own that goes on across a change of boot,
+the new boot's first row at the time of the row before it: the rows of the boot before
+are dropped once the new boot has given a span of rows.
 
 **What can be exported.** The exporter does not read a model's `forward()`: the graph
 is the model's child modules, one op each (`Linear`, `LSTM`, `ReLU`, `Tanh`, `Sigmoid`,

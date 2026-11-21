@@ -216,13 +216,14 @@ class _RowCodec(object):
 
 
 class _Row(object):
-    __slots__ = ("seq", "stamp", "boot", "flags", "x", "y", "starts_run", "partial")
+    __slots__ = ("seq", "stamp", "boot", "flags", "x", "y", "starts_run", "partial", "t")
 
     def __init__(self, seq, stamp, boot, flags, x, y, lost_before, partial=False):
         self.seq, self.stamp, self.boot, self.flags, self.x, self.y = seq, stamp, boot, flags, x, y
         # One of x, y is the zeros of a missing part, or of a window its
         # count does not fill, not a value anything published.
         self.partial = partial
+        self.t = stamp      # the buffer's time (Replay.add)
         # A run starts at a reset, after a row lost (a fresh start the vehicle
         # did not make), and at a change of boot (set by the buffer).
         self.starts_run = bool(flags & RESET) or lost_before
@@ -239,7 +240,14 @@ class _Row(object):
 class Replay(object):
     """The recent rows, by the anchor's stamp: rows older than `span` behind
     the newest are dropped. Indices are absolute (they keep counting as rows
-    are dropped from the front)."""
+    are dropped from the front).
+
+    The stamps are the vehicle's clock, which starts again at a reboot, so
+    the buffer keeps its own time (a row's `t`): the stamp within a boot,
+    and at a change of boot the new boot's first row at the time of the
+    row before it. A row of the boot before is then dropped once the new
+    boot has given `span` of rows, and "the last `recent`" is the same
+    stretch of rows whichever boot was up longer."""
 
     def __init__(self, span="10min", recent="2min", rng=None):
         self.span_ns = _duration_ns(span) if span is not None else None
@@ -248,6 +256,7 @@ class Replay(object):
         self.base = 0
         self.rng = rng or random.Random(0)
         self.total = 0
+        self._offset = 0    # t = stamp + _offset, in the newest row's boot
 
     def __len__(self):
         return len(self.rows)
@@ -257,13 +266,19 @@ class Replay(object):
         return self.base + len(self.rows)
 
     def add(self, row):
-        if self.rows and row.boot != self.rows[-1].boot:
-            row.starts_run = True
+        if self.rows:
+            last = self.rows[-1]
+            if row.boot != last.boot:
+                row.starts_run = True
+                self._offset = last.t - row.stamp
+            row.t = max(last.t, row.stamp + self._offset)   # never back: draw() searches by it
+        else:
+            self._offset = 0
+            row.t = row.stamp
         self.rows.append(row)
         self.total += 1
         if self.span_ns is not None:
-            newest = row.stamp
-            while len(self.rows) > 1 and newest - self.rows[0].stamp > self.span_ns:
+            while len(self.rows) > 1 and row.t - self.rows[0].t > self.span_ns:
                 self.rows.popleft()
                 self.base += 1
 
@@ -276,11 +291,11 @@ class Replay(object):
         if n == 0:
             return None
         if self.rng.random() < 0.5:
-            newest = self.rows[-1].stamp
+            newest = self.rows[-1].t
             lo, hi = 0, n - 1
             while lo < hi:  # the first row within `recent` of the newest
                 mid = (lo + hi) // 2
-                if newest - self.rows[mid].stamp > self.recent_ns:
+                if newest - self.rows[mid].t > self.recent_ns:
                     lo = mid + 1
                 else:
                     hi = mid

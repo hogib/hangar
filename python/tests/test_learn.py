@@ -146,6 +146,40 @@ class ReplayBuffer(unittest.TestCase):
         # half from the last 10 s, plus the uniform half's share of them (1/6)
         self.assertAlmostEqual(recent, 0.5 + 0.5 * 101 / 600, delta=0.04)
 
+    def test_span_across_a_reboot(self):
+        # The anchor's stamps are the vehicle's CLOCK_MONOTONIC: after a
+        # reboot they start again near zero. newest - oldest was negative,
+        # so nothing was dropped until the new boot's uptime passed the old
+        # boot's, and the buffer grew without bound.
+        rp = learn.Replay("1s", rng=random.Random(1))
+        for i in range(1, 101):                       # an hour up, 20 ms apart
+            rp.add(row(i, stamp=3600 * 10 ** 9 + i * 20 * MS))
+        self.assertEqual(len(rp), 51)
+        for i in range(1, 31):                        # rebooted: 30 rows of the new boot
+            rp.add(row(i, boot=B1, stamp=5 * 10 ** 9 + i * 20 * MS))
+        self.assertEqual(len(rp), 52)                 # the span goes on over the change of boot
+        self.assertEqual([r.boot for r in rp.rows].count(B1), 30)
+        for i in range(31, 101):
+            rp.add(row(i, boot=B1, stamp=5 * 10 ** 9 + i * 20 * MS))
+        self.assertEqual(len(rp), 51)
+        self.assertEqual({r.boot for r in rp.rows}, {B1})   # the boot before is gone after a span of the new one
+        self.assertEqual(rp.at(rp.base).seq, 50)
+        self.assertEqual(rp.total, 200)
+
+    def test_recent_draws_across_a_reboot(self):
+        # "The last `recent`" was searched for by stamp over rows whose
+        # stamps no longer rise: with the old boot's stamps above the new
+        # one's, the search took every row for recent or none.
+        for old_stamp in (3600 * 10 ** 9, 0):          # the boot before up longer, or shorter
+            rp = learn.Replay("10min", recent="10s", rng=random.Random(3))
+            for i in range(1, 501):                   # 50 s of one boot
+                rp.add(row(i, stamp=old_stamp + i * 100 * MS))
+            for i in range(1, 101):                   # 10 s of the next
+                rp.add(row(i, boot=B1, stamp=20 * 10 ** 9 + i * 100 * MS))
+            draws = [rp.at(rp.draw()) for _ in range(4000)]
+            recent = sum(1 for r in draws if r.boot == B1) / len(draws)
+            self.assertAlmostEqual(recent, 0.5 + 0.5 * 100 / 600, delta=0.04)
+
     def test_boot_change_starts_a_run(self):
         rp = replay([row(1, learn.RESET), row(2), row(3, boot=B1)])
         self.assertTrue(rp.at(2).starts_run)
