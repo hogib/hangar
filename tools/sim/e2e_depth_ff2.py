@@ -453,6 +453,10 @@ def summarise(dirs):
             ", ".join(str(len(get(r, "demotions", "demotions") or [])) for r in rs),
             ", ".join(str(get(r, "rows", "the trainer's stream", "lost")) for r in rs),
             ", ".join(str(sum(x.get("over_30ms", 0) for x in (r.get("timing") or {}).values())) for r in rs))]
+        # Each run's own loop delay: the seed does not fix it (docs/14
+        # "Determinism and replay"), so it is reported beside the seeds.
+        L.append("Loop delay per run, nav.depth to thr.cmd, median (ms): %s." % ", ".join(
+            str(get(r, "control_latency", "nav.depth to thr.cmd", "median_ms")) for r in rs))
         # The first experiment's checks.
         ll = [m for r in rs for m in (get(r, "loop_latency", "models") or [])]
         for name in ("M1", "M2"):

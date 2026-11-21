@@ -501,7 +501,8 @@ The baseline is `assisted` with the same controller parameters in the same run: 
 (nominal) and B5 (heavier) for the steps and holds, T1 for the buoyancy change. Against
 it: B2 (M1, nominal), B3 (M1, 4 N heavier: the model from before the change), B4 (M2,
 heavier: the model trained since), T2 (the buoyancy change with M1 promoted). Two
-variants, five runs each with simulator and trainer seeds 1 to 5: **learned**, and
+variants, five runs each with simulator and trainer seeds 1 to 5 (a seed fixes the
+simulator's noise and the trainer's draws, not the run: below): **learned**, and
 **oracle** (the policy network fitted to `depth_ff2.oracle` and deployed through the
 same load, promotion and envelope, as M1 and again as M2). Per metric the median and
 the smallest and largest of the five; a difference between variants or against the
@@ -776,6 +777,21 @@ the next by as much as different seeds do: the spread in the tables is where the
 modules' timers happened to fall (the loop's latency above) as much as the simulator's
 noise, and "smallest to largest of five" is a little narrower than what a sixth run can
 give. The supplementary runs were not repeated.
+
+**What a seed fixes.** The simulator's noise sequence and the trainer's draws; not
+the run. `sim_vehicle` steps on a 200 Hz timer and `nav`, `depth_hold`, the `mux` and
+`thrusters` each on a 50 Hz loop that starts when its process does, so the delay from a
+depth reading to the thrust it causes is set by the processes' start times: constant
+within a run, different between runs, unrelated to the seed (docs/14 "Determinism and
+replay"). Each report's `control_latency` has it: the median from `nav.depth` to
+`thr.cmd` was 33.8 to 60.5 ms over the thirteen runs of this section (learned 1: 39.0,
+its repeat 36.9; oracle 4: 37.9, disturbed 33.8), and 59.2 to 59.6 ms in all ten runs
+of the quiet repeat below (presumably because a manager on a quiet machine starts the
+processes at the same intervals every time; that was not tested). So the quiet runs
+share one loop delay, and the loaded runs do not: part of the loaded runs' spread, and of the difference between the two sets, is
+the delay. Within a run the blocks share it, which is why every comparison here is
+against `assisted` in the same run. `e2e_depth_ff2.py --summarise` prints each run's
+delay from now on. The plant model's `LAG = 2` ticks is one value for all of them.
 
 **Again on a quiet machine, 2026-11-21** (`2026-11-21-quiet/`, main at `1aa7d17`). Much of
 the load above was not the other agents' but six busy loops left running by an earlier

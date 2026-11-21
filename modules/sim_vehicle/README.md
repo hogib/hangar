@@ -106,7 +106,9 @@ module on UDP 9002 under its manager, waits up to 60 s for SITL's frames, and ch
   - a 20° roll rights itself (−0.02° after 30 s);
   - energy decays with no thrust, never rising in 2000 steps;
   - the wrench of 500 random commands matches `sim_applied_wrench` to 1e-6 (the depth-hold label's conversion);
-  - the same seed gives bit-identical readings and state, another seed different ones;
+  - the same seed gives bit-identical readings and state, another seed different ones
+    (the model and its sensors, stepped by the suite; a run under a manager is not a
+    function of the seed: docs/14 "Determinism and replay");
   - 5 N less buoyancy sinks the vehicle, live, and so does a payload;
   - the battery drains with thrust;
   - a step costs 0.6 µs (8000× real time at 200 Hz, x86-64 `-O2`);

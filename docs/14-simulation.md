@@ -12,8 +12,9 @@ binaries are the ones that go on the vehicle.
 - **Two machines on one.** The vehicle and the topside each run their own manager, in
   their own network namespace, joined by a virtual tether whose loss and delay are set
   from the command line.
-- **Deterministic when asked.** A seeded simulation and a replayed pilot give the same
-  topics twice.
+- **Deterministic when asked.** A seed fixes each simulator's noise, and the model
+  gives the same state for the same inputs, bit for bit. A whole run under a manager is
+  not yet a function of its seed ([Determinism and replay](#determinism-and-replay)).
 - **Faults are scripted**, so the safety bench tests run unattended.
 
 ## Running it
@@ -187,10 +188,41 @@ dependency tree the project exists to avoid.
 ## Determinism and replay
 
 `--seed` seeds every simulator's noise. With `--pilot <session>` the pilot input is a
-recording, so a run is a function of the seed, the session and the release: two runs
-give the same topics, which the live-against-offline dataset test and the equivalence
-tests of ported operators rely on. The recorder runs in the simulation as in production,
-so a simulated dive is a session like any other and can itself be replayed.
+recording, so a run is meant to be a function of the seed, the session and the release:
+two runs give the same topics, which the live-against-offline dataset test and the
+equivalence tests of ported operators rely on. The recorder runs in the simulation as in
+production, so a simulated dive is a session like any other and can itself be replayed.
+
+**As built, the seed fixes the noise, not the run.** What is the same twice: lib/sim's
+model and sensor channels for the same seed and the same commands at the same steps
+(its suite, and `sim_vehicle`'s, compare them bit for bit). What is not: a standalone
+run under a manager. `sim_vehicle` steps on a 200 Hz timer of the machine's clock and
+applies, at each step, the newest `thr.cmd` that has arrived; `nav`, `depth_hold`, the
+`mux` and `thrusters` each run a 50 Hz loop that starts when its process does and then
+advances by its period. The phase of each loop against the simulator's steps, and
+against the loop before it, is therefore set by when the manager happened to start the
+processes. It does not drift during a run, so every run has its own delay from a depth
+reading to the thrust it causes, constant for that run and unrelated to the seed: each
+of the four hops waits between 0 and 20 ms. In the recorded runs of
+`bench/e2e-depth-ff` the median from `nav.depth` to `thr.cmd` was between 34 and 60 ms
+over 20 runs made on a loaded machine (37 and 39 ms for two runs with the same seed),
+and 59.2 to 59.6 ms for all ten made on a quiet one (presumably the processes start at
+the same intervals there; not tested). Consequences:
+
+- two runs with the same seed give different topics, and differ in closed-loop numbers
+  by as much as two seeds do;
+- comparisons within one run (a baseline block against a learned block) share the
+  delay and stand; comparisons between runs carry the difference in delay as well as
+  the difference in noise;
+- a model fitted with a fixed lag in ticks (`LAG` in `python/examples/depth_ff2.py`)
+  assumes one delay for every run.
+
+Each run's delay is measured from its recording (`control_latency` in the run's
+`report.json`: every hop and the whole chain, through the messages' references), and
+`e2e_depth_ff2.py --summarise` prints the whole chain's median per run beside the
+seeds. Planned, not built: the simulator stepped from `thr.cmd` arrivals or a
+fixed-phase start of the loops, which is what a run that is a function of its seed
+needs; `--pilot <session>`.
 
 ## What the simulation is for
 
