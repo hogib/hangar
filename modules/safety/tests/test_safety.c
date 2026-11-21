@@ -7,7 +7,8 @@
 // transition and refused transition, each trigger and the combination rule,
 // the latch across a restart, clear against the manager, and the Allow
 // lists through a raw caller; readings that are not numbers, a latch that
-// cannot be read, a hold across restarts. About 45 s.
+// cannot be read, a hold across restarts; the tether; the checklist's
+// refusals by reading, arming interrupted, the 10 Hz of safety.state. About 65 s.
 #include "hd_test.h"
 
 #include <math.h>
@@ -28,6 +29,7 @@ static const char *T_safety, *T_fake_mux;
 static hg_pub *P_ap, *P_leak, *P_bat, *P_depth, *P_link;
 static hg_sub *S_state;
 static safety_state last_state;
+static struct hg_info last_info; /* of last_state, as read_state() read it */
 static int have_state;
 
 /* What the toy inputs say; pump() publishes them. */
@@ -249,6 +251,7 @@ static void read_state(void)
 			printf("      [%llu ms] safety.state seq %llu state %d reason '%s'\n",
 			       (unsigned long long)(hg_now_ns() / 1000000u), (unsigned long long)info.seq, s.state, s.reason);
 		last_state = s;
+		last_info = info;
 		have_state = 1;
 	}
 	if (getenv("SAFETY_DEBUG") && rr != HG_NONE)
@@ -475,6 +478,122 @@ static void test_arm_refusals(void)
 	T.arm_mode = 0;
 }
 
+/* safety.state comes at 10 Hz when nothing changes (docs/07 "Vehicle
+ * states"), which is what the gate's SafetyTimeout of three periods and the
+ * bridge's ExpectRate are set against. Measured from the messages' own
+ * publish times over 3 s, so the suite's own scheduling plays no part. */
+static void test_state_rate(void)
+{
+	pump(300);
+	struct hg_info a = last_info;
+	pump(3000);
+	struct hg_info b = last_info;
+	CHECK(b.seq > a.seq && b.publish_ns > a.publish_ns);
+	double hz = (double)(b.seq - a.seq) / ((double)(b.publish_ns - a.publish_ns) / 1e9);
+	printf("    safety.state at %.2f Hz (%llu messages)\n", hz, (unsigned long long)(b.seq - a.seq));
+	CHECK(hz > 8.0 && hz < 11.0);
+}
+
+/* 1 when `check` says not ok and its detail has this clause. */
+static int check_refuses(const char *clause)
+{
+	if (call("check") != 0 || strcmp(cli_field(cli_out, "ok"), "0") != 0 || !strstr(cli_out, clause)) {
+		printf("    check wanted '%s': %s\n", clause, cli_out);
+		return 0;
+	}
+	return 1;
+}
+
+/* The checklist's refusals that need a reading, not only its presence
+ * (docs/07 "Arming"): a wet probe, a battery below battery_min, and ArduSub
+ * not disarmed, not in MANUAL, or without the parameters of the file. */
+static void test_checklist(void)
+{
+	CHECK_EQ_INT(last_state.state, 0);
+	T.leak_wet = 1;
+	pump(250);
+	CHECK(check_refuses("vehicle.leak wet"));
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "HG_E_REFUSED") != NULL && strstr(cli_out, "water at the probe") != NULL);
+	T.leak_wet = 0;
+	T.batt_v = 10.5f;
+	pump(250);
+	CHECK(check_refuses("power.battery 10.50 V below 11.00 V"));
+	CHECK(strstr(cli_out, "vehicle.leak") == NULL);
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "power.battery 10.50 V below") != NULL);
+	T.batt_v = 16.0f;
+	T.ap_mode = 2;
+	pump(300);
+	CHECK(check_refuses("ArduSub mode 2 is not MANUAL"));
+	CHECK(strstr(cli_out, "power.battery") == NULL);
+	T.ap_mode = 19;
+	T.ap_params = 2;
+	pump(300);
+	CHECK(check_refuses("ArduSub parameters differ from the file"));
+	T.ap_params = 0;
+	pump(300);
+	CHECK(check_refuses("ArduSub parameters not read yet"));
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "ArduSub parameters not read yet") != NULL);
+	T.ap_params = 1;
+	/* ArduSub still answering a disarm (the fake reports 2, disarming, for
+	 * an armed ArduSub under a disarmed hangar, as the mavlink module does). */
+	T.ap_armed = 1;
+	pump(300);
+	CHECK(check_refuses("ArduSub disarming"));
+	T.ap_armed = 0;
+	pump(300);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
+	/* None of it was a failsafe: the vehicle was disarmed throughout. */
+	CHECK_EQ_INT(last_state.state, 0);
+	CHECK_EQ_INT(last_state.triggers, 0);
+}
+
+static void clear_ok(void);
+
+/* `arming` is left by a disarm and by any trigger (docs/07 "Vehicle
+ * states"), and the arm that was in flight does not come back afterwards as
+ * a timeout or as armed. */
+static void test_arming_interrupted(void)
+{
+	T.arm_mode = 2; /* accepted, and ArduSub never reports armed */
+	T.ap_result = 255;
+	T.ap_reason[0] = 0;
+	CHECK_EQ_INT(call("arm"), 0);
+	CHECK(wait_safety(3, -1, 1000));
+	CHECK_EQ_INT(call("disarm"), 0);
+	CHECK(wait_safety(0, -1, 1000));
+	CHECK(!last_state.outputs_enabled);
+	CHECK(last_state.reason[0] == 0);
+	pump(1500); /* past arm_timeout (1 s here) */
+	CHECK_EQ_INT(last_state.state, 0);
+	CHECK(strstr(last_state.reason, "no armed report") == NULL);
+	/* A trigger during arming: failsafe with its action, and it stays. */
+	CHECK_EQ_INT(call("arm"), 0);
+	CHECK(wait_safety(3, -1, 1000));
+	T.leak_wet = 1;
+	CHECK(wait_safety(2, 1, 1000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 2);
+	pump(1500);
+	CHECK_EQ_INT(last_state.state, 2);
+	T.leak_wet = 0;
+	pump(200);
+	clear_ok();
+	/* An e-stop during arming. */
+	CHECK_EQ_INT(call("arm"), 0);
+	CHECK(wait_safety(3, -1, 1000));
+	CHECK_EQ_INT(call("estop"), 0);
+	CHECK(wait_safety(2, 0, 1000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 6);
+	CHECK(!last_state.outputs_enabled);
+	pump(1500);
+	CHECK_EQ_INT(last_state.state, 2);
+	clear_ok();
+	T.arm_mode = 0;
+}
+
 static void arm_ok(void)
 {
 	T.arm_mode = 0;
@@ -573,6 +692,30 @@ static void test_triggers_and_actions(void)
 	pump(200);
 	clear_ok();
 	CHECK_EQ_INT(last_state.triggers, 0);
+	/* A disarm in a failsafe that still drives (surface): never refused; the
+	 * outputs go off and stay off until clear, and the latch says so, so
+	 * that a restart does not surface again. */
+	char latch[700];
+	tfmt(latch, sizeof latch, "%s/var/lib/hangar/safety/failsafe", T_root);
+	arm_ok();
+	T.leak_wet = 1;
+	CHECK(wait_safety(2, 1, 1000));
+	CHECK(last_state.outputs_enabled);
+	CHECK(file_contains(latch, "disarmed 0"));
+	CHECK_EQ_INT(call("disarm"), 0);
+	CHECK(wait_safety(2, 0, 1000));
+	CHECK(!last_state.outputs_enabled);
+	CHECK_EQ_INT(last_state.triggers, 1u << 2);
+	CHECK(strstr(last_state.reason, "disarmed by") != NULL);
+	CHECK(file_contains(latch, "disarmed 1"));
+	pump(500); /* the leak is still there: no tick brings the surface back */
+	CHECK_EQ_INT(last_state.state, 2);
+	CHECK_EQ_INT(last_state.action, 0);
+	CHECK(!last_state.outputs_enabled);
+	T.leak_wet = 0;
+	T.ap_armed = 0;
+	pump(200);
+	clear_ok();
 	/* battery: below battery_min for battery_time (0.5 s here), surface. */
 	arm_ok();
 	T.batt_v = 10.0f;
@@ -600,6 +743,25 @@ static void test_triggers_and_actions(void)
 	T.ap_armed = 0;
 	pump(200);
 	clear_ok();
+	/* And the shallow side: above depth_min by depth_margin. */
+	T.depth_m = 3.0f;
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "mux", "depth_min=2", (char *)NULL), 0);
+	pump(300);
+	arm_ok();
+	T.depth_m = 1.6f;
+	pump(300);
+	CHECK_EQ_INT(last_state.state, 1);
+	T.depth_m = 1.4f;
+	CHECK(wait_safety(2, 1, 1000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 4);
+	CHECK(strstr(last_state.reason, "above") != NULL);
+	T.depth_m = 3.0f;
+	T.ap_armed = 0;
+	pump(200);
+	clear_ok();
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "mux", "depth_min=0", (char *)NULL), 0);
+	T.depth_m = 1.0f;
+	pump(300);
 	/* input: vehicle.leak stops; stale after three periods (300 ms); neutral. */
 	arm_ok();
 	T.publish_leak = 0;
@@ -631,6 +793,44 @@ static void test_triggers_and_actions(void)
 	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "start", "depth_hold", (char *)NULL), 0);
 	CHECK(wait_state("depth_hold", "ready", 3000));
 	pump(1200);
+	/* The combination rule, all three (docs/07 "Several triggers at once"):
+	 * surface alone (the battery), then hold joins (the leak, action_leak 2
+	 * here) and wins over surface, then neutral (e-stop) wins over both. */
+	CHECK_EQ_INT(param_set("safety", "hold_time=5", NULL, NULL, NULL), 0);
+	arm_ok();
+	T.batt_v = 10.0f;
+	CHECK(wait_safety(2, 1, 2000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 3);
+	T.leak_wet = 1;
+	CHECK(wait_safety(2, 2, 1000));
+	CHECK_EQ_INT(last_state.triggers, (1u << 2) | (1u << 3));
+	CHECK(last_state.outputs_enabled);
+	CHECK_EQ_INT(call("estop"), 0);
+	CHECK(wait_safety(2, 0, 1000));
+	CHECK_EQ_INT(last_state.triggers, (1u << 2) | (1u << 3) | (1u << 6));
+	CHECK(!last_state.outputs_enabled);
+	T.batt_v = 16.0f;
+	T.leak_wet = 0;
+	T.ap_armed = 0;
+	pump(300);
+	clear_ok();
+	/* A disarm during a hold ends it there, not at hold_time (5 s here). */
+	arm_ok();
+	T.leak_wet = 1;
+	CHECK(wait_safety(2, 2, 1000));
+	CHECK(last_state.outputs_enabled);
+	t0 = now_ms();
+	CHECK_EQ_INT(call("disarm"), 0);
+	CHECK(wait_safety(2, 0, 1000));
+	dt = now_ms() - t0;
+	CHECK(!last_state.outputs_enabled);
+	CHECK(strstr(last_state.reason, "disarmed by") != NULL);
+	CHECK(dt < 4000);
+	T.leak_wet = 0;
+	T.ap_armed = 0;
+	pump(200);
+	clear_ok();
+	CHECK_EQ_INT(param_set("safety", "hold_time=1", NULL, NULL, NULL), 0);
 	arm_ok();
 	T.leak_wet = 1;
 	t0 = now_ms();
@@ -642,9 +842,15 @@ static void test_triggers_and_actions(void)
 	CHECK(strstr(last_state.reason, "hold ended") != NULL);
 	CHECK(dt >= 900 && dt < 2000);
 	printf("    hold ended after %llu ms\n", (unsigned long long)dt);
-	/* A disarm during failsafe is never refused: outputs stay off, the latch holds. */
+	/* A disarm after the hold has ended is never refused either: outputs
+	 * stay off, the latch holds, and the state says who disarmed (the two
+	 * disarms above, in a surface and in a hold, are the ones that turn
+	 * outputs off). */
 	CHECK_EQ_INT(call("disarm"), 0);
-	pump(100);
+	t0 = now_ms();
+	while (!strstr(last_state.reason, "disarmed by") && now_ms() - t0 < 2000)
+		pump(20);
+	CHECK(strstr(last_state.reason, "disarmed by") != NULL);
 	CHECK_EQ_INT(last_state.state, 2);
 	CHECK(!last_state.outputs_enabled);
 	T.leak_wet = 0;
@@ -1214,7 +1420,9 @@ static void test_allow(void)
 	clear_ok();
 	/* set_params: admin is listed (used throughout); a module is not. */
 	r = raw_call("set_params");
-	CHECK(strncmp(r, "HG_E_DENIED", 11) == 0 || strncmp(r, "HG_E_BADTYPE", 12) == 0);
+	CHECK(strncmp(r, "HG_E_DENIED", 11) == 0);
+	if (strncmp(r, "HG_E_DENIED", 11) != 0)
+		printf("    raw set_params: %s\n", r);
 }
 
 static void test_shutdown(void)
@@ -1248,7 +1456,10 @@ int main(int argc, char **argv)
 	copy_types();
 	RUN_TEST(test_start);
 	RUN_TEST(test_arm_disarm);
+	RUN_TEST(test_state_rate);
+	RUN_TEST(test_checklist);
 	RUN_TEST(test_arm_refusals);
+	RUN_TEST(test_arming_interrupted);
 	RUN_TEST(test_autopilot_trigger);
 	RUN_TEST(test_triggers_and_actions);
 	RUN_TEST(test_latch);

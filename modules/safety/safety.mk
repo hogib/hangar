@@ -44,7 +44,7 @@ check-safety: $(SAFETY_TEST) $(SAFETY_BIN) $(SAFETY_FAKE_MUX) $(BUILDDIR)/hangar
 	@if HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(abspath $(BUILDDIR)/hangar) \
 	    HANGARD_TOYS=$(abspath $(HANGARD_TOYDIR)) HANGAR_MSG_SRC=$(abspath msg) \
 	    SAFETY_BIN=$(abspath $(SAFETY_BIN)) FAKE_MUX_BIN=$(abspath $(SAFETY_FAKE_MUX)) \
-	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/safety.log 2>&1; then \
+	    $(if $(TIMEOUT),$(TIMEOUT) 240) $(abspath $<) > $(TESTDIR)/safety.log 2>&1; then \
 	  echo "ok    safety"; \
 	else \
 	  echo "FAIL  safety"; cat $(TESTDIR)/safety.log; exit 1; \

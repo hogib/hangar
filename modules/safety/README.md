@@ -152,7 +152,7 @@ it, not only the newest:
   file is a mirrored request to the library. With the bridge the same code reads the
   mirrored topic.
 
-## Tests (`make check-safety`, 45 s)
+## Tests (`make check-safety`, 65 s)
 
 A manager with the module, a fake mux (parameters only, named `mux`), the toy talker
 as `depth_hold`, the toy crasher for a module given up with `OnGiveUp=failsafe`; the
@@ -167,7 +167,16 @@ input's staleness (≈300 ms), hold to neutral with the controller stopped and a
 `hold_time`; the latch across `hangar restart` with `arm` refused until `clear`; the
 `module` trigger through a crasher, `clear` refused by the manager while it is failed
 and accepted once it runs; `arm`/`clear`/`set_params` denied to an unlisted module,
-`disarm`/`estop`/`check` open to any. `test_tether`, with `tether_timeout` 1 s and the
+`disarm`/`estop`/`check` open to any. `test_state_rate`: `safety.state` at 10 Hz, from
+the messages' own publish times over 3 s. `test_checklist`: `check` and `arm` refuse,
+by name, a wet probe, 10.5 V under `battery_min`, ArduSub in a mode other than
+MANUAL, with parameters that differ or are not read, and still disarming.
+`test_arming_interrupted`: a disarm, a leak and an e-stop during `arming` each leave
+it, and the arm in flight does not come back as a timeout. In
+`test_triggers_and_actions`: a disarm in a failsafe `surface` and in a `hold` turns
+the outputs off there (the latch says `disarmed 1`), and they stay off with the
+trigger still active; the shallow side of the depth band; the combination rule in
+full (surface, then hold joins and wins, then neutral wins). `test_tether`, with `tether_timeout` 1 s and the
 suite publishing `bridge.vehicle.link`: enabled with no link topic, and with a link
 `searching`, `check` and `arm` refuse by name; with the link up the vehicle arms and
 stays armed; a 500 ms outage, and four 400 ms outages in a row, fire nothing; the link
