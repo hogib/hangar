@@ -56,10 +56,13 @@ if [ ! -f "$src/configure" ] || [ "$(git -C "$src" rev-parse HEAD 2>/dev/null)" 
 	[ "$(git -C "$src" rev-parse HEAD)" = "$X264_COMMIT" ] || { echo "x264.sh: fetched another commit" >&2; exit 1; }
 fi
 
+as=$cc
 case "$arch" in
 x86_64) host=x86_64-linux-musl
 	asm=
-	command -v nasm >/dev/null 2>&1 || { asm=--disable-asm; echo "x264.sh: no nasm: the x86-64 encoder is C alone" >&2; } ;;
+	# x86's assembly is nasm's syntax, not the C compiler's.
+	if command -v nasm >/dev/null 2>&1; then as=nasm
+	else asm=--disable-asm; echo "x264.sh: no nasm: the x86-64 encoder is C alone" >&2; fi ;;
 aarch64) host=aarch64-linux-musl; asm= ;;
 arm) host=arm-linux-musleabihf
 	asm=--disable-asm; echo "x264.sh: armv7: the encoder is C alone (its assembly wants an -march configure does not see in zig's flags)" >&2 ;;
@@ -68,13 +71,13 @@ esac
 
 # x264 builds in its source directory; a copy per build keeps the cached
 # source clean for the next target. zig provides ar, ranlib and the assembler
-# for aarch64's and arm's .S files (through the C compiler).
+# for aarch64's and arm's .S files (through the C compiler); x86-64's are nasm's.
 build=$dir/build
 rm -rf "$build" "$prefix"
 cp -R "$src" "$build"
 cd "$build"
 # shellcheck disable=SC2086
-CC="$cc" AR="zig ar" RANLIB="zig ranlib" STRIP=true AS="$cc" \
+CC="$cc" AR="zig ar" RANLIB="zig ranlib" STRIP=true AS="$as" \
 	./configure --prefix="$prefix" --host="$host" --enable-static --disable-cli \
 	--disable-opencl --disable-lavf --disable-swscale --disable-ffms --disable-gpac --disable-lsmash \
 	--disable-avs --bit-depth=8 --chroma-format=420 --enable-pic $asm \
