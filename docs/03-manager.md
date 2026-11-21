@@ -347,7 +347,15 @@ manager:
    side. A module of the same name may be enabled on both machines (the console is):
    the `.req` of the other side's is then accepted where the local one declares none,
    with a line in the log, because a server knows that caller as `<role>:<module>`
-   from the file's `origin_boot` and never as the local module;
+   from the file's `origin_boot` and never as the local module. A mirrored topic's
+   size is the sender's numbers, and the manager bounds what they reserve itself,
+   whatever the bridge has checked ([08-bridge](08-bridge.md#delivery)): a ring of
+   more than 32 MB, counted as slots × (128 + payload), is refused, and so is any
+   mirrored topic once the files in the topic directory that are no local topic's
+   (no output of a module of this machine, nor the manager's own), the one being
+   replaced left out, would with it take more than 256 MB. A local topic's slots are
+   the manifest's and its payload its declared type's (a `frame` or dataset type's
+   is the module's own choice, at most 1 GiB a message; nothing bounds that here);
 3. creates the topic file ([01-topics](01-topics.md#writing)), continuing the
    sequence numbers of any file it replaces. A mirrored topic continues them only
    within one boot of the sender: when there is no file, or the existing file's

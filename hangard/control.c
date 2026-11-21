@@ -5,6 +5,7 @@
  * packet, one reply per request, the connection closed after the reply. */
 #include "hangard.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -302,6 +303,54 @@ static int hexnib(int c)
 	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
 }
 
+/* What the sender's numbers may make this machine reserve (docs/08
+ * "Delivery"): one mirrored topic's ring, slots x (128 + payload) as the
+ * bridge counts it, and the files of all mirrored topics together. The
+ * bridge holds itself to both (modules/bridge/bridge.c, RING_MAX and
+ * RINGS_MAX); the manager reserves the memory, as root, and does not take
+ * the bridge's word for the size. */
+#define MIRROR_RING_MAX (32ull << 20)
+#define MIRROR_RINGS_MAX (256ull << 20)
+
+/* 1 for a topic of this machine: the manager's own, or an output, declared
+ * or implicit, of a module in the set. */
+static int local_topic(const char *name)
+{
+	char own[MF_TOPIC];
+	mf_fmt(own, sizeof own, "hangar.%s.", G.set.role);
+	if (strncmp(name, own, strlen(own)) == 0)
+		return 1;
+	for (int k = 0; k < G.set.n_modules; k++) {
+		const struct mf_module *o = G.set.modules[k];
+		for (int i = 0; i < o->n_pubs; i++)
+			if (strcmp(o->pubs[i].topic, name) == 0)
+				return 1;
+	}
+	return 0;
+}
+
+/* The bytes the mirrored topics' files take now, `except` left out (the
+ * file an open replaces): every topic file that is no local topic's. From
+ * the directory and the files' sizes, not from anything their writer can
+ * set: a header is the bridge's to write. */
+static uint64_t mirrored_bytes(const char *except)
+{
+	DIR *d = opendir(G.conf.topic_dir);
+	if (!d)
+		return 0;
+	uint64_t sum = 0;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.' || strcmp(e->d_name, except) == 0 || local_topic(e->d_name))
+			continue;
+		struct stat st;
+		if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode))
+			sum += (uint64_t)st.st_size;
+	}
+	closedir(d);
+	return sum;
+}
+
 /* The bridge's open of a topic of the other side (docs/08 "Mirrored topics"):
  * the sender's schema, the mirror line's rate and staleness, the sender's boot
  * id and first seq, and the module that writes it there as the writer. Only
@@ -425,6 +474,21 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 		return;
 	}
 	free(parsed);
+	if (!slots)
+		slots = 16;
+	uint64_t ring = (uint64_t)slots * ((uint64_t)payload + 128);
+	if (ring > MIRROR_RING_MAX) {
+		err_reply(fd, "%s: %u slots of %u bytes are %llu KB: a mirrored topic's ring is at most %llu KB", topic, slots,
+			  payload, (unsigned long long)(ring >> 10), (unsigned long long)(MIRROR_RING_MAX >> 10));
+		return;
+	}
+	uint64_t held = mirrored_bytes(topic);
+	if (held + ring > MIRROR_RINGS_MAX) {
+		err_reply(fd, "%s: the mirrored topics take %llu KB, and %llu KB more would pass the %llu KB they may take together",
+			  topic, (unsigned long long)(held >> 10), (unsigned long long)(ring >> 10),
+			  (unsigned long long)(MIRROR_RINGS_MAX >> 10));
+		return;
+	}
 	char who[96];
 	if (topic_other_writer(topic, p->pid, who, sizeof who)) {
 		err_reply(fd, "%s already has a writer: %s", topic, who);
@@ -437,7 +501,7 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 				   .payload_bytes = payload,
 				   .schema = schema,
 				   .schema_bytes = (uint32_t)schema_len,
-				   .slots = slots ? slots : 16, /* the sender's, as its ring holds */
+				   .slots = slots, /* the sender's, as its ring holds; 16 when it names none */
 				   .rate_mhz = mm->rate_mhz,
 				   .stale_after_ns = mm->rate_mhz ? mm->stale_after_ns : 0,
 				   .origin_boot = boot,

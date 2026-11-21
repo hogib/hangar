@@ -191,12 +191,84 @@ static void test_bridge_dead_at_startup_flags_its_mirrors(void)
 	bridge_down();
 }
 
+/* Request n: a mirrored open of topic with a payload of `bytes` and the
+ * sender's slot count. */
+static void open_sized(int n, const char *topic, unsigned bytes, unsigned slots)
+{
+	static struct hg_schema sch;
+	char path[1024], text[64], req[1024];
+	int tl = tfmt(text, sizeof text, "u8 data[%u]\n", bytes);
+	if (hg_schema_parse(text, (size_t)tl, &sch, NULL, 0) < 0) {
+		printf("    the schema of %u bytes does not parse\n", bytes);
+		return;
+	}
+	tfmt(path, sizeof path, "%s/ctl.%d", T_root, n);
+	int len = tfmt(req, sizeof req, "open %s hash=%016llx payload=%u schema=%d boot=%s first=1 writer=far slots=%u\n%s",
+		       topic, (unsigned long long)sch.type.hash, sch.type.payload_bytes, tl, BOOT, slots, text);
+	write_file(path, req);
+	(void)len;
+}
+
+/* What a mirrored open makes the manager reserve is the sender's numbers:
+ * its slot count and its type's size. The bridge bounds them (docs/08
+ * "Delivery": 32 MB a ring, 256 MB together), and the manager took whatever
+ * the bridge then asked for: 65536 slots of any type its mirror lines let
+ * in, reserved by root in /dev/shm. Now the manager holds the request to the
+ * same two bounds itself. */
+static void test_ring_bounds(void)
+{
+	/* 65536 slots of 1000 bytes: 70 MB. The same type in 16 slots, and a
+	 * ring just under the bound (4 slots of 8 MB less the slot headers), are
+	 * opened. */
+	open_sized(1, "far.big", 1000, 65536);
+	open_sized(2, "far.small", 1000, 16);
+	open_sized(3, "far.edge", (8u << 20) - 128, 4);
+	open_sized(4, "far.over", (8u << 20) - 120, 4);
+	bridge_up("[Bridge]\nPair=lab\n[Mirror far.*]\nDirection=down\n");
+	printf("    65536 slots of 1000 bytes: %s", reply_of(1));
+	CHECK(strncmp(reply_of(1), "err", 3) == 0);
+	CHECK(strstr(reply_of(1), "a mirrored topic's ring is at most 32768 KB") != NULL);
+	CHECK(strncmp(reply_of(2), "ok", 2) == 0);
+	CHECK(strncmp(reply_of(3), "ok", 2) == 0);
+	CHECK(strncmp(reply_of(4), "err", 3) == 0);
+	unsigned char h[4096];
+	CHECK(topic_header("far.big", h) < 0);
+	CHECK(topic_header("far.over", h) < 0);
+	CHECK(topic_header("far.small", h) == 0);
+	bridge_down();
+	/* Together: nine files of 30 MB that no module of this machine declares
+	 * are in the directory (sparse: they take no memory here), 270 MB. One
+	 * more topic, of any size, is not opened; a local module's still is. */
+	mkdir_p(T_topics);
+	for (int i = 0; i < 9; i++) {
+		char path[1024];
+		tfmt(path, sizeof path, "%s/far.held%d", T_topics, i);
+		int fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0640);
+		CHECK(fd >= 0 && ftruncate(fd, 30 << 20) == 0);
+		if (fd >= 0)
+			close(fd);
+	}
+	manifest("local", "[Module]\nExec=%s/talker --topic near.depth --rate 20\n[Publish near.depth]\nType=depth\nRate=20\n",
+		 T_toys);
+	open_sized(1, "far.small", 1000, 16);
+	bridge_up("[Bridge]\nPair=lab\n[Mirror far.*]\nDirection=down\n");
+	printf("    one more beside 270 MB: %s", reply_of(1));
+	CHECK(strncmp(reply_of(1), "err", 3) == 0);
+	CHECK(strstr(reply_of(1), "would pass the 262144 KB they may take together") != NULL);
+	CHECK(topic_header("far.small", h) < 0);
+	CHECK(wait_state("local", "ready", 3000));
+	CHECK(topic_header("near.depth", h) == 0);
+	bridge_down();
+	manifest_remove("local");
+}
+
 int main(void)
 {
 	hd_setup("mirror", NULL);
 	HD_RUN(test_zero_boot_refused);
 	HD_RUN(test_name_of_an_enabled_module_is_reported);
 	HD_RUN(test_topic_id_collision_refused);
+	HD_RUN(test_ring_bounds);
 	HD_RUN(test_bridge_exit_flags_its_mirrors);
 	HD_RUN(test_bridge_dead_at_startup_flags_its_mirrors);
 	hd_teardown();

@@ -25,7 +25,9 @@
  *   bit 5     depth_hold is running (its parameters are not written then)
  *
  * A file the manager is asked to create is held to 64 MB by RLIMIT_FSIZE:
- * `open` reserves slots x payload bytes, which the request chooses. */
+ * `open` reserves slots x payload bytes. For a mirrored topic the request
+ * chooses both, and the manager refuses a ring over 32 MB itself (docs/03
+ * "Opening topics"); for a local one the slots are the manifest's. */
 #include "fuzz.h"
 
 #include <dirent.h>

@@ -802,6 +802,16 @@ static void control_seeds(void)
 		 "open hangar.vehicle.system hash=%016llx payload=%u schema=%u boot=00000000000000000000000000000000\n",
 		 (unsigned long long)DEPTH_TYPE.hash, DEPTH_TYPE.payload_bytes, DEPTH_TYPE.schema_bytes);
 	request(&b, line, DEPTH_TYPE.schema, DEPTH_TYPE.schema_bytes);
+	/* More than the manager lets the sender's numbers reserve (docs/03
+	 * "Opening topics"): 65536 slots of 1000 bytes, 70 MB; refused. */
+	static struct hg_schema big;
+	static const char big_text[] = "u8 data[1000]\n";
+	if (hg_schema_parse(big_text, sizeof big_text - 1, &big, NULL, 0) == 0) {
+		snprintf(line, sizeof line,
+			 "open pilot.wrench hash=%016llx payload=%u schema=%u boot=00112233445566778899aabbccddeeff slots=65536\n",
+			 (unsigned long long)big.type.hash, big.type.payload_bytes, (unsigned)(sizeof big_text - 1));
+		request(&b, line, big_text, sizeof big_text - 1);
+	}
 	put("control", "bridge", &b);
 
 	/* A stranger: refused by name, and a connection that says nothing. */
