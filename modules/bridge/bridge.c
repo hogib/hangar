@@ -58,6 +58,9 @@
 #define HELLO_NS 250000000ull
 #define NONCE_NS 5000000000ull    /* a nonce is offered for this long, then drawn again */
 #define HELLO_BODY 92
+#define CAND_NS 5000000000ull     /* a beacon makes a candidate for this long */
+#define ASK_NS 500000000ull       /* a candidate is sent a hello at most this often */
+#define SETTLE_NS 500000000ull    /* two candidates heard: this long for both to answer */
 #define WINDOW_NS 10000000000ull  /* the clock's sample window */
 
 enum { K_HELLO = 1, K_CONFIRM, K_PING, K_PONG, K_DATA, K_ACK, K_MSG };
@@ -132,7 +135,14 @@ static struct {
 	int pending;
 	unsigned char p_tx[32], p_rx[32], p_nonce[16], p_boot[16];
 	uint32_t p_id, p_link;
-	uint64_t last_hello_ns;
+	struct sockaddr_in p_from; /* Peer=auto: where the pending handshake's hello came from */
+	uint64_t last_hello_ns;  /* the timer's own last hello (hello_tick); no datagram moves it */
+	/* Peer=auto, no link: who has echoed the nonce offered now (docs/08
+	 * "Discovery"). One id: the peer. Two: two machines hold the key and
+	 * answer, and none is chosen until 5 s after they last both did. */
+	uint32_t fresh_id;
+	int nfresh;
+	uint64_t fresh_since, both_ns;
 	int up;
 	uint64_t last_rx_ns;
 	uint64_t tx_seq, rx_hi, rx_win, rx_count;
@@ -350,6 +360,7 @@ static void new_nonce(void)
 	random_bytes(B.nonce, 16);
 	B.nonce_since = 0;
 	B.pending = 0;
+	B.nfresh = 0;
 }
 
 /* Role, id, pair, our nonce, our boot id; then the peer's nonce this hello
@@ -371,9 +382,8 @@ static void send_hello(const unsigned char *echo, const struct sockaddr_in *to)
 		memcpy(b + 72, echo, 16);
 	put32(b + 88, B.keyed ? B.link_id : 0);
 	send_dgram(K_HELLO, BC_SAFETY, b, sizeof b, B.key, to);
-	B.last_hello_ns = now_ns();
 	if (!B.nonce_since)
-		B.nonce_since = B.last_hello_ns;
+		B.nonce_since = now_ns();
 }
 
 static void send_confirm(const unsigned char *k_tx, const struct sockaddr_in *to)
@@ -388,6 +398,36 @@ static void send_confirm(const unsigned char *k_tx, const struct sockaddr_in *to
 }
 
 static void reset_generation(void);
+
+/* Peer=auto: the candidates, each an id and an address a beacon came from
+ * whose tag checked, heard in the last CAND_NS (docs/08 "Discovery"). A
+ * beacon's tag says its sender held the key at some time, and nothing about
+ * now: a recorded one checks for as long as the key lives. So a candidate is
+ * somewhere to send a hello and no more: no beacon sets the peer, and none
+ * keeps a link from being made. */
+struct cand {
+	uint32_t id;
+	struct sockaddr_in addr;
+	uint64_t heard, asked;
+};
+static struct cand cands[8];
+static int ncands;
+
+/* Beacons of two ids in the last CAND_NS: perhaps two machines, perhaps one
+ * and a recording of its bridge before a restart. Their hellos say which. */
+static int two_heard(uint64_t now)
+{
+	int first = -1;
+	for (int i = 0; i < ncands; i++) {
+		if (now - cands[i].heard >= CAND_NS)
+			continue;
+		if (first >= 0 && cands[i].id != cands[first].id)
+			return 1;
+		if (first < 0)
+			first = i;
+	}
+	return 0;
+}
 
 /* A hello, its tag checked under the shared key: which proves the key, at
  * some time, and nothing about now. Three kinds:
@@ -408,7 +448,14 @@ static void reset_generation(void);
  * No hello sets the peer's address either: only a datagram that checks under
  * a session key does (on_dgram). The answers go to the peer when there is one
  * to keep (a link up, or Peer= fixed), and to where the hello came from
- * otherwise (Peer=auto, no link: the handshake that makes it the peer). */
+ * otherwise (Peer=auto, no link: the handshake that makes it the peer).
+ *
+ * Peer=auto, no link: a fresh hello is also the one proof that its sender is
+ * there now, which no beacon gives. Two ids that echo the same nonce are two
+ * machines holding the key: none is chosen, now and for CAND_NS after (docs/08
+ * "Discovery"). And while beacons of two ids are being heard, the first to
+ * answer waits SETTLE_NS for the other, so that which of two is linked is
+ * not a race between their answers. */
 static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in *from)
 {
 	if (n < HELLO_BODY) {
@@ -434,8 +481,28 @@ static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in 
 		send_hello(nonce, to);
 		return;
 	}
+	if (!B.peer_fixed && !B.up) {
+		uint64_t now = now_ns();
+		uint32_t id = get32(b + 4);
+		if (!B.nfresh) {
+			B.fresh_id = id;
+			B.nfresh = 1;
+			B.fresh_since = now;
+		} else if (id != B.fresh_id) {
+			B.nfresh = 2;
+		}
+		if (B.nfresh > 1) {
+			B.both_ns = now;
+			B.pending = 0;
+		}
+		if (B.both_ns && now - B.both_ns < CAND_NS)
+			return; /* ambiguous: no keys, no answer */
+		if (two_heard(now) && now - B.fresh_since < SETTLE_NS)
+			return; /* its next hello, if nobody else has answered by then */
+	}
 	int again = B.pending && memcmp(nonce, B.p_nonce, 16) == 0;
 	if (!again) {
+		B.p_from = *from;
 		memcpy(B.p_nonce, nonce, 16);
 		memcpy(B.p_boot, b + 56, 16);
 		B.p_id = get32(b + 4);
@@ -1453,14 +1520,6 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 
 /* ---- Discovery (docs/08 "Discovery") --------------------------------------- */
 
-struct cand {
-	uint32_t id;
-	struct sockaddr_in addr;
-	uint64_t heard;
-};
-static struct cand cands[8];
-static int ncands;
-
 static void beacon(void)
 {
 	char line[200], tagx[40];
@@ -1497,37 +1556,66 @@ static void on_beacon(const char *line, size_t n, const struct sockaddr_in *from
 	if (strlen(tagx) != 32 || !tag_eq((const unsigned char *)want, (const unsigned char *)tagx, 32) ||
 	    strcmp(pair, B.conf.pair) != 0 || strcmp(role, B.role) == 0 || id == B.id)
 		return;
-	struct sockaddr_in a = *from;
-	a.sin_port = htons((uint16_t)port);
-	for (int i = 0; i < ncands; i++)
-		if (cands[i].id == id) {
-			cands[i].addr = a;
-			cands[i].heard = now_ns();
-			return;
-		}
-	if (ncands < 8)
-		cands[ncands++] = (struct cand){ .id = id, .addr = a, .heard = now_ns() };
+	struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr = from->sin_addr };
+	uint64_t now = now_ns();
+	/* An id heard from two addresses is two candidates: the handshake finds
+	 * the one that answers. A ninth takes the place of the one heard longest
+	 * ago. */
+	int at = -1, oldest = 0;
+	for (int i = 0; i < ncands; i++) {
+		if (cands[i].id == id && cands[i].addr.sin_addr.s_addr == a.sin_addr.s_addr &&
+		    cands[i].addr.sin_port == a.sin_port)
+			at = i;
+		if (cands[i].heard < cands[oldest].heard)
+			oldest = i;
+	}
+	if (at < 0) {
+		at = ncands < (int)(sizeof cands / sizeof cands[0]) ? ncands++ : oldest;
+		cands[at] = (struct cand){ .id = id, .addr = a };
+	}
+	cands[at].heard = now;
+	/* No link: a hello to where the beacon came from. Whoever is there and
+	 * holds the key answers it, and the handshake goes on with whoever
+	 * answers (on_hello). At most one every ASK_NS to one candidate. */
+	if (!B.up && !B.peer_fixed && (!cands[at].asked || now - cands[at].asked >= ASK_NS)) {
+		cands[at].asked = now;
+		send_hello(NULL, &a);
+	}
 }
 
-/* Peer=auto: the one candidate of the opposite role heard in the last 5 s. */
+/* Peer=auto, no link: the candidates still heard, and what the link's state
+ * is called meanwhile. The peer itself is set by the handshake (peer_is). */
 static void choose_peer(void)
 {
 	if (B.peer_fixed || B.up)
 		return;
-	int live = 0, which = -1;
+	uint64_t now = now_ns();
+	int k = 0;
 	for (int i = 0; i < ncands; i++)
-		if (now_ns() - cands[i].heard < 5000000000ull) {
-			live++;
-			which = i;
-		}
-	if (live == 1) {
-		B.peer = cands[which].addr;
-		B.have_peer = 1;
-		snprintf(B.peer_txt, sizeof B.peer_txt, "%s:%u", inet_ntoa(B.peer.sin_addr), ntohs(B.peer.sin_port));
-	} else if (live > 1) {
-		B.have_peer = 0;
-	}
-	B.st.state = live > 1 ? ST_AMBIGUOUS : live ? ST_CONNECTING : ST_SEARCHING;
+		if (now - cands[i].heard < CAND_NS)
+			cands[k++] = cands[i];
+	ncands = k;
+	B.st.state = B.both_ns && now - B.both_ns < CAND_NS ? ST_AMBIGUOUS :
+		     ncands || B.pending || B.have_peer ? ST_CONNECTING : ST_SEARCHING;
+}
+
+/* No link: the handshake's own sends, on the timer. To a fixed peer; with
+ * Peer=auto, to where the handshake under way came from, or to the peer of
+ * the link that went down. (A candidate gets its hello when its beacon
+ * comes, on_beacon.) */
+static void hello_tick(uint64_t now)
+{
+	if (B.up)
+		return;
+	const struct sockaddr_in *to = B.peer_fixed ? &B.peer : B.pending ? &B.p_from : B.have_peer ? &B.peer : NULL;
+	if (!to || now - B.last_hello_ns < (B.pending ? HELLO_NS : 1000000000ull))
+		return;
+	B.last_hello_ns = now;
+	send_hello(B.pending ? B.p_nonce : NULL, to);
+	if (B.pending)
+		send_confirm(B.p_tx, to);
+	else if (B.keyed)
+		send_dgram(K_CONFIRM, BC_SAFETY, "", 0, B.k_tx, to);
 }
 
 /* ---- The status topic ------------------------------------------------------ */
@@ -1537,8 +1625,8 @@ static void publish_status(void)
 	struct bridge_link *s = &B.st;
 	if (B.up)
 		s->state = ST_UP;
-	else if (B.peer_fixed || B.have_peer)
-		s->state = ST_CONNECTING;
+	else if (B.peer_fixed)
+		s->state = ST_CONNECTING; /* Peer=auto: choose_peer says */
 	s->config_match = (uint8_t)(B.up && B.peer_info && B.config_match);
 	s->peer_role = B.keyed ? (uint8_t)(B.vehicle ? 2 : 1) : 0;
 	s->peer_id = B.peer_id;
@@ -1552,7 +1640,8 @@ static void publish_status(void)
 	snprintf(s->detail, sizeof s->detail, "%s",
 		 B.detail[0] ? B.detail :
 		 B.up && !B.peer_info ? "exchanging versions" :
-		 B.up && !B.have_offset ? "no clock estimate: nothing mirrored in" : "");
+		 B.up && !B.have_offset ? "no clock estimate: nothing mirrored in" :
+		 !B.up && s->state == ST_AMBIGUOUS ? "two peers hold the key and answer: none chosen" : "");
 	hg_publish(B.link_pub, s, sizeof *s, now_ns());
 	static char last[160];
 	char line[160];
@@ -1800,20 +1889,14 @@ int main(int argc, char **argv)
 			beacon();
 			last_beacon = now;
 		}
-		choose_peer();
 		if (B.up && now - B.last_rx_ns > LINK_TIMEOUT_NS) {
 			B.up = 0;
 			mod_log(WHO, "link down: nothing heard for %.1f s", (double)(now - B.last_rx_ns) / 1e9);
 		}
+		choose_peer();
 		if (B.nonce_since && now - B.nonce_since > NONCE_NS)
 			new_nonce();
-		if (!B.up && B.have_peer && now - B.last_hello_ns >= (B.pending ? HELLO_NS : 1000000000ull)) {
-			send_hello(B.pending ? B.p_nonce : NULL, NULL);
-			if (B.pending)
-				send_confirm(B.p_tx, NULL);
-			else if (B.keyed)
-				send_keyed(K_CONFIRM, BC_SAFETY, "", 0);
-		}
+		hello_tick(now);
 		if (B.up && now - B.last_ping_ns >= PING_NS)
 			send_ping();
 		if (B.have_offset && B.nsamp && now - B.samp[B.nsamp - 1].at > PING_NS * 5)
