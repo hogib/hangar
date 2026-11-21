@@ -338,13 +338,18 @@ static uint64_t mirrored_bytes(const char *except)
 	DIR *d = opendir(G.conf.topic_dir);
 	if (!d)
 		return 0;
+	int dfd = dirfd(d);
+	if (dfd < 0) {
+		closedir(d);
+		return 0;
+	}
 	uint64_t sum = 0;
 	struct dirent *e;
 	while ((e = readdir(d))) {
 		if (e->d_name[0] == '.' || strcmp(e->d_name, except) == 0 || local_topic(e->d_name))
 			continue;
 		struct stat st;
-		if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode))
+		if (fstatat(dfd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode))
 			sum += (uint64_t)st.st_size;
 	}
 	closedir(d);
