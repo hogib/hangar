@@ -53,7 +53,8 @@ char reason[64]       # why: a refused arm, ArduSub's refusal, a trigger's cause
 **Arming** passes the checklist only if every module named in the `required` parameter
 is `ready` (from `hangar.vehicle.modules`, which also means its rated topics are
 fresh), no failsafe trigger is active, `vehicle.leak` is fresh and dry,
-`power.battery` is fresh and above `battery_min`, and `bridge.vehicle.link` is `up`.
+`power.battery` is fresh and above `battery_min`, and `bridge.vehicle.link` is fresh
+and `up` ([The tether](#failsafe); not on a machine without a bridge, below).
 In phase 1 it also needs ArduSub disarmed, in MANUAL, and reporting the parameters
 `hangar ardusub-setup` set (`FS_*`, the joystick gains, the button functions,
 `SYSID_MYGCS`), as the vehicle's `mavlink` module reads them
@@ -103,9 +104,9 @@ pilot's arm and disarm requests from QGroundControl, commands and buttons alike,
 these calls ([10-mavlink](10-mavlink.md#the-topsides-mavlink-module)). `hangar check`
 run on the topside calls `safety.check` as `topside:admin:<user>`.
 
-The safety module's parameters (the trigger actions, `tether_timeout`, `battery_min`,
-`depth_margin`, `hold_time`, the `required` list) decide what arming checks and what a
-failsafe does. Its `[Params] Allow` is `topside:pilot_console admin topside:admin`; for
+The safety module's parameters (the trigger actions, `tether_enabled`,
+`tether_timeout`, `battery_min`, `depth_margin`, `hold_time`, the `required` list)
+decide what arming checks and what a failsafe does. Its `[Params] Allow` is `topside:pilot_console admin topside:admin`; for
 the safety module the default is none ([05-parameters](05-parameters.md#declaring-parameters)).
 
 ## The actuator gate
@@ -307,6 +308,27 @@ no reading and counts as a message that did not come: the last reading that was 
 number stands until it is stale, and then the input is missing, which is `input`
 while armed and a refusal at the checklist. Without this rule a NaN is the one value
 no comparison ever catches.
+
+**The tether.** The vehicle's bridge publishes `bridge.vehicle.link` at 10 Hz whether
+the link is up or not ([08-bridge](08-bridge.md#link-status)), and the safety module
+reads two things from it, judged apart. The time of the last packet from the topside
+is the newest `last_rx_ns` of a message whose `state` is `up`, and never later than
+that message's own publication. The safety module remembers it: `tether` fires
+`tether_timeout` after that packet, whatever the topic has said, or not said, since.
+A link that drops and returns within the time fires nothing, each packet starts the
+time again, and a bridge that restarts or dies neither starts the time again nor ends
+it. The topic's own staleness (300 ms, three of its periods) means the bridge is dead
+or hung, and is `input` like any other topic the module needs: the bridge is judged
+by its own output, not by what it receives ([00-overview](00-overview.md), principle
+5); with no bridge to report a packet, `tether` joins it at `tether_timeout`. Both
+count while the vehicle is `arming`, `armed` or in failsafe, and `safety.clear` is
+refused while either lasts; disarmed, a lost tether is a refused `arm`.
+
+A machine without a bridge (a bench, a simulation in one root) has no
+`bridge.vehicle.link`. Its safety module runs with the parameter `tether_enabled`
+set to 0: the link is then neither needed to arm nor watched, and `input` does not
+count it. The default is 1, and with it a vehicle with no link topic refuses `arm`,
+naming the topic.
 
 `vehicle.leak` is published at 10 Hz by the `leak` module, which reads the leak probe's
 GPIO line itself, through a device granted to it alone

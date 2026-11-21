@@ -11,6 +11,7 @@
 #                         vehicle's mavlink module
 
 SAFETY_MSG_SRC := msg/safety_state.c msg/safety_params.c msg/mux_params.c msg/leak.c msg/battery.c \
+	msg/bridge_link.c \
 	msg/depth.c msg/ardusub_state.c msg/arm_req.c msg/arm_rep.c msg/check_rep.c msg/empty.c \
 	msg/hangar_modules.c msg/hangar_system.c
 SAFETY_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodules/common -Ihangard/tests

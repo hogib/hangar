@@ -13,7 +13,7 @@ typedef struct safety_params {
     uint8_t action_depth;      // nav.depth beyond the mux's band by depth_margin
     uint8_t action_autopilot;  // ArduSub disagreed, left MANUAL or fell silent
     uint8_t action_input;      // an input the safety module needs went stale
-    uint8_t tether_enabled;    // until the bridge: there is no bridge.vehicle.link; on, the trigger fires at once
+    uint8_t tether_enabled;    // bridge.vehicle.link is watched: arming needs it up, its loss is the tether trigger; 0 without a bridge
     uint8_t leak_required;     // arming needs vehicle.leak fresh and dry; its staleness is an input fault
     uint8_t battery_required;  // arming needs power.battery fresh and above battery_min
     uint8_t depth_required;    // nav.depth stale is an input fault

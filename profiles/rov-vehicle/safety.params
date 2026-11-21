@@ -4,5 +4,10 @@
 # check stays on: the main battery must be connected to arm (on 2026-11-09 the
 # Pixhawk read 0.74 V without it, and safety refused, as it should).
 # Every other field keeps its default (msg/safety_params.msg).
+# The bridge is opt-in in this profile (bridge.module.off): without it nothing
+# publishes bridge.vehicle.link, so the tether is not watched. tools/rov/rov.sh
+# laid out with BRIDGE=1 sets tether_enabled = 1 (the default of docs/07): arming
+# then needs the link up, and its loss for tether_timeout is the tether failsafe.
 leak_required = 0
+tether_enabled = 0
 required = "mux mavlink"

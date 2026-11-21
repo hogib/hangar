@@ -16,6 +16,7 @@
 #include "arm_rep.h"
 #include "arm_req.h"
 #include "battery.h"
+#include "bridge_link.h"
 #include "depth.h"
 #include "empty.h"
 #include "hg_call.h"
@@ -24,7 +25,7 @@
 
 static pid_t mgr;
 static const char *T_safety, *T_fake_mux;
-static hg_pub *P_ap, *P_leak, *P_bat, *P_depth;
+static hg_pub *P_ap, *P_leak, *P_bat, *P_depth, *P_link;
 static hg_sub *S_state;
 static safety_state last_state;
 static int have_state;
@@ -47,6 +48,12 @@ static struct {
 	int arms_served;
 	uint8_t arm_saw_state;  /* safety.state's state when the arm request came */
 	uint64_t next_sensor_ns, next_ap_ns;
+	/* bridge.vehicle.link, as the vehicle's bridge publishes it: nothing
+	 * until a test turns it on (no bridge), then at 10 Hz with this state;
+	 * frozen, last_rx_ns stops advancing (no packet from the topside). */
+	int link_publish, link_frozen;
+	uint8_t link_state;
+	uint64_t link_last_rx, next_link_ns;
 } T = { .publish_leak = 1, .batt_v = 16.0f, .depth_m = 1.0f, .ap_mode = 19, .ap_params = 1, .ap_result = 255 };
 
 static void copy_types(void)
@@ -55,7 +62,7 @@ static void copy_types(void)
 	if (!src || !*src)
 		src = "msg";
 	const char *types[] = { "safety_params", "mux_params", "leak", "battery", "ardusub_state", "arm_req",
-				"arm_rep", "check_rep", NULL };
+				"arm_rep", "check_rep", "bridge_link", NULL };
 	for (int i = 0; types[i]; i++) {
 		char from[1024], to[1024];
 		tfmt(from, sizeof from, "%s/%s.msg", src, types[i]);
@@ -72,7 +79,7 @@ static void write_manifests(void)
 	manifest("safety", "[Module]\nDescription=Vehicle state\nExec=%s\n"
 			   "[Subscribe hangar.vehicle.modules]\n[Subscribe hangar.vehicle.system]\n"
 			   "[Subscribe vehicle.leak]\n[Subscribe power.battery]\n[Subscribe nav.depth]\n"
-			   "[Subscribe ardusub.state]\n[Subscribe mux.params]\n"
+			   "[Subscribe ardusub.state]\n[Subscribe mux.params]\n[Subscribe bridge.vehicle.link]\n"
 			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
 			   "[Params]\nType=safety_params\nAllow=topside:pilot_console admin topside:admin\n"
 			   "[Serve arm]\nRequest=empty\nReply=empty\nAllow=topside:pilot_console topside:topside_mavlink admin topside:admin\n"
@@ -92,6 +99,7 @@ static void write_manifests(void)
 			    "[Publish vehicle.leak]\nType=leak\nRate=10\n"
 			    "[Publish power.battery]\nType=battery\nRate=10\n"
 			    "[Publish nav.depth]\nType=depth\nRate=50\n"
+			    "[Publish bridge.vehicle.link]\nType=bridge_link\nRate=10\n"
 			    "[Serve arm]\nRequest=arm_req\nReply=arm_rep\nAllow=safety\n");
 	manifest("rawcaller", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n[Call safety.disarm]\n");
 }
@@ -298,6 +306,16 @@ static void pump(long ms)
 			T.next_ap_ns = now + 100000000u;
 			publish_ap();
 		}
+		if (now >= T.next_link_ns && T.link_publish) {
+			T.next_link_ns = now + 100000000u;
+			struct bridge_link l;
+			memset(&l, 0, sizeof l);
+			l.state = T.link_state;
+			if (!T.link_frozen)
+				T.link_last_rx = now;
+			l.last_rx_ns = T.link_last_rx;
+			hg_publish(P_link, &l, sizeof l, now);
+		}
 		if (n > 0)
 			hg_wait(subs, n, 5);
 		else
@@ -359,7 +377,8 @@ static void test_start(void)
 	P_leak = hg_pub_open("vehicle.leak", &LEAK_TYPE, NULL);
 	P_bat = hg_pub_open("power.battery", &BATTERY_TYPE, NULL);
 	P_depth = hg_pub_open("nav.depth", &DEPTH_TYPE, NULL);
-	CHECK(S_state && P_ap && P_leak && P_bat && P_depth);
+	P_link = hg_pub_open("bridge.vehicle.link", &BRIDGE_LINK_TYPE, NULL);
+	CHECK(S_state && P_ap && P_leak && P_bat && P_depth && P_link);
 	CHECK_EQ_INT(hg_serve_method("arm", on_arm, NULL), 0);
 	CHECK(wait_safety(0, -1, 3000));
 	CHECK(strcmp(last_state.reason, "start") == 0);
@@ -373,9 +392,14 @@ static void test_start(void)
 	CHECK(strstr(cli_out, "mux not ready") == NULL);
 	CHECK(strstr(cli_out, "vehicle.leak absent") != NULL);
 	CHECK(strstr(cli_out, "ardusub.state absent") != NULL);
+	/* The tether is watched by default (docs/07): with no bridge publishing
+	 * its link, the checklist says so. Every test up to test_tether runs as
+	 * a profile without a bridge does, with tether_enabled = 0. */
+	CHECK(strstr(cli_out, "bridge.vehicle.link absent") != NULL);
 	/* Shorter timeouts for the suite; mux is the one module required. */
 	CHECK_EQ_INT(param_set("safety", "required=mux", "battery_time=0.5", "hold_time=1", "arm_timeout=1"), 0);
-	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "safety", "autopilot_silence=1", (char *)NULL), 0);
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "safety", "autopilot_silence=1", "tether_enabled=0",
+			     (char *)NULL), 0);
 	/* arm is refused while the checklist fails, naming the first failure. */
 	CHECK_EQ_INT(call("arm"), 1);
 	CHECK(strstr(cli_out, "HG_E_REFUSED") != NULL);
@@ -922,6 +946,158 @@ static void test_request_from_before_start(void)
 	clear_ok();
 }
 
+/* Says what the bridge's link topic says from now on. */
+static void link_say(int publish, uint8_t state, int frozen)
+{
+	T.link_publish = publish;
+	T.link_state = state;
+	T.link_frozen = frozen;
+	T.next_link_ns = 0;
+}
+
+/* The tether trigger (docs/07 "Failsafe", bit 1) and the checklist's "the
+ * link is up". Before, with tether_enabled the trigger fired at once whatever
+ * the link said, and without it a vehicle that lost its tether kept its last
+ * mode. tether_timeout is 1 s here (3 s by default). The link's states are
+ * msg/bridge_link.msg's: 1 searching, 2 connecting, 3 up. */
+static void test_tether(void)
+{
+	const uint32_t TETHER = 1u << 1, INPUT = 1u << 7;
+	CHECK_EQ_INT(last_state.state, 0);
+	/* No bridge and tether_enabled = 0: the checklist passes with no link
+	 * topic, as it has for every arm of this suite so far. */
+	pump(300);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
+	/* Enabled, and still no bridge: refused by name, not silently armed. */
+	CHECK_EQ_INT(param_set("safety", "tether_enabled=1", "tether_timeout=1", NULL, NULL), 0);
+	pump(200);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "0") == 0);
+	CHECK(strstr(cli_out, "bridge.vehicle.link absent") != NULL);
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "HG_E_REFUSED") != NULL && strstr(cli_out, "bridge.vehicle.link absent") != NULL);
+	/* A bridge that has not found the topside: the link is not up. */
+	link_say(1, 1, 1);
+	pump(300);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "0") == 0);
+	CHECK(strstr(cli_out, "bridge.vehicle.link searching") != NULL);
+	if (!strstr(cli_out, "bridge.vehicle.link searching"))
+		printf("    check: %s\n", cli_out);
+	CHECK_EQ_INT(call("arm"), 1);
+	pump(100);
+	CHECK_EQ_INT(last_state.state, 0);
+	/* Up, with packets: arms, and stays armed for two timeouts. */
+	link_say(1, 3, 0);
+	pump(300);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
+	arm_ok();
+	pump(2000);
+	CHECK_EQ_INT(last_state.state, 1);
+	/* A flap shorter than tether_timeout fires nothing: down 500 ms, and
+	 * then up for longer than the rest of the timeout. */
+	link_say(1, 2, 1);
+	pump(500);
+	link_say(1, 3, 0);
+	pump(1200);
+	CHECK_EQ_INT(last_state.state, 1);
+	/* Nor do several in a row whose sum is longer than the timeout: each
+	 * packet starts the time again. */
+	for (int i = 0; i < 4; i++) {
+		link_say(1, 1, 1);
+		pump(400);
+		link_say(1, 3, 0);
+		pump(200);
+	}
+	CHECK_EQ_INT(last_state.state, 1);
+	CHECK_EQ_INT(last_state.triggers, 0);
+	/* The link reported down while armed: tether, neutral, tether_timeout
+	 * after the last packet (the last message that said `up` was published
+	 * within the 100 ms before t0). */
+	pump(200);
+	link_say(1, 1, 1);
+	uint64_t t0 = now_ms();
+	CHECK(wait_safety(2, 0, 5000));
+	uint64_t dt = now_ms() - t0;
+	CHECK_EQ_INT(last_state.triggers, TETHER);
+	CHECK(!last_state.outputs_enabled);
+	CHECK(strcmp(last_state.by, "tether") == 0);
+	CHECK(strstr(last_state.reason, "tether: no packet from the topside for") != NULL);
+	if (!strstr(last_state.reason, "tether: no packet"))
+		printf("    reason: %s\n", last_state.reason);
+	CHECK(dt >= 850 && dt < 4000);
+	printf("    tether fired %llu ms after the link went down (tether_timeout 1 s)\n", (unsigned long long)dt);
+	/* clear is refused while the tether is lost, and passes once it is back. */
+	T.ap_armed = 0;
+	pump(200);
+	CHECK_EQ_INT(call("clear"), 1);
+	CHECK(strstr(cli_out, "active: tether") != NULL);
+	link_say(1, 3, 0);
+	pump(300);
+	clear_ok();
+	CHECK_EQ_INT(last_state.triggers, 0);
+	/* Disarmed, a lost tether is no failsafe (a vehicle on deck with the
+	 * topside off), for any length of time; it is a refused arm. */
+	link_say(1, 1, 1);
+	pump(2500);
+	CHECK_EQ_INT(last_state.state, 0);
+	CHECK_EQ_INT(last_state.triggers, 0);
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "bridge.vehicle.link searching") != NULL);
+	pump(100);
+	CHECK_EQ_INT(last_state.state, 0);
+	link_say(1, 3, 0);
+	pump(300);
+	/* The bridge dead while armed: its link topic goes stale, which is the
+	 * `input` trigger after the topic's 300 ms, and no message says a packet
+	 * came, so `tether` joins at tether_timeout. */
+	arm_ok();
+	pump(200);
+	link_say(0, 3, 0);
+	t0 = now_ms();
+	CHECK(wait_safety(2, 0, 3000));
+	dt = now_ms() - t0;
+	CHECK(last_state.triggers & INPUT);
+	CHECK(!last_state.outputs_enabled);
+	if (last_state.triggers == INPUT)
+		CHECK(strstr(last_state.reason, "input: bridge.vehicle.link stale") != NULL);
+	CHECK(dt >= 150 && dt < 2500);
+	printf("    a dead bridge fired input after %llu ms\n", (unsigned long long)dt);
+	while (!(last_state.triggers & TETHER) && now_ms() - t0 < 5000)
+		pump(20);
+	dt = now_ms() - t0;
+	CHECK_EQ_INT(last_state.triggers, TETHER | INPUT);
+	CHECK(dt >= 850);
+	printf("    and tether %llu ms after its last message\n", (unsigned long long)dt);
+	T.ap_armed = 0;
+	pump(200);
+	CHECK_EQ_INT(call("clear"), 1);
+	link_say(1, 3, 0);
+	pump(400);
+	clear_ok();
+	/* The trigger's action is a parameter like the others': surface keeps
+	 * the outputs on. */
+	CHECK_EQ_INT(param_set("safety", "action_tether=1", NULL, NULL, NULL), 0);
+	arm_ok();
+	pump(200);
+	link_say(1, 2, 1);
+	CHECK(wait_safety(2, 1, 5000));
+	CHECK_EQ_INT(last_state.triggers, TETHER);
+	CHECK(last_state.outputs_enabled);
+	link_say(1, 3, 0);
+	T.ap_armed = 0;
+	pump(300);
+	clear_ok();
+	/* As before for the tests that follow: no bridge, the trigger off. */
+	CHECK_EQ_INT(param_set("safety", "action_tether=0", "tether_enabled=0", "tether_timeout=3", NULL), 0);
+	link_say(0, 0, 0);
+	pump(500);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
+}
+
 /* A hold lasts hold_time from when it began. hold_since was not latched, so
  * a module restarted during the hold began it again at each start: with
  * hold_time 6 s and a crash at 2 s and at 4 s the hold ended 10 s after it
@@ -1047,6 +1223,7 @@ static void test_shutdown(void)
 	hg_pub_close(P_leak);
 	hg_pub_close(P_bat);
 	hg_pub_close(P_depth);
+	hg_pub_close(P_link);
 	CHECK_EQ_INT(manager_stop(mgr), 0);
 	CHECK(file_contains(T_log, "safety: pid"));
 }
@@ -1079,6 +1256,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_latch_unreadable);
 	RUN_TEST(test_request_from_before_start);
 	RUN_TEST(test_hold_across_restarts);
+	RUN_TEST(test_tether);
 	RUN_TEST(test_module_trigger);
 	RUN_TEST(test_allow);
 	RUN_TEST(test_shutdown);

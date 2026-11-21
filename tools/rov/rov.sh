@@ -101,6 +101,11 @@ lay_out() { # root profile
                -e "s|^Peer=192\.168\.2\.1$|Peer=$GCS_IP|" -e "s|^Peer=192\.168\.2\.10$|Peer=$ROV_IP|" \
             "$root/etc/hangar/bridge.conf"
         install -m 600 "$STATE/bridge.key" "$root/etc/hangar/bridge.key"
+        # With a bridge the tether is watched (docs/07 "Failsafe"): the profile's
+        # safety.params says tether_enabled = 0 for the layout without one.
+        if [ -e "$root/var/lib/hangar/safety/params" ]; then
+            sed -i -e 's|^tether_enabled = 0$|tether_enabled = 1|' "$root/var/lib/hangar/safety/params"
+        fi
     fi
     if [ -n "$ENCODER_SOURCE" ] && [ -e "$root/etc/hangar/encoder.conf" ]; then
         sed -i "s|^Source=.*|Source=$ENCODER_SOURCE|" "$root/etc/hangar/encoder.conf"

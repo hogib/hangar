@@ -23,7 +23,9 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   was sent: send it again": docs/07 "A request from before a restart".
 - The checklist: every module of `required` ready in `hangar.vehicle.modules`, no
   trigger active, `vehicle.leak` fresh and dry, `power.battery` fresh and above
-  `battery_min`, `nav.depth` fresh, and, with an autopilot behind the actuators,
+  `battery_min`, `nav.depth` fresh, `bridge.vehicle.link` fresh and `up` with a packet
+  from the topside within `tether_timeout` (with `tether_enabled`), and, with an
+  autopilot behind the actuators,
   `ardusub.state` fresh, disarmed, in MANUAL, with `params` 1. A refusal names the
   first check that failed; `check` names them all.
 - Arming is asynchronous: `accepted` at once; `armed` when `ardusub.state` reports
@@ -36,7 +38,8 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   the mux's band, read from `mux.params`, by `depth_margin`), `autopilot` (the armed
   agreement judged against the `safety.state` each `ardusub.state` references, a
   self-disarm while armed, a mode other than MANUAL, silence for
-  `autopilot_silence`), `estop`, `input` (a required input stale or absent). A
+  `autopilot_silence`), `estop`, `input` (a required input stale or absent). The
+  tether, below. A
   message whose voltage or depth is not a number (NaN, an infinity) is a message that
   did not come: the last reading that was a number is judged while it is fresh by the
   topic's own rule, and after that the input is missing, named `power.battery voltage
@@ -65,6 +68,41 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
   across any number of restarts of the module, and a hold whose beginning is not
   known (a latch from before a reboot, whose time is of another clock; a latch
   without the line) is over, neutral.
+
+## The tether
+
+`bridge.vehicle.link` (`bridge.topside.link` under a topside role), every message of
+it, not only the newest:
+
+- **The last packet** is the newest `last_rx_ns` of a message whose `state` is `up`
+  (3), cut to that message's publish time (a message cannot report a packet from
+  after it was published; `last_rx_ns` is this machine's `CLOCK_MONOTONIC`). It is
+  kept in the module, so a later message with `last_rx_ns` 0 (a restarted bridge) or
+  no message at all (a dead one) changes nothing.
+- **`tether`** (bit 1, `action_tether`, neutral by default) is active while `now -
+  last packet >= tether_timeout` (3 s; 0.5 to 60), or while no packet is known at all
+  (reason `tether: no packet from the topside yet`). The reason gives the time: `tether:
+  no packet from the topside for 3.0 s`. A link down for less than `tether_timeout`
+  fires nothing, and any number of such outages in a row fire nothing, since each
+  packet starts the time again.
+- **`input`** (bit 7) is active while the link topic is stale by its own rule (300 ms
+  from the manager's wiring of the bridge) or absent: reason `input:
+  bridge.vehicle.link stale`. A dead bridge therefore gives `input` after 300 ms and
+  `tether` as well at `tether_timeout`.
+- Both count while `arming`, `armed` or in failsafe (deviation 1) and block `clear`
+  while they last. Disarmed they are the checklist's refusal, by name:
+  `bridge.vehicle.link absent`, `... stale`, `... searching` (the link's state when it
+  is not `up`), or the tether reason when the link says `up` with an old packet.
+- **`tether_enabled`** (default 1) turns all of it off at 0: no checklist item, no
+  `tether`, the link not counted by `input`. A machine without a bridge sets 0, as
+  every profile under `profiles/` does (`rov.sh` sets 1 when it lays out the bridge
+  with `BRIDGE=1`). With 1 and no bridge, `arm` is refused with `bridge.vehicle.link
+  absent`; so is it when the manifest lacks `[Subscribe bridge.vehicle.link]` (logged
+  at start).
+- The link's `state` alone fires nothing: `connecting` with a recent packet is within
+  the time. The bridge itself calls the link down 3 s after its last packet
+  (`LINK_TIMEOUT_NS`), so with the default `tether_timeout` the two agree; a shorter
+  `tether_timeout` fires before the bridge says down, a longer one after.
 
 ## Deviations from docs/07, and why
 
@@ -105,11 +143,10 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
 
 ## Until the bridge
 
-- `tether`: there is no `bridge.vehicle.link`; `tether_enabled` is off by default and,
-  on, fires at once with the reason "no bridge.vehicle.link (until the bridge)", so
-  that enabling it is never silent. `tether_timeout` is kept for the module that will
-  read the link.
-- The checklist's "`bridge.vehicle.link` is `up`" is skipped.
+- The vehicle's `mavlink` module does not yet stop `MANUAL_CONTROL` at
+  `tether_timeout` (docs/07 "ArduSub's own failsafes", docs/10): with `action_tether`
+  `surface` or `hold`, ArduSub's GCS failsafe does not stand behind the trigger. With
+  the default, `neutral`, hangar disarms ArduSub.
 - `topside:topside_mavlink` and the other topside tokens pass through the same-host
   shim (`lib/hg/NOTES.md`, "Phase 1"): a request read from the other root's `.req`
   file is a mirrored request to the library. With the bridge the same code reads the
@@ -130,7 +167,17 @@ input's staleness (≈300 ms), hold to neutral with the controller stopped and a
 `hold_time`; the latch across `hangar restart` with `arm` refused until `clear`; the
 `module` trigger through a crasher, `clear` refused by the manager while it is failed
 and accepted once it runs; `arm`/`clear`/`set_params` denied to an unlisted module,
-`disarm`/`estop`/`check` open to any. `test_not_a_number`: with NaN volts, then an
+`disarm`/`estop`/`check` open to any. `test_tether`, with `tether_timeout` 1 s and the
+suite publishing `bridge.vehicle.link`: enabled with no link topic, and with a link
+`searching`, `check` and `arm` refuse by name; with the link up the vehicle arms and
+stays armed; a 500 ms outage, and four 400 ms outages in a row, fire nothing; the link
+down while armed is `tether`, neutral, 0.9 s after it went down, `clear` refused until
+it is back; down for 2.5 s while disarmed is no failsafe and a refused `arm`; the
+topic stopped while armed (a dead bridge) is `input` after 0.2 to 0.3 s and `tether`
+with it at 0.9 s; with `action_tether` 1 the outputs stay on. Every other test of the
+suite runs with `tether_enabled = 0` and no link topic, as a profile without a bridge
+does. Before, the trigger did not read the link: off, a lost tether did nothing; on,
+it fired at once. `test_not_a_number`: with NaN volts, then an
 infinite depth, `check` and `arm` refuse by name; armed, each becomes the `input`
 trigger (neutral) with `clear` refused while it lasts; forty depth messages of which
 every other one is NaN fire nothing; with `battery_required = 0` NaN volts arm and

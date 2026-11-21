@@ -12,6 +12,9 @@ Exec=/usr/lib/hangar/hangar-safety
 [Subscribe power.battery]
 [Subscribe nav.depth]
 [Subscribe ardusub.state]
+# No bridge in this profile: safety.params sets tether_enabled = 0, and nothing
+# publishes the topic.
+[Subscribe bridge.vehicle.link]
 [Subscribe mux.params]
 
 [Publish safety.state]

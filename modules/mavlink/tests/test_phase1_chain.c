@@ -144,7 +144,7 @@ static void write_vehicle(void)
 	/* The safety module's saved parameters: no leak module in this chain. */
 	tfmt(latch_params, sizeof latch_params, "%s/var/lib/hangar/safety/params", root_v);
 	write_file(latch_params, "# hangar parameters: safety_params\n# version 1, set by test, 2026-11-07T00:00:00Z\n"
-				 "leak_required = 0\nrequired = \"mux mavlink\"\nbattery_min = 10\n");
+				 "leak_required = 0\ntether_enabled = 0\nrequired = \"mux mavlink\"\nbattery_min = 10\n");
 	use_root(0);
 	manifest("safety", "[Module]\nDescription=Vehicle state\nExec=%s\n"
 			   "[Subscribe hangar.vehicle.modules]\n[Subscribe hangar.vehicle.system]\n"

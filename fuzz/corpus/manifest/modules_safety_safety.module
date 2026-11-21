@@ -8,11 +8,15 @@ Exec=/usr/lib/hangar/hangar-safety
 # system (the `module` trigger).
 [Subscribe hangar.vehicle.modules]
 [Subscribe hangar.vehicle.system]
-# The inputs the triggers watch. bridge.vehicle.link waits for the bridge.
+# The inputs the triggers watch.
 [Subscribe vehicle.leak]
 [Subscribe power.battery]
 [Subscribe nav.depth]
 [Subscribe ardusub.state]
+# The tether, from the vehicle's bridge. A machine without a bridge module
+# sets tether_enabled = 0 in the safety module's parameters: nothing
+# publishes the topic there, and arming would be refused for it.
+[Subscribe bridge.vehicle.link]
 # The mux's envelope gives the depth band the `depth` trigger watches.
 [Subscribe mux.params]
 

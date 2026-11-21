@@ -6,8 +6,7 @@
  * triggers; latches a failsafe in its state directory so that a restart comes
  * back in it; and arms ArduSub through mavlink.arm asynchronously, after the
  * `arming` message is out (docs/10 "Arming and failsafe"). Parameters:
- * msg/safety_params.msg. What waits for the bridge is marked
- * `until the bridge`; modules/safety/README.md lists every deviation. */
+ * msg/safety_params.msg. modules/safety/README.md lists every deviation. */
 #include "mod.h"
 
 #include <ctype.h>
@@ -18,6 +17,7 @@
 #include "arm_rep.h"
 #include "arm_req.h"
 #include "battery.h"
+#include "bridge_link.h"
 #include "check_rep.h"
 #include "depth.h"
 #include "empty.h"
@@ -332,6 +332,8 @@ static int module_ready(const char *name, uint64_t now)
 	return 0;
 }
 
+static void read_link(void); /* the tether, below */
+
 static void read_inputs(uint64_t now)
 {
 	read_modules(now);
@@ -364,6 +366,7 @@ static void read_inputs(uint64_t now)
 		IN.have_depth_m = 1;
 	}
 	mod_latest(sub_mux_params, IN.mux_params_buf, sizeof IN.mux_params_buf, &IN.mux_info, &IN.have_mux);
+	read_link();
 	/* ardusub.state: every message is judged, not only the newest, since a
 	 * disagreement is "the first such message" (docs/10). */
 	struct ardusub_state ap;
@@ -429,6 +432,81 @@ static const char *depth_missing(void)
 	return !IN.have_depth ? "absent" : !isfinite(IN.depth.depth_m) ? "depth not a number" : "stale";
 }
 
+/* ---- The tether (docs/07 "Failsafe", bit 1; docs/08 "Link status") ---------------- */
+
+/* bridge.<role>.link, which the machine's bridge publishes at 10 Hz whether
+ * the link is up or not. Two things are read from it, and they are judged
+ * apart:
+ *  - the topic's own freshness says whether the bridge runs (a dead or hung
+ *    bridge is the `input` trigger, like any input this module needs);
+ *  - the time of the last packet from the topside: the newest last_rx_ns that
+ *    a message with state `up` carried. It is remembered here, so a bridge
+ *    that restarts (last_rx_ns 0, searching) or dies does not start the time
+ *    again and does not end it either: `tether` fires tether_timeout after
+ *    the last packet whatever the bridge has done since.
+ * A message cannot claim a packet later than its own publication: last_rx_ns
+ * is on this machine's CLOCK_MONOTONIC, and a value ahead of it is not a
+ * time. NULL when the wiring has no such subscription (a manifest from before
+ * the bridge): the link is then absent, which the checklist says by name. */
+#define LINK_UP 3
+static hg_sub *sub_link;
+static char link_topic[40];
+static struct {
+	struct bridge_link link;
+	struct hg_info info;
+	int have;
+	uint64_t contact_ns; /* 0: no packet from the topside known */
+} TE;
+
+static void read_link(void)
+{
+	if (!sub_link)
+		return;
+	struct bridge_link l;
+	struct hg_info info;
+	enum hg_result r;
+	/* Every message, not only the newest: a packet reported between two
+	 * reads counts, whatever the message after it says. */
+	while ((r = hg_next(sub_link, &l, sizeof l, &info)) == HG_MSG) {
+		TE.link = l;
+		TE.info = info;
+		TE.have = 1;
+		if (l.state == LINK_UP && l.last_rx_ns) {
+			uint64_t at = l.last_rx_ns < info.publish_ns ? l.last_rx_ns : info.publish_ns;
+			if (at > TE.contact_ns)
+				TE.contact_ns = at;
+		}
+	}
+	if (r == HG_ABSENT)
+		TE.have = 0;
+}
+
+static int link_fresh(uint64_t now)
+{
+	return sub_link && TE.have && mod_fresh(sub_link, &TE.info, now);
+}
+
+static const char *link_state_name(uint8_t st)
+{
+	static const char *const names[] = { "off", "searching", "connecting", "up", "ambiguous", "refused" };
+	return st < 6 ? names[st] : "in an unknown state";
+}
+
+/* 1 when no packet from the topside has come for tether_timeout, with the
+ * trigger's reason. */
+static int tether_lost(uint64_t now, char reason[64])
+{
+	if (!TE.contact_ns) {
+		mod_fmt(reason, 64, "tether: no packet from the topside yet");
+		return 1;
+	}
+	if (now > TE.contact_ns && now - TE.contact_ns >= mod_s_to_ns(P.tether_timeout)) {
+		mod_fmt(reason, 64, "tether: no packet from the topside for %.1f s", (double)(now - TE.contact_ns) / 1e9);
+		return 1;
+	}
+	return 0;
+}
+
 /* ---- The triggers (docs/07 "Failsafe") ----------------------------------------- */
 
 /* The triggers active now, with one reason per bit in reasons[8]. The
@@ -454,11 +532,8 @@ static uint32_t active_triggers(uint64_t now, char reasons[8][64], int all)
 	}
 	if (!all)
 		return t;
-	if (P.tether_enabled) {
-		/* until the bridge: there is no bridge.vehicle.link to watch. */
+	if (P.tether_enabled && tether_lost(now, reasons[1]))
 		t |= TRG_TETHER;
-		mod_fmt(reasons[1], 64, "tether: no bridge.vehicle.link (until the bridge)");
-	}
 	int leak_fresh = IN.have_leak && mod_fresh(sub_leak, &IN.leak_info, now);
 	int bat_fresh = bat_usable(now);
 	int depth_fresh = depth_usable(now);
@@ -523,6 +598,11 @@ static uint32_t active_triggers(uint64_t now, char reasons[8][64], int all)
 		input = 1;
 		if (!r[0])
 			mod_fmt(r, 64, "input: nav.depth %s", depth_missing());
+	}
+	if (P.tether_enabled && !link_fresh(now)) {
+		input = 1;
+		if (!r[0])
+			mod_fmt(r, 64, "input: %s %s", link_topic, TE.have ? "stale" : "absent");
 	}
 	if (input)
 		t |= TRG_INPUT;
@@ -618,7 +698,8 @@ static int checklist(uint64_t now, char *detail, size_t len)
 		if (!module_ready(tok, now))
 			FAIL("%s not ready", tok);
 	char reasons[8][64];
-	uint32_t t = active_triggers(now, reasons, 1) & ~TRG_INPUT; /* the inputs are checked below, by name */
+	/* The inputs, and the tether with them, are checked below, by name. */
+	uint32_t t = active_triggers(now, reasons, 1) & ~(TRG_INPUT | TRG_TETHER);
 	for (int i = 0; i < 8; i++)
 		if (t & (1u << i))
 			FAIL("trigger %s", reasons[i]);
@@ -636,7 +717,15 @@ static int checklist(uint64_t now, char *detail, size_t len)
 	}
 	if (P.depth_required && !depth_usable(now))
 		FAIL("nav.depth %s", depth_missing());
-	/* until the bridge: bridge.vehicle.link up is not checked; there is none. */
+	if (P.tether_enabled) {
+		char why[64];
+		if (!link_fresh(now))
+			FAIL("%s %s", link_topic, TE.have ? "stale" : "absent");
+		else if (TE.link.state != LINK_UP)
+			FAIL("%s %s", link_topic, link_state_name(TE.link.state));
+		else if (tether_lost(now, why))
+			FAIL("%s", why);
+	}
 	if (have_autopilot) {
 		if (!IN.have_ap)
 			FAIL("ardusub.state absent");
@@ -970,6 +1059,12 @@ int main(int argc, char **argv)
 	sub_depth = hg_sub_open("nav.depth", &DEPTH_TYPE);
 	sub_ardusub = hg_sub_open("ardusub.state", &ARDUSUB_STATE_TYPE);
 	sub_mux_params = hg_sub_open("mux.params", NULL);
+	mod_fmt(link_topic, sizeof link_topic, "bridge.%s.link",
+		w && strcmp(w->role, "topside") == 0 ? "topside" : "vehicle");
+	sub_link = hg_sub_open(link_topic, &BRIDGE_LINK_TYPE);
+	if (!sub_link)
+		mod_log(WHO, "%s: %s: with tether_enabled, arming is refused (a manifest without the subscription?)",
+			link_topic, strerror(errno));
 	if (!sub_modules || !sub_system || !sub_leak || !sub_battery || !sub_depth || !sub_ardusub || !sub_mux_params) {
 		mod_log(WHO, "hg_sub_open: %s", strerror(errno));
 		return 4;
@@ -994,6 +1089,8 @@ int main(int argc, char **argv)
 	subs[n++] = sub_depth;
 	subs[n++] = sub_ardusub;
 	subs[n++] = sub_mux_params;
+	if (sub_link)
+		subs[n++] = sub_link;
 	int nc = hg_call_subs(subs + n, HG_MAX_WAIT - n);
 	if (nc < 0) {
 		mod_log(WHO, "hg_call_subs: %s", strerror(errno));

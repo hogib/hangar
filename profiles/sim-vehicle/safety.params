@@ -3,5 +3,8 @@
 # The development demo has no leak module (docs/14: the sim profile's leak module
 # reads a gpio-sim line; not built yet), so arming does not wait for vehicle.leak.
 # Every other field keeps its default (msg/safety_params.msg).
+# No bridge either (the two roles share the host through the shim), so the tether
+# is not watched: tether_enabled = 0.
 leak_required = 0
+tether_enabled = 0
 required = "mux mavlink"

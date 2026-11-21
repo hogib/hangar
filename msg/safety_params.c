@@ -10,7 +10,7 @@ static const struct hg_field safety_params_fields[20] = {
     {"action_depth", HG_U8, 1, 4, "nav.depth beyond the mux's band by depth_margin"},
     {"action_autopilot", HG_U8, 1, 5, "ArduSub disagreed, left MANUAL or fell silent"},
     {"action_input", HG_U8, 1, 6, "an input the safety module needs went stale"},
-    {"tether_enabled", HG_U8, 1, 7, "until the bridge: there is no bridge.vehicle.link; on, the trigger fires at once"},
+    {"tether_enabled", HG_U8, 1, 7, "bridge.vehicle.link is watched: arming needs it up, its loss is the tether trigger; 0 without a bridge"},
     {"leak_required", HG_U8, 1, 8, "arming needs vehicle.leak fresh and dry; its staleness is an input fault"},
     {"battery_required", HG_U8, 1, 9, "arming needs power.battery fresh and above battery_min"},
     {"depth_required", HG_U8, 1, 10, "nav.depth stale is an input fault"},
@@ -38,7 +38,7 @@ const struct hg_type SAFETY_PARAMS_TYPE = {
         "u8   action_depth = 1      [0, 2]      # nav.depth beyond the mux's band by depth_margin\n"
         "u8   action_autopilot = 0  [0, 2]      # ArduSub disagreed, left MANUAL or fell silent\n"
         "u8   action_input = 0      [0, 2]      # an input the safety module needs went stale\n"
-        "u8   tether_enabled = 0    [0, 1]      # until the bridge: there is no bridge.vehicle.link; on, the trigger fires at once\n"
+        "u8   tether_enabled = 1    [0, 1]      # bridge.vehicle.link is watched: arming needs it up, its loss is the tether trigger; 0 without a bridge\n"
         "u8   leak_required = 1     [0, 1]      # arming needs vehicle.leak fresh and dry; its staleness is an input fault\n"
         "u8   battery_required = 1  [0, 1]      # arming needs power.battery fresh and above battery_min\n"
         "u8   depth_required = 1    [0, 1]      # nav.depth stale is an input fault\n"
@@ -52,7 +52,7 @@ const struct hg_type SAFETY_PARAMS_TYPE = {
         "f32  autopilot_silence = 3 [0.5, 60]   # s without any message from ArduSub\n"
         "char required[256] = \"mux mavlink\"     # modules that must be ready to arm, blank-separated\n"
         ,
-    .schema_bytes = 1876,
+    .schema_bytes = 1898,
     .hash = 0x2dc5fe1a5eab1e9aull,   // FNV-1a 64 of the canonical form
     .payload_bytes = 296,
     .n_fields = 20,
@@ -67,7 +67,7 @@ const struct hg_param_meta SAFETY_PARAMS_META[20] = {
     {"1", "0", "2", 0},              // action_depth
     {"0", "0", "2", 0},              // action_autopilot
     {"0", "0", "2", 0},              // action_input
-    {"0", "0", "1", 0},              // tether_enabled
+    {"1", "0", "1", 0},              // tether_enabled
     {"1", "0", "1", 0},              // leak_required
     {"1", "0", "1", 0},              // battery_required
     {"1", "0", "1", 0},              // depth_required
