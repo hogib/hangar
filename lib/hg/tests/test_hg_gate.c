@@ -141,38 +141,77 @@ static void test_open_closed_stale(void)
 	CHECK_EQ_INT(hg_gate_command_info(g)->seq, 2);
 	w = hg_gate_check(g, &why);
 	CHECK(w && w[0] == -0.5f && hg_gate_command_info(g)->seq == 2);
-	/* The command ages past CommandTimeout while the safety state stays fresh. */
-	sleep_ms(120);
-	pub_safety(1, 1);
-	sleep_ms(120);
-	CHECK(hg_gate_check(g, &why) == NULL);
-	CHECK(why && strncmp(why, "command stale ", 14) == 0);
-	if (why)
-		printf("    %s\n", why);
+	/* The command ages past CommandTimeout (200 ms) while the safety state
+	 * stays fresh: a command published 240 ms ago against a safety state
+	 * published 120 ms ago. The two sleeps are lower bounds only. When the
+	 * machine was late enough for the safety state to pass its own 300 ms
+	 * (the gate says so: hg_gate_safety is the age it judged), that is not
+	 * the case under test and it is set up again, rather than the sleeps
+	 * being trusted to end on time. */
+	struct hg_gate_safety s;
+	int seen = 0;
+	for (int attempt = 0; attempt < 30 && !seen; attempt++) {
+		pub_safety(1, 1);
+		pub_cmd(-0.5f);
+		sleep_ms(120);
+		pub_safety(1, 1);
+		sleep_ms(120);
+		const float *r = hg_gate_check(g, &why);
+		hg_gate_safety(g, &s);
+		if (!s.fresh)
+			continue;
+		CHECK(r == NULL);
+		CHECK(why && strncmp(why, "command stale ", 14) == 0);
+		if (why)
+			printf("    %s (the safety state %llu ms old)\n", why, (unsigned long long)(s.age_ns / 1000000u));
+		seen = 1;
+	}
+	CHECK(seen);
 	/* A fresh command, but the safety state is now older than SafetyTimeout
-	 * (published 120 ms ago; 200 ms more passes 300). */
-	sleep_ms(200);
+	 * (published at least 120 ms ago; 250 ms more passes 300, and a late
+	 * machine only adds to it). The safety state is judged first, so this
+	 * is the reason whatever the command's age. */
+	sleep_ms(250);
 	pub_cmd(0.1f);
 	CHECK(hg_gate_check(g, &why) == NULL);
 	CHECK(why && strncmp(why, "safety state stale ", 19) == 0);
 	if (why)
 		printf("    %s\n", why);
-	struct hg_gate_safety s;
 	hg_gate_safety(g, &s);
 	CHECK(s.present && !s.fresh && s.age_ns > 300000000ull);
 	/* Both fresh again: open. The boundary: a safety state 250 ms old is
-	 * within 300 ms, one 350 ms old is not. */
-	pub_safety(1, 1);
-	pub_cmd(0.2f);
-	CHECK(hg_gate_check(g, &why) != NULL);
-	sleep_ms(250);
-	pub_cmd(0.3f);
-	w = hg_gate_check(g, &why);
-	CHECK(w != NULL && w[0] == 0.3f);
+	 * within 300 ms, one 350 ms old is not. The first half needs the check
+	 * to come between 250 and 300 ms after the publish, which a sleep
+	 * cannot promise (the 50 ms of margin failed in CI). The attempt counts
+	 * when the age the gate judged was within the timeout, and is made
+	 * again when the machine was late. What is checked is not weaker: a
+	 * safety state seen at 250 ms or more, and no more than 300, with a
+	 * fresh command, is an open gate. */
+	int within = 0;
+	for (int attempt = 0; attempt < 40 && !within; attempt++) {
+		pub_safety(1, 1);
+		pub_cmd(0.2f);
+		sleep_ms(250);
+		pub_cmd(0.3f);
+		uint64_t t_cmd = hg_now_ns();
+		w = hg_gate_check(g, &why);
+		uint64_t cmd_age_ms = ms_since(t_cmd);
+		hg_gate_safety(g, &s);
+		if (!s.fresh || cmd_age_ms >= 150)
+			continue; /* late: past SafetyTimeout, or stalled between the publish and the check */
+		CHECK(s.age_ns >= 250000000ull && s.age_ns <= 300000000ull);
+		CHECK(w != NULL && w[0] == 0.3f);
+		CHECK(why && strcmp(why, "open") == 0);
+		printf("    open with the safety state %llu ms old\n", (unsigned long long)(s.age_ns / 1000000u));
+		within = 1;
+	}
+	CHECK(within);
 	sleep_ms(100);
 	pub_cmd(0.4f);
 	CHECK(hg_gate_check(g, &why) == NULL);
 	CHECK(why && strncmp(why, "safety state stale ", 19) == 0);
+	hg_gate_safety(g, &s);
+	CHECK(!s.fresh && s.age_ns > 300000000ull);
 	/* A disarm closes the gate at once, whatever the command. */
 	pub_safety(0, 0);
 	pub_cmd(0.5f);
@@ -305,11 +344,25 @@ static void test_flagged_command(void)
 	hg_sub *depth_sub = hg_sub_open("nav.depth", NULL);
 	CHECK(depth_sub != NULL);
 	struct depth d = { 3.0f, 20.0f, 1300.0f };
-	CHECK_EQ_INT(hg_publish(P_depth, &d, sizeof d, hg_now_ns()), 0);
-	struct hg_input ref = { .topic_id = hg_topic_id("nav.depth"), .seq = hg_pub_next_seq(P_depth) - 1 };
+	struct hg_input ref = { .topic_id = hg_topic_id("nav.depth"), .seq = 0 };
 	float w[6] = { 0.6f, 0, 0, 0, 0, 0 };
-	CHECK_EQ_INT(hg_publish_with(P_cmd, w, sizeof w, hg_now_ns(), 0, &ref, 1), 0);
-	const float *c = hg_gate_check(g, &why);
+	const float *c = NULL;
+	/* nav.depth is stale 60 ms after its publish: the command must be
+	 * published within that, which adjacent calls do unless the machine
+	 * stalls between them; then they are made again. A gate closed within
+	 * 40 ms of a fresh nav.depth is not lateness, and fails. */
+	for (int attempt = 0; attempt < 20 && !c; attempt++) {
+		uint64_t t0 = hg_now_ns();
+		CHECK_EQ_INT(hg_publish(P_depth, &d, sizeof d, hg_now_ns()), 0);
+		ref.seq = hg_pub_next_seq(P_depth) - 1;
+		pub_safety(1, 1);
+		CHECK_EQ_INT(hg_publish_with(P_cmd, w, sizeof w, hg_now_ns(), 0, &ref, 1), 0);
+		c = hg_gate_check(g, &why);
+		if (!c && ms_since(t0) < 40) {
+			printf("    closed %llu ms after a fresh nav.depth: %s\n", (unsigned long long)ms_since(t0), why);
+			break;
+		}
+	}
 	CHECK(c != NULL && c[0] == 0.6f);
 	/* nav.depth goes stale (60 ms); a command computed from it is flagged
 	 * by the library, and the gate treats it as no command. */

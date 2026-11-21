@@ -310,11 +310,18 @@ static void test_presets_through_the_module(void)
 	long diff = run_frames(&cfg);
 	printf("    custom    %d frames, %ld bytes differ\n", FRAMES, diff);
 	CHECK_EQ_INT(diff, 0);
-	/* The module's own measure, once its status line has caught up. */
-	sleep_ms(1200);
+	/* The module's own measure, once its status line has caught up. It
+	 * rewrites the line once a second: waited for, up to 10 s, where a
+	 * fixed 1.2 s was 200 ms of margin. */
 	char status[256] = "";
 	uint64_t inst, ready, alive;
-	CHECK_EQ_INT(page_read("vision", &inst, &ready, &alive, status), 0);
+	int rc = -1;
+	for (uint64_t t0 = now_ms(); now_ms() - t0 < 10000; sleep_ms(50)) {
+		rc = page_read("vision", &inst, &ready, &alive, status);
+		if (rc == 0 && strstr(status, "custom (blur+sobel)"))
+			break;
+	}
+	CHECK_EQ_INT(rc, 0);
 	printf("    status: %s\n", status);
 	CHECK(strstr(status, "custom (blur+sobel)") != NULL);
 }

@@ -454,18 +454,32 @@ static void test_heartbeat_and_telemetry(void)
 static void test_manual_control(void)
 {
 	/* The axes normalized; z 0..1000 with 500 neutral; at 50 Hz. */
-	for (int i = 0; i < 10; i++) {
+	uint64_t t_last = 0;
+	for (int i = 0; i < 10 || (!near(last_w.surge, 0.3f) && i < 250); i++) {
+		t_last = hg_now_ns();
 		gcs_manual_control(300, -200, 750, 100, 0);
 		pump(20);
 	}
 	CHECK(near(last_w.surge, 0.3f) && near(last_w.sway, -0.2f) && near(last_w.heave, 0.5f) && near(last_w.yaw, 0.1f));
 	CHECK(near(last_w.roll, 0) && near(last_w.pitch, 0));
 	CHECK_EQ_INT(last_b.pressed, 0);
-	/* Held with no new message: zero after InputTimeout (500 ms). */
-	pump(300);
-	CHECK(near(last_w.surge, 0.3f));
-	pump(400);
+	/* Held with no new message: zero after InputTimeout (500 ms), and not
+	 * before. Looked at 300 ms and at 700 ms after the last message, this
+	 * failed whenever the machine was 200 ms late; the first zero wrench's
+	 * own publish time is what says when the module let go: at least
+	 * 500 ms after the last message was sent (the module's time starts
+	 * when it reads the message, later still), and held until then. */
+	int held = 1;
+	while (!near(last_w.surge, 0) && (hg_now_ns() - t_last) / 1000000u < 5000) {
+		held = held && near(last_w.surge, 0.3f);
+		pump(10);
+	}
+	CHECK(held);
 	CHECK(near(last_w.surge, 0));
+	uint64_t held_ms = last_w_info.publish_ns > t_last ? (last_w_info.publish_ns - t_last) / 1000000u : 0;
+	printf("    the wrench went to zero %llu ms after the last MANUAL_CONTROL (InputTimeout 500 ms)\n",
+	       (unsigned long long)held_ms);
+	CHECK(held_ms >= 500 && held_ms < 3000);
 	/* Buttons: 6 is pass (bit set while held), 2 arm (one call per press),
 	 * 3 disarm, 5 nothing. */
 	for (int i = 0; i < 5; i++) {

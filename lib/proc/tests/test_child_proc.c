@@ -100,9 +100,16 @@ static void test_stop_closes_stdin_first(void) {
 // A child that ignores SIGTERM still goes, after the grace period.
 static void test_stop_escalates_to_sigkill(void) {
   ChildProc c;
-  char *const argv[] = {"sh", "-c", "trap '' TERM; sleep 30", NULL};
-  CHECK(child_spawn(&c, "test", argv, CHILD_NULL_STDIN));
-  sleep_ms(100); // let the shell install its trap
+  // The shell says when its trap is installed: a byte on its stdout, after
+  // the trap. A fixed 100 ms was not always enough on a loaded machine, and
+  // a SIGTERM before the trap ends the shell at once (took < 140).
+  char *const argv[] = {"sh", "-c", "trap '' TERM; echo r; sleep 30 >/dev/null",
+                        NULL};
+  CHECK(child_spawn(&c, "test", argv, CHILD_NULL_STDIN | CHILD_PIPE_STDOUT));
+  uint8_t ready = 0;
+  size_t got = 0;
+  CHECK_EQ_INT(child_read_exact(c.out_fd, &ready, 1, 10000, &got), CHILD_IO_OK);
+  CHECK_EQ_INT(ready, 'r');
 
   int64_t t0 = now_ms();
   int status = child_stop(&c, 150);
