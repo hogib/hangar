@@ -4,6 +4,8 @@ The root `tools/sim/e2e-depth-ff2.sh` lays out and runs: docs/09's "Example: ada
 depth hold" as it is written now, with no ArduSub and no Docker. Method and results:
 [bench/e2e-depth-ff/README.md](../../bench/e2e-depth-ff/README.md), "Second design".
 The first design's root is [profiles/sim-depth-ff](../sim-depth-ff/README.md).
+`tools/sim/e2e-adapt.sh` runs the adaptation experiment on the same root (the same
+page, "Adaptation").
 
 The same modules and manifests as `profiles/sim-depth-ff`; what differs:
 

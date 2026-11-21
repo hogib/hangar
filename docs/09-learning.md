@@ -789,14 +789,46 @@ simulator's own thrust table, mass and drag, the ceiling, did no better: no diff
 between the two is outside the spread. With the residual the vertical thrusters
 reverse several times as often as without.
 
-Not shown: that a later model follows a vehicle that changes. After the buoyancy change
+**Whether a later model follows a vehicle that changes** depends on the change, and for
+most changes the answer is that there is nothing to follow. After the buoyancy change
 the first model was already right, the trim being one of its inputs, and the second
 added nothing. After a change no input carries, the thrusters' supply from 16.8 to
 12.6 V, the model trained since did no better than the one from before either (1.41 and
 2.22 m s against 1.44 and 2.20, inside the spread; `assisted` 1.98 and 3.47): at that
 supply the correction is at the policy's bound twice as often, and a model that knew
 the new thrust curve exactly gains 0.03 to 0.04 m s on the bench's few-line model of
-the loop. And none of it has run on a
+the loop. The same few-line model, with the simulator's own numbers in place of a
+learned model, says the same of a change of mass: the feedback asks for more when the
+vehicle does less, and the bound caps what any model can add.
+
+Drag is the change that leaves a later model something to gain, and it was tested with
+a criterion written down before the runs
+([bench/e2e-depth-ff](../bench/e2e-depth-ff/README.md#adaptation-a-change-the-policy-cannot-read)):
+a payload that weighs nothing in water, 10 kg more to move and five times the heave
+drag, so that the trim and with it every input of the policy stays where it was. The
+first model drove the vehicle with the payload while the rows were recorded; the
+trainer went on from it on those rows; the second model was loaded during the dive;
+then the same two 1 m steps with the first model, the second, and the first again.
+Five runs, and five with the simulator's own model of each vehicle in the two models'
+places. The integral of absolute error over both steps was 4.49 and 4.51 m s with the
+first model (4.44 to 4.58 over the ten blocks), **4.25 with the second** (4.15 to 4.32),
+lower in every run than before and after it; the controller alone 8.18; the two oracles
+4.44 and 4.20. So the second model follows the payload, and gets what there was to get.
+**These five runs are provisional**: they were made with other work on the machine and
+are to be made again on a quiet one.
+
+What that result does not say. The gain is 5 % where the residual as such gives 45 %,
+and the gap between the two models' ranges is narrower than either range. It is all on
+the step down; going up, against the deadband, the correction is at its bound and both
+models do the same. The second model reverses the vertical thrusters two to four times
+as often as the first (0.7 per second against 0.3; the controller alone 0.03), which
+the oracle of the same vehicle does not. And it is worse than the first once the
+payload is off again (3.20 m s against 3.06): with these inputs a model is right for
+one vehicle, and nothing the policy reads says which vehicle it is on. Whether a model
+should cover both, through an input that names the payload, or the operator loads the
+one that fits, is not decided here.
+
+None of it has run on a
 vehicle: the label is an accelerometer's, and the simulator's has 0.01 m/s² of noise
 and no vibration, its thrust depends on the command alone, and its water is still.
 

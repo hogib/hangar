@@ -6,9 +6,13 @@ label was zero or the trim, and the residual improved nothing. **The second**
 ([Second design](#second-design), below) learns a model of the heave axis around the
 trim and inverts it: on 1 m steps the integral of absolute error falls by a third to a
 half and a 4 N buoyancy change moves the vehicle 2.7 cm instead of 33, in each of
-five runs, as much as an oracle gains; that a later model follows a vehicle that changes
-was not shown. docs/09 describes the second; what the first half quotes from docs/09
-is its text at the time.
+five runs, as much as an oracle gains. Whether a later model follows a vehicle that
+changes was not shown by those runs; [Adaptation](#adaptation-a-change-the-policy-cannot-read)
+tests it with a change none of the policy's inputs shows, and in five provisional
+runs the model trained since is better than the one from before, by 5 %, at the
+price of more thruster reversals and of the vehicle it was first trained on. docs/09
+describes the second design; what the first half quotes from docs/09 is its text at
+the time.
 
 [docs/09](../../docs/09-learning.md#example-adaptive-depth-hold)'s adaptive depth hold,
 run for the first time as a whole: `sim_vehicle` standalone, `thrusters`, `safety`, `mux`,
@@ -544,11 +548,14 @@ than the runs' spread, and it is as good as the oracle: no difference between th
 is outside the spread. It does nothing for the hold, which the controller already
 holds to the depth sensor's bias. It was never demoted and never at the mux's envelope
 in ten runs, and promoting it, swapping it and taking it away moved the vehicle by
-2 to 4 cm. **That a later model follows a vehicle that changes is not shown.** A second
+2 to 4 cm. **That a later model follows a vehicle that changes is not shown by these
+runs.** A second
 model was not needed after the buoyancy change, since the trim is an input; after a
 change of the thrusters' supply, which is not, the model trained since did no better
 than the one from before, and by a few-line model of the loop could not have: the
-policy's bound, not what it knows, is the limit there.
+policy's bound, not what it knows, is the limit there. A later experiment with a
+change that leaves a model something to gain is under
+[Adaptation](#adaptation-a-change-the-policy-cannot-read).
 
 ### Depth error
 
@@ -700,7 +707,8 @@ nothing in depth (S2). That the second model is *better* than the first on the c
 vehicle was not seen with either change, and with these two could not be: one is
 carried by an input, and the other is beyond the residual's bound. A change that
 would show it (a thrust curve or a drag that moves by more than the first model's
-error and within the envelope) was not run.
+error and within the envelope) was not run then; it was run afterwards, with a
+payload's drag: [Adaptation](#adaptation-a-change-the-policy-cannot-read).
 
 ### The first experiment's checks, again
 
@@ -813,6 +821,30 @@ read another `ctl.depth_hold.target` than the pairer at 1 anchor of 375 455 (49 
 
 `2026-11-21-quiet/summary.md` is the whole table. Nothing in the verdict below changes;
 these are the runs to quote. The supplementary supply runs were not made again.
+
+### What this says about docs/09's claim, second design
+
+docs/09 now describes this design, and what it says of it was measured: a network that
+learns during the dive, from rows the pairer joins, a bounded correction that makes the
+vehicle do what the controller asks, deployed, promoted and swapped without a
+transient, never demoted, as good as the simulator's own model inverted, and leaving
+the trim to the integrator. That holds in simulation, over five seeds, by a margin
+many times the spread.
+
+It says less than the first version claimed, on purpose. The network does not learn
+"what the command was short by" from the thrusters' outputs; it learns the heave axis
+from the acceleration and inverts it, and without an acceleration worth the name there
+is no label. And "the correction follows the vehicle as it changes" is shown for the
+loop's mechanics and for a change the policy reads from an input. For a change it has
+to learn there is one case, provisional until it is run on a quiet machine: a
+payload's drag, after which the model trained since was better than the one from
+before in each of five runs, by 0.21 m s in 4.5 (the oracles: 0.23), all of it on the
+step down, with two to four times the thruster reversals, and worse than the first
+model once the payload is off again. The changes tried before it (buoyancy, supply)
+and most of those tried on the few-line loop (mass, supply) leave a later model
+nothing to gain: the feedback and the bound see to that. So "follows the vehicle" is
+true here in a narrow sense, and "one model for a vehicle that changes back and
+forth" is not: nothing the policy reads says which vehicle it is on.
 
 ## Adaptation: a change the policy cannot read
 
@@ -947,21 +979,168 @@ thrusters' reversals and the policy's share of ticks at its bound in every block
 alone (A1). By the argument above M2 is expected to be worse there than M1; by how
 much is the cost of having one model at a time.
 
-### What this says about docs/09's claim, second design
+### The runs of 2026-11-21: provisional
 
-docs/09 now describes this design, and what it says of it was measured: a network that
-learns during the dive, from rows the pairer joins, a bounded correction that makes the
-vehicle do what the controller asks, deployed, promoted and swapped without a
-transient, never demoted, as good as the simulator's own model inverted, and leaving
-the trim to the integrator. That holds in simulation, over five seeds, by a margin
-many times the spread.
+**These numbers are provisional.** The machine was not quiet: three other agents
+were building and running test suites on it. The load average was 0.3 to 4.0 at the
+start of each pair of runs and reached 5.3 during the first (12 threads); the table
+has it per run. The runs were made two at a time, a learned and an oracle run of one
+seed together, each on six threads of its own (`taskset -c 0-5` and `6-11`), by
+`tools/sim/e2e-adapt.sh` at `ce24ed5`, once, seeds 1 to 5, none repeated. The set is
+to be made again on a quiet machine with the same command
+(`E2E_LABEL=quiet tools/sim/e2e-adapt.sh`); until then nothing below is final.
+Reports: [2026-11-21-adapt-provisional/](2026-11-21-adapt-provisional/), whose
+`summary.md` has every metric per seed.
 
-It says less than the first version claimed, on purpose. The network does not learn
-"what the command was short by" from the thrusters' outputs; it learns the heave axis
-from the acceleration and inverts it, and without an acceleration worth the name there
-is no label. And "the correction follows the vehicle as it changes" is shown for the
-loop's mechanics and for a change the policy reads from an input, not for a change it
-has to learn.
+| Seed | Learned: load average at the start, highest, at the end | `nav.depth` to `thr.cmd`: median, p99 (ms) | 50 Hz intervals over 25 ms, over 30 ms | Oracle: load average | Median, p99 (ms) | Over 25 ms, over 30 ms |
+|---|---|---|---|---|---|---|
+| 1 | 0.91, 5.33, 4.02 | 59.6, 60.2 | 5, 0 | 1.01, 5.33, 4.01 | 59.5, 60.1 | 3, 0 |
+| 2 | 4.09, 4.83, 1.39 | 58.2, 59.0 | 1, 0 | 4.42, 4.83, 1.39 | 59.2, 60.0 | 0, 0 |
+| 3 | 1.43, 3.75, 1.48 | 59.6, 60.3 | 3, **1** | 1.91, 3.75, 1.15 | 59.6, 60.3 | 0, 0 |
+| 4 | 1.14, 1.50, 0.44 | 59.4, 60.0 | 0, 0 | 1.18, 1.50, 0.34 | 59.7, 60.3 | 0, 0 |
+| 5 | 0.47, 1.44, 0.56 | 59.4, 60.1 | 3, 0 | 0.59, 1.44, 0.44 | 59.5, 60.2 | 1, 0 |
+
+The load average is the 1 min one, of the whole machine, the run's own processes
+included (two runs by themselves make about 0.5). No message was lost by the
+recorder and no row by a trainer in any run; the mux demoted nothing; every block ran
+under the model the schedule names, with a residual in every command of a residual
+block, by the recorded references. One interval of one 50 Hz topic was over 30 ms, in
+learned 3.
+
+**With the payload, both steps together** (`J`, m s; the reversals are the heave
+command's zero crossings per second over the block):
+
+| Seed | Controller alone (P4) | M1 (P1) | **M2 (P2)** | M1 again (P3) | M1's mean less M2 | Reversals per second: P4, P1, P2, P3 |
+|---|---|---|---|---|---|---|
+| 1 | 8.18 | 4.45 | **4.32** | 4.44 | 0.13 | 0.03, 0.37, 0.69, 0.53 |
+| 2 | 8.19 | 4.49 | **4.32** | 4.51 | 0.18 | 0.03, 0.31, 0.37, 0.29 |
+| 3 | 8.16 | 4.56 | **4.15** | 4.58 | 0.41 | 0.03, 0.09, 0.74, 0.14 |
+| 4 | 8.18 | 4.54 | **4.20** | 4.55 | 0.35 | 0.06, 0.17, 0.49, 0.06 |
+| 5 | 8.19 | 4.45 | **4.25** | 4.48 | 0.21 | 0.03, 0.71, 0.94, 0.31 |
+| median (smallest to largest) | 8.18 (8.16 to 8.19) | 4.49 (4.45 to 4.56) | **4.25** (4.15 to 4.32) | 4.51 (4.44 to 4.58) | 0.21 (0.13 to 0.41) | 0.03, 0.31, 0.69, 0.29 |
+
+The oracle runs, the oracle of the bare vehicle in M1's place and the oracle of the
+vehicle with the payload in M2's:
+
+| Seed | Controller alone (P4) | Bare vehicle's oracle (P1) | **Payload's oracle (P2)** | Bare vehicle's again (P3) | The mean less P2 | Reversals per second: P4, P1, P2, P3 |
+|---|---|---|---|---|---|---|
+| 1 | 8.21 | 4.45 | **4.19** | 4.46 | 0.26 | 0.03, 0.54, 0.40, 0.57 |
+| 2 | 8.20 | 4.44 | **4.20** | 4.45 | 0.25 | 0.03, 0.57, 0.34, 0.60 |
+| 3 | 8.20 | 4.43 | **4.20** | 4.42 | 0.22 | 0.03, 0.94, 0.51, 1.04 |
+| 4 | 8.19 | 4.44 | **4.23** | 4.47 | 0.23 | 0.03, 0.83, 0.29, 0.53 |
+| 5 | 8.19 | 4.43 | **4.20** | 4.42 | 0.23 | 0.03, 0.63, 0.54, 0.43 |
+| median (smallest to largest) | 8.20 (8.19 to 8.21) | 4.44 (4.43 to 4.45) | **4.20** (4.19 to 4.23) | 4.45 (4.42 to 4.47) | 0.23 (0.22 to 0.26) | 0.03, 0.63, 0.40, 0.57 |
+
+**The criterion, as `--summarise` applied it: adaptation is shown** (provisionally:
+above).
+
+1. The oracles differ: 4.19 to 4.23 m s against 4.42 to 4.47, lower in each of the five
+   runs than before and after. There was something to see: 0.23 m s, 5 % of `J`.
+2. M2 is lower than M1 before and after it in each of the five runs, and the largest
+   M2 value, 4.32, is below the smallest of the ten M1 values, 4.44.
+
+What that is and is not:
+
+- **It is small.** The residual takes `J` on the vehicle with the payload from 8.18 to
+  4.49 m s with a model that has never met the payload; the model trained on it takes
+  it to 4.25. The first is 45 %, the second 5 % more. The gap between the two ranges
+  is 0.12 m s, against ranges 0.14 and 0.17 wide: the ranges do not overlap, and that
+  is all. A sixth run could close the gap; the loaded runs above differed from their
+  quiet repeats by up to 0.05 m s on one step.
+- **It is all on the step down.** 3 to 4 m: M1 1.86 (1.86 to 1.88) and 1.90 (1.86 to
+  1.91), M2 **1.70** (1.63 to 1.71), overshoot 2.0 and 3.6 % against 0.0 (0.0 to 0.7).
+  4 to 3 m: 2.63 (2.57 to 2.68) and 2.61 (2.58 to 2.69) against 2.57 (2.52 to 2.62),
+  inside the spread; the two oracles do not differ there at all (2.56 and 2.59
+  against 2.57). The vehicle floats, so going up the command crosses the deadband and
+  the correction is at its bound, whatever the model knows: the supply runs' finding
+  again. The few-line loop had promised 0.28 m s on the step down and 0.10 on the step
+  up, 0.38 together; the stack gave the oracles 0.25 and nothing, 0.23 together.
+- **M2 is as good as the oracle of the vehicle it was trained on, M1 as good as the
+  oracle of the one it was trained on**: 4.25 (4.15 to 4.32) against 4.20 (4.19 to
+  4.23), and 4.49 and 4.51 against 4.44 and 4.45, the learned ones with three to four
+  times the oracles' spread. In seeds 3 and 4 the learned gain (0.41, 0.35) is larger
+  than the oracles' (0.22, 0.23) because M1 was worse there than its oracle (4.56 and
+  4.54) and M2 as good as or better than its own (4.15, 4.20).
+- **Order and drift**: M1 before and after M2 gives the same `J` (4.49 and 4.51;
+  within a run they differ by 0.03 at most), so what separates M2 from M1 is not when
+  its block was run. The overshoot of the step down does differ between the two M1
+  blocks (2.0 % and 3.6 %; the oracle's 1.8 and 3.3), and so does the hold (below):
+  the integrator was on its way back to the trim through all three.
+- **What M2 had that M1 had not**, besides the payload: 35 700 training steps where M1
+  had 8350, and rows with a residual in the command, which reach further (commands
+  −0.37 to +0.34 where M1's rows had −0.23 to +0.12). A model trained as long on the
+  bare vehicle with M1 driving was not run, so the runs do not separate "trained on
+  the changed vehicle" from "trained longer, on richer rows" by themselves. Two
+  things speak for the first: M2 is worse than M1 on the bare vehicle (below), and
+  each of the two sits at its own vehicle's oracle.
+- **M2 is trained on the live rows**, the pairer's `dataset.depth_ff` through the
+  trainer's 3 min replay buffer, going on from M1's networks: the loop as built. It is
+  not trained from the recorder's file of the same rows after the fact. From the
+  newest row M2 was trained on to the first thruster command carrying it: 0.70 to
+  0.74 s. No interval of a 50 Hz topic during a load was over 20.8 ms.
+
+**Forgetting.** M2 on the bare vehicle (N2) against M1 on it (A2), both steps, m s:
+
+| Seed | Controller alone (A1) | M1 (A2) | M2 (N2) | M2 less M1 | Reversals per second: A1, A2, N2 |
+|---|---|---|---|---|---|
+| 1 | 4.89 | 3.01 | 3.15 | +0.14 | 0.03, 0.31, 1.17 |
+| 2 | 4.87 | 3.09 | 3.15 | +0.06 | 0.03, 0.26, 0.54 |
+| 3 | 4.86 | 3.10 | 3.23 | +0.13 | 0.03, 0.20, 0.86 |
+| 4 | 4.88 | 3.06 | 3.26 | +0.21 | 0.03, 0.20, 0.60 |
+| 5 | 4.90 | 3.03 | 3.20 | +0.17 | 0.06, 0.20, 0.97 |
+| median (smallest to largest) | 4.88 (4.86 to 4.90) | 3.06 (3.01 to 3.10) | 3.20 (3.15 to 3.26) | +0.14 (0.06 to 0.21) | 0.03, 0.20, 0.86 |
+
+M2 is worse than M1 on the vehicle M1 was trained on, in each run, the ranges apart:
+it has forgotten, as a model with these inputs must. The cost is on the step down
+(1.43 m s (1.37 to 1.44) against 1.22 (1.20 to 1.24), overshoot 4.7 % (3.4 to 8.9)
+against 0.9), where it pushes for drag that is not there; the step up is inside the
+spread (1.78 against 1.85). The two oracles: 3.31 against 3.12, overshoot 10 % against
+1 %. M2 is still far better there than the controller alone (4.88). So a model for
+the vehicle with the payload gains 0.21 m s with it and loses 0.14 without it; which
+one drives is the operator's `load_weights` or `revert`, there being no input to
+choose by. N2 has no block of M1 after it, so its 0.14 has whatever the order adds
+in it; the integrator was at −0.067 in N2's hold and at −0.084 in A2's.
+
+**Thruster reversals.** Controller alone: 0.03 per second, the two steps' own. With
+M1: 0.20 (0.20 to 0.31) on the bare vehicle, 0.31 and 0.29 (0.06 to 0.71) with the
+payload. **With M2: 0.69 (0.37 to 0.94) with the payload and 0.86 (0.54 to 1.17)
+without**, more than M1 before and after it in each of the five runs: the later model
+reverses the verticals two to four times as often as the earlier one, and twenty
+to thirty times as often as the controller. The oracles do not show that: the payload's oracle
+reverses less than the bare vehicle's on the vehicle with the payload (0.40 against
+0.63 and 0.57) and as little on the bare one (0.11 and 0.11). So the extra reversals
+are the learned M2's, not the price of knowing the payload; what in M2 makes them
+(the policy's fit near zero acceleration is where to look first) was not looked into.
+The policy was at its own bound on 7.9 % of the ticks with M2 and the payload, 5.7 %
+and 5.3 % with M1 (the oracles: 7.6 %, 3.7 %, 3.6 %).
+
+**Seen on the way, not part of the criterion.**
+
+- The payload moved nothing at the hold, as designed: switching it on or off with a
+  model driving, 2.8 to 3.3 cm peak (the medians of C1, C2, C3); off under the controller alone (C4), 2.2 cm, an
+  undisturbed hold. The controller alone on the vehicle with the payload gives 8.16 to
+  8.21 m s, where the few-line loop has 8.21 to 8.26: the simulator's payload is the
+  one the oracle was told of.
+- The hold with a residual and the payload reads 2.85, 2.39 and 2.11 cm rms in P1, P2
+  and P3 (the oracles 3.21, 2.56, 2.02; the controller alone 2.00): the block order,
+  not the model. The recording phase's steps leave the integrator off the trim
+  (−0.059 in P1's hold, −0.070 in P2's, −0.083 in P3's, the trim being −0.085) and
+  the policy supplies the rest, with the vehicle up to a centimetre from where the
+  sensor's bias would put it, as after the buoyancy change above.
+- **Taking the residual away cost 11.4 cm** (9.9 to 12.1; the oracle runs 12.4) at H2,
+  where it cost 3.0 cm in the runs above. H2 here follows a block of steps on the
+  vehicle with the payload; the integrator's place at that moment is the likely
+  reason and was not checked (the runs kept no session).
+- The swap to M2, the revert to M1 and the promotion: 3.2, 2.7 and 2.4 cm.
+- Train against serve: the policy read another `ctl.depth_hold.target` message than
+  the pairer joined at one anchor in learned 2 and one in oracle 5 (there the outputs
+  differ by 1.9e-3 on that anchor; elsewhere by 1.5e-7 at most).
+
+**What is placeholder in it.** Everything the second design's list below names, and:
+one payload, chosen on the few-line loop so that an oracle could gain something; one
+block of steps; a payload that comes on at once, with the operator knowing when; the
+added mass folded into the mass; M2 deployed at a time the schedule set, not when the
+trainer's loss said the vehicle had changed; and the machine's load.
 
 ## What is placeholder in the second design
 
@@ -993,9 +1172,12 @@ has to learn.
 | | |
 |---|---|
 | `tools/sim/e2e-depth-ff2.sh` | the root, the manager, the run; `E2E_SEED`, `E2E_ARGS` |
-| `tools/sim/e2e_depth_ff2.py` | the operator and the trainer's thread; `--variant learned`, `oracle`, `collect`; `--change supply`; `--analyse`; `--summarise` |
-| `tools/sim/depth_ff2_offline.py` | the offline check |
+| `tools/sim/e2e_depth_ff2.py` | the operator and the trainer's thread; `--variant learned`, `oracle`, `collect`; `--change supply`; `--adapt`; `--analyse`; `--summarise` |
+| `tools/sim/e2e-adapt.sh` | the adaptation experiment whole: ten runs with `--adapt` and their table, into a dated directory here |
+| `tools/sim/depth_ff2_offline.py` | the offline check; `--adaptation` for the payload |
 | `profiles/sim-depth-ff2/` | the dataset and policy specs; the rest is `sim-depth-ff`'s |
 | `python/examples/depth_ff2.py` | the plant, the heave at rest, the inversion, the policy, the oracle |
 | `python/tests/test_depth_ff2.py` | their tests |
 | `2026-11-20-second/<run>/` | `report.md`, `report.json`, `events.log`; `offline/` the offline check's result and the two collect runs; `supply/` the supplementary runs |
+| `2026-11-21-quiet/` | the ten runs again on a quiet machine |
+| `<date>-adapt*/` | a set of `e2e-adapt.sh`: `summary.md` (the machine, every run's load and loop delay, every metric per seed, the criterion's verdict), `machine.txt`, and a directory a run |
