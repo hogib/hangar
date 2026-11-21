@@ -596,6 +596,15 @@ anything else ([03-manager](03-manager.md#opening-topics)). The pairer therefore
 a dataset topic once every topic its spec names exists. A row schema longer than a
 topic header's 3584 bytes of schema text is refused.
 
+The row type is bound to the topic files open at that moment. A writer of the anchor
+or of a part that restarts with the same type, declared rate and `StaleAfter` changes
+nothing (the rows' `boot_id` follows a new epoch of the anchor). One that restarts
+with another makes the row type untrue of what the pairer reads: it logs the topic,
+drops the rows that were still waiting for their `emitted_ns`, closes `dataset.<name>`
+and binds again as at start, with a row type of another hash; the first row after
+that carries `reset`. The recorder continues `dataset.<name>` in a new file
+([Draining](#draining)).
+
 For each spec, the pairer reads the anchor topic in order and, for each anchor
 message, fetches the parts from their rings: `hg_read_seq(sub, seq)` for provenance,
 `hg_find_stamp(sub, t)` for `asof`, and the preceding seqs for windows

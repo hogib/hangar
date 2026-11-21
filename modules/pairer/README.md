@@ -124,6 +124,18 @@ configuration lists, or the pairer exits 78 saying which differs; unwired, the c
 is skipped. The manifest's `Type=` for a dataset output is the row type: see
 deviation 1.
 
+**A topic that changes its type under a bound dataset** (its writer restarted with
+another type, payload size, rate or `StaleAfter`; `binding_stands`, checked with
+`hg_sub_reopens` after each read of the anchor, after the joins of each row and once a
+pass): the pairer logs it, drops the rows that waited, closes the dataset topic and
+the sink and binds again, the sink going on in `dataset.<name>+<k>.hgr`. Until
+2026-11-21 the binding was for the life of the process: the new type's bytes were
+copied into rows at the old type's offsets, or, when the anchor had grown, no row was
+made any more, and nothing was logged (`test_part_retyped`). A writer that restarts
+with the same type changes nothing, except that the rows' `boot_id` is taken again
+from the anchor's new file (a mirrored anchor's new epoch; before, the rows kept the
+first sender's boot id).
+
 **A dataset that is not bound yet** (one of its topics does not exist) has its anchor
 and the parts that do exist skipped on each pass too: unread in the wait set they kept
 the loop from ever sleeping, 96 % of a core measured for as long as the topic stayed
@@ -206,7 +218,10 @@ with the misses of a part referenced every fourth message, `hangar dataset check
 (`WARN` for the manifests, `OK` for the session), `build`, `schema` from the session
 and from `.msg` files hashing to the row type the pairer published, `check` and
 `build` refusing a spec whose part the session does not hold, `pairs`; exit 78 for a
-missing spec, a bad key, an empty list and a wiring whose dataset outputs differ.
+missing spec, a bad key, an empty list and a wiring whose dataset outputs differ; a
+part whose writer restarts with another type while the anchor's restarts with the
+same (`test_part_retyped`): the rows of each row type in a sink file of their own,
+each part value at the offsets of the type it was published with.
 
 ## Deviations from docs/06, with reasons
 

@@ -63,6 +63,10 @@ struct dataset {
 	struct hgr_writer sink;
 	int sink_open;
 	uint32_t anchor_id;
+	/* What the row type was bound to: the anchor's file, then the parts'. */
+	uint64_t reopens[1 + HG_DS_MAX_PARTS];
+	struct hg_topic_meta bound_meta[1 + HG_DS_MAX_PARTS];
+	int binds;
 };
 
 static struct {
@@ -223,15 +227,18 @@ static int conf_load(const char *path, char *err, size_t errlen)
 
 /* ---- Binding ------------------------------------------------------------------ */
 
-static int sub_info(hg_sub *s, struct hg_schema *sch, struct hg_ds_topic_info *out)
+static int sub_info(hg_sub *s, struct hg_schema *sch, struct hg_ds_topic_info *out, struct hg_topic_meta *meta,
+		    uint64_t *reopens)
 {
 	struct hg_topic_meta m;
 	uint32_t slen;
+	*reopens = hg_sub_reopens(s);
 	const char *text = hg_sub_schema(s, &slen);
 	if (!text || hg_sub_meta(s, &m) < 0)
 		return -1;
 	if (hg_schema_parse(text, slen, sch, NULL, 0) < 0)
 		return -1;
+	*meta = m;
 	out->type = &sch->type;
 	out->topic_id = m.topic_id;
 	out->rate_mhz = m.rate_mhz;
@@ -253,8 +260,14 @@ static void sink_open(struct dataset *d)
 	struct hgr_header h;
 	hgr_header_init(&h, &m, d->rt->schema.type.schema, d->rt->schema.type.schema_bytes, HGR_FULL, 1, "full",
 			"live", 0);
+	/* One file per row type: dataset.<name>.hgr, then +1, +2 for each time
+	 * the dataset was bound again (unbind), as the recorder names the files
+	 * of a topic that changed its type. */
 	char path[PR_PATH + 80];
-	bfmt(path, sizeof path, "%s/dataset.%s.hgr", conf.sink_dir, d->name);
+	if (d->binds)
+		bfmt(path, sizeof path, "%s/dataset.%s+%d.hgr", conf.sink_dir, d->name, d->binds);
+	else
+		bfmt(path, sizeof path, "%s/dataset.%s.hgr", conf.sink_dir, d->name);
 	unlink(path);
 	if (hgr_create(&d->sink, path, &h) < 0) {
 		logf_("%s: cannot create the sink %s: %s", d->name, path, strerror(errno));
@@ -263,14 +276,81 @@ static void sink_open(struct dataset *d)
 	d->sink_open = 1;
 }
 
+/* The rows' boot_id: the boot that numbered the anchor (docs/06 "The row"). */
+static void anchor_boot(struct dataset *d, const struct hg_topic_meta *am)
+{
+	int zero = 1;
+	for (int i = 0; i < 16; i++)
+		zero &= am->origin_boot[i] == 0;
+	if (zero)
+		hg_ds_boot_id(d->boot);
+	else
+		memcpy(d->boot, am->origin_boot, 16);
+}
+
+/* Whether the files the row type was bound to are still the ones read, or
+ * were replaced by files read the same way (a writer restarted with the same
+ * type, rate and StaleAfter). 0 when one was replaced by another kind, its
+ * name in *which: the row type's offsets, sizes and staleness rule no longer
+ * describe what a read of it returns. A replaced anchor of the same type may
+ * be a new epoch, numbered by another boot: the rows' boot_id follows. */
+static int binding_stands(struct dataset *d, const char **which)
+{
+	for (int i = 0; i <= d->spec.n_parts; i++) {
+		hg_sub *sub = i ? d->parts[i - 1] : d->anchor;
+		uint64_t r = hg_sub_reopens(sub);
+		if (r == d->reopens[i])
+			continue;
+		struct hg_topic_meta m;
+		if (hg_sub_meta(sub, &m) < 0)
+			continue;
+		const struct hg_topic_meta *b = &d->bound_meta[i];
+		if (m.type_hash != b->type_hash || m.payload_bytes != b->payload_bytes || m.rate_mhz != b->rate_mhz ||
+		    m.stale_after_ns != b->stale_after_ns) {
+			*which = i ? d->spec.parts[i - 1].topic : d->spec.anchor;
+			return 0;
+		}
+		d->reopens[i] = r;
+		d->bound_meta[i] = m;
+		if (i == 0)
+			anchor_boot(d, &m);
+	}
+	return 1;
+}
+
+/* A topic of the dataset changed its type under the binding: the rows that
+ * waited are dropped (a part of theirs not joined yet would be read by the
+ * old offsets), the dataset topic and the sink are closed, and the main loop
+ * binds again from the files now open, as at start: a row type of another
+ * hash, which replaces dataset.<name> (wired, the manifest must declare it,
+ * or the pairer stops with status 78 as at any bind). */
+static void unbind(struct dataset *d, const char *which)
+{
+	logf_("%s: the writer of %s restarted with another type: %d rows that waited are dropped and the dataset is "
+	      "bound again", d->name, which, d->pcount);
+	if (d->sink_open) {
+		hgr_close(&d->sink);
+		d->sink_open = 0;
+	}
+	hg_pub_close(d->pub);
+	d->pub = NULL;
+	free(d->pend[0].row);
+	free(d->pend);
+	d->pend = NULL;
+	d->pcap = d->phead = d->pcount = 0;
+	d->pending_gap = 0;
+	memset(&d->state, 0, sizeof d->state); /* the next row is a first row: reset */
+	d->bound = 0;
+}
+
 /* Once the anchor and every part exist: the row type, the topic, the sink. */
 static void try_bind(struct dataset *d)
 {
 	struct hg_ds_topic_info ai, pi[HG_DS_MAX_PARTS];
-	if (sub_info(d->anchor, &d->schemas[0], &ai) < 0)
+	if (sub_info(d->anchor, &d->schemas[0], &ai, &d->bound_meta[0], &d->reopens[0]) < 0)
 		return;
 	for (int i = 0; i < d->spec.n_parts; i++)
-		if (sub_info(d->parts[i], &d->schemas[1 + i], &pi[i]) < 0)
+		if (sub_info(d->parts[i], &d->schemas[1 + i], &pi[i], &d->bound_meta[1 + i], &d->reopens[1 + i]) < 0)
 			return;
 	char err[300];
 	if (hg_ds_bind(&d->spec, &ai, pi, d->rt, err, sizeof err) < 0) {
@@ -294,15 +374,7 @@ static void try_bind(struct dataset *d)
 	d->pcap = conf.pending;
 	for (int i = 0; i < d->spec.n_parts; i++)
 		d->src[i] = hg_ds_source_sub(d->parts[i]);
-	struct hg_topic_meta am;
-	hg_sub_meta(d->anchor, &am);
-	int zero = 1;
-	for (int i = 0; i < 16; i++)
-		zero &= am.origin_boot[i] == 0;
-	if (zero)
-		hg_ds_boot_id(d->boot);
-	else
-		memcpy(d->boot, am.origin_boot, 16);
+	anchor_boot(d, &d->bound_meta[0]);
 	char topic[HG_NAME_MAX + 1];
 	bfmt(topic, sizeof topic, "dataset.%s", d->name);
 	struct hg_pub_opts o = { .slots = 256 };
@@ -313,6 +385,7 @@ static void try_bind(struct dataset *d)
 		exit(78);
 	}
 	sink_open(d);
+	d->binds++;
 	d->bound = 1;
 	logf_("%s: %d parts, %u-byte rows, wait %lld ms, hash %016llx", d->name, d->spec.n_parts, d->rt->row_bytes,
 	      (long long)(d->rt->wait_ns / 1000000), (unsigned long long)d->rt->schema.type.hash);
@@ -330,15 +403,20 @@ static void join_part(struct dataset *d, struct pending *p, int i)
 		d->latency_max[i] = p->jr[i].latency_ns;
 }
 
-static void emit(struct dataset *d, struct pending *p)
+/* Closes a row: joins what waited, finishes, publishes. 0, or -1 when a join
+ * found its part's file replaced by one of another type (the read follows
+ * the topic): the row is not published and the caller unbinds. */
+static int emit(struct dataset *d, struct pending *p, const char **which)
 {
 	for (int i = 0; i < d->spec.n_parts; i++)
 		if (!(p->joined & (1u << i)))
 			join_part(d, p, i);
+	if (!binding_stands(d, which))
+		return -1;
 	int keep = hg_ds_row_finish(d->rt, &d->state, p->row, p->jr, p->gap, p->ainfo.epoch);
 	if (!keep) {
 		d->dropped++;
-		return;
+		return 0;
 	}
 	uint32_t flags;
 	memcpy(&flags, p->row + HG_DS_OFF_FLAGS, 4);
@@ -361,6 +439,7 @@ static void emit(struct dataset *d, struct pending *p)
 			d->sink_open = 0;
 		}
 	}
+	return 0;
 }
 
 /* Pending rows whose wait is over, in order. */
@@ -370,7 +449,11 @@ static void flush(struct dataset *d, uint64_t now, int all)
 		struct pending *p = &d->pend[d->phead];
 		if (!all && p->emitted_ns > now)
 			break;
-		emit(d, p);
+		const char *which;
+		if (emit(d, p, &which) < 0) {
+			unbind(d, which);
+			return;
+		}
 		d->phead = (d->phead + 1) % d->pcap;
 		d->pcount--;
 	}
@@ -381,6 +464,13 @@ static void read_anchor(struct dataset *d)
 	struct hg_info info;
 	for (int n = 0; n < 4096; n++) {
 		enum hg_result r = hg_next(d->anchor, d->apayload, d->rt->anchor_payload_bytes + 8, &info);
+		/* The read follows the anchor to a new file: of another type, what
+		 * it returned is not the row type's anchor. */
+		const char *which;
+		if (!binding_stands(d, &which)) {
+			unbind(d, which);
+			return;
+		}
 		if (r != HG_MSG)
 			break;
 		if (info.gap)
@@ -391,7 +481,10 @@ static void read_anchor(struct dataset *d)
 			/* More anchors waiting than the buffer holds: the oldest row
 			 * closes now, with what has arrived. */
 			struct pending *p = &d->pend[d->phead];
-			emit(d, p);
+			if (emit(d, p, &which) < 0) {
+				unbind(d, which);
+				return;
+			}
 			d->phead = (d->phead + 1) % d->pcap;
 			d->pcount--;
 			d->forced++;
@@ -408,6 +501,10 @@ static void read_anchor(struct dataset *d)
 		for (int i = 0; i < d->spec.n_parts; i++)
 			if (d->rt->parts[i].immediate)
 				join_part(d, p, i);
+		if (!binding_stands(d, &which)) {
+			unbind(d, which);
+			return;
+		}
 	}
 }
 
@@ -559,6 +656,10 @@ int main(int argc, char **argv)
 		now = hg_now_ns();
 		for (int k = 0; k < conf.n; k++) {
 			struct dataset *d = &D[k];
+			/* hg_wait and the skips below follow a topic to its new file. */
+			const char *which;
+			if (d->bound && !binding_stands(d, &which))
+				unbind(d, which);
 			if (!d->bound) {
 				try_bind(d);
 				if (!d->bound) {
@@ -578,7 +679,8 @@ int main(int argc, char **argv)
 				}
 			}
 			read_anchor(d);
-			flush(d, hg_now_ns(), 0);
+			if (d->bound)
+				flush(d, hg_now_ns(), 0);
 			/* The parts are read by stamp and sequence (hg_find_stamp,
 			 * hg_read_seq), which leave hg_next where it was: in the wait set
 			 * unskipped, a part was news from its first message on and hg_wait
@@ -599,6 +701,8 @@ int main(int argc, char **argv)
 		if (!d->bound)
 			continue;
 		flush(d, 0, 1);
+		if (!d->bound)
+			continue;
 		if (d->sink_open)
 			hgr_close(&d->sink);
 		hg_pub_close(d->pub);

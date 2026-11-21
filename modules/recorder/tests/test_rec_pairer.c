@@ -552,6 +552,97 @@ static void test_damaged_recordings(void)
 	hgr_reader_close(&r);
 }
 
+/* A part whose writer restarts with another type while the pairer runs: the
+ * row type bound at start no longer describes what the part's file holds.
+ * The pairer says so, drops the rows that waited and binds again: the
+ * dataset topic is replaced by one of the new row type, and the sink goes
+ * on in dataset.<name>+1.hgr. A writer that restarts with the same type (the
+ * anchor here) changes nothing. Before, the binding was for the life of the
+ * process and the new type's bytes were copied into rows by the old type's
+ * offsets, with nothing said. */
+static void test_part_retyped(void)
+{
+	char path[700], text[1024], dir[700];
+	rfmt(path, sizeof path, "%s/etc/hangar/datasets/retyped.dataset", R_root);
+	CHECK_EQ_INT(write_file(path, "[Dataset]\nAnchor=rt.a\nAnchorRole=input\nLateness=0\n\n"
+				      "[Input rt.p]\nJoin=asof:0\n"), 0);
+	rfmt(dir, sizeof dir, "%s/sink-retyped", R_root);
+	mkdir_p(dir, 0755);
+	rfmt(path, sizeof path, "%s/etc/hangar/pairer-retyped.conf", R_root);
+	rfmt(text, sizeof text, "[Pairer]\nDatasets=retyped\nDatasetDir=%s/etc/hangar/datasets\nSink=%s\n", R_root, dir);
+	CHECK_EQ_INT(write_file(path, text), 0);
+	pid_t pid = spawn("pairer-retyped", NULL, R_pairer, path, (char *)NULL);
+	CHECK(pid > 0);
+	CHECK(wait_file_contains(log_path("pairer-retyped"), "1 datasets", 5000));
+	char toy[700];
+	rfmt(toy, sizeof toy, "%s/retype", R_toys);
+	/* The part first, so that every anchor message finds one: 0.6 s of each type. */
+	pid_t part = spawn("retype-part", NULL, toy, "--topic", "rt.p", "--first", "u64 v", "--then", "f64 x\\nf64 y",
+			   "--count", "6", "--gap-ms", "100", (char *)NULL);
+	sleep_ms(50);
+	pid_t anchor = spawn("retype-anchor", NULL, toy, "--topic", "rt.a", "--first", "u64 v", "--then", "u64 v", "--count",
+			     "12", "--gap-ms", "50", (char *)NULL);
+	CHECK_EQ_INT(wait_pid_ms(part, 5000), 0);
+	CHECK_EQ_INT(wait_pid_ms(anchor, 5000), 0);
+	sleep_ms(200);
+	CHECK_EQ_INT(wait_pid_ms(pid, 0), -1); /* still running */
+	CHECK(file_contains(log_path("pairer-retyped"), "retyped: 1 parts, 88-byte rows"));
+	CHECK(file_contains(log_path("pairer-retyped"), "retyped: the writer of rt.p restarted with another type"));
+	CHECK(!file_contains(log_path("pairer-retyped"), "the writer of rt.a restarted"));
+	CHECK(file_contains(log_path("pairer-retyped"), "retyped: 1 parts, 96-byte rows"));
+	/* The topic is of the row type bound now. */
+	hg_sub *rows = hg_sub_open("dataset.retyped", NULL);
+	struct hg_topic_meta m;
+	memset(&m, 0, sizeof m);
+	unsigned char row[96];
+	struct hg_info info;
+	CHECK(rows != NULL);
+	CHECK_EQ_INT(hg_latest(rows, row, sizeof row, &info), HG_MSG);
+	CHECK_EQ_INT(hg_sub_meta(rows, &m), 0);
+	CHECK_EQ_INT(m.payload_bytes, 96);
+	uint32_t slen = 0;
+	const char *schema = hg_sub_schema(rows, &slen);
+	CHECK(schema && strstr(schema, "f64 rt.p.y"));
+	/* The last row: anchor message 24, the part's last message, 12, whose
+	 * last byte the toy sets to 13: byte 7 of y, at the end of the row. */
+	CHECK_EQ_INT(r64(row, 0), 24);
+	CHECK_EQ_INT(r32(row, 32), 0);
+	CHECK_EQ_INT(row[48], 24);
+	CHECK_EQ_INT(r64(row, 56), 12);
+	CHECK_EQ_INT(row[80], 12);
+	CHECK_EQ_INT(row[95], 13);
+	if (rows)
+		hg_sub_close(rows);
+	CHECK_EQ_INT(stop_child(pid), 0);
+	/* The sink: the rows of the first row type in one file, of the second in the next. */
+	struct hgr_reader r;
+	rfmt(path, sizeof path, "%s/dataset.retyped.hgr", dir);
+	CHECK_EQ_INT(hgr_open(&r, path), 0);
+	CHECK_EQ_INT(r.payload_bytes, 88);
+	CHECK(r.count >= 8 && r.count <= 12);
+	for (uint64_t i = 0; i < r.count; i++) {
+		const unsigned char *lr = hgr_payload_at(&r, i);
+		/* v of the part, as the old type has it: a message of the first
+		 * six, the toy's k in its first byte and k + 1 in its last. */
+		CHECK(r32(lr, 32) != 0 || (r64(lr, 56) >= 1 && r64(lr, 56) <= 6 && lr[80] == r64(lr, 56) && lr[87] == lr[80] + 1));
+	}
+	hgr_reader_close(&r);
+	rfmt(path, sizeof path, "%s/dataset.retyped+1.hgr", dir);
+	CHECK_EQ_INT(hgr_open(&r, path), 0);
+	CHECK_EQ_INT(r.payload_bytes, 96);
+	CHECK(r.count >= 8 && r.count <= 13);
+	if (r.count)
+		CHECK(r32(hgr_payload_at(&r, 0), 36) & HG_DS_ROW_RESET);
+	for (uint64_t i = 0; i < r.count; i++) {
+		const unsigned char *lr = hgr_payload_at(&r, i);
+		CHECK_EQ_INT(r32(lr, 32), 0);
+		CHECK(r64(lr, 56) >= 7 && r64(lr, 56) <= 12);
+		CHECK_EQ_INT(lr[80], r64(lr, 56));
+		CHECK_EQ_INT(lr[95], r64(lr, 56) + 1);
+	}
+	hgr_reader_close(&r);
+}
+
 int main(void)
 {
 	rec_setup("pairer");
@@ -562,6 +653,7 @@ int main(void)
 	RUN_TEST(test_refusals);
 	RUN_TEST(test_pairs_long_inputs);
 	RUN_TEST(test_damaged_recordings);
+	RUN_TEST(test_part_retyped);
 	RUN_TEST(test_unbound_does_not_spin); /* last: its pairer publishes pairer.status too */
 	if (rows_sub)
 		hg_sub_close(rows_sub);
