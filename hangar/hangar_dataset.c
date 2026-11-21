@@ -211,7 +211,7 @@ static int session_boot(const char *session, unsigned char boot[16])
 		const char *p = line + 7;
 		int k = 0;
 		for (; k < 32; k++) {
-			int c = p[k], v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+			int c = (unsigned char)p[k], v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
 				       c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 			if (v < 0)
 				break;
