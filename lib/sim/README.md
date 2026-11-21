@@ -38,7 +38,8 @@ rotating body vectors into the world; ν = [u v w p q r] is the body velocity.
   Coriolis matrix for a diagonal `M_A`, with `A₁ = diag(A₁..A₃)`, `A₂ = diag(A₄..A₆)`.
 - `D(ν_r) ν_r`: per axis `(d_lin_i + d_quad_i |ν_r,i|) ν_r,i`.
 - `ν_r = ν − [Rᵀ v_c ; 0]`: the velocity relative to the water, `v_c` the current
-  in the world frame (constant, or sinusoidal with a period, `sim_current_at`).
+  in the world frame (constant, or sinusoidal with a period, `sim_current_at`;
+  `sim_vehicle` sets the constant part only, and the default is zero).
   The current is irrotational, so only the linear part is relative; added-mass
   Coriolis and damping act on `ν_r`, the rigid-body terms on `ν`. (The term
   `M_A ν̇_c` of a varying current is dropped: for the slow variation this models
@@ -62,8 +63,12 @@ acceleration: a vehicle floating at the surface reads gravity alone, not the
 decays monotonically in still water with no thrust (a test).
 
 `sim_params_add_payload` adds a point mass at a body position: the CG moves
-towards it, so `cb` and the thruster positions' frame shift the other way by
-`m_p/(m+m_p)` of its offset; the inertia takes the diagonal parallel-axis terms.
+towards it, so `cb` shifts the other way by `m_p/(m+m_p)` of its offset; the
+inertia takes the diagonal parallel-axis terms. The thruster positions do not
+shift: they are in `struct sim_geometry`, not in `sim_params`, and `sim_vehicle`
+builds the allocation once from the bare vehicle's, so a payload off the CG
+changes the restoring moment and the inertia and leaves every thruster's moment
+arm as it was. Shifting the geometry by the same amount is what is missing.
 This is the model's "payload mass and position" parameter of doc 14; a payload
 is assumed to have no buoyancy of its own.
 
@@ -103,11 +108,11 @@ Sources:
 | W | 112.8 N | Wu18 eq. (5.16) "W = mg = 11.5 × 9.81 = 112.8 (N)" | printed value kept (11.5 × 9.81 = 112.815) |
 | B | 114.8 N | Wu18 eq. (5.17) "B = 0.2 × 9.81 + 112.8 = 114.8 (N)" | net buoyancy 0.2 kg from the BR specification Wu cites |
 | cb (CB relative to CG) | (0, 0, −0.02) m | Wu18 Table 5.1 "r_g [0, 0, 0.02]ᵀ (m)" with the origin at the CB | frame change only; Wu calls 0.02 m "a representative value", not a measurement |
-| gravity | 9.81 m/s² | the g of Wu18 (5.16) | used for the IMU and payload weight; the thrust table uses 9.80665 N/kgf |
+| gravity | 9.81 m/s² | the g of Wu18 (5.16) | used for the IMU and payload weight; the thrust table uses 9.80665 N/kgf, and so do `nav` (`NAV_G`) and `sim_vehicle`'s pressure: `nav`'s vertical acceleration carries −0.0034 m/s² |
 | current, floor | 0 | — | set by `sim_vehicle` |
 | thruster positions | T1..T4 (±0.156, ±0.111, 0.085), T5..T8 (±0.120, ±0.218, 0) m | Wu18 Table 4.2, in mm: 156, 111, 85, 120, 218 | mm → m; Wu's origin is the CB, 0.02 m above the CG, and the z of 0.085 is carried over unchanged |
 | thruster directions | horizontals push outward along ±45° diagonals, verticals push down, for a pulse width above 1500 µs | AP motor factors (roll, pitch, yaw, throttle, forward, lateral): 1 `(0,0,+1,0,−1,+1)`, 2 `(0,0,−1,0,−1,−1)`, 3 `(0,0,−1,0,+1,+1)`, 4 `(0,0,+1,0,+1,−1)`, 5 `(+1,−1,0,−1,0,0)`, 6 `(−1,−1,0,−1,0,0)`, 7 `(+1,+1,0,−1,0,0)`, 8 `(−1,+1,0,−1,0,0)` | Wu18 (4.62) has the same magnitudes (0.707, 0.06, 0.1888, 0.218, 0.120, 1) with columns 1–4, 5 and 8 of opposite sign, his convention for a positive thrust; the AP signs are what `thr.out` means on the vehicle. `polarity[i]` = ±1 mirrors `MOT_n_DIRECTION` |
-| thruster lag | 0.1 s (`sim_vehicle` default; the library takes it as an argument) | — | **estimate**, no published value; `hangar sim fit` fits it |
+| thruster lag | 0.05 s (`sim_vehicle`'s default, `thruster_lag`; the library takes it as an argument) | — | **estimate**, no published value; `hangar sim fit` fits it |
 
 Dimensions for reference (BR-ref, heavy): 457 × 575 × 254 mm; bollard thrust
 forward 9 kgf (45°), vertical 14 kgf, lateral 9 kgf (45°). Not used by the model.
@@ -203,7 +208,8 @@ and the ESC's own dynamics beyond the first-order lag.
 
 ## How `sim_vehicle` uses it
 
-Per 200 Hz step: read `thr.cmd` (or SITL's servo outputs) and `power.battery`;
+Per 200 Hz step: read `thr.cmd` (or SITL's servo outputs) and the module's own
+battery voltage (it models the battery and publishes `power.battery` itself);
 `sim_thrusters_command(th, pwm, voltage)`; `sim_thrusters_step(th, dt)`;
 `sim_thrusters_wrench(th, tau)`; `sim_step(params, state, tau, dt)`; publish
 `sim.pose` (`state.pos`, `state.q`), `sim.velocity` (`state.nu`), `sim.thrust`

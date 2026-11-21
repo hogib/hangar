@@ -68,7 +68,8 @@ double sim_depth_measure(const struct sim_channel *c, const struct sim_state *s,
 void sim_attitude_measure(const struct sim_channel *c, const struct sim_state *s,
                           struct sim_rng *r, double rpy[3]);
 
-/* Noise-free channels: the defaults sim_vehicle starts from. */
+/* A noise-free channel: for tests. sim_vehicle's channels come from its
+ * parameters (msg/sim_vehicle_params.msg), whose defaults have noise. */
 struct sim_channel sim_channel_ideal(void);
 /* Typical values for a Navigator-class sensor set (estimates; see README). */
 struct sim_imu_model sim_imu_typical(void);

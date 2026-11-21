@@ -2,8 +2,8 @@
 # modules/sim_vehicle/README.md): opt-in. Rename to sim_vehicle.module to use it,
 # and take mavlink.module out of the same root first: here the simulator writes
 # nav.imu, nav.attitude, nav.depth and power.battery itself, and one topic has
-# one writer. It reads thr.cmd (phase 2's thruster command); until a thruster
-# module exists in this profile, whatever drives the experiment publishes it.
+# one writer. It reads thr.cmd, which this profile's thrusters module
+# (thrusters.module) publishes from ctl.wrench through the actuator gate.
 # For the learning loop's experiments without Docker: buoyancy and payload
 # change live (hangar param set sim_vehicle buoyancy=... payload_mass=...).
 [Module]

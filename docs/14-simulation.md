@@ -45,7 +45,9 @@ own continuous integration ([Physics](#physics)):
   the centre of buoyancy above the centre of mass;
 - thrusters at the BlueROV2's positions and angles, each a first-order lag on commanded
   thrust and a tabulated thrust curve with a deadband;
-- the sea floor and the surface as limits; a current, constant or slowly varying.
+- the sea floor and the surface as limits; a current. As built the module's current is
+  a constant (`current[3]`, live): lib/sim also has a slow sinusoidal variation
+  (`current_amp`, `current_period`), which no parameter of `sim_vehicle` sets yet.
 
 It publishes the **truth topics**, `sim.pose` (position and attitude), `sim.velocity`
 (linear and angular) and `sim.thrust` (each thruster's thrust), at 200 Hz and without
@@ -73,7 +75,8 @@ place of the sensor modules that read the Navigator's buses.
 
 Its parameters are live ([05-parameters](05-parameters.md)): mass, buoyancy, drag
 coefficients, payload mass and position, current, and each sensor's noise, bias and
-latency. Changing buoyancy or payload during a run is how the adaptive depth-hold
+latency. As built, a payload moves the centre of gravity for the restoring moment and
+the inertia only: the thrusters' moment arms stay those of the bare vehicle (below). Changing buoyancy or payload during a run is how the adaptive depth-hold
 experiment of [09-learning](09-learning.md#example-adaptive-depth-hold) is driven.
 
 ### `sim_camera`
@@ -149,6 +152,27 @@ thruster lag to a recorded dive (least squares on `nav.*` and `thr.out` over the
 session, with the fitted values and their residuals in a report), and writes them as a
 parameter file the simulator loads. The simulator is thereby something to calibrate,
 not to trust, and its error against the vehicle is a number reported per session.
+
+**As built, and not on purpose** (`modules/sim_vehicle`, `lib/sim`; each is a
+difference from the text above, to be closed or accepted):
+
+- A payload off the centre of gravity changes the weight, the restoring moment (the
+  centre of buoyancy moves the other way in the body frame) and the inertia. It does
+  not change the thrusters' moment arms: the allocation is built once from the bare
+  vehicle's geometry, so a payload forward of the CG gives no pitching moment under
+  vertical thrust beyond the restoring one.
+- The current is constant. With the default of zero, nothing disturbs the dynamics
+  at all: sensor noise (white, with a constant bias) is the only randomness, and a
+  depth hold measured in simulation is better than any current would leave it.
+- Gravity is 9.81 m/s² in the simulator's weight and accelerometer (the value of the
+  coefficients' source) and 9.80665 in `nav` and in the simulator's pressure:
+  `nav.state.accel[2]` carries a constant −0.0034 m/s², which `nav`'s bias state
+  absorbs.
+- Standalone, a step that is late is made up, up to one second: the steps of one
+  wake-up are published with one stamp and all use the newest `thr.cmd`; beyond 200
+  late steps simulated time is dropped, with no log line and no counter.
+- `d_lin` and `d_quad` have no range (`msg/sim_vehicle_params.msg`): a negative value
+  is accepted, and the model is then unstable.
 
 **What the model leaves out, on purpose**: hull and tether hydrodynamics beyond the
 diagonal terms, wall and surface effects, current fields that vary in space, thruster
