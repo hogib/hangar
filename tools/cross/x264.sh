@@ -13,11 +13,14 @@
 # encoder is C alone, and says so). x264 is GPL-2.0-or-later: LICENSING.md.
 #
 # The source is fetched by its git commit, which names its content: no tarball
-# checksum to drift (code.videolan.org's archives are generated on request).
+# checksum to drift (code.videolan.org's archives are generated on request). When
+# code.videolan.org does not answer, the same commit is asked of GitHub's mirror: the
+# commit's hash is checked either way, so where it came from does not matter.
 set -eu
 
 X264_COMMIT=b35605ace3ddf7c1a5d67a2eb553f034aef41d55  # the stable branch, 2025-06-08, recorded 2026-11-20
 X264_GIT=https://code.videolan.org/videolan/x264.git
+X264_GIT_MIRROR=https://github.com/mirror/x264.git
 
 cc=
 arch=
@@ -51,7 +54,10 @@ if [ ! -f "$src/configure" ] || [ "$(git -C "$src" rev-parse HEAD 2>/dev/null)" 
 	mkdir -p "$src"
 	echo "x264.sh: fetching x264 $X264_COMMIT" >&2
 	git -C "$src" init -q
-	git -C "$src" fetch -q --depth 1 "$X264_GIT" "$X264_COMMIT"
+	git -C "$src" fetch -q --depth 1 "$X264_GIT" "$X264_COMMIT" || {
+		echo "x264.sh: $X264_GIT did not answer: trying $X264_GIT_MIRROR" >&2
+		git -C "$src" fetch -q --depth 1 "$X264_GIT_MIRROR" "$X264_COMMIT"
+	}
 	git -C "$src" checkout -q FETCH_HEAD
 	[ "$(git -C "$src" rev-parse HEAD)" = "$X264_COMMIT" ] || { echo "x264.sh: fetched another commit" >&2; exit 1; }
 fi
