@@ -31,7 +31,12 @@
 # (~/hangar-rov), the relay's log and the parameter files; HANGAR_BIN, the binaries;
 # ROS_SETUP (/opt/ros/jazzy/setup.bash); RELAY=0 starts no relay (a test without a Pixhawk);
 # ENCODER=1 lays out the encoder too (the camera's own H.264 to the laptop; README);
-# ENCODER_SOURCE (uvc:/dev/video2 on the lab's camera) its Source=, set at lay-out.
+# ENCODER_SOURCE (uvc:/dev/video2 on the lab's camera) its Source=, set at lay-out;
+# MAVLINK=serial lays out the profile's mavlink.conf.serial and mavlink.module.serial:
+# the mavlink module on the Pixhawk's serial line itself ($FCU's device and rate), no
+# relay, and nothing else may hold the device (modules/mavlink/README.md, "A serial line");
+# BRIDGE_PORT and BRIDGE_PEER_PORT (5614 both), the bridge's own UDP port and its peer's:
+# two different ones only for both roles on one machine (a rehearsal on loopback).
 set -euo pipefail
 
 here=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
@@ -55,8 +60,17 @@ RELAY=${RELAY:-1}
 ENCODER=${ENCODER:-0}
 ENCODER_SOURCE=${ENCODER_SOURCE:-}
 BRIDGE=${BRIDGE:-0}
+BRIDGE_PORT=${BRIDGE_PORT:-5614}
+BRIDGE_PEER_PORT=${BRIDGE_PEER_PORT:-5614}
+MAVLINK=${MAVLINK:-udp}
+case $MAVLINK in udp|serial) ;; *) echo "rov: MAVLINK=$MAVLINK: udp or serial" >&2; exit 2 ;; esac
+# MAVLINK=serial: the module holds the Pixhawk itself, so there is no relay to start.
+[ "$MAVLINK" = serial ] && RELAY=0
+# The address the topside's MAVLink module binds: the machine the topside role runs on.
+# The Pi's by default; rov.sh topside (the role on the laptop) makes it the laptop's.
+TOPSIDE_BIND_IP=$ROV_IP
 
-usage() { sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
 die() { echo "rov: $*" >&2; exit 1; }
 
@@ -65,6 +79,15 @@ die() { echo "rov: $*" >&2; exit 1; }
 # A profile's files with the installed paths rewritten: /usr/lib/hangar -> the
 # binaries, /etc/hangar and /var/lib/hangar -> the root's, the recorder's sessions
 # -> $SESSIONS, the tether addresses -> ROV_IP and GCS_IP.
+conf_sed() { # root: a profile's .conf on stdin, as laid out, on stdout
+    sed -e "s|/etc/hangar/|$1/etc/hangar/|g" \
+        -e "s|/var/lib/hangar/recorder/sessions|$SESSIONS|g" \
+        -e "s|/var/lib/hangar/|$1/var/lib/hangar/|g" \
+        -e "s|^Bind=192\.168\.2\.10:|Bind=$TOPSIDE_BIND_IP:|" \
+        -e "s|^GCS=192\.168\.2\.1:|GCS=$GCS_IP:|" \
+        -e "s|^Peer=192\.168\.2\.1:|Peer=$GCS_IP:|"
+}
+
 lay_out() { # root profile
     local root=$1 prof=$2 f b
     mkdir -p "$root/etc/hangar/modules" "$root/usr/share/hangar/msg" "$root/var/lib/hangar/safety" \
@@ -85,20 +108,29 @@ lay_out() { # root profile
         case $b in
             hangard.conf) cp "$f" "$root/etc/hangar/hangard.conf" ;;
             safety.params) cp "$f" "$root/var/lib/hangar/safety/params" ;;
-            *) sed -e "s|/etc/hangar/|$root/etc/hangar/|g" \
-                   -e "s|/var/lib/hangar/recorder/sessions|$SESSIONS|g" \
-                   -e "s|/var/lib/hangar/|$root/var/lib/hangar/|g" \
-                   -e "s|^Bind=192\.168\.2\.10:|Bind=$ROV_IP:|" \
-                   -e "s|^GCS=192\.168\.2\.1:|GCS=$GCS_IP:|" \
-                   -e "s|^Peer=192\.168\.2\.1:|Peer=$GCS_IP:|" "$f" > "$root/etc/hangar/$b" ;;
+            *) conf_sed "$root" < "$f" > "$root/etc/hangar/$b" ;;
         esac
     done
+    # The serial line is opt-in: mavlink.conf.serial and mavlink.module.serial in the
+    # place of the two beside them, the device and the rate from $FCU. The profile's
+    # own files are read, never changed.
+    if [ "$MAVLINK" = serial ] && [ -e "$prof/mavlink.conf.serial" ]; then
+        local rate=115200
+        [[ $FCU == *:* ]] && rate=${FCU##*:}
+        sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$prof/mavlink.module.serial" \
+            > "$root/etc/hangar/modules/mavlink.module"
+        conf_sed "$root" < "$prof/mavlink.conf.serial" |
+            sed -e "s|^Serial=.*|Serial=${FCU%%:*}|" -e "s|^Baud=.*|Baud=$rate|" > "$root/etc/hangar/mavlink.conf"
+    fi
     # The bridge is opt-in: bridge.module.off, bridge.conf and the shared key.
     if [ "$BRIDGE" = 1 ] && [ -e "$prof/bridge.module.off" ]; then
         sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$prof/bridge.module.off" \
             > "$root/etc/hangar/modules/bridge.module"
-        sed -i -e "s|/usr/share/hangar/|$root/usr/share/hangar/|g" \
-               -e "s|^Peer=192\.168\.2\.1$|Peer=$GCS_IP|" -e "s|^Peer=192\.168\.2\.10$|Peer=$ROV_IP|" \
+        # Peer= names a port only when it is not this end's own (the bridge's default).
+        local pport=""
+        [ "$BRIDGE_PEER_PORT" = "$BRIDGE_PORT" ] || pport=:$BRIDGE_PEER_PORT
+        sed -i -e "s|/usr/share/hangar/|$root/usr/share/hangar/|g" -e "s|^Port=5614$|Port=$BRIDGE_PORT|" \
+               -e "s|^Peer=192\.168\.2\.1$|Peer=$GCS_IP$pport|" -e "s|^Peer=192\.168\.2\.10$|Peer=$ROV_IP$pport|" \
             "$root/etc/hangar/bridge.conf"
         install -m 600 "$STATE/bridge.key" "$root/etc/hangar/bridge.key"
         # With a bridge the tether is watched (docs/07 "Failsafe"): the profile's
@@ -170,6 +202,19 @@ same_layout() { # root
     [ -e "$1/etc/hangar/modules/bridge.module" ] && has=1
     [ ! -d "$1/etc/hangar" ] || [ "$has" = "$BRIDGE" ] ||
         die "$1 was laid out with BRIDGE=$has: rov.sh reset (or topside reset) first"
+    local link=udp
+    grep -q '^Serial=' "$1/etc/hangar/mavlink.conf" 2>/dev/null && link=serial
+    [ ! -e "$1/etc/hangar/mavlink.conf" ] || [ "$link" = "$MAVLINK" ] ||
+        die "$1 was laid out with MAVLINK=$link: rov.sh reset first"
+}
+
+# MAVLINK=serial: the line must be there and nobody else's. The module opens it
+# exclusively; a relay of an earlier up would have it get EBUSY for ever.
+need_serial() {
+    [ "$MAVLINK" = serial ] || return 0
+    [ -e "${FCU%%:*}" ] || die "no Pixhawk at ${FCU%%:*}"
+    ! running "$STATE/relay.pid" ||
+        die "MAVLINK=serial, and the relay holds ${FCU%%:*} (pid $(cat "$STATE/relay.pid")): rov.sh relay down first"
 }
 
 stop_manager() { # root
@@ -368,6 +413,7 @@ cmd_up() {
             die "ENCODER=1, but the vehicle root was laid out without the encoder: rov.sh reset first"
     fi
     same_layout "$RV"
+    need_serial
     if [ "$BRIDGE" = 1 ]; then
         [ -x "$bin/hangar-bridge" ] || die "missing $bin/hangar-bridge (set HANGAR_BIN)"
         need_key make
@@ -430,6 +476,7 @@ cmd_topside() {
             done
             need_key copy
             same_layout "$RT"
+            TOPSIDE_BIND_IP=$GCS_IP
             [ -d "$RT/etc/hangar" ] || lay_out "$RT" "$profiles/rov-topside"
             start_manager "$RT"
             sleep 1
