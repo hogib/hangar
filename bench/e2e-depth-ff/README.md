@@ -814,6 +814,139 @@ read another `ctl.depth_hold.target` than the pairer at 1 anchor of 375 455 (49 
 `2026-11-21-quiet/summary.md` is the whole table. Nothing in the verdict below changes;
 these are the runs to quote. The supplementary supply runs were not made again.
 
+## Adaptation: a change the policy cannot read
+
+What the runs above left open: a second model, trained on rows recorded while the
+first drove a vehicle that had changed, doing better on it than the first. This
+section's design and criterion were written and committed on 2026-11-21 before any
+run of it was made; the results follow them.
+
+```sh
+make -j4 all
+PYTHONPATH=python ~/.cache/hangar-e2e-venv/bin/python tools/sim/depth_ff2_offline.py --adaptation --seeds 5
+tools/sim/e2e-adapt.sh        # ten runs, two at a time, 1 h 30; writes bench/e2e-depth-ff/<today>-adapt/
+```
+
+### The change
+
+A payload that weighs nothing in water: **10 kg more to move and five times the heave
+drag** (25.9 N s/m and 185 N s²/m² where the bare vehicle has 5.18 and 36.99; a flat
+tray of about 0.5 by 0.6 m slung under the vehicle would do it). In `sim_vehicle`'s
+parameters, set in one `hangar param set`: `payload_mass=10`, `buoyancy` up by the
+payload's weight (98.1 N), the heave entries of `d_lin` and `d_quad` times five
+(`depth_ff2.payload_params`). The simulator has no parameter for added mass, so the
+10 kg stand for the payload's mass and its added mass together: 36.07 kg to move in
+heave where it was 26.07.
+
+The vehicle floats by the same 2 N with and without it, so the trim stays at −0.085
+and the integrator does not move. The policy's inputs are the acceleration the
+controller wants, the vertical velocity and the integrator: at the same three numbers
+the vehicle with the payload needs another heave, and **nothing the policy reads says
+which vehicle it is on**. A buoyancy change was carried by an input; this one is
+carried by none, so the only way a model can be right for the changed vehicle is to
+have been trained on it. For the same reason no single model can be right for both:
+M2 is meant for the vehicle with the payload, and what it costs on the vehicle
+without is measured (N2 below), not hoped away. An input that would let one model
+cover both does not exist in the system: it would be the payload itself (a flag the
+operator sets, as a field of some topic the dataset joins) or an estimate of mass and
+drag from the last seconds' rows, which is what the trainer is. Adding a field to a
+dataset spec and a policy is supported without touching lib/hg; there is nothing to
+put in it.
+
+**Why this change and this size.** The change of supply above could not have shown
+adaptation, because the policy's bound limited both models. So before any live run the
+candidates were put on the offline check's few-line loop
+(`depth_ff2_offline.closed_loop`, which now takes a vehicle), with oracles only, no
+learned model: on the changed vehicle, the oracle of the unchanged one (the best a
+model from before the change can be) against the oracle of the changed one (the best
+a model trained since can be), both within the bound; the sum of the two 1 m steps'
+IAE, mean of three noise seeds, which differ by 0.05 at most.
+
+| Change | Oracle of the unchanged vehicle (m s) | Oracle of the changed vehicle | To gain |
+|---|---|---|---|
+| mass +5 kg; +10 kg; −5 kg | 3.30; 3.44; 3.24 | 3.27; 3.37; 3.27 | 0.03; 0.07; −0.03 |
+| supply 12.6 V; 20 V | 3.69; 3.18 | 3.64; 3.27 | 0.05; −0.09 |
+| heave drag ×2; ×3; ×5 | 3.71; 4.05; 4.63 | 3.61; 3.89; 4.38 | 0.10; 0.16; 0.25 |
+| +10 kg and drag ×3 | 4.10 | 3.83 | 0.27 |
+| **+10 kg and drag ×5** | **4.68** | **4.30** | **0.38** |
+| +15 kg and drag ×5; +20 kg and drag ×4 | 4.69; 4.46 | 4.29; 4.09 | 0.40; 0.37 |
+
+Mass alone and the supply leave a later model nothing to gain that five live runs
+could tell from their spread (0.05 to 0.1 m s on such a sum): the feedback asks for
+more when the vehicle does less, and the bound caps what either model can add. Drag
+does leave something, and a payload with drag is a thing that happens to a vehicle.
+The row in bold was taken: `--adaptation` reruns it (five seeds: controller alone 8.21
+to 8.26 m s, the oracle of the bare vehicle 4.65 to 4.69, the oracle of the vehicle
+with the payload 4.27 to 4.31; of the 0.38 to gain, 0.28 are on the step down and 0.10
+on the step up). So at best a later model is **8 % better** than an earlier one here.
+That is what this vehicle and this scheme offer; a change was not looked for until the
+number was large.
+
+### The schedule
+
+| t (s) | | |
+|---|---|---|
+| 0 | arm, `assisted`, 3 m; training phase as before (120 s of steps, 20 s at 3 m) | the bare vehicle |
+| 170 | **deploy M1**; **A1** `assisted`: hold 3 m (20 s), step to 4 m (25 s), step to 3 m (25 s) | |
+| 240 | **H1** `residual:depth_ff` with M1; **A2** the block with M1 | |
+| 330 | **C1** the payload on, at the hold, M1 driving | from here the payload |
+| 350 | **record**: the training phase's steps again, 180 s, and 20 s at 3 m, M1 driving, the trainer training | |
+| 550 | **P1** the block with M1 | |
+| 620 | **S2** **deploy M2** at the hold, 30 s | |
+| 650 | **P2** the block with M2 | |
+| 720 | **C2** the payload off; **N2** the block with M2 | the bare vehicle |
+| 810 | **C3** the payload on; **S3** `policy_depth_ff.revert`: M1 again | the payload |
+| 850 | **P3** the block with M1 again | |
+| 920 | **H2** `assisted`; **P4** the block with the controller alone; **C4** the payload off | |
+
+**What M1 sees**: 140 s of rows from the bare vehicle under the controller alone.
+**What M2 sees**: the trainer goes on from M1's plant and policy networks, as it would
+on a dive, on a replay buffer of 3 min; at S2 the payload has been on for 300 s, so
+every row in the buffer is from the vehicle with the payload and with M1's residual
+in the command (the last 80 s of the recording phase's steps, its 20 s hold, P1). M2 is
+exported, sent and loaded by `hangar.learn.deploy` and `load_weights` as M1 was,
+during the dive, with nothing restarted; the return to M1 is the policy's `revert`.
+**The oracle runs** go through the same schedule and the same deploys with two
+networks fitted before the dive: as M1 the oracle of the bare vehicle, as M2 the
+oracle of the vehicle with the payload (`depth_ff2.oracle(..., **PAYLOAD)`). They say
+what the two models could be at best, on the real stack instead of the few-line loop.
+
+P1 and P3 are the same model on the same vehicle before and after M2's block: if they
+differ, the difference between M1 and M2 has an order or a drift in it. Each run's
+analysis checks from the recorded references which model's residual every block's
+commands carried, and that every command of a residual block carried one.
+
+### The criterion, fixed before the comparison
+
+`J` is the sum of the two steps' IAE (3 to 4 m and 4 to 3 m, 25 s each, truth against
+the target) in a block on the vehicle with the payload. Five runs a variant, simulator
+and trainer seeds 1 to 5, named here before they were run; every run made is reported
+and none is repeated by itself. `e2e_depth_ff2.py --summarise` applies the criterion
+(`adapt_verdict`) and prints it under the table.
+
+1. **Whether there was anything to see**: in the oracle runs, `J` with the oracle of
+   the vehicle with the payload (P2) is lower than with the oracle of the bare vehicle
+   before and after it (P1, P3) in each of the five runs, and the largest of the five
+   P2 values is below the smallest of the ten P1 and P3 values. If not, the result is
+   **undecided**: no later model could have been seen to do better.
+2. **Adaptation is shown** if 1 holds and the same holds for the learned runs: `J`
+   with M2 lower than with M1 before and after it in each of the five runs, and the
+   largest of the five below the smallest of the ten. This is "lower on every seed,
+   by more than the seed-to-seed spread" with the spread taken as the whole range.
+3. **Not shown** if 1 holds and 2 does not.
+
+Also **undecided**: fewer than five runs of a variant, or a run in which a block ran
+under another model than the schedule names, a command of a residual block carried
+no residual, or the mux demoted the policy. Runs with the machine's marks on them (a
+50 Hz interval over 30 ms, a message the recorder lost, a row the trainer lost) are
+listed with the verdict and kept in.
+
+Reported beside it and not part of it: each step by itself, overshoot, the hold, the
+thrusters' reversals and the policy's share of ticks at its bound in every block; and
+**forgetting**: M2 on the bare vehicle (N2) against M1 on it (A2) and the controller
+alone (A1). By the argument above M2 is expected to be worse there than M1; by how
+much is the cost of having one model at a time.
+
 ### What this says about docs/09's claim, second design
 
 docs/09 now describes this design, and what it says of it was measured: a network that
