@@ -187,10 +187,11 @@ timer of its own, the cadence the library keeps for any module's glob subscripti
 ## Discovery
 
 From `hellion`: every bridge announces itself once a second on UDP 5613, to the IPv4
-broadcast address and IPv6 `ff02::1` of every interface that is up, and listens there:
+broadcast address, and listens there (IPv6's `ff02::1` and a beacon on every interface
+that is up are not built: one IPv4 broadcast is sent, by the route the system gives it):
 
 ```
-HANGAR/1 role=vehicle name=rov-1 pair=default port=5614 id=1a2b3c4d tag=9f0c…
+HANGAR/1 role=vehicle pair=default port=5614 id=1a2b3c4d tag=9f0c…
 ```
 
 `tag` is the keyed hash of the rest of the line, under the shared key. `id` is random,
