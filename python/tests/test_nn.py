@@ -286,6 +286,43 @@ class TestHgw(unittest.TestCase):
                 self.assertEqual(data[:8], b"HGWEIGHT")
                 self.assertEqual(len(data) % 64, 0 if len(data) >= 4096 else len(data) % 64)
 
+    def test_a_file_that_is_not_one_is_a_value_error(self):
+        # parse() said ValueError for a bad magic, a version, a size; counts,
+        # codes and offsets it took from the file came out as KeyError,
+        # struct.error or UnicodeDecodeError, and a probe that says 2^32 - 1
+        # steps was stepped through, every step an empty slice.
+        data = open(os.path.join(VECTORS, "depth_ff.hgw"), "rb").read()
+        f = hgw.parse(data)
+        secs = {name: off for name, off, _size in f.sections}
+        dir_off = struct.unpack_from("<I", data, 268)[0]
+
+        def changed(off, raw):
+            b = bytearray(data)
+            b[off:off + len(raw)] = raw
+            return bytes(b)
+
+        hostile = {
+            "a section count the file cannot hold": changed(264, struct.pack("<I", 2 ** 32 - 1)),
+            "a directory past the end": changed(268, struct.pack("<I", len(data) - 8)),
+            "no ops section": changed(data.index(b"ops\0", dir_off), b"xps\0"),
+            "a buffer of no known type": changed(secs["buffers"] + 32, struct.pack("<I", 99)),
+            "a tensor of no known type": changed(secs["tensors"] + 32, struct.pack("<I", 99)),
+            "a tensor past the end": changed(secs["tensors"] + 56, struct.pack("<Q", len(data) - 2)),
+            "a probe of 2^32 - 1 steps": changed(secs["probes"], struct.pack("<I", 2 ** 32 - 1)),
+            "a probe past the end": changed(secs["probes"] + 8, struct.pack("<Q", len(data) - 4)),
+            "a name that is no text": changed(secs["buffers"], b"\xff\xfe\xfd"),
+            "nine lineage entries": changed(struct.calcsize("<8s I I Q 32s Q I"), struct.pack("<I", 9)),
+            "an op with 99 tensors": changed(secs["ops"] + 28, struct.pack("<I", 2 ** 31)),
+        }
+        for what, bad in hostile.items():
+            with self.subTest(what=what):
+                self.assertNotEqual(bad, data)
+                with self.assertRaises(ValueError):
+                    hgw.parse(bad)
+        for cut in (0, 100, 4095, 4096, 4100, len(data) - 1):
+            with self.assertRaises(ValueError):
+                hgw.parse(data[:cut])
+
     def test_layout_constants(self):
         self.assertEqual(struct.calcsize(hgw.HEADER_FMT), 288)
         self.assertEqual(struct.calcsize(hgw.OP_FMT), 192)

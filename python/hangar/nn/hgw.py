@@ -421,6 +421,8 @@ def _unpack_header(data: bytes) -> Header:
         format_version=f[1],
     )
     count = f[7]
+    if count > MAX_LINEAGE:
+        raise ValueError(f"lineage_count {count} > {MAX_LINEAGE}")
     for i in range(count):
         s = struct.unpack(SESSION_FMT, data[288 + 48 * i : 288 + 48 * (i + 1)])
         r = struct.unpack(RANGE_SUMMARY_FMT, data[672 + 40 * i : 672 + 40 * (i + 1)])
@@ -451,6 +453,8 @@ def _pack_op(op: Op) -> bytes:
 def _unpack_op(rec: bytes) -> Op:
     f = struct.unpack(OP_FMT, rec)
     n_in, n_t, n_a = f[2], f[3], f[4]
+    if n_in > MAX_OP_INPUTS or n_t > MAX_OP_TENSORS or n_a > MAX_ATTRS:
+        raise ValueError(f"op {_rcstr(f[0])}: {n_in} inputs, {n_t} tensors, {n_a} attributes")
     return Op(
         type=_rcstr(f[0]),
         version=f[1],
@@ -586,6 +590,17 @@ def write(path: str, graph: Graph, header: Header, probes: Sequence[Probe] = (),
 
 
 def parse(data: bytes) -> File:
+    """The file's records, or ValueError: for a file that is not one, and
+    for every count, code and offset in it that does not hold (they came out
+    as KeyError, struct.error or UnicodeDecodeError, and a probe's step
+    count was believed)."""
+    try:
+        return _parse(data)
+    except (KeyError, IndexError, struct.error, UnicodeDecodeError, OverflowError) as e:
+        raise ValueError(f"not a .hgw file: {type(e).__name__}: {e}") from e
+
+
+def _parse(data: bytes) -> File:
     if len(data) < HEADER_SIZE:
         raise ValueError("shorter than the header")
     header = _unpack_header(data)
@@ -596,9 +611,13 @@ def parse(data: bytes) -> File:
         raise ValueError(f"header says {file_size} bytes, data has {len(data)}")
     secs: Dict[str, Tuple[int, int]] = {}
     order = []
+    if dir_off + 32 * n_sections > len(data):
+        raise ValueError(f"section directory of {n_sections} entries does not fit")
     for i in range(n_sections):
         name, off, size = struct.unpack(SECTION_FMT, data[dir_off + 32 * i : dir_off + 32 * (i + 1)])
         name = _rcstr(name)
+        if off + size > len(data):
+            raise ValueError(f"section {name}: {size} bytes at {off} do not fit")
         secs[name] = (off, size)
         order.append((name, off, size))
 
@@ -617,13 +636,27 @@ def parse(data: bytes) -> File:
         dtype = DTYPE_BY_CODE[r[1]]
         shape = list(r[3 : 3 + r[2]])
         toff, tsize = r[7], r[8]
+        if toff + tsize > len(data) or tsize != numel(shape) * dtype_size(dtype):
+            raise ValueError(f"tensor {_rcstr(r[0])}: {tsize} bytes at {toff} for shape {shape}")
         tensors.append(Tensor(_rcstr(r[0]), dtype, shape, unpack_values(dtype, data[toff : toff + tsize])))
+    if "ops" not in secs:
+        raise ValueError("no ops section")
     off, size = secs["ops"]
+    if size % 192:
+        raise ValueError(f"section ops: {size} bytes is not whole 192-byte records")
     ops = [_unpack_op(data[off + k * 192 : off + (k + 1) * 192]) for k in range(size // 192)]
     inputs = [Binding(r[0], r[1], _rcstr(r[2])) for r in records("inputs", BINDING_FMT)]
     outputs = [Binding(r[0], r[1], _rcstr(r[2])) for r in records("outputs", BINDING_FMT)]
     g = Graph(buffers, tensors, ops, inputs, outputs)
-    probes = [_probe_from_blob(g, data[r[2] : r[2] + r[3]], r[0]) for r in records("probes", PROBE_FMT)]
+    for b in list(g.inputs) + list(g.outputs):
+        if b.buffer >= len(buffers):
+            raise ValueError(f"binding {b.field}: no buffer {b.buffer}")
+    stride = probe_stride(g)
+    probes = []
+    for r in records("probes", PROBE_FMT):
+        if r[2] + r[3] > len(data) or r[0] * stride != r[3]:
+            raise ValueError(f"probe: {r[0]} steps of {stride} bytes are not its {r[3]} bytes at {r[2]}")
+        probes.append(_probe_from_blob(g, data[r[2] : r[2] + r[3]], r[0]))
     ranges = [(r[0], r[1]) for r in records("ranges", RANGE_FMT)] if "ranges" in secs else None
     return File(header, g, probes, ranges, order)
 
