@@ -1343,6 +1343,19 @@ static int replay_ok(uint64_t seq)
 
 static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_in *from)
 {
+	/* Peer=<address>: the peer is that address and port and no other. What
+	 * comes from anywhere else is not read: no tag checked, nothing answered,
+	 * nothing moved (docs/08 "The link"). */
+	if (B.peer_fixed && (from->sin_addr.s_addr != B.peer.sin_addr.s_addr || from->sin_port != B.peer.sin_port)) {
+		static int said; /* once: a peer that sends from another address than Peer= names is found here */
+		if (!said) {
+			said = 1;
+			mod_log(WHO, "a datagram from %s:%u, which is not Peer=%s: not read, nor any other from there",
+				inet_ntoa(from->sin_addr), ntohs(from->sin_port), B.peer_txt);
+		}
+		B.st.rejected++;
+		return;
+	}
 	if (len < HDR + TAG || memcmp(d, "HGB1", 4) != 0) {
 		B.st.rejected++;
 		return;
