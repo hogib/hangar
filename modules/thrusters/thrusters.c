@@ -30,10 +30,19 @@ static void neutral(uint16_t pwm[THR_N])
 int main(int argc, char **argv)
 {
 	if (argc == 2 && strcmp(argv[1], "--neutral") == 0) {
-		/* Nothing to send: thr.cmd's readers stop the thrusters when it goes
-		 * stale (the simulator does). A driver of real ESCs writes 1500 us
-		 * here. */
-		fprintf(stderr, "%s --neutral: thr.cmd goes stale and its readers stop the thrusters\n", WHO);
+		/* This module drives no hardware: its output is the topic thr.cmd,
+		 * whose reader (the simulator) stops the thrusters when it is stale.
+		 * A Neutral command runs outside the module's wiring (the manager
+		 * gives it HANGAR_MODULE and the module's user, nothing else), so it
+		 * could not publish 1500 us on thr.cmd either. Nothing to write.
+		 *
+		 * NOT a model for a driver of real ESCs. docs/07 "The actuator
+		 * gate": a Neutral command puts the hardware to neutral by itself,
+		 * since a PWM generator keeps its last pulse widths when the module
+		 * that set them is dead. That driver's --neutral writes 1500 us to
+		 * the hardware and exits non-zero when it cannot (the manager then
+		 * puts the system in failsafe). */
+		fprintf(stderr, "%s --neutral: no hardware here; thr.cmd goes stale and its reader stops the thrusters\n", WHO);
 		return 0;
 	}
 	mod_init(WHO);

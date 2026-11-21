@@ -166,6 +166,21 @@ actuators), then neutralized. Where the output hardware has an enable line, the
 actuator module keeps it enabled by refreshing a hardware watchdog, so that outputs
 drop by themselves if nothing refreshes them, even if the computer hangs.
 
+**As built, the `thrusters` module drives no hardware.** `hangar-thrusters` publishes
+pulse widths on `thr.cmd` (and `thr.out`), and its only reader is the simulator,
+which stops its thrusters when `thr.cmd` is stale, absent or flagged
+([14-simulation](14-simulation.md)). Its `Neutral` command, `hangar-thrusters
+--neutral`, writes nothing and exits 0. It cannot do what the table above asks, and
+has nothing to do it to: a `Neutral` command is started by the manager with the
+module's user and name but outside its wiring
+([03-manager](03-manager.md#neutral-commands)), so it cannot publish on the module's
+topics, and a topic has no state to put to neutral beyond going stale, which the
+module's death already does. This holds for a simulated actuator only. The module
+that drives ESCs in phase 2 has hardware that keeps its last pulse width, and its
+`Neutral` command must write 1500 µs to that hardware itself (`navigator_pwm
+--neutral` in the example above); `hangar-thrusters --neutral` is not a model for
+it.
+
 ## The mux
 
 `ctl.wrench` has one writer: the `mux`. Every control source publishes its own topic

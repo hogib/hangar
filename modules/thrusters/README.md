@@ -12,8 +12,13 @@ directly. C11 over lib/hg; static for musl.
 - Publishes `thr.cmd` (`thruster_cmd`, `Actuator=yes`), what sim_vehicle reads, and
   `thr.out` (`thruster_out`), the pulse widths sent, as the mavlink module publishes
   ArduSub's servo outputs, so a dataset's labels read the same topic either way.
-- `--neutral` (the manifest's `Neutral=`) sends nothing: `thr.cmd`'s readers stop the
-  thrusters when it goes stale. Stopping, the module publishes 1500 µs once.
+- `--neutral` (the manifest's `Neutral=`) writes nothing and exits 0. docs/07 asks a
+  `Neutral` command to put the hardware to neutral by itself; this module has no
+  hardware (its output is a topic, whose reader, the simulator, stops the thrusters
+  when `thr.cmd` goes stale), and a `Neutral` command runs outside the module's
+  wiring, so it could not publish on `thr.cmd` either. docs/07 "The actuator gate"
+  says so. A driver of real ESCs must write 1500 µs to its hardware there and fail
+  when it cannot: do not copy this one. Stopping, the module publishes 1500 µs once.
 - One writer per topic: not in a root with `mavlink.module`.
 - It waits only on its tick; the gate's topics are read every tick (hangar#1).
 
