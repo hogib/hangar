@@ -32,6 +32,30 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   `common.xml` defines them, `enabled_extensions` 3; buttons 0), each axis checked
   finite then clamped. What is sent is `ardusub.manual_control`, referencing
   `ctl.wrench`; neutral names nothing.
+- What ArduSub is sent, by `safety.state`. The module never stops `MANUAL_CONTROL`
+  while it runs and has heard ArduSub, and never repeats a command: every 20 ms it
+  sends what the gate hands it at that moment, or neutral.
+
+  | `safety.state` | `MANUAL_CONTROL`, 50 Hz | arm state |
+  |---|---|---|
+  | `disarmed`, `arming` | neutral | disarmed; armed in `arming` on `mavlink.arm` |
+  | `armed` | `ctl.wrench`; neutral while it is stale, flagged or not finite | armed |
+  | failsafe `surface`, `hold` (`outputs_enabled` 1) | `ctl.wrench`: the mux's heave, and the pilot's override | stays armed |
+  | failsafe `neutral` (`outputs_enabled` 0) | neutral | a disarm, when the window closes |
+  | stale or absent | neutral | a disarm, when the window closes |
+
+  The `tether` trigger is no special case: the module reads `safety.state`, not the
+  link. With `action_tether` `neutral` (the default) it is the fourth row, neutral and
+  a disarm; with `surface` or `hold` the third, and ArduSub stays armed in MANUAL with
+  the mux's command. A stick held when the tether goes does not reach ArduSub after
+  the trigger: `pilot.wrench` is stale three periods after its last message and the
+  mux counts it as zero, long before `tether_timeout`; and with `neutral` the gate is
+  closed whatever the mux says. Neutral is kept up, not stopped, because in MANUAL
+  neutral input is no thrust, and because phase 1's `surface` and `hold` reach the
+  thrusters as `MANUAL_CONTROL` and nothing else: a module that stopped sending would
+  hand the vehicle to ArduSub's own ground-station failsafe in place of hangar's
+  action. docs/07 and docs/10 ask for that stop at `tether_timeout`; it is not built
+  ("Until the bridge" below).
 - `mavlink.arm` (Allow `safety`): refused unless the newest `safety.state` is fresh and
   says `arming`, ArduSub is disarmed and in MANUAL, and `params` is 1; otherwise
   `MAV_CMD_COMPONENT_ARM_DISARM`, `accepted`, and the `PreArm:`/`Arm:` texts collected
@@ -284,11 +308,16 @@ pseudo-terminal.
 
 ## Until the bridge, the recorder, and the vehicle
 
-- `bridge.vehicle.link` / `bridge.topside.link` do not exist: the topside counts the
-  link as up while `safety.state` keeps arriving (`LinkTimeout`, 2 s) and stops its
-  `HEARTBEAT` otherwise; the vehicle module does not stop `MANUAL_CONTROL` at
-  `tether_timeout` (there is no link to time out) and does not subscribe to
-  `safety.params`. Marked `until the bridge` in the code and the manifests.
+- `bridge.vehicle.link` / `bridge.topside.link` are not read here (the bridge
+  publishes them now, and the safety module's `tether` trigger reads the vehicle's):
+  the topside counts the link as up while `safety.state` keeps arriving
+  (`LinkTimeout`, 2 s) and stops its `HEARTBEAT` otherwise; the vehicle module does
+  not stop `MANUAL_CONTROL` at `tether_timeout` and does not subscribe to
+  `safety.params`. Marked `until the bridge` in the code and the manifests. What the
+  vehicle module sends on a lost tether instead is in "The vehicle's module" above,
+  and `test_tether` of the chain suite pins it. Whether to build the stop is open: it
+  only matters with `action_tether` `surface` or `hold`, and there it would replace
+  hangar's action with ArduSub's `FS_GCS_ENABLE` action, since both cannot drive.
 - The topics crossing the tether (`safety.state`, `ardusub.state`, `nav.*`,
   `power.battery`, `pilot.wrench`, `pilot.buttons`, the `.req`/`.rep` of the calls) are
   read through the same-host shim (`lib/hg/NOTES.md` "Phase 1"); the `topside_mavlink`
@@ -360,7 +389,13 @@ pseudo-terminal.
   at ArduSub after **16 ms** (the manager flags the dead writer's topic and the gate
   closes on it; `SafetyTimeout` + one period, 320 ms, is the bound without a manager,
   which `test_hg_gate` covers); `mux` killed → neutral after **21 ms**; both modules
-  restarted by the manager, the vehicle disarmed by the window closing.
+  restarted by the manager, the vehicle disarmed by the window closing. `test_tether`:
+  the suite again as the module `link`, publishing `bridge.vehicle.link`, with
+  `tether_enabled` 1 and `tether_timeout` 1 s; armed with the stick at 300, the link's
+  last packet stops: `safety.state` failsafe by `tether`, neutral at ArduSub **19 ms**
+  later, ArduSub disarmed, and for the next second `MANUAL_CONTROL` still at 50 Hz,
+  every one neutral, with the stick still held; then with `action_tether` `surface`:
+  `MANUAL_CONTROL` still at 50 Hz with `z` 750 (`surface_thrust` 0.5), ArduSub armed.
 - `make check-sitl HANGAR_SITL=1`: the chain against the real container
   (`HANGAR_SIM=1 tools/sim/run.sh up`), the fake replaced by SITL on 14560, signing off,
   `mavlink.setup` first, the thrust seen in `thr.out`. Written and wired, **not run in

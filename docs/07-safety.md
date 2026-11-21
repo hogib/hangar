@@ -455,9 +455,14 @@ has reported no packet from the topside for `tether_timeout`
 behind hangar's `tether` trigger, whatever hangar did. *As built (2026-11-21): the
 safety module's `tether` trigger reads the link; the `mavlink` module does not yet
 stop `MANUAL_CONTROL` at `tether_timeout` (`modules/mavlink/README.md`, "Until the
-bridge"). With the default action, `neutral`, hangar disarms ArduSub on tether loss
-and nothing more is needed; with `action_tether` set to `surface` or `hold`, ArduSub's
-GCS failsafe does not stand behind the trigger until the module does.*
+bridge"): it goes on at 50 Hz with what the gate hands it. With the default action,
+`neutral`, that is neutral input and a disarm, and nothing more is needed; with
+`action_tether` set to `surface` or `hold` it is the mux's command with ArduSub armed,
+and ArduSub's GCS failsafe does not stand behind the trigger until the module stops.
+Stopping would also end hangar's own `surface` or `hold`, which reach the thrusters as
+`MANUAL_CONTROL` and nothing else, and leave the action to `FS_GCS_ENABLE`: the two
+are alternatives, not layers. The chain suite's `test_tether` pins what is sent in
+both cases.*
 
 If the vehicle's `mavlink` module dies, its `Neutral` command sends ArduSub neutral
 manual control and a disarm, and ArduSub, no longer hearing from its ground station,
@@ -502,7 +507,8 @@ recorded. None is optional.
    zero within `pilot.wrench`'s `StaleAfter`, and the `tether` failsafe fires at
    `tether_timeout`. Pulled again with the `tether` action set to `surface`, so that
    ArduSub stays armed: ArduSub's GCS failsafe acts `FS_GCS_TIMEOUT` after the module
-   stops sending manual control.
+   stops sending manual control. *(As built the module does not stop: the second half
+   shows `surface` driven by hangar and no GCS failsafe; [Phase 1](#phase-1-ardusub-drives-the-thrusters).)*
 7. **A policy not promoted** producing large commands: nothing reaches the thrusters.
 8. **Pilot override** during `assisted` and `residual:<name>`: the pilot's axis wins at
    once.

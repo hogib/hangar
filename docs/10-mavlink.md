@@ -117,7 +117,11 @@ so its ground-station and pilot-input failsafes fire `FS_GCS_TIMEOUT` after the 
 stops sending: when the module dies, and when it stops `MANUAL_CONTROL` on purpose,
 once `bridge.vehicle.link` has reported no packet from the topside for the safety
 module's `tether_timeout` (from `safety.params`). On tether loss ArduSub therefore acts
-behind hangar's `tether` trigger, whatever hangar did.
+behind hangar's `tether` trigger, whatever hangar did. *As built (2026-11-21) the stop
+on purpose is not: the module keeps sending at 50 Hz after the `tether` trigger,
+neutral and a disarm with the default action, the mux's command with ArduSub armed
+with `surface` or `hold` (`modules/mavlink/README.md`, "The vehicle's module";
+[07-safety](07-safety.md#phase-1-ardusub-drives-the-thrusters)).*
 
 ### ArduSub's parameters
 
@@ -552,6 +556,8 @@ QGroundControl.
   SITL's own failsafe fires `FS_GCS_TIMEOUT` later. Killing SITL: the `ardusub`
   module's `Neutral` command runs.
 - Tether cut: hangar's `tether` failsafe; the module stops `MANUAL_CONTROL` at
-  `tether_timeout`; SITL's ground-station failsafe acts behind it.
+  `tether_timeout`; SITL's ground-station failsafe acts behind it. *(The stop is not
+  built; against the fake ArduSub, `test_tether` of `make check-phase1_chain` shows
+  what is sent.)*
 - Time: stamps against SITL's known clock, continuing forward across a SITL restart.
 - Raw log: every message both ways in the session's `.tlog`, readable by pymavlink.

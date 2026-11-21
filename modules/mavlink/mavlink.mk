@@ -70,7 +70,8 @@ $(TESTDIR)/test_mav_link: $(OBJDIR)/modules/mavlink/tests/test_mav_link.o $(OBJD
 define mavlink_test_rule
 $(TESTDIR)/test_$(1): $(OBJDIR)/modules/mavlink/tests/test_$(1).o $(OBJDIR)/modules/mavlink/mav.o \
 		$(OBJDIR)/modules/mavlink/sha256.o $(OBJDIR)/modules/mavlink/mavlink_conf.o $(call obj,$(HG_SRC)) \
-		$(call obj,$(MAVLINK_MSG_SRC)) $(OBJDIR)/msg/mux_params.o $(OBJDIR)/msg/safety_params.o
+		$(call obj,$(MAVLINK_MSG_SRC)) $(OBJDIR)/msg/mux_params.o $(OBJDIR)/msg/safety_params.o \
+		$(OBJDIR)/msg/bridge_link.o
 	@mkdir -p $$(dir $$@)
 	$$(CC) $$(HG_CFLAGS) $$(CFLAGS) $$(ALL_LDFLAGS) -o $$@ $$^ $$(HG_LDLIBS) -lm $$(LDLIBS)
 endef

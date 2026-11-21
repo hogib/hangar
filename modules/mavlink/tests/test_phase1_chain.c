@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 
 #include "ardusub_state.h"
+#include "bridge_link.h"
 #include "mav.h"
 #include "mavlink_gen.h"
 #include "safety_state.h"
@@ -149,7 +150,7 @@ static void write_vehicle(void)
 	manifest("safety", "[Module]\nDescription=Vehicle state\nExec=%s\n"
 			   "[Subscribe hangar.vehicle.modules]\n[Subscribe hangar.vehicle.system]\n"
 			   "[Subscribe vehicle.leak]\n[Subscribe power.battery]\n[Subscribe nav.depth]\n"
-			   "[Subscribe ardusub.state]\n[Subscribe mux.params]\n"
+			   "[Subscribe ardusub.state]\n[Subscribe mux.params]\n[Subscribe bridge.vehicle.link]\n"
 			   "[Publish safety.state]\nType=safety_state\nRate=10\n"
 			   "[Params]\nType=safety_params\nAllow=topside:pilot_console admin topside:admin\n"
 			   "[Serve arm]\nRequest=empty\nReply=empty\nAllow=topside:pilot_console topside:topside_mavlink admin topside:admin\n"
@@ -158,6 +159,9 @@ static void write_vehicle(void)
 			   "[Serve clear]\nRequest=empty\nReply=empty\nAllow=topside:pilot_console topside:topside_mavlink admin topside:admin\n"
 			   "[Serve check]\nRequest=empty\nReply=check_rep\nAllow=* topside:* admin topside:admin\n"
 			   "[Call mavlink.arm]\n[Restart]\nPolicy=always\nBackoff=0.1s..0.2s\n", T_safety);
+	/* The bridge's place: test_tether publishes the link as this module. */
+	manifest("link", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
+			 "[Publish bridge.vehicle.link]\nType=bridge_link\nRate=10\n");
 	manifest("mux", "[Module]\nExec=%s\n"
 			"[Subscribe pilot.wrench]\n[Subscribe ctl.depth_hold]\n[Subscribe nav.depth]\n[Subscribe safety.state]\n"
 			"[Publish ctl.wrench]\nType=wrench\nRate=50\nSources=pilot.wrench ctl.depth_hold nav.depth\n"
@@ -611,6 +615,221 @@ static void kill_and_measure(const char *name, long limit_ms)
 	pump(500);
 }
 
+/* ---- The tether (docs/07 "Failsafe", docs/10 "Arming and failsafe") -------------- */
+
+/* The vehicle's bridge, as far as the safety module reads it: this suite
+ * executed again as the module `link`, publishing bridge.vehicle.link at
+ * 10 Hz, state up. SIGUSR1: last_rx_ns stops advancing (no packet from the
+ * topside); SIGUSR2: it advances again. It ends on SIGTERM, when the suite
+ * is gone, and after 120 s whatever happens. */
+static volatile sig_atomic_t link_frozen, link_stop;
+
+static void link_signal(int sig)
+{
+	if (sig == SIGUSR1)
+		link_frozen = 1;
+	else if (sig == SIGUSR2)
+		link_frozen = 0;
+	else
+		link_stop = 1;
+}
+
+static int link_child(void)
+{
+	signal(SIGUSR1, link_signal);
+	signal(SIGUSR2, link_signal);
+	signal(SIGTERM, link_signal);
+	if (hg_init() < 0) {
+		fprintf(stderr, "link: hg_init: %s\n", hg_init_error());
+		return 2;
+	}
+	hg_pub *p = hg_pub_open("bridge.vehicle.link", &BRIDGE_LINK_TYPE, NULL);
+	if (!p)
+		return 3;
+	pid_t parent = getppid();
+	uint64_t last_rx = 0, end = hg_now_ns() + 120000000000ull;
+	while (!link_stop && getppid() == parent && hg_now_ns() < end) {
+		uint64_t now = hg_now_ns();
+		struct bridge_link l;
+		memset(&l, 0, sizeof l);
+		l.state = 3;
+		l.config_match = 1;
+		if (!link_frozen)
+			last_rx = now;
+		l.last_rx_ns = last_rx;
+		hg_publish(p, &l, sizeof l, now);
+		sleep_ms(100);
+	}
+	return 0;
+}
+
+static pid_t link_start(void)
+{
+	char wiring[600];
+	use_root(0);
+	if (wiring_to_file("link", wiring, sizeof wiring) < 0)
+		return -1;
+	pid_t pid = fork();
+	if (pid == 0) {
+		setenv("HANGAR_WIRING_FILE", wiring, 1);
+		setenv("HANGAR_MODULE", "link", 1);
+		setenv("HANGAR_TOPIC_DIR", topics_v, 1);
+		unsetenv("HANGAR_CONTROL");
+		unsetenv("HANGAR_PEER_TOPIC_DIR");
+		execl("/proc/self/exe", "test_phase1_chain", "--link", (char *)NULL);
+		_exit(127);
+	}
+	return pid;
+}
+
+/* The fake's count of MANUAL_CONTROL messages received. */
+static long long fake_mc_count(void)
+{
+	const char *p = strstr(fake_cmd("status"), " mc_count=");
+	return p ? atoll(p + 10) : -1;
+}
+
+/* safety.clear until safety.state says disarmed: it is refused while a
+ * trigger is still active (the link has just come back). */
+static int clear_failsafe(void)
+{
+	use_root(0);
+	for (uint64_t t0 = now_ms(); now_ms() - t0 < 8000;) {
+		run_cli(cli_out, sizeof cli_out, 5000, "call", "safety.clear", (char *)NULL);
+		for (uint64_t t1 = now_ms(); last_safety.state != 0 && now_ms() - t1 < 300;)
+			pump(10);
+		if (last_safety.state == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int arm_with_link(void)
+{
+	use_root(0);
+	/* The checklist wants the link up and fresh: polled, as at the start. */
+	for (uint64_t t0 = now_ms();;) {
+		run_cli(cli_out, sizeof cli_out, 5000, "call", "safety.check", (char *)NULL);
+		if (strcmp(cli_field(cli_out, "ok"), "1") == 0 || now_ms() - t0 > 5000)
+			break;
+		pump(100);
+	}
+	gcs_arm(1);
+	if (!wait_safety(1, 3000))
+		return 0;
+	for (uint64_t t0 = now_ms(); (!have_ap || last_ap.armed != 1) && now_ms() - t0 < 3000;)
+		pump(20);
+	return last_ap.armed == 1;
+}
+
+/* What ArduSub is sent when the tether trigger fires, with the real safety
+ * module, mux and mavlink module (the fake only: SITL's thrust is read from
+ * thr.out, not from what it was sent). tether_timeout is 1 s here.
+ *
+ * neutral (the default): MANUAL_CONTROL goes on at 50 Hz, neutral, and
+ * ArduSub is disarmed; the pilot's stick, still held and still arriving in
+ * this chain (the shim is not a tether), does not reach it.
+ * surface: MANUAL_CONTROL goes on at 50 Hz with the mux's heave up, ArduSub
+ * stays armed. The module does not stop sending in either (README "Until the
+ * bridge"), so ArduSub's own ground-station failsafe does not fire. */
+static void test_tether(void)
+{
+	if (sitl) {
+		printf("    (skipped with SITL: the fake ArduSub says what it was sent)\n");
+		return;
+	}
+	pid_t link = link_start();
+	CHECK(link > 0);
+	use_root(0);
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "safety", "tether_enabled=1", "tether_timeout=1",
+			     (char *)NULL), 0);
+	Q.x = 300;
+	CHECK(arm_with_link());
+	uint64_t t0 = now_ms();
+	while (!thrust_active() && now_ms() - t0 < 3000)
+		pump(20);
+	int x = 0, z = 0;
+	CHECK_EQ_INT(fake_mc(&x, &z), 0);
+	CHECK(x == 300 && z == 500);
+
+	/* No packet from the topside: failsafe by `tether`, neutral, outputs off. */
+	kill(link, SIGUSR1);
+	CHECK(wait_safety(2, 5000));
+	t0 = now_ms();
+	CHECK(last_safety.triggers & (1u << 1));
+	CHECK_EQ_INT(last_safety.action, 0);
+	CHECK_EQ_INT(last_safety.outputs_enabled, 0);
+	CHECK(strcmp(last_safety.by, "tether") == 0);
+	while (thrust_active() && now_ms() - t0 < 3000)
+		pump(5);
+	uint64_t dt = now_ms() - t0;
+	CHECK(!thrust_active());
+	printf("    tether, neutral: neutral at ArduSub %llu ms after safety.state said failsafe\n", (unsigned long long)dt);
+	for (t0 = now_ms(); (!have_ap || last_ap.armed != 0) && now_ms() - t0 < 5000;)
+		pump(20);
+	CHECK_EQ_INT(last_ap.armed, 0);
+	/* Time must pass here: for a second it goes on at 50 Hz, and every
+	 * message looked at is neutral with the stick still at 300. */
+	CHECK(have_pilot && near(last_pilot.surge, 0.3f));
+	long long c0 = fake_mc_count();
+	int neutral = 1;
+	for (t0 = now_ms(); now_ms() - t0 < 1000;) {
+		pump(50);
+		neutral &= fake_mc(&x, &z) == 0 && x == 0 && z == 500;
+	}
+	long long c1 = fake_mc_count();
+	uint64_t ms = now_ms() - t0;
+	CHECK(neutral);
+	CHECK(c0 >= 0 && (double)(c1 - c0) * 1000.0 / (double)ms > 30);
+	printf("    then %lld MANUAL_CONTROL in %llu ms, all neutral, ArduSub disarmed\n", c1 - c0, (unsigned long long)ms);
+
+	/* surface: the link back, cleared, armed again with the stick at rest. */
+	kill(link, SIGUSR2);
+	Q.x = 0;
+	CHECK(clear_failsafe());
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "safety", "action_tether=1", (char *)NULL), 0);
+	CHECK(arm_with_link());
+	kill(link, SIGUSR1);
+	CHECK(wait_safety(2, 5000));
+	CHECK(last_safety.triggers & (1u << 1));
+	CHECK_EQ_INT(last_safety.action, 1);
+	CHECK_EQ_INT(last_safety.outputs_enabled, 1);
+	/* surface_thrust 0.5 up: z 750, reached through the mux's rate limit. */
+	for (t0 = now_ms(); !(fake_mc(&x, &z) == 0 && z == 750) && now_ms() - t0 < 3000;)
+		pump(20);
+	CHECK(x == 0 && z == 750);
+	/* Time must pass here too: a second later it is still sent at 50 Hz,
+	 * still heave up, ArduSub still armed. */
+	c0 = fake_mc_count();
+	t0 = now_ms();
+	pump(1000);
+	c1 = fake_mc_count();
+	ms = now_ms() - t0;
+	CHECK_EQ_INT(fake_mc(&x, &z), 0);
+	CHECK(x == 0 && z == 750);
+	CHECK(c0 >= 0 && (double)(c1 - c0) * 1000.0 / (double)ms > 30);
+	CHECK_EQ_INT(last_ap.armed, 1);
+	CHECK_EQ_INT(last_safety.state, 2);
+	printf("    tether, surface: %lld MANUAL_CONTROL in %llu ms with z %d, ArduSub armed\n", c1 - c0, (unsigned long long)ms, z);
+
+	/* Back as the other tests expect it: disarmed, the tether not watched. */
+	kill(link, SIGUSR2);
+	use_root(0);
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "call", "safety.disarm", (char *)NULL), 0);
+	CHECK(clear_failsafe());
+	for (t0 = now_ms(); (!have_ap || last_ap.armed != 0) && now_ms() - t0 < 5000;)
+		pump(20);
+	CHECK_EQ_INT(last_ap.armed, 0);
+	CHECK_EQ_INT(run_cli(cli_out, sizeof cli_out, 5000, "param", "set", "safety", "tether_enabled=0", "action_tether=0",
+			     "tether_timeout=3", (char *)NULL), 0);
+	kill(link, SIGTERM);
+	CHECK_EQ_INT(wait_pid_ms(link, 3000), 0);
+	Q.x = 300; /* the stick as the tests after this one found it */
+	for (t0 = now_ms(); !near(last_cmd.surge, 0.3f) && now_ms() - t0 < 3000;)
+		pump(20);
+	CHECK(near(last_cmd.surge, 0.3f));
+}
+
 static void test_kill_safety(void)
 {
 	/* SafetyTimeout 300 ms + one 20 ms period, with the fake's 5 ms poll and
@@ -640,6 +859,8 @@ static void test_shutdown(void)
 
 int main(int argc, char **argv)
 {
+	if (argc > 1 && strcmp(argv[1], "--link") == 0)
+		return link_child();
 	sitl = argc > 1 && strcmp(argv[1], "--sitl") == 0;
 	T_mavlink = getenv("MAVLINK_BIN");
 	T_fake = getenv("FAKE_ARDUSUB_BIN");
@@ -664,6 +885,7 @@ int main(int argc, char **argv)
 	RUN_TEST(test_start);
 	RUN_TEST(test_idle_cpu);
 	RUN_TEST(test_pilot_to_vehicle);
+	RUN_TEST(test_tether);
 	RUN_TEST(test_kill_safety);
 	RUN_TEST(test_kill_mux);
 	RUN_TEST(test_shutdown);
