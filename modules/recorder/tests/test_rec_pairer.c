@@ -730,9 +730,12 @@ static void test_pending_overflow(void)
 	char toy[700];
 	rfmt(toy, sizeof toy, "%s/retype", R_toys);
 	/* 40 anchors 10 ms apart: ten times what Pending=4 holds for 600 ms. The
-	 * toy replaces the topic after the 20th; it lingers 200 ms before that
-	 * (under the 600 ms, so the four rows then waiting stay open), or a
-	 * pairer not scheduled within 10 ms loses the 20th with the file. */
+	 * toy lingers 200 ms after it opens the topic and before it replaces it
+	 * after the 20th (410 ms between the 20th and the 21st, under the 600 ms,
+	 * so the four rows then waiting stay open). Without that, a pairer that
+	 * attaches to the new topic more than 10 ms late starts at its second
+	 * message and has 39 rows: the library starts a new subscription at
+	 * the newest message. */
 	pid_t pub = spawn("crowd", NULL, toy, "--topic", "crowd.a", "--first", "u64 v", "--then", "u64 v", "--count", "20",
 			  "--gap-ms", "10", "--linger-ms", "200", (char *)NULL);
 	CHECK_EQ_INT(wait_pid_ms(pub, 5000), 0);

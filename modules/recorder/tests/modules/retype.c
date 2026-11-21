@@ -7,7 +7,7 @@
  *
  *   retype --topic T --first "<msg text>" --then "<msg text>"
  *          [--count N (3)] [--rate R (0: an event topic)] [--gap-ms G (100)]
- *          [--linger-ms L (0): waited before each close]
+ *          [--linger-ms L (0): waited after each open and before each close]
  *
  * Publishes N messages of the first type, closes, reopens T with the second
  * type and publishes N more. Message k (1, 2, ... over both types) has k in
@@ -62,6 +62,9 @@ int main(int argc, char **argv)
 			fprintf(stderr, "retype: %s: %s\n", topic, strerror(errno));
 			return 3;
 		}
+		/* A reader attaches to a new topic at its newest message: one that
+		 * attaches after the second message has lost the first. */
+		toy_sleep_ms(linger);
 		uint32_t len = type[t].type.payload_bytes;
 		unsigned char *payload = calloc(1, len ? len : 1);
 		if (!payload)
@@ -76,8 +79,8 @@ int main(int argc, char **argv)
 			toy_sleep_ms(gap);
 		}
 		free(payload);
-		/* A reader that has not yet taken the last messages loses them
-		 * when the file is replaced: --linger-ms gives it the time. */
+		/* And one that has not yet taken the last messages when the file
+		 * is replaced. */
 		toy_sleep_ms(linger);
 		hg_pub_close(p);
 	}
