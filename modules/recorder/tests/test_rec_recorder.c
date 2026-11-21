@@ -816,12 +816,6 @@ static void test_autostart_armed(void)
 	 * hangar.vehicle.modules' a module's exit (test_blackbox_triggers); the
 	 * restarted recorder replayed both, a session of a few milliseconds and a
 	 * dump of an empty black box at every restart. */
-	/* (Past the 2 s deadline of this suite's last calls first. The instance
-	 * stopped here answered none, so it leaves no reply in recorder.rep, and
-	 * the next one takes a request still in tester.req within its deadline
-	 * for unanswered and runs it again: lib/hg/hg_call.c, not this test's
-	 * subject.) */
-	sleep_ms(2100);
 	stop_child(rec_pid);
 	int sessions = count_sessions("20"), dumps = count_sessions("blackbox-");
 	rec_pid = start_recorder(conf_path);
