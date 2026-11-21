@@ -150,6 +150,7 @@ static void test_spec_refusals(void)
 	refused("[Dataset]\nAnchor=a.b\nFields=x x\n", "listed twice");
 	refused("[Dataset]\nAnchor=a.b\nFields=a.b\n", "bad field name");
 	refused("[Dataset]\nAnchor=a.b\nRate=every:0\n", "every:N");
+	refused("[Dataset]\nAnchor=a.b\nRate=every:-2\n", "every:N");
 	refused("[Dataset]\nAnchor=a.b\nRate=every:x\n", "every:N");
 	refused("[Dataset]\nAnchor=a.b\nRate=rate:0\n", "rate:<Hz>");
 	refused("[Dataset]\nAnchor=a.b\nRate=4\n", "every:N or rate:<Hz>");

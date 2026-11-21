@@ -415,8 +415,9 @@ static int on_key(void *ctx, const char *key, const char *value, int line, char 
 				return -1;
 			if (strncmp(value, "every:", 6) == 0) {
 				char *e;
+				/* strtoull takes a sign and wraps: "-2" is 2^64 - 2. */
 				unsigned long long n = strtoull(value + 6, &e, 10);
-				if (e == value + 6 || *e || n == 0) {
+				if (value[6] < '0' || value[6] > '9' || *e || n == 0) {
 					snprintf(why, whylen, "Rate: every:N needs N from 1");
 					return -1;
 				}
