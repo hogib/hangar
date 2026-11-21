@@ -281,6 +281,24 @@ static void clamp_vertical(struct sim_state *s, int at_surface) {
     vw[2] = 0.0;
     sim_quat_rotate_inv(s->q, vw, s->nu);
   }
+  // The same for the acceleration the IMU reads (sim_imu_truth): nu_dot is
+  // the unconstrained acceleration of the step's first stage, and a vehicle
+  // held at the limit does not accelerate through it; the limit carries that
+  // part of the force. The CG's acceleration in the world frame is
+  // R (v_dot + w x v); its vertical component pointing out of the water
+  // column goes, the rest stays.
+  const double *v = s->nu, *w = s->nu + 3;
+  double wxv[3] = {w[1] * v[2] - w[2] * v[1], w[2] * v[0] - w[0] * v[2], w[0] * v[1] - w[1] * v[0]};
+  double ab[3], aw[3];
+  for (int i = 0; i < 3; i++)
+    ab[i] = s->nu_dot[i] + wxv[i];
+  sim_quat_rotate(s->q, ab, aw);
+  if ((at_surface && aw[2] < 0.0) || (!at_surface && aw[2] > 0.0)) {
+    aw[2] = 0.0;
+    sim_quat_rotate_inv(s->q, aw, ab);
+    for (int i = 0; i < 3; i++)
+      s->nu_dot[i] = ab[i] - wxv[i];
+  }
 }
 
 void sim_step(const struct sim_params *p, struct sim_state *s, const double tau[6], double dt) {

@@ -55,7 +55,10 @@ the working copy of each stage, so a stage's drift from unit length does not
 scale the velocity). After the step, depth below 0 is clamped to 0 and the
 world-frame vertical velocity zeroed if it points up; the same at
 `floor_depth` pointing down. Horizontal and angular motion continue along the
-limit. `sim_energy` returns `½ νᵀ(M_RB + M_A)ν + (B − W) z + B (R cb)_z`, which
+limit. `nu_dot`, which the IMU reads, loses the same component of the CG's
+acceleration: a vehicle floating at the surface reads gravity alone, not the
+(W − B)/(m + A) = −0.077 m/s² of a body rising through it, as it did before
+2026-11-21. `sim_energy` returns `½ νᵀ(M_RB + M_A)ν + (B − W) z + B (R cb)_z`, which
 decays monotonically in still water with no thrust (a test).
 
 `sim_params_add_payload` adds a point mass at a body position: the CG moves

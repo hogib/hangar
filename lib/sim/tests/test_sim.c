@@ -513,6 +513,83 @@ static void test_imu_truth(void) {
   CHECK(near(rpy[0], (SIM_PI / 2), 1e-12));
 }
 
+// A vehicle held at the surface or on the floor does not accelerate through
+// it: the limit carries the force, and the accelerometer reads what it reads
+// at rest. nu_dot was the unconstrained acceleration of the step's first
+// stage, so a vehicle floating at the surface with 2 N of net buoyancy
+// reported (W - B)/(m + A) = -0.076 m/s^2 of vertical acceleration at every
+// step with no motion at all, and the whole thrust over the mass when the
+// thrusters pushed it against the limit. The horizontal part is left alone,
+// and so is an acceleration that takes the vehicle away from the limit.
+static void test_no_acceleration_through_a_limit(void) {
+  struct sim_params p = sim_params_bluerov2_heavy(); // B > W: it floats
+  struct sim_state s;
+  double gyro[3], accel[3];
+  sim_state_init(&s); // at the surface, at rest
+  run(&p, &s, ZERO6, 1.0, DT);
+  CHECK(s.pos[2] == 0.0 && near(s.nu[2], 0.0, 1e-12));
+  CHECK(near(s.nu_dot[2], 0.0, 1e-12));
+  sim_imu_truth(&p, &s, gyro, accel);
+  if (!near(accel[2], -p.gravity, 1e-9))
+    printf("    at rest at the surface the accelerometer reads %.6f on z, gravity is %.6f\n", accel[2],
+           p.gravity);
+  CHECK(near(accel[2], -p.gravity, 1e-9));
+
+  // Pushed up against the surface, and forward: no vertical acceleration,
+  // and the surge acceleration of the same push below the surface.
+  double tau[6] = {20.0, 0, -30.0, 0, 0, 0};
+  struct sim_state deep;
+  sim_state_init(&deep);
+  deep.pos[2] = 5.0;
+  sim_state_init(&s);
+  sim_step(&p, &s, tau, DT);
+  sim_step(&p, &deep, tau, DT);
+  CHECK(s.pos[2] == 0.0);
+  // The limit is the world's vertical; the push pitches the vehicle a
+  // little within the step, so the CG's acceleration is taken to the world
+  // frame, R (v_dot + w x v), as the clamp does.
+  double cg_b[3], cg_w[3];
+  const double *v = s.nu, *w = s.nu + 3;
+  cg_b[0] = s.nu_dot[0] + w[1] * v[2] - w[2] * v[1];
+  cg_b[1] = s.nu_dot[1] + w[2] * v[0] - w[0] * v[2];
+  cg_b[2] = s.nu_dot[2] + w[0] * v[1] - w[1] * v[0];
+  sim_quat_rotate(s.q, cg_b, cg_w);
+  if (!near(cg_w[2], 0.0, 1e-12) || !near(s.nu_dot[0], deep.nu_dot[0], 1e-3))
+    printf("    pushed against the surface: world z %.3e, surge %.6f (submerged %.6f), body z %.3e\n", cg_w[2],
+           s.nu_dot[0], deep.nu_dot[0], s.nu_dot[2]);
+  CHECK(near(cg_w[2], 0.0, 1e-12));
+  CHECK(near(s.nu_dot[2], 0.0, 1e-3));
+  CHECK(deep.nu_dot[2] < -0.5); // the same push moves a submerged vehicle up
+  CHECK(s.nu_dot[0] > 0.1 && near(s.nu_dot[0], deep.nu_dot[0], 1e-3));
+
+  // Pushed down from the surface, it leaves: that acceleration is real.
+  double down[6] = {0, 0, 30.0, 0, 0, 0};
+  sim_state_init(&s);
+  sim_step(&p, &s, down, DT);
+  CHECK(s.pos[2] > 0.0 && s.nu_dot[2] > 0.5);
+
+  // The floor, the other way: a sinking vehicle rests on it.
+  p.buoyancy = p.weight - 2.0;
+  p.floor_depth = 10.0;
+  sim_state_init(&s);
+  s.pos[2] = 10.0;
+  run(&p, &s, ZERO6, 1.0, DT);
+  CHECK(s.pos[2] == 10.0);
+  CHECK(near(s.nu_dot[2], 0.0, 1e-12));
+  sim_imu_truth(&p, &s, gyro, accel);
+  CHECK(near(accel[2], -p.gravity, 1e-9));
+  // Rolled 90 degrees on the floor, the vertical is the body's y axis.
+  sim_state_init(&s);
+  s.pos[2] = 10.0;
+  sim_quat_from_euler((SIM_PI / 2), 0, 0, s.q);
+  p.cb[0] = p.cb[1] = p.cb[2] = 0.0; // no righting moment: it stays rolled
+  sim_step(&p, &s, ZERO6, DT);
+  CHECK(s.pos[2] == 10.0);
+  double a_w[3];
+  sim_quat_rotate(s.q, s.nu_dot, a_w);
+  CHECK(near(a_w[2], 0.0, 1e-12));
+}
+
 // Same seed, same inputs: identical trajectories and readings, bit for bit.
 static void test_determinism(void) {
   struct sim_params p = sim_params_bluerov2_heavy();
@@ -757,6 +834,7 @@ int main(void) {
   RUN_TEST(test_rng_and_channels);
   RUN_TEST(test_delay_line);
   RUN_TEST(test_imu_truth);
+  RUN_TEST(test_no_acceleration_through_a_limit);
   RUN_TEST(test_determinism);
   RUN_TEST(test_fit_recovers_parameters);
   RUN_TEST(test_fit_unexcited_axis_keeps_baseline);

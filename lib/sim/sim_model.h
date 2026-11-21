@@ -95,7 +95,9 @@ void sim_model_coriolis(const struct sim_params *p, const struct sim_state *s, d
 /* One RK4 step of dt seconds under the constant wrench tau. Applies the
  * surface and floor limits afterwards: depth is clamped at 0 (and at
  * floor_depth) with the world-frame vertical velocity component pointing
- * out of the water column zeroed. */
+ * out of the water column zeroed, and with it that component of the CG's
+ * acceleration in nu_dot (what the accelerometer reads): the limit carries
+ * the force. */
 void sim_step(const struct sim_params *p, struct sim_state *s, const double tau[6], double dt);
 
 /* Kinetic (1/2 nu^T (M_RB + M_A) nu) plus potential energy, the potential
