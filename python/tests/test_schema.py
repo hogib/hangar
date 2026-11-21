@@ -104,6 +104,16 @@ class Canonical(unittest.TestCase):
         self.assertNotEqual(schema.type_hash("f32 depth_m[1]\nf32 temp_c\nf32 pressure_mbar\n"), bare)
         self.assertEqual(schema.canonical("u8 a[1]\n"), "u8 a[1]\n")
 
+    def test_generated_names_with_capitals(self):
+        # A row field is <part>.<field>, and a field is a C identifier: lib/hg
+        # (hg_schema_parse) takes the capital, so the row type's reader must.
+        row = "u64 anchor_seq\nf32 ctl.gains.kP # role=input\nu64 ctl.gains._seq\n"
+        self.assertEqual(schema.canonical(row, generated=True),
+                         "u64 anchor_seq\nf32 ctl.gains.kP\nu64 ctl.gains._seq\n")
+        self.assertEqual(schema.type_hash("f32 kP\n"), 0x82977807cb658b7f)  # lib/hg's and msggen's
+        with self.assertRaises(SchemaError):
+            schema.canonical("f32 ctl.gains.kP\n")  # dots only in a generated type
+
 
 class Refusals(unittest.TestCase):
     def refuse(self, text, what, line=1, params=False):

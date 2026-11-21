@@ -101,8 +101,12 @@ struct's size too. Comments are kept: they carry units, which the
 recorder copies into datasets.
 
 The **type hash** is the 64-bit FNV-1a hash of the schema's canonical form: one field
-per line as `type name[N]` (`[N]` only for arrays), single spaces, each line ended by a
-newline, comments, blank lines and parameter attributes removed. A reader that opens a topic with an expected type gets an error, not data,
+per line as `type name[N]` (`[N]` for a field written as an array, `u8 x[1]` included,
+and for no other), single spaces, each line ended by a
+newline, comments, blank lines and parameter attributes removed. Three implementations
+compute it, the generator, Python's `hangar.schema` and lib/hg's run-time parser
+(which reads the text in a topic's or a recording's header), and `make check-msggen`
+compares the three on every type in `msg/`. A reader that opens a topic with an expected type gets an error, not data,
 if the hashes differ; a reader that opens it without one (a dashboard, Python, the
 recorder) parses the schema from the file.
 

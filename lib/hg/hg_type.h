@@ -62,6 +62,9 @@ struct hg_schema {
 	struct hg_field fields[HG_SCHEMA_MAX_FIELDS];
 	char text[HG_SCHEMA_MAX + 1];
 	char pool[HG_SCHEMA_MAX + 2 * HG_SCHEMA_MAX_FIELDS + 2];
+	/* 1 for a field written name[N]: its canonical line carries [N] even
+	 * when N is 1, which struct hg_field (the generator's ABI) cannot say. */
+	unsigned char is_array[HG_SCHEMA_MAX_FIELDS];
 };
 
 /* Parses schema text (len bytes, need not be NUL-terminated, at most

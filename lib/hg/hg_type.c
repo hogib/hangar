@@ -43,9 +43,14 @@ uint32_t hg_field_elem_size(enum hg_field_kind kind)
 	return kinds[kind].size;
 }
 
+/* A field name is a C identifier (tools/msggen/README.md, as the generator
+ * and python/hangar/schema.py take it), with dots in a generated row type's
+ * (docs/06 "The row"). Lower case alone was taken here until 2026-11-21: a
+ * type with `f32 kP` was generated, published, and refused by every reader
+ * of its header. */
 static int is_name_char(char c)
 {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
 }
 
 static void set_err(char *err, size_t errlen, int line, const char *what)
@@ -58,6 +63,7 @@ static void set_err(char *err, size_t errlen, int line, const char *what)
 struct line {
 	int kind;
 	uint32_t count;
+	int is_array;
 	const char *name;
 	size_t name_len;
 	const char *comment;
@@ -99,7 +105,7 @@ static int parse_line(const char *s, const char *end, struct line *l, const char
 		return -1;
 	}
 	l->count = 1;
-	int is_array = 0;
+	l->is_array = 0;
 	if (s < end && *s == '[') {
 		s++;
 		uint64_t v = 0;
@@ -118,9 +124,9 @@ static int parse_line(const char *s, const char *end, struct line *l, const char
 		}
 		s++;
 		l->count = (uint32_t)v;
-		is_array = 1;
+		l->is_array = 1;
 	}
-	if (l->kind == HG_CHAR && !is_array) {
+	if (l->kind == HG_CHAR && !l->is_array) {
 		*what = "char needs a size: char name[N]";
 		return -1;
 	}
@@ -145,10 +151,13 @@ static int parse_line(const char *s, const char *end, struct line *l, const char
 	return 1;
 }
 
-/* The canonical line of a field: "type name[N]\n", [N] only for arrays. */
-static size_t canon_line(const struct hg_field *f, char *buf, size_t len)
+/* The canonical line of a field: "type name[N]\n", [N] for a field written
+ * as an array and only for one (docs/01 "Message types"). `u8 x[1]` is an
+ * array: by its count alone it was taken for `u8 x`, and hashed otherwise
+ * than the generator and Python hash it. */
+static size_t canon_line(const struct hg_field *f, int is_array, char *buf, size_t len)
 {
-	if (f->count > 1 || f->kind == HG_CHAR)
+	if (is_array)
 		return (size_t)snprintf(buf, len, "%s %s[%u]\n", kinds[f->kind].name, f->name, f->count);
 	return (size_t)snprintf(buf, len, "%s %s\n", kinds[f->kind].name, f->name);
 }
@@ -222,7 +231,8 @@ int hg_schema_parse(const char *text, size_t len, struct hg_schema *out, char *e
 			goto bad;
 		}
 		char cl[HG_FIELD_NAME_MAX + 32];
-		size_t cn = canon_line(f, cl, sizeof cl);
+		out->is_array[out->type.n_fields] = (unsigned char)l.is_array;
+		size_t cn = canon_line(f, l.is_array, cl, sizeof cl);
 		for (size_t i = 0; i < cn; i++) {
 			h ^= (unsigned char)cl[i];
 			h *= 0x100000001b3ull;
@@ -253,7 +263,7 @@ size_t hg_schema_canonical(const char *text, size_t len, char *out, size_t outle
 	size_t n = 0;
 	for (uint32_t i = 0; i < s->type.n_fields; i++) {
 		char cl[HG_FIELD_NAME_MAX + 32];
-		size_t cn = canon_line(&s->fields[i], cl, sizeof cl);
+		size_t cn = canon_line(&s->fields[i], s->is_array[i], cl, sizeof cl);
 		if (out && n < outlen) {
 			size_t room = outlen - n;
 			memcpy(out + n, cl, cn < room ? cn : room);

@@ -347,6 +347,19 @@ static void test_row_type(void)
 	static const char WKEPT[] = "[Dataset]\nAnchor=t.c\nWhere=t.a.temp_c > 0\n[Input t.a]\nJoin=provenance\nFields=depth_m\n";
 	CHECK_EQ_INT(hg_ds_parse(WKEPT, strlen(WKEPT), "x", &s, err, sizeof err), 0);
 	CHECK(hg_ds_bind(&s, &anchor, parts, &rt2, err, sizeof err) < 0 && strstr(err, "Fields="));
+	/* A field name is a C identifier (hg_type.c, msggen): one with capitals
+	 * can be selected and compared like any other. */
+	static struct hg_schema gains;
+	static const char GAINS[] = "f32 kP\nf32 kI\nu8 one[1]\n";
+	CHECK_EQ_INT(hg_schema_parse(GAINS, sizeof GAINS - 1, &gains, err, sizeof err), 0);
+	static const char CAPS[] = "[Dataset]\nAnchor=t.c\nWhere=t.g.kP > 0.5 and t.c.surge > 0\n[Input t.g]\nJoin=asof:0\nFields=kP one\n";
+	struct hg_ds_topic_info partg[1] = { ti(&gains.type, "t.g", 0) };
+	CHECK_EQ_INT(hg_ds_parse(CAPS, strlen(CAPS), "x", &s, err, sizeof err), 0);
+	int rcg = hg_ds_bind(&s, &anchor, partg, &rt2, err, sizeof err);
+	if (rcg < 0)
+		printf("    %s\n", err);
+	CHECK_EQ_INT(rcg, 0);
+	CHECK(rcg < 0 || hg_type_field(&rt2.schema.type, "t.g.kP") != NULL);
 	/* Too many row fields: 64 x 3 imu fields + ... passes 128. */
 	static const char BIG[] = "[Dataset]\nAnchor=t.c\n[Input t.b]\nJoin=provenance\nWindow=64\n";
 	struct hg_ds_topic_info partb[1] = { ti(&IMU_TYPE, "t.b", 50000) };

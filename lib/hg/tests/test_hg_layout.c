@@ -132,6 +132,31 @@ static void test_fnv_vectors(void)
 	CHECK_EQ_INT(hg_topic_id("nav.depth"), hg_fnv1a32("nav.depth"));
 }
 
+// The generator's rules, which this parser must share (make check-msggen
+// compares the three implementations on every msg/*.msg and on these two): an
+// array of one element is written [1] in the canonical form, and a field
+// name is a C identifier, capitals and all. The hashes are msggen's and
+// Python's for the same texts.
+static void test_one_element_array_and_capitals(void)
+{
+	static struct hg_schema s;
+	char err[128], canon[64];
+	const char one[] = "u8 x[1]   # an array, of one\n", scalar[] = "u8 x\n", cap[] = "f32 kP\n";
+	CHECK_EQ_INT(hg_schema_parse(one, sizeof one - 1, &s, err, sizeof err), 0);
+	CHECK(s.type.hash == 0xa0a277c90925e1b7ull);
+	CHECK_EQ_INT(s.type.fields[0].count, 1);
+	CHECK_EQ_INT(hg_schema_canonical(one, sizeof one - 1, canon, sizeof canon), 8);
+	CHECK(strcmp(canon, "u8 x[1]\n") == 0);
+	CHECK_EQ_INT(hg_schema_parse(scalar, sizeof scalar - 1, &s, err, sizeof err), 0);
+	CHECK(s.type.hash == 0x1af5f0af551f218eull);
+	CHECK_EQ_INT(hg_schema_canonical(scalar, sizeof scalar - 1, canon, sizeof canon), 5);
+	CHECK(strcmp(canon, "u8 x\n") == 0);
+	CHECK_EQ_INT(hg_schema_parse(cap, sizeof cap - 1, &s, err, sizeof err), 0);
+	CHECK(s.type.hash == 0x82977807cb658b7full);
+	CHECK(strcmp(s.type.fields[0].name, "kP") == 0);
+	CHECK(hg_type_field(&s.type, "kP") != NULL && hg_type_field(&s.type, "kp") == NULL);
+}
+
 static void test_depth_canonical_and_hash(void)
 {
 	char canon[256];
@@ -369,6 +394,7 @@ int main(void)
 	RUN_TEST(test_input_record);
 	RUN_TEST(test_fnv_vectors);
 	RUN_TEST(test_depth_canonical_and_hash);
+	RUN_TEST(test_one_element_array_and_capitals);
 	RUN_TEST(test_parameter_attributes_ignored);
 	RUN_TEST(test_layout_rules);
 	RUN_TEST(test_layout_bound);

@@ -48,7 +48,9 @@ Layout = namedtuple("Layout", "fields payload_bytes")
 ParamMeta = namedtuple("ParamMeta", "name default min max restart")
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_GENERATED = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*$")
+# A generated row field: <topic>.<field> (docs/06 "The row"). A topic is lower
+# case; the field is a C identifier, capitals included, as lib/hg takes it.
+_GENERATED = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$")
 _FLOAT_CHARS = re.compile(r"^[0-9.eE+-]+$")
 
 

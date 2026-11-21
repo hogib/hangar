@@ -443,21 +443,33 @@ $(TESTDIR)/test_msggen: $(MSGGEN_OBJDIR)/tools/msggen/tests/test_msggen.o \
 .PHONY: check-msggen
 CHECKS += check-msggen
 check: check-msggen
-check-msggen: $(TESTDIR)/test_msggen $(MSGGEN)
+# lib/hg's run-time parser on the same files, for the three-way comparison of
+# hashes below (lib/hg/tests/hg_schema_hash.c).
+$(TESTDIR)/hg_schema_hash: lib/hg/tests/hg_schema_hash.c lib/hg/hg_type.c lib/hg/hg_type.h
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) -Ilib/hg -o $@ lib/hg/tests/hg_schema_hash.c lib/hg/hg_type.c
+
+check-msggen: $(TESTDIR)/test_msggen $(MSGGEN) $(TESTDIR)/hg_schema_hash
 	$(call run_suite,msggen,60,$<)
 	@if $(MSGGEN) --check --out msg $(MSG_PLAIN) && \
 	    $(MSGGEN) --check --out msg --params $(MSG_PARAMS); then \
 	  echo "ok    msggen --check  $(words $(MSG_SRC)) types in msg/"; \
 	else echo "FAIL  msggen --check: run make msg"; exit 1; fi
-	@mkdir -p $(TESTDIR); \
-	{ $(MSGGEN) --print-hash $(MSG_PLAIN) && $(MSGGEN) --print-hash --params $(MSG_PARAMS); } \
+	@mkdir -p $(TESTDIR)/msg-odd; \
+	printf 'u8 x[1]\n' > $(TESTDIR)/msg-odd/one_element.msg; \
+	printf 'f32 kP\nu16 Raw_ADC[2]\n' > $(TESTDIR)/msg-odd/capitals.msg; \
+	odd="$(TESTDIR)/msg-odd/one_element.msg $(TESTDIR)/msg-odd/capitals.msg"; \
+	{ $(MSGGEN) --print-hash $(MSG_PLAIN) $$odd && $(MSGGEN) --print-hash --params $(MSG_PARAMS); } \
 	  | sort > $(TESTDIR)/msggen-hash-c.txt || exit 1; \
-	PYTHONPATH=python $(PYTHON) -m hangar.schema --print-hash $(MSG_SRC) \
+	PYTHONPATH=python $(PYTHON) -m hangar.schema --print-hash $(MSG_SRC) $$odd \
 	  | sort > $(TESTDIR)/msggen-hash-py.txt || exit 1; \
-	if cmp -s $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt; then \
-	  echo "ok    msggen hashes  C and Python agree on $(words $(MSG_SRC)) types"; \
-	else echo "FAIL  msggen hashes: C and Python differ:"; \
-	  diff $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt; exit 1; fi
+	$(TESTDIR)/hg_schema_hash $(MSG_SRC) $$odd | sort > $(TESTDIR)/msggen-hash-hg.txt; \
+	if cmp -s $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt && \
+	   cmp -s $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-hg.txt; then \
+	  echo "ok    msggen hashes  msggen, Python and lib/hg agree on $(words $(MSG_SRC)) types and 2 odd ones"; \
+	else echo "FAIL  msggen hashes: msggen (<) and Python (>) or lib/hg (>) differ:"; \
+	  diff $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-py.txt; \
+	  diff $(TESTDIR)/msggen-hash-c.txt $(TESTDIR)/msggen-hash-hg.txt; exit 1; fi
 	@$(PYTHON) python/tests/run.py --log $(TESTDIR)/python.log
 
 

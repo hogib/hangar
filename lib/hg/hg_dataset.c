@@ -51,9 +51,11 @@ struct tok {
 	double num;
 };
 
+/* <part>.<field> in Where: a part is named like a topic, lower case; a
+ * field is a C identifier, as hg_schema_parse takes it. */
 static int ident_char(char c)
 {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
 }
 
 static void next_tok(const char **pp, struct tok *t)
@@ -263,7 +265,8 @@ static int split_fields(const char *v, char (*out)[HG_FIELD_NAME_MAX + 1], int c
 			return -1;
 		}
 		for (size_t i = 0; i < len; i++)
-			if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_')) {
+			if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9') ||
+			      s[i] == '_')) {
 				snprintf(why, whylen, "bad field name '%.*s'", (int)len, s);
 				return -1;
 			}
