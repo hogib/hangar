@@ -235,12 +235,14 @@ class MsgDirectory(unittest.TestCase):
             self.assertEqual(lay.payload_bytes % 8, 0, path)
             h = schema.type_hash(data)
             cpath = path[:-4] + ".c"
-            if os.path.exists(cpath):
-                with open(cpath) as fp:
-                    src = fp.read()
-                self.assertIn(".hash = 0x%016xull" % h, src, path)
-                self.assertIn(".payload_bytes = %d," % lay.payload_bytes, src, path)
-                self.assertIn('.name = "%s"' % name, src, path)
+            # The generated .c is checked in beside every .msg; were one
+            # absent, the three assertions below were skipped without a word.
+            self.assertTrue(os.path.exists(cpath), cpath)
+            with open(cpath) as fp:
+                src = fp.read()
+            self.assertIn(".hash = 0x%016xull" % h, src, path)
+            self.assertIn(".payload_bytes = %d," % lay.payload_bytes, src, path)
+            self.assertIn('.name = "%s"' % name, src, path)
 
     def test_envelopes(self):
         req = schema.layout_from_schema(open(os.path.join(REPO, "msg", "call_request_envelope.msg")).read())
