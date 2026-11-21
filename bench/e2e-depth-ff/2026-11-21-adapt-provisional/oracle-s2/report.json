@@ -1,0 +1,1078 @@
+{
+ "session": "/dev/shm/hg-adapt-1/var/lib/hangar/recorder/sessions/20261121-174414-mousev",
+ "blocks": {
+  "A1": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -1.96,
+    "ss_rms_cm": 1.96,
+    "iae_m_s": 0.396,
+    "peak_cm": 2.2,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.91,
+    "ss_rms_cm": 1.91,
+    "iae_m_s": 1.853,
+    "peak_cm": 102.0,
+    "overshoot_pct": 8.87,
+    "within_5cm_s": 6.32
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.07,
+    "ss_rms_cm": 2.07,
+    "iae_m_s": 3.052,
+    "peak_cm": 98.07,
+    "overshoot_pct": 20.06,
+    "within_5cm_s": 10.38
+   }
+  },
+  "A2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.07,
+    "ss_rms_cm": 2.08,
+    "iae_m_s": 0.408,
+    "peak_cm": 2.43,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.43,
+    "ss_rms_cm": 1.44,
+    "iae_m_s": 1.228,
+    "peak_cm": 102.02,
+    "overshoot_pct": 0.88,
+    "within_5cm_s": 2.27
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.97,
+    "ss_rms_cm": 2.97,
+    "iae_m_s": 1.894,
+    "peak_cm": 98.56,
+    "overshoot_pct": 3.7,
+    "within_5cm_s": 2.47
+   }
+  },
+  "P1": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -3.15,
+    "ss_rms_cm": 3.15,
+    "iae_m_s": 0.648,
+    "peak_cm": 3.65,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.06,
+    "ss_rms_cm": 1.08,
+    "iae_m_s": 1.867,
+    "peak_cm": 103.05,
+    "overshoot_pct": 1.82,
+    "within_5cm_s": 3.87
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.11,
+    "ss_rms_cm": 3.11,
+    "iae_m_s": 2.569,
+    "peak_cm": 98.55,
+    "overshoot_pct": 3.28,
+    "within_5cm_s": 4.25
+   }
+  },
+  "P2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.55,
+    "ss_rms_cm": 2.55,
+    "iae_m_s": 0.539,
+    "peak_cm": 3.15,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.11,
+    "ss_rms_cm": 1.12,
+    "iae_m_s": 1.612,
+    "peak_cm": 102.42,
+    "overshoot_pct": 0.35,
+    "within_5cm_s": 3.0
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.08,
+    "ss_rms_cm": 3.08,
+    "iae_m_s": 2.583,
+    "peak_cm": 98.39,
+    "overshoot_pct": 3.38,
+    "within_5cm_s": 4.06
+   }
+  },
+  "N2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.61,
+    "ss_rms_cm": 2.61,
+    "iae_m_s": 0.552,
+    "peak_cm": 3.29,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.01,
+    "ss_rms_cm": 2.01,
+    "iae_m_s": 1.457,
+    "peak_cm": 102.35,
+    "overshoot_pct": 10.23,
+    "within_5cm_s": 3.04
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.79,
+    "ss_rms_cm": 2.79,
+    "iae_m_s": 1.846,
+    "peak_cm": 98.04,
+    "overshoot_pct": 5.54,
+    "within_5cm_s": 3.04
+   }
+  },
+  "P3": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.02,
+    "ss_rms_cm": 2.02,
+    "iae_m_s": 0.409,
+    "peak_cm": 2.35,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -0.79,
+    "ss_rms_cm": 0.85,
+    "iae_m_s": 1.853,
+    "peak_cm": 102.05,
+    "overshoot_pct": 3.32,
+    "within_5cm_s": 3.61
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.08,
+    "ss_rms_cm": 3.08,
+    "iae_m_s": 2.594,
+    "peak_cm": 98.82,
+    "overshoot_pct": 3.42,
+    "within_5cm_s": 4.28
+   }
+  },
+  "P4": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.03,
+    "ss_rms_cm": 2.03,
+    "iae_m_s": 0.404,
+    "peak_cm": 2.13,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.19,
+    "ss_rms_cm": 2.2,
+    "iae_m_s": 2.933,
+    "peak_cm": 102.06,
+    "overshoot_pct": 13.4,
+    "within_5cm_s": 10.8
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.84,
+    "ss_rms_cm": 5.4,
+    "iae_m_s": 5.265,
+    "peak_cm": 98.07,
+    "overshoot_pct": 27.71,
+    "within_5cm_s": 19.37
+   }
+  }
+ },
+ "transients": {
+  "H1": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.07,
+   "ss_rms_cm": 2.07,
+   "iae_m_s": 0.417,
+   "peak_cm": 2.4,
+   "within_5cm_s": 0.0
+  },
+  "C1": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.43,
+   "ss_rms_cm": 2.44,
+   "iae_m_s": 0.518,
+   "peak_cm": 3.19,
+   "within_5cm_s": 0.0
+  },
+  "S2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -3.01,
+   "ss_rms_cm": 3.01,
+   "iae_m_s": 0.614,
+   "peak_cm": 3.44,
+   "within_5cm_s": 0.0
+  },
+  "C2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -3.06,
+   "ss_rms_cm": 3.06,
+   "iae_m_s": 0.624,
+   "peak_cm": 3.5,
+   "within_5cm_s": 0.0
+  },
+  "C3": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.45,
+   "ss_rms_cm": 2.45,
+   "iae_m_s": 0.507,
+   "peak_cm": 3.01,
+   "within_5cm_s": 0.0
+  },
+  "S3": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.18,
+   "ss_rms_cm": 2.18,
+   "iae_m_s": 0.447,
+   "peak_cm": 2.54,
+   "within_5cm_s": 0.0
+  },
+  "H2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -1.75,
+   "ss_rms_cm": 1.77,
+   "iae_m_s": 0.933,
+   "peak_cm": 12.12,
+   "within_5cm_s": 8.02
+  },
+  "C4": {
+   "seconds": 20.0,
+   "ss_mean_cm": -1.97,
+   "ss_rms_cm": 1.97,
+   "iae_m_s": 0.38,
+   "peak_cm": 2.18,
+   "within_5cm_s": 0.0
+  }
+ },
+ "trim_carried_by": {
+  "A1": {
+   "integral": -0.0847,
+   "policy_heave": 0.002,
+   "ctl_wrench_heave": -0.0847
+  },
+  "A2": {
+   "integral": -0.0871,
+   "policy_heave": 0.0015,
+   "ctl_wrench_heave": -0.0859
+  },
+  "P1": {
+   "integral": -0.0635,
+   "policy_heave": -0.0168,
+   "ctl_wrench_heave": -0.0847
+  },
+  "P2": {
+   "integral": -0.0756,
+   "policy_heave": -0.0079,
+   "ctl_wrench_heave": -0.0855
+  },
+  "N2": {
+   "integral": -0.0729,
+   "policy_heave": -0.0101,
+   "ctl_wrench_heave": -0.0855
+  },
+  "P3": {
+   "integral": -0.0869,
+   "policy_heave": 0.0007,
+   "ctl_wrench_heave": -0.0864
+  },
+  "P4": {
+   "integral": -0.085,
+   "policy_heave": 0.0025,
+   "ctl_wrench_heave": -0.0849
+  }
+ },
+ "residual_share_pct": {
+  "A1": 0.0,
+  "A2": 100.0,
+  "P1": 100.0,
+  "P2": 100.0,
+  "N2": 100.0,
+  "P3": 100.0,
+  "P4": 0.0
+ },
+ "control_latency": {
+  "thr.cmd records": 51525,
+  "without the whole chain": 3,
+  "nav.depth to nav.state": {
+   "n": 51522,
+   "median_ms": 16.112,
+   "p99_ms": 16.611,
+   "max_ms": 17.237
+  },
+  "nav.state to ctl.depth_hold": {
+   "n": 51522,
+   "median_ms": 18.931,
+   "p99_ms": 19.733,
+   "max_ms": 19.946
+  },
+  "ctl.depth_hold to ctl.wrench": {
+   "n": 51522,
+   "median_ms": 19.329,
+   "p99_ms": 20.012,
+   "max_ms": 20.73
+  },
+  "ctl.wrench to thr.cmd": {
+   "n": 51522,
+   "median_ms": 4.704,
+   "p99_ms": 5.569,
+   "max_ms": 6.127
+  },
+  "nav.depth to thr.cmd": {
+   "n": 51522,
+   "median_ms": 59.24,
+   "p99_ms": 59.984,
+   "max_ms": 60.476
+  },
+  "policy.wrench to ctl.wrench": {
+   "n": 34011,
+   "median_ms": 18.666,
+   "p99_ms": 19.511,
+   "max_ms": 20.571
+  },
+  "nav.state to policy.wrench": {
+   "n": 34011,
+   "median_ms": 0.019,
+   "p99_ms": 0.038,
+   "max_ms": 1.668
+  },
+  "nav.state to ctl.wrench, by the policy": {
+   "n": 34011,
+   "median_ms": 18.686,
+   "p99_ms": 19.532,
+   "max_ms": 20.585
+  }
+ },
+ "loop_latency": {
+  "unit": "ms after the stamp of the newest row trained on",
+  "models": [
+   {
+    "version": 1,
+    "hash": "54fab7f2fd3fe96b",
+    "rows": 8023,
+    "model": "M1",
+    "its row published": 0.01,
+    "deploy called": 12.41,
+    "load: checking": 20.98,
+    "load: warming": 40.0,
+    "swapped (policy.active)": 220.13,
+    "first policy.wrench of the model": 240.05,
+    "first ctl.wrench carrying it": 70258.8,
+    "first thr.cmd carrying it": 70263.72,
+    "ctl.wrench messages carrying it": 19511
+   },
+   {
+    "version": 2,
+    "hash": "b3976437f6a9579f",
+    "rows": 31035,
+    "model": "M2",
+    "its row published": 0.03,
+    "deploy called": 19.79,
+    "load: checking": 29.02,
+    "load: warming": 40.11,
+    "swapped (policy.active)": 220.39,
+    "first policy.wrench of the model": 240.41,
+    "first ctl.wrench carrying it": 258.45,
+    "first thr.cmd carrying it": 263.29,
+    "ctl.wrench messages carrying it": 10000
+   },
+   {
+    "version": 3,
+    "hash": "54fab7f2fd3fe96b",
+    "rows": 8023,
+    "its row published": 0.01,
+    "deploy called": null,
+    "load: checking": null,
+    "load: warming": null,
+    "swapped (policy.active)": 660495.63,
+    "first policy.wrench of the model": 660499.64,
+    "first ctl.wrench carrying it": 660518.66,
+    "first thr.cmd carrying it": 660523.63,
+    "ctl.wrench messages carrying it": 4500
+   }
+  ]
+ },
+ "swap_cost": {
+  "M1": {
+   "export and send (trainer, same machine)_ms": 8.6,
+   "checks_ms": 19.02,
+   "warm_up_ms": 180.15,
+   "before (10 s)": {
+    "policy.depth_ff.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.437,
+     "interval_min_ms": 19.008,
+     "interval_sd_ms": 0.1566,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0127,
+     "anchor_to_output_max_ms": 0.2525
+    },
+    "ctl.depth_hold": {
+     "messages": 500,
+     "interval_max_ms": 20.408,
+     "interval_min_ms": 19.014,
+     "interval_sd_ms": 0.1734,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.408,
+     "interval_min_ms": 19.012,
+     "interval_sd_ms": 0.161,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 500,
+     "interval_max_ms": 20.548,
+     "interval_min_ms": 19.061,
+     "interval_sd_ms": 0.2718,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 500,
+     "interval_max_ms": 20.437,
+     "interval_min_ms": 19.012,
+     "interval_sd_ms": 0.1556,
+     "intervals_over_30ms": 0
+    }
+   },
+   "load": {
+    "policy.depth_ff.wrench": {
+     "messages": 20,
+     "interval_max_ms": 20.313,
+     "interval_min_ms": 19.938,
+     "interval_sd_ms": 0.0701,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.013,
+     "anchor_to_output_max_ms": 0.0338
+    },
+    "ctl.depth_hold": {
+     "messages": 21,
+     "interval_max_ms": 20.298,
+     "interval_min_ms": 19.957,
+     "interval_sd_ms": 0.0638,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 21,
+     "interval_max_ms": 20.298,
+     "interval_min_ms": 19.023,
+     "interval_sd_ms": 0.2281,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 20,
+     "interval_max_ms": 20.078,
+     "interval_min_ms": 19.076,
+     "interval_sd_ms": 0.2207,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 20,
+     "interval_max_ms": 20.291,
+     "interval_min_ms": 19.935,
+     "interval_sd_ms": 0.0652,
+     "intervals_over_30ms": 0
+    }
+   }
+  },
+  "M2": {
+   "export and send (trainer, same machine)_ms": 9.2,
+   "checks_ms": 11.09,
+   "warm_up_ms": 180.29,
+   "before (10 s)": {
+    "policy.depth_ff.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.332,
+     "interval_min_ms": 19.025,
+     "interval_sd_ms": 0.1712,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0309,
+     "anchor_to_output_max_ms": 0.0432
+    },
+    "ctl.depth_hold": {
+     "messages": 500,
+     "interval_max_ms": 20.229,
+     "interval_min_ms": 19.026,
+     "interval_sd_ms": 0.1763,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.063,
+     "interval_min_ms": 19.027,
+     "interval_sd_ms": 0.1886,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 500,
+     "interval_max_ms": 20.083,
+     "interval_min_ms": 19.07,
+     "interval_sd_ms": 0.2582,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 500,
+     "interval_max_ms": 20.329,
+     "interval_min_ms": 19.027,
+     "interval_sd_ms": 0.1714,
+     "intervals_over_30ms": 0
+    }
+   },
+   "load": {
+    "policy.depth_ff.wrench": {
+     "messages": 21,
+     "interval_max_ms": 20.04,
+     "interval_min_ms": 19.03,
+     "interval_sd_ms": 0.2179,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0312,
+     "anchor_to_output_max_ms": 0.0391
+    },
+    "ctl.depth_hold": {
+     "messages": 20,
+     "interval_max_ms": 20.039,
+     "interval_min_ms": 19.035,
+     "interval_sd_ms": 0.2227,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 20,
+     "interval_max_ms": 20.041,
+     "interval_min_ms": 19.031,
+     "interval_sd_ms": 0.2244,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 20,
+     "interval_max_ms": 20.076,
+     "interval_min_ms": 19.074,
+     "interval_sd_ms": 0.223,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 21,
+     "interval_max_ms": 20.047,
+     "interval_min_ms": 19.032,
+     "interval_sd_ms": 0.2177,
+     "intervals_over_30ms": 0
+    }
+   }
+  }
+ },
+ "mismatch": {
+  "inputs": {
+   "anchors with an output and a row": 51523,
+   "outputs without a row": 2,
+   "rows without an output": 2,
+   "same ctl.depth_hold.target message": 51523,
+   "another message": 0,
+   "policy read a newer one": 0,
+   "policy read an older one": 0
+  },
+  "outputs": {
+   "model": "b3976437f6a9579f",
+   "ticks in the reset's window": 4,
+   "anchors compared": 3000,
+   "heave difference, max": 9.147090803893199e-08,
+   "heave difference, median": 1.0282734191902065e-08,
+   "over 1e-4": 0,
+   "over 1e-5": 0,
+   "largest at a wrong reset tick": 5.092312862359227e-08
+  },
+  "outputs, by the message read": {
+   "model": "54fab7f2fd3fe96b",
+   "the same message": {
+    "anchors": 6000,
+    "heave difference, max": 6.213318674841428e-08,
+    "over 1e-4": 0,
+    "over 1e-6": 0
+   },
+   "another message": {
+    "anchors": 0,
+    "heave difference, max": null,
+    "over 1e-4": 0,
+    "over 1e-6": 0
+   }
+  }
+ },
+ "lineage": {
+  "models": [
+   {
+    "version": 1,
+    "cause": 1,
+    "hash": "54fab7f2fd3fe96b",
+    "rows": 8023,
+    "file_in_session": true,
+    "header": {
+     "rows": 8023,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "0efcc4d39173e86d",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 89873867006952,
+     "trainer": "e2e_depth_ff2.py",
+     "lineage": [
+      {
+       "session": "20261121-174414-mousev",
+       "rows": 8023,
+       "first_anchor_seq": 1348,
+       "last_anchor_seq": 9370
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   },
+   {
+    "version": 2,
+    "cause": 1,
+    "hash": "b3976437f6a9579f",
+    "rows": 31035,
+    "file_in_session": true,
+    "header": {
+     "rows": 31035,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "0efcc4d39173e86d",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 90334106955148,
+     "trainer": "e2e_depth_ff2.py",
+     "lineage": [
+      {
+       "session": "20261121-174414-mousev",
+       "rows": 9001,
+       "first_anchor_seq": 23382,
+       "last_anchor_seq": 32382
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   },
+   {
+    "version": 3,
+    "cause": 2,
+    "hash": "54fab7f2fd3fe96b",
+    "rows": 8023,
+    "file_in_session": true,
+    "header": {
+     "rows": 8023,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "0efcc4d39173e86d",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 89873867006952,
+     "trainer": "e2e_depth_ff2.py",
+     "lineage": [
+      {
+       "session": "20261121-174414-mousev",
+       "rows": 8023,
+       "first_anchor_seq": 1348,
+       "last_anchor_seq": 9370
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   }
+  ],
+  "thr.cmd carrying a residual": 34011,
+  "of them leading back to a policy.active": 34011,
+  "one command followed back": {
+   "thr.cmd": {
+    "seq": 44647,
+    "t_s": 891.68,
+    "pwm": [
+     1500,
+     1500,
+     1500,
+     1500,
+     1521,
+     1521,
+     1521,
+     1521
+    ]
+   },
+   "ctl.wrench": {
+    "seq": 44645,
+    "heave": -0.05191
+   },
+   "ctl.depth_hold": {
+    "seq": 44646,
+    "heave": -0.11915
+   },
+   "policy.depth_ff.wrench": {
+    "seq": 44644,
+    "heave": 0.06724
+   },
+   "ctl.depth_hold.target": {
+    "seq": 44645,
+    "accel_z": -0.30158
+   },
+   "nav.state (the tick's anchor)": {
+    "seq": 44645
+   },
+   "nav.depth (the tick's)": {
+    "seq": 44643
+   },
+   "nav.attitude (the tick's)": {
+    "seq": 44643
+   },
+   "nav.imu (the tick's)": {
+    "seq": 178575
+   },
+   "policy.depth_ff.active": {
+    "seq": 3,
+    "version": 3,
+    "hash": "54fab7f2fd3fe96b",
+    "rows": 8023
+   },
+   "weights file": {
+    "in the session": true,
+    "agrees": true
+   },
+   "rows": [
+    {
+     "session": "20261121-174414-mousev",
+     "anchor_seq": [
+      1348,
+      9370
+     ],
+     "rows the buffer held": 8023,
+     "of them in the recording": 8023
+    }
+   ],
+   "newest row": {
+    "anchor_seq": 9370,
+    "ctl.depth_hold.target seq": 9370,
+    "ctl.depth_hold seq": 9370,
+    "thr.out seq": 9370
+   },
+   "nav.state (the newest row's anchor)": {
+    "seq": 9370
+   },
+   "nav.depth (the newest row's)": {
+    "seq": 9368
+   },
+   "nav.attitude (the newest row's)": {
+    "seq": 9368
+   },
+   "nav.imu (the newest row's)": {
+    "seq": 37475
+   },
+   "chain": [
+    "thr.cmd",
+    "ctl.wrench",
+    "ctl.depth_hold",
+    "policy.depth_ff.wrench",
+    "ctl.depth_hold.target",
+    "nav.state (the tick's anchor)",
+    "nav.depth (the tick's)",
+    "nav.attitude (the tick's)",
+    "nav.imu (the tick's)",
+    "policy.depth_ff.active",
+    "weights file",
+    "rows",
+    "nav.state (the newest row's anchor)",
+    "nav.depth (the newest row's)",
+    "nav.attitude (the newest row's)",
+    "nav.imu (the newest row's)"
+   ],
+   "complete": true
+  }
+ },
+ "demotions": {
+  "mode changes": [
+   {
+    "t_s": 256.42,
+    "from": "assisted",
+    "to": "residual:depth_ff",
+    "asked": true
+   },
+   {
+    "t_s": 936.68,
+    "from": "residual:depth_ff",
+    "to": "assisted",
+    "asked": true
+   }
+  ],
+  "demotions": [],
+  "mux.state with residual_active": 6666,
+  "mux.state at the residual envelope": 0,
+  "mux.state in a residual mode": 6668,
+  "the mux's log": []
+ },
+ "policy_output": {
+  "A1": {
+   "rms": 0.0677,
+   "at its bound (share of ticks)": 0.074,
+   "sign changes per second": 4.8
+  },
+  "A2": {
+   "rms": 0.045,
+   "at its bound (share of ticks)": 0.0214,
+   "sign changes per second": 4.04
+  },
+  "P1": {
+   "rms": 0.0607,
+   "at its bound (share of ticks)": 0.0374,
+   "sign changes per second": 2.0
+  },
+  "P2": {
+   "rms": 0.0633,
+   "at its bound (share of ticks)": 0.0757,
+   "sign changes per second": 2.89
+  },
+  "N2": {
+   "rms": 0.0508,
+   "at its bound (share of ticks)": 0.0614,
+   "sign changes per second": 5.03
+  },
+  "P3": {
+   "rms": 0.0583,
+   "at its bound (share of ticks)": 0.038,
+   "sign changes per second": 3.29
+  },
+  "P4": {
+   "rms": 0.0953,
+   "at its bound (share of ticks)": 0.1474,
+   "sign changes per second": 4.13
+  }
+ },
+ "battery_v": [
+  16.8,
+  16.64
+ ],
+ "command_activity": {
+  "A1": {
+   "rms of the change per tick": 0.006,
+   "reversals per second": 0.03
+  },
+  "A2": {
+   "rms of the change per tick": 0.00981,
+   "reversals per second": 0.11
+  },
+  "P1": {
+   "rms of the change per tick": 0.01307,
+   "reversals per second": 0.57
+  },
+  "P2": {
+   "rms of the change per tick": 0.01258,
+   "reversals per second": 0.34
+  },
+  "N2": {
+   "rms of the change per tick": 0.01087,
+   "reversals per second": 0.11
+  },
+  "P3": {
+   "rms of the change per tick": 0.01248,
+   "reversals per second": 0.6
+  },
+  "P4": {
+   "rms of the change per tick": 0.00593,
+   "reversals per second": 0.03
+  }
+ },
+ "block_models": {
+  "A1": [],
+  "A2": [
+   "54fab7f2fd3fe96b"
+  ],
+  "P1": [
+   "54fab7f2fd3fe96b"
+  ],
+  "P2": [
+   "b3976437f6a9579f"
+  ],
+  "N2": [
+   "b3976437f6a9579f"
+  ],
+  "P3": [
+   "54fab7f2fd3fe96b"
+  ],
+  "P4": []
+ },
+ "timing": {
+  "nav.state": {
+   "messages": 51525,
+   "interval_max_ms": 21.29,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "ctl.depth_hold": {
+   "messages": 51525,
+   "interval_max_ms": 21.86,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "ctl.wrench": {
+   "messages": 51525,
+   "interval_max_ms": 22.25,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "thr.cmd": {
+   "messages": 51525,
+   "interval_max_ms": 21.87,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "policy.depth_ff.wrench": {
+   "messages": 51525,
+   "interval_max_ms": 22.27,
+   "over_30ms": 0,
+   "over_25ms": 0
+  }
+ },
+ "rows": {
+  "rows recorded": 51525,
+  "recorder gaps": 0,
+  "anchors from the first row to the last": 51525,
+  "anchors without a row": 0,
+  "masked (outputs off, or the controller not driving)": 1,
+  "resets": 0,
+  "anchor to row published, median_ms": 0.016,
+  "the trainer's stream": {
+   "rows": 51048,
+   "lost": 0,
+   "steps": 0,
+   "steps_per_s": null,
+   "batch": 256,
+   "replay": "3min",
+   "lag": 2,
+   "bound": 0.18
+  },
+  "passed Where, without loss (a part missing, or thr.out's window short of the command)": 0,
+  "thr.out's window not full": 0,
+  "plant rows": {
+   "train": {
+    "rows with loss": 7000,
+    "still rows": 2369,
+    "accel made: sd": 0.1578,
+    "heave applied less the integrator: sd": 0.0672,
+    "on still rows: mean": 0.00556,
+    "r2 of the simulator's own model on accel made": 0.741
+   },
+   "A1": {
+    "rows with loss": 3501,
+    "still rows": 2667,
+    "accel made: sd": 0.1323,
+    "heave applied less the integrator: sd": 0.0484,
+    "on still rows: mean": 0.00078,
+    "r2 of the simulator's own model on accel made": 0.827
+   },
+   "A2": {
+    "rows with loss": 3500,
+    "still rows": 2395,
+    "accel made: sd": 0.2122,
+    "heave applied less the integrator: sd": 0.0711,
+    "on still rows: mean": -0.0008,
+    "r2 of the simulator's own model on accel made": 0.876
+   },
+   "P1": {
+    "rows with loss": 3500,
+    "still rows": 2610,
+    "accel made: sd": 0.1322,
+    "heave applied less the integrator: sd": 0.0977,
+    "on still rows: mean": -0.01711,
+    "r2 of the simulator's own model on accel made": -3.185
+   },
+   "P2": {
+    "rows with loss": 3501,
+    "still rows": 2583,
+    "accel made: sd": 0.1345,
+    "heave applied less the integrator: sd": 0.0989,
+    "on still rows: mean": -0.00805,
+    "r2 of the simulator's own model on accel made": -3.418
+   },
+   "N2": {
+    "rows with loss": 3500,
+    "still rows": 2258,
+    "accel made: sd": 0.2267,
+    "heave applied less the integrator: sd": 0.0732,
+    "on still rows: mean": -0.00992,
+    "r2 of the simulator's own model on accel made": 0.92
+   },
+   "P3": {
+    "rows with loss": 3501,
+    "still rows": 2508,
+    "accel made: sd": 0.1324,
+    "heave applied less the integrator: sd": 0.0962,
+    "on still rows: mean": -0.00243,
+    "r2 of the simulator's own model on accel made": -3.091
+   },
+   "P4": {
+    "rows with loss": 3500,
+    "still rows": 1961,
+    "accel made: sd": 0.0873,
+    "heave applied less the integrator: sd": 0.0726,
+    "on still rows: mean": 0.00212,
+    "r2 of the simulator's own model on accel made": -2.798
+   }
+  }
+ },
+ "recorder_gaps": {},
+ "variant": "oracle",
+ "seed": 2,
+ "change": "payload",
+ "schedule": "adapt",
+ "load_average": {
+  "at the start (1, 5, 15 min)": [
+   4.42,
+   3.61,
+   2.48
+  ],
+  "at the end (1, 5, 15 min)": [
+   1.39,
+   1.38,
+   1.66
+  ],
+  "highest 1 min average during the run": 4.83,
+  "threads": 12
+ },
+ "deploys": {
+  "M1": {
+   "version": 1,
+   "state": "done",
+   "check": 0,
+   "reason": "",
+   "hash": "54fab7f2fd3fe96b",
+   "commands": "-0.225 to +0.120",
+   "rest": "-0.085",
+   "seconds": 0.223137575,
+   "steps": 0,
+   "plant_loss": NaN,
+   "policy_loss": NaN
+  },
+  "M2": {
+   "version": 2,
+   "state": "done",
+   "check": 0,
+   "reason": "",
+   "hash": "b3976437f6a9579f",
+   "commands": "-0.370 to +0.340",
+   "rest": "-0.082",
+   "seconds": 0.217341887,
+   "steps": 0,
+   "plant_loss": NaN,
+   "policy_loss": NaN
+  }
+ }
+}

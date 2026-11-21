@@ -1,0 +1,1084 @@
+{
+ "session": "/dev/shm/hg-adapt-0/var/lib/hangar/recorder/sessions/20261121-181907-mousev",
+ "blocks": {
+  "A1": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.06,
+    "ss_rms_cm": 2.06,
+    "iae_m_s": 0.4,
+    "peak_cm": 2.27,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.01,
+    "ss_rms_cm": 2.01,
+    "iae_m_s": 1.872,
+    "peak_cm": 101.89,
+    "overshoot_pct": 9.17,
+    "within_5cm_s": 6.33
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.01,
+    "ss_rms_cm": 2.02,
+    "iae_m_s": 3.011,
+    "peak_cm": 97.98,
+    "overshoot_pct": 19.82,
+    "within_5cm_s": 10.13
+   }
+  },
+  "A2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -1.95,
+    "ss_rms_cm": 1.96,
+    "iae_m_s": 0.396,
+    "peak_cm": 2.54,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.46,
+    "ss_rms_cm": 1.47,
+    "iae_m_s": 1.202,
+    "peak_cm": 102.05,
+    "overshoot_pct": 0.72,
+    "within_5cm_s": 2.23
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.84,
+    "ss_rms_cm": 2.84,
+    "iae_m_s": 1.854,
+    "peak_cm": 98.5,
+    "overshoot_pct": 3.53,
+    "within_5cm_s": 2.41
+   }
+  },
+  "P1": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.77,
+    "ss_rms_cm": 2.78,
+    "iae_m_s": 0.595,
+    "peak_cm": 3.41,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.05,
+    "ss_rms_cm": 1.08,
+    "iae_m_s": 1.861,
+    "peak_cm": 102.65,
+    "overshoot_pct": 2.07,
+    "within_5cm_s": 3.77
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.61,
+    "ss_rms_cm": 3.62,
+    "iae_m_s": 2.68,
+    "peak_cm": 98.66,
+    "overshoot_pct": 4.02,
+    "within_5cm_s": 4.13
+   }
+  },
+  "P2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.36,
+    "ss_rms_cm": 2.36,
+    "iae_m_s": 0.486,
+    "peak_cm": 2.8,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -1.13,
+    "ss_rms_cm": 1.14,
+    "iae_m_s": 1.626,
+    "peak_cm": 102.04,
+    "overshoot_pct": 0.67,
+    "within_5cm_s": 2.99
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.1,
+    "ss_rms_cm": 3.1,
+    "iae_m_s": 2.572,
+    "peak_cm": 98.61,
+    "overshoot_pct": 3.51,
+    "within_5cm_s": 4.03
+   }
+  },
+  "N2": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.56,
+    "ss_rms_cm": 2.57,
+    "iae_m_s": 0.531,
+    "peak_cm": 3.17,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.05,
+    "ss_rms_cm": 2.05,
+    "iae_m_s": 1.433,
+    "peak_cm": 102.49,
+    "overshoot_pct": 8.06,
+    "within_5cm_s": 2.83
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.73,
+    "ss_rms_cm": 2.74,
+    "iae_m_s": 1.829,
+    "peak_cm": 98.04,
+    "overshoot_pct": 4.2,
+    "within_5cm_s": 2.26
+   }
+  },
+  "P3": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -2.11,
+    "ss_rms_cm": 2.12,
+    "iae_m_s": 0.424,
+    "peak_cm": 2.46,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -0.87,
+    "ss_rms_cm": 0.91,
+    "iae_m_s": 1.862,
+    "peak_cm": 102.22,
+    "overshoot_pct": 3.03,
+    "within_5cm_s": 3.6
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.61,
+    "ss_rms_cm": 3.61,
+    "iae_m_s": 2.69,
+    "peak_cm": 99.02,
+    "overshoot_pct": 3.93,
+    "within_5cm_s": 4.16
+   }
+  },
+  "P4": {
+   "hold": {
+    "seconds": 20.0,
+    "ss_mean_cm": -1.99,
+    "ss_rms_cm": 1.99,
+    "iae_m_s": 0.398,
+    "peak_cm": 2.1,
+    "within_5cm_s": 0.0
+   },
+   "down": {
+    "seconds": 25.0,
+    "ss_mean_cm": -2.22,
+    "ss_rms_cm": 2.22,
+    "iae_m_s": 2.935,
+    "peak_cm": 102.07,
+    "overshoot_pct": 13.55,
+    "within_5cm_s": 10.82
+   },
+   "up": {
+    "seconds": 25.0,
+    "ss_mean_cm": -3.85,
+    "ss_rms_cm": 5.42,
+    "iae_m_s": 5.246,
+    "peak_cm": 98.01,
+    "overshoot_pct": 27.46,
+    "within_5cm_s": 19.37
+   }
+  }
+ },
+ "transients": {
+  "H1": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.01,
+   "ss_rms_cm": 2.02,
+   "iae_m_s": 0.401,
+   "peak_cm": 2.42,
+   "within_5cm_s": 0.0
+  },
+  "C1": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.42,
+   "ss_rms_cm": 2.42,
+   "iae_m_s": 0.496,
+   "peak_cm": 2.89,
+   "within_5cm_s": 0.0
+  },
+  "S2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.62,
+   "ss_rms_cm": 2.63,
+   "iae_m_s": 0.543,
+   "peak_cm": 3.26,
+   "within_5cm_s": 0.0
+  },
+  "C2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.8,
+   "ss_rms_cm": 2.81,
+   "iae_m_s": 0.575,
+   "peak_cm": 3.39,
+   "within_5cm_s": 0.0
+  },
+  "C3": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.43,
+   "ss_rms_cm": 2.44,
+   "iae_m_s": 0.504,
+   "peak_cm": 2.92,
+   "within_5cm_s": 0.0
+  },
+  "S3": {
+   "seconds": 20.0,
+   "ss_mean_cm": -2.21,
+   "ss_rms_cm": 2.21,
+   "iae_m_s": 0.457,
+   "peak_cm": 2.71,
+   "within_5cm_s": 0.0
+  },
+  "H2": {
+   "seconds": 20.0,
+   "ss_mean_cm": -1.84,
+   "ss_rms_cm": 1.85,
+   "iae_m_s": 0.82,
+   "peak_cm": 10.27,
+   "within_5cm_s": 7.13
+  },
+  "C4": {
+   "seconds": 20.0,
+   "ss_mean_cm": -1.99,
+   "ss_rms_cm": 1.99,
+   "iae_m_s": 0.383,
+   "peak_cm": 2.25,
+   "within_5cm_s": 0.0
+  }
+ },
+ "trim_carried_by": {
+  "A1": {
+   "integral": -0.0847,
+   "policy_heave": -0.0018,
+   "ctl_wrench_heave": -0.0848
+  },
+  "A2": {
+   "integral": -0.0843,
+   "policy_heave": -0.0012,
+   "ctl_wrench_heave": -0.0853
+  },
+  "P1": {
+   "integral": -0.0649,
+   "policy_heave": -0.0159,
+   "ctl_wrench_heave": -0.084
+  },
+  "P2": {
+   "integral": -0.0766,
+   "policy_heave": -0.0047,
+   "ctl_wrench_heave": -0.0828
+  },
+  "N2": {
+   "integral": -0.0674,
+   "policy_heave": -0.0137,
+   "ctl_wrench_heave": -0.0833
+  },
+  "P3": {
+   "integral": -0.0829,
+   "policy_heave": -0.0022,
+   "ctl_wrench_heave": -0.0855
+  },
+  "P4": {
+   "integral": -0.0849,
+   "policy_heave": -0.0014,
+   "ctl_wrench_heave": -0.0851
+  }
+ },
+ "residual_share_pct": {
+  "A1": 0.0,
+  "A2": 100.0,
+  "P1": 100.0,
+  "P2": 100.0,
+  "N2": 100.0,
+  "P3": 100.0,
+  "P4": 0.0
+ },
+ "control_latency": {
+  "thr.cmd records": 51573,
+  "without the whole chain": 2,
+  "nav.depth to nav.state": {
+   "n": 51571,
+   "median_ms": 16.773,
+   "p99_ms": 17.271,
+   "max_ms": 19.728
+  },
+  "nav.state to ctl.depth_hold": {
+   "n": 51571,
+   "median_ms": 19.111,
+   "p99_ms": 19.975,
+   "max_ms": 20.318
+  },
+  "ctl.depth_hold to ctl.wrench": {
+   "n": 51571,
+   "median_ms": 19.318,
+   "p99_ms": 20.006,
+   "max_ms": 20.837
+  },
+  "ctl.wrench to thr.cmd": {
+   "n": 51571,
+   "median_ms": 4.013,
+   "p99_ms": 4.87,
+   "max_ms": 5.985
+  },
+  "nav.depth to thr.cmd": {
+   "n": 51571,
+   "median_ms": 59.395,
+   "p99_ms": 60.016,
+   "max_ms": 61.718
+  },
+  "policy.wrench to ctl.wrench": {
+   "n": 34034,
+   "median_ms": 18.698,
+   "p99_ms": 19.581,
+   "max_ms": 19.953
+  },
+  "nav.state to policy.wrench": {
+   "n": 34034,
+   "median_ms": 0.017,
+   "p99_ms": 0.044,
+   "max_ms": 1.721
+  },
+  "nav.state to ctl.wrench, by the policy": {
+   "n": 34034,
+   "median_ms": 18.719,
+   "p99_ms": 19.602,
+   "max_ms": 19.967
+  }
+ },
+ "loop_latency": {
+  "unit": "ms after the stamp of the newest row trained on",
+  "models": [
+   {
+    "version": 1,
+    "hash": "fe5ef9b9843aa66b",
+    "rows": 8024,
+    "model": "M1",
+    "its row published": 0.02,
+    "deploy called": 5.91,
+    "load: checking": 485.82,
+    "load: warming": 500.85,
+    "swapped (policy.active)": 680.09,
+    "first policy.wrench of the model": 700.11,
+    "first ctl.wrench carrying it": 70719.03,
+    "first thr.cmd carrying it": 70722.66,
+    "ctl.wrench messages carrying it": 19534
+   },
+   {
+    "version": 2,
+    "hash": "f1f7e55b1c394a1c",
+    "rows": 31060,
+    "model": "M2",
+    "its row published": 0.03,
+    "deploy called": 7.9,
+    "load: checking": 470.67,
+    "load: warming": 479.69,
+    "swapped (policy.active)": 659.95,
+    "first policy.wrench of the model": 679.96,
+    "first ctl.wrench carrying it": 697.96,
+    "first thr.cmd carrying it": 701.93,
+    "ctl.wrench messages carrying it": 10001
+   },
+   {
+    "version": 3,
+    "hash": "fe5ef9b9843aa66b",
+    "rows": 8024,
+    "its row published": 0.02,
+    "deploy called": null,
+    "load: checking": null,
+    "load: warming": null,
+    "swapped (policy.active)": 661425.54,
+    "first policy.wrench of the model": 661440.55,
+    "first ctl.wrench carrying it": 661459.55,
+    "first thr.cmd carrying it": 661462.85,
+    "ctl.wrench messages carrying it": 4499
+   }
+  ]
+ },
+ "swap_cost": {
+  "M1": {
+   "export and send (trainer, same machine)_ms": 479.9,
+   "checks_ms": 15.03,
+   "warm_up_ms": 179.27,
+   "before (10 s)": {
+    "policy.depth_ff.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.244,
+     "interval_min_ms": 18.955,
+     "interval_sd_ms": 0.1667,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0272,
+     "anchor_to_output_max_ms": 0.1688
+    },
+    "ctl.depth_hold": {
+     "messages": 500,
+     "interval_max_ms": 20.146,
+     "interval_min_ms": 19.022,
+     "interval_sd_ms": 0.1707,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.072,
+     "interval_min_ms": 19.027,
+     "interval_sd_ms": 0.1864,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 500,
+     "interval_max_ms": 20.113,
+     "interval_min_ms": 19.052,
+     "interval_sd_ms": 0.2587,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 500,
+     "interval_max_ms": 20.125,
+     "interval_min_ms": 19.019,
+     "interval_sd_ms": 0.1647,
+     "intervals_over_30ms": 0
+    }
+   },
+   "load": {
+    "policy.depth_ff.wrench": {
+     "messages": 44,
+     "interval_max_ms": 20.759,
+     "interval_min_ms": 19.015,
+     "interval_sd_ms": 0.2725,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.0252,
+     "anchor_to_output_max_ms": 0.0393
+    },
+    "ctl.depth_hold": {
+     "messages": 44,
+     "interval_max_ms": 20.77,
+     "interval_min_ms": 19.025,
+     "interval_sd_ms": 0.2624,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 44,
+     "interval_max_ms": 20.068,
+     "interval_min_ms": 19.042,
+     "interval_sd_ms": 0.1621,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 43,
+     "interval_max_ms": 20.085,
+     "interval_min_ms": 19.066,
+     "interval_sd_ms": 0.2584,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 44,
+     "interval_max_ms": 20.756,
+     "interval_min_ms": 19.026,
+     "interval_sd_ms": 0.2718,
+     "intervals_over_30ms": 0
+    }
+   }
+  },
+  "M2": {
+   "export and send (trainer, same machine)_ms": 462.8,
+   "checks_ms": 9.02,
+   "warm_up_ms": 180.28,
+   "before (10 s)": {
+    "policy.depth_ff.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.051,
+     "interval_min_ms": 19.018,
+     "interval_sd_ms": 0.1336,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.013,
+     "anchor_to_output_max_ms": 0.0479
+    },
+    "ctl.depth_hold": {
+     "messages": 500,
+     "interval_max_ms": 20.044,
+     "interval_min_ms": 19.012,
+     "interval_sd_ms": 0.1471,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 500,
+     "interval_max_ms": 20.468,
+     "interval_min_ms": 19.013,
+     "interval_sd_ms": 0.1483,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 500,
+     "interval_max_ms": 20.085,
+     "interval_min_ms": 19.059,
+     "interval_sd_ms": 0.2483,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 500,
+     "interval_max_ms": 20.049,
+     "interval_min_ms": 19.016,
+     "interval_sd_ms": 0.1335,
+     "intervals_over_30ms": 0
+    }
+   },
+   "load": {
+    "policy.depth_ff.wrench": {
+     "messages": 43,
+     "interval_max_ms": 20.355,
+     "interval_min_ms": 19.03,
+     "interval_sd_ms": 0.1605,
+     "intervals_over_30ms": 0,
+     "anchor_to_output_median_ms": 0.026,
+     "anchor_to_output_max_ms": 0.0406
+    },
+    "ctl.depth_hold": {
+     "messages": 43,
+     "interval_max_ms": 20.115,
+     "interval_min_ms": 20.011,
+     "interval_sd_ms": 0.0158,
+     "intervals_over_30ms": 0
+    },
+    "ctl.wrench": {
+     "messages": 43,
+     "interval_max_ms": 20.036,
+     "interval_min_ms": 19.049,
+     "interval_sd_ms": 0.1482,
+     "intervals_over_30ms": 0
+    },
+    "thr.cmd": {
+     "messages": 42,
+     "interval_max_ms": 20.084,
+     "interval_min_ms": 19.075,
+     "interval_sd_ms": 0.2591,
+     "intervals_over_30ms": 0
+    },
+    "nav.state": {
+     "messages": 43,
+     "interval_max_ms": 20.353,
+     "interval_min_ms": 19.018,
+     "interval_sd_ms": 0.1619,
+     "intervals_over_30ms": 0
+    }
+   }
+  }
+ },
+ "mismatch": {
+  "inputs": {
+   "anchors with an output and a row": 51571,
+   "outputs without a row": 2,
+   "rows without an output": 3,
+   "same ctl.depth_hold.target message": 51571,
+   "another message": 0,
+   "policy read a newer one": 0,
+   "policy read an older one": 0
+  },
+  "outputs": {
+   "model": "f1f7e55b1c394a1c",
+   "ticks in the reset's window": 5,
+   "anchors compared": 3000,
+   "heave difference, max": 1.1595033629161616e-07,
+   "heave difference, median": 1.792437678838077e-08,
+   "over 1e-4": 0,
+   "over 1e-5": 0,
+   "largest at a wrong reset tick": 9.831561479864415e-08
+  },
+  "outputs, by the message read": {
+   "model": "fe5ef9b9843aa66b",
+   "the same message": {
+    "anchors": 6000,
+    "heave difference, max": 9.113778559610708e-08,
+    "over 1e-4": 0,
+    "over 1e-6": 0
+   },
+   "another message": {
+    "anchors": 0,
+    "heave difference, max": null,
+    "over 1e-4": 0,
+    "over 1e-6": 0
+   }
+  }
+ },
+ "lineage": {
+  "models": [
+   {
+    "version": 1,
+    "cause": 1,
+    "hash": "fe5ef9b9843aa66b",
+    "rows": 8024,
+    "file_in_session": true,
+    "header": {
+     "rows": 8024,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "0efcc4d39173e86d",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 91967049540574,
+     "trainer": "e2e_depth_ff2.py",
+     "lineage": [
+      {
+       "session": "20261121-181907-mousev",
+       "rows": 8024,
+       "first_anchor_seq": 567,
+       "last_anchor_seq": 8590
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   },
+   {
+    "version": 2,
+    "cause": 1,
+    "hash": "f1f7e55b1c394a1c",
+    "rows": 31060,
+    "file_in_session": true,
+    "header": {
+     "rows": 31060,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "0efcc4d39173e86d",
+     "parent_hash": "fe5ef9b9843aa66b",
+     "newest_row_stamp_ns": 92427770369852,
+     "trainer": "e2e_depth_ff2.py",
+     "lineage": [
+      {
+       "session": "20261121-181907-mousev",
+       "rows": 9000,
+       "first_anchor_seq": 22627,
+       "last_anchor_seq": 31626
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   },
+   {
+    "version": 3,
+    "cause": 2,
+    "hash": "fe5ef9b9843aa66b",
+    "rows": 8024,
+    "file_in_session": true,
+    "header": {
+     "rows": 8024,
+     "steps": 0,
+     "dataset": "depth_ff",
+     "dataset_hash": "0efcc4d39173e86d",
+     "parent_hash": "0000000000000000",
+     "newest_row_stamp_ns": 91967049540574,
+     "trainer": "e2e_depth_ff2.py",
+     "lineage": [
+      {
+       "session": "20261121-181907-mousev",
+       "rows": 8024,
+       "first_anchor_seq": 567,
+       "last_anchor_seq": 8590
+      }
+     ]
+    },
+    "file agrees with the announcement": true
+   }
+  ],
+  "thr.cmd carrying a residual": 34034,
+  "of them leading back to a policy.active": 34034,
+  "one command followed back": {
+   "thr.cmd": {
+    "seq": 43913,
+    "t_s": 877.09,
+    "pwm": [
+     1500,
+     1500,
+     1500,
+     1500,
+     1526,
+     1526,
+     1526,
+     1526
+    ]
+   },
+   "ctl.wrench": {
+    "seq": 43911,
+    "heave": -0.06437
+   },
+   "ctl.depth_hold": {
+    "seq": 43911,
+    "heave": -0.11762
+   },
+   "policy.depth_ff.wrench": {
+    "seq": 43910,
+    "heave": 0.05325
+   },
+   "ctl.depth_hold.target": {
+    "seq": 43911,
+    "accel_z": -0.27144
+   },
+   "nav.state (the tick's anchor)": {
+    "seq": 43911
+   },
+   "nav.depth (the tick's)": {
+    "seq": 43909
+   },
+   "nav.attitude (the tick's)": {
+    "seq": 43909
+   },
+   "nav.imu (the tick's)": {
+    "seq": 175639
+   },
+   "policy.depth_ff.active": {
+    "seq": 3,
+    "version": 3,
+    "hash": "fe5ef9b9843aa66b",
+    "rows": 8024
+   },
+   "weights file": {
+    "in the session": true,
+    "agrees": true
+   },
+   "rows": [
+    {
+     "session": "20261121-181907-mousev",
+     "anchor_seq": [
+      567,
+      8590
+     ],
+     "rows the buffer held": 8024,
+     "of them in the recording": 8024
+    }
+   ],
+   "newest row": {
+    "anchor_seq": 8590,
+    "ctl.depth_hold.target seq": 8590,
+    "ctl.depth_hold seq": 8590,
+    "thr.out seq": 8590
+   },
+   "nav.state (the newest row's anchor)": {
+    "seq": 8590
+   },
+   "nav.depth (the newest row's)": {
+    "seq": 8588
+   },
+   "nav.attitude (the newest row's)": {
+    "seq": 8588
+   },
+   "nav.imu (the newest row's)": {
+    "seq": 34355
+   },
+   "chain": [
+    "thr.cmd",
+    "ctl.wrench",
+    "ctl.depth_hold",
+    "policy.depth_ff.wrench",
+    "ctl.depth_hold.target",
+    "nav.state (the tick's anchor)",
+    "nav.depth (the tick's)",
+    "nav.attitude (the tick's)",
+    "nav.imu (the tick's)",
+    "policy.depth_ff.active",
+    "weights file",
+    "rows",
+    "nav.state (the newest row's anchor)",
+    "nav.depth (the newest row's)",
+    "nav.attitude (the newest row's)",
+    "nav.imu (the newest row's)"
+   ],
+   "complete": true
+  }
+ },
+ "demotions": {
+  "mode changes": [
+   {
+    "t_s": 0.65,
+    "from": "manual",
+    "to": "assisted",
+    "asked": true
+   },
+   {
+    "t_s": 241.37,
+    "from": "assisted",
+    "to": "residual:depth_ff",
+    "asked": true
+   },
+   {
+    "t_s": 922.09,
+    "from": "residual:depth_ff",
+    "to": "assisted",
+    "asked": true
+   }
+  ],
+  "demotions": [],
+  "mux.state with residual_active": 6665,
+  "mux.state at the residual envelope": 0,
+  "mux.state in a residual mode": 6667,
+  "the mux's log": []
+ },
+ "policy_output": {
+  "A1": {
+   "rms": 0.0685,
+   "at its bound (share of ticks)": 0.098,
+   "sign changes per second": 5.44
+  },
+  "A2": {
+   "rms": 0.0446,
+   "at its bound (share of ticks)": 0.0337,
+   "sign changes per second": 4.79
+  },
+  "P1": {
+   "rms": 0.0584,
+   "at its bound (share of ticks)": 0.0566,
+   "sign changes per second": 1.94
+  },
+  "P2": {
+   "rms": 0.0643,
+   "at its bound (share of ticks)": 0.0786,
+   "sign changes per second": 2.89
+  },
+  "N2": {
+   "rms": 0.0527,
+   "at its bound (share of ticks)": 0.0554,
+   "sign changes per second": 5.66
+  },
+  "P3": {
+   "rms": 0.0571,
+   "at its bound (share of ticks)": 0.0549,
+   "sign changes per second": 2.74
+  },
+  "P4": {
+   "rms": 0.0971,
+   "at its bound (share of ticks)": 0.218,
+   "sign changes per second": 4.07
+  }
+ },
+ "battery_v": [
+  16.8,
+  16.64
+ ],
+ "command_activity": {
+  "A1": {
+   "rms of the change per tick": 0.00602,
+   "reversals per second": 0.03
+  },
+  "A2": {
+   "rms of the change per tick": 0.0105,
+   "reversals per second": 0.2
+  },
+  "P1": {
+   "rms of the change per tick": 0.01072,
+   "reversals per second": 0.17
+  },
+  "P2": {
+   "rms of the change per tick": 0.01416,
+   "reversals per second": 0.49
+  },
+  "N2": {
+   "rms of the change per tick": 0.01457,
+   "reversals per second": 0.6
+  },
+  "P3": {
+   "rms of the change per tick": 0.01018,
+   "reversals per second": 0.06
+  },
+  "P4": {
+   "rms of the change per tick": 0.00595,
+   "reversals per second": 0.06
+  }
+ },
+ "block_models": {
+  "A1": [],
+  "A2": [
+   "fe5ef9b9843aa66b"
+  ],
+  "P1": [
+   "fe5ef9b9843aa66b"
+  ],
+  "P2": [
+   "f1f7e55b1c394a1c"
+  ],
+  "N2": [
+   "f1f7e55b1c394a1c"
+  ],
+  "P3": [
+   "fe5ef9b9843aa66b"
+  ],
+  "P4": []
+ },
+ "timing": {
+  "nav.state": {
+   "messages": 51573,
+   "interval_max_ms": 23.5,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "ctl.depth_hold": {
+   "messages": 51573,
+   "interval_max_ms": 20.85,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "ctl.wrench": {
+   "messages": 51573,
+   "interval_max_ms": 22.45,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "thr.cmd": {
+   "messages": 51573,
+   "interval_max_ms": 23.53,
+   "over_30ms": 0,
+   "over_25ms": 0
+  },
+  "policy.depth_ff.wrench": {
+   "messages": 51573,
+   "interval_max_ms": 24.0,
+   "over_30ms": 0,
+   "over_25ms": 0
+  }
+ },
+ "rows": {
+  "rows recorded": 51574,
+  "recorder gaps": 0,
+  "anchors from the first row to the last": 51574,
+  "anchors without a row": 0,
+  "masked (outputs off, or the controller not driving)": 2,
+  "resets": 0,
+  "anchor to row published, median_ms": 0.017,
+  "the trainer's stream": {
+   "rows": 51095,
+   "lost": 0,
+   "steps": 59575,
+   "steps_per_s": 59.5,
+   "batch": 256,
+   "replay": "3min",
+   "lag": 2,
+   "bound": 0.18
+  },
+  "passed Where, without loss (a part missing, or thr.out's window short of the command)": 0,
+  "thr.out's window not full": 0,
+  "plant rows": {
+   "train": {
+    "rows with loss": 7001,
+    "still rows": 2367,
+    "accel made: sd": 0.1569,
+    "heave applied less the integrator: sd": 0.0672,
+    "on still rows: mean": 0.00583,
+    "r2 of the simulator's own model on accel made": 0.741
+   },
+   "A1": {
+    "rows with loss": 3500,
+    "still rows": 2632,
+    "accel made: sd": 0.1334,
+    "heave applied less the integrator: sd": 0.0485,
+    "on still rows: mean": 0.00034,
+    "r2 of the simulator's own model on accel made": 0.835
+   },
+   "A2": {
+    "rows with loss": 3500,
+    "still rows": 2374,
+    "accel made: sd": 0.2238,
+    "heave applied less the integrator: sd": 0.0712,
+    "on still rows: mean": -0.00232,
+    "r2 of the simulator's own model on accel made": 0.901
+   },
+   "P1": {
+    "rows with loss": 3500,
+    "still rows": 2608,
+    "accel made: sd": 0.1324,
+    "heave applied less the integrator: sd": 0.0963,
+    "on still rows: mean": -0.01756,
+    "r2 of the simulator's own model on accel made": -3.213
+   },
+   "P2": {
+    "rows with loss": 3500,
+    "still rows": 2571,
+    "accel made: sd": 0.1374,
+    "heave applied less the integrator: sd": 0.0998,
+    "on still rows: mean": -0.00768,
+    "r2 of the simulator's own model on accel made": -3.239
+   },
+   "N2": {
+    "rows with loss": 3501,
+    "still rows": 2075,
+    "accel made: sd": 0.2254,
+    "heave applied less the integrator: sd": 0.0747,
+    "on still rows: mean": -0.01136,
+    "r2 of the simulator's own model on accel made": 0.912
+   },
+   "P3": {
+    "rows with loss": 3500,
+    "still rows": 2657,
+    "accel made: sd": 0.1349,
+    "heave applied less the integrator: sd": 0.0958,
+    "on still rows: mean": -0.00837,
+    "r2 of the simulator's own model on accel made": -2.978
+   },
+   "P4": {
+    "rows with loss": 3500,
+    "still rows": 1951,
+    "accel made: sd": 0.0866,
+    "heave applied less the integrator: sd": 0.0726,
+    "on still rows: mean": 0.00248,
+    "r2 of the simulator's own model on accel made": -2.822
+   }
+  }
+ },
+ "recorder_gaps": {},
+ "variant": "learned",
+ "seed": 4,
+ "change": "payload",
+ "schedule": "adapt",
+ "load_average": {
+  "at the start (1, 5, 15 min)": [
+   1.14,
+   1.5,
+   1.71
+  ],
+  "at the end (1, 5, 15 min)": [
+   0.44,
+   0.44,
+   0.84
+  ],
+  "highest 1 min average during the run": 1.5,
+  "threads": 12
+ },
+ "deploys": {
+  "M1": {
+   "version": 1,
+   "state": "done",
+   "check": 0,
+   "reason": "",
+   "hash": "fe5ef9b9843aa66b",
+   "commands": "-0.230 to +0.122",
+   "rest": "-0.084",
+   "seconds": 0.223821448,
+   "steps": 8359,
+   "plant_loss": 0.0008345276000909507,
+   "policy_loss": 0.00014130063937045634
+  },
+  "M2": {
+   "version": 2,
+   "state": "done",
+   "check": 0,
+   "reason": "",
+   "hash": "f1f7e55b1c394a1c",
+   "commands": "-0.380 to +0.343",
+   "rest": "-0.086",
+   "seconds": 0.215354,
+   "steps": 35766,
+   "plant_loss": 0.0043485225178301334,
+   "policy_loss": 5.596749542746693e-05
+  }
+ }
+}
