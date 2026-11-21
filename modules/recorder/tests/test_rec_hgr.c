@@ -296,6 +296,64 @@ static void test_find_stamp_uses_publish_without_stamp(void)
 	hgr_reader_close(&r);
 }
 
+/* The live join's search (hg_find_stamp, through hg_ds_source_sub) and the
+ * build's (hgr_find_stamp, through hg_ds_source_file) pick the same message
+ * of a topic published without stamps: three messages, stamp 0, a few ms
+ * apart, and a recording of them, asked at times between and around their
+ * publish times. The ring's search compared the raw stamp, 0, and answered
+ * the newest message to every question. */
+static void test_find_stamp_live_and_file_agree(void)
+{
+	static struct hg_schema sch;
+	const char *text = "u64 v\n";
+	CHECK_EQ_INT(hg_schema_parse(text, strlen(text), &sch, NULL, 0), 0);
+	struct hg_pub_opts o = { .slots = 16 };
+	hg_pub *p = hg_pub_open("ev.live", &sch.type, &o);
+	hg_sub *s = hg_sub_open_from("ev.live", NULL, HG_OLDEST);
+	CHECK(p && s);
+	if (!p || !s)
+		return;
+	for (uint64_t v = 1; v <= 3; v++) {
+		CHECK_EQ_INT(hg_publish(p, &v, sizeof v, 0), 0);
+		sleep_ms(3);
+	}
+	struct hg_topic_meta m;
+	CHECK_EQ_INT(hg_sub_meta(s, &m), 0);
+	struct hgr_header h;
+	hgr_header_init(&h, &m, text, (uint32_t)strlen(text), HGR_FULL, 1, "full", "s", 0);
+	char path[600];
+	path_of(path, sizeof path, "ev.live.hgr");
+	struct hgr_writer w;
+	CHECK_EQ_INT(hgr_create(&w, path, &h), 0);
+	uint64_t pub[4] = { 0 }, buf[2];
+	struct hg_info info;
+	while (hg_next(s, buf, sizeof buf, &info) == HG_MSG) {
+		struct hgr_record r;
+		hgr_record_init(&r, &info, 0, 0);
+		CHECK_EQ_INT(hgr_append(&w, &r, buf), 0);
+		if (info.seq <= 3)
+			pub[info.seq] = info.publish_ns;
+	}
+	hgr_close(&w);
+	struct hgr_reader rd;
+	CHECK_EQ_INT(hgr_open(&rd, path), 0);
+	struct hg_ds_source live = hg_ds_source_sub(s), file = hg_ds_source_file(&rd);
+	const uint64_t ask[] = { pub[1] - 1, pub[1], pub[1] + 1000000, pub[2] - 1, pub[2], pub[3] - 1, pub[3], UINT64_MAX };
+	const uint64_t want[] = { 0, 1, 1, 1, 2, 2, 3, 3 };
+	for (size_t i = 0; i < sizeof ask / sizeof ask[0]; i++) {
+		struct hg_info li, fi;
+		enum hg_result lr = live.find_stamp(live.ctx, ask[i], buf, sizeof buf, &li);
+		enum hg_result fr = file.find_stamp(file.ctx, ask[i], buf, sizeof buf, &fi);
+		CHECK_EQ_INT(lr, fr);
+		CHECK_EQ_INT(lr, want[i] ? HG_MSG : HG_GONE);
+		CHECK_EQ_INT(li.seq, want[i]);
+		CHECK_EQ_INT(fi.seq, want[i]);
+	}
+	hgr_reader_close(&rd);
+	hg_sub_close(s);
+	hg_pub_close(p);
+}
+
 int main(void)
 {
 	rec_setup("hgr");
@@ -306,6 +364,7 @@ int main(void)
 	RUN_TEST(test_meta_and_cut_off);
 	RUN_TEST(test_partial_record_cut_back);
 	RUN_TEST(test_find_stamp_uses_publish_without_stamp);
+	RUN_TEST(test_find_stamp_live_and_file_agree);
 	rec_teardown();
 	TEST_MAIN_END();
 }

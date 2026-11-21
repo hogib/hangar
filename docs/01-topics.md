@@ -309,7 +309,9 @@ pairer ([06-recorder](06-recorder.md#live-the-pairer)): a message no longer in t
 ring, or never in it (a seq a mirrored topic does not have), returns `HG_GONE`.
 `hg_find_stamp` searches the ring from the newest seq back, checking each slot's `seq`
 as `hg_next` does and passing over seqs not in the ring, assuming stamps rise with
-sequence numbers, which a writer must keep.
+sequence numbers, which a writer must keep. A message published with stamp 0 is
+searched by its `publish_ns`, as a recording of it is
+([06-recorder](06-recorder.md#joins)).
 
 A fresh subscription starts at the newest message: its first `hg_next` or `hg_latest`
 returns the message that is newest when it is called, with no gap counted for anything

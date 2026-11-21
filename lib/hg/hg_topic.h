@@ -195,6 +195,8 @@ enum hg_result hg_skip(hg_sub *s);
 /* Random access: HG_GONE when seq is not in the ring. Neither moves hg_next. */
 enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len,
 			   struct hg_info *info);
+/* The newest message stamped at or before t_ns: by its stamp_ns, or by its
+ * publish_ns when the stamp is 0 (hgr_find_stamp's rule; docs/06 "Joins"). */
 enum hg_result hg_find_stamp(hg_sub *s, uint64_t t_ns, void *buf, size_t buf_len,
 			     struct hg_info *info);
 /* Makes the message info describes the reference the next publishes record

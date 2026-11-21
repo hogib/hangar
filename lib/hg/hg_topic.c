@@ -2178,7 +2178,11 @@ enum hg_result hg_find_stamp(hg_sub *s, uint64_t t_ns, void *buf, size_t buf_len
 		return finish(s, info, a);
 	/* From the newest seq back to the oldest that can still be in the ring,
 	 * passing over seqs not in it; stamps rise with seqs, so the first one
-	 * at or before t is the answer. */
+	 * at or before t is the answer. A message's stamp is its stamp_ns, or
+	 * its publish_ns when that is 0 ("unknown"), as hgr_find_stamp reads a
+	 * recording of it (docs/06 "Joins"): taken raw, a 0 was at or before
+	 * every t and the newest message was the answer whatever was asked,
+	 * live, while the offline build joined by publish time. */
 	uint64_t W = atomic_load_explicit(&s->h->write_seq, memory_order_acquire);
 	uint64_t k = (uint64_t)s->mask + 1;
 	/* Nothing of this file to read: none published yet, or a header whose
@@ -2191,7 +2195,7 @@ enum hg_result hg_find_stamp(hg_sub *s, uint64_t t_ns, void *buf, size_t buf_len
 	uint64_t lo = W - s->first >= k ? W - k + 1 : s->first + 1;
 	for (uint64_t n = W; n >= lo && n > 0; n--) {
 		int r = read_slot(s, n, buf, buf_len, info);
-		if (r > 0 && info->stamp_ns <= t_ns) {
+		if (r > 0 && (info->stamp_ns ? info->stamp_ns : info->publish_ns) <= t_ns) {
 			info->seq = n;
 			return finish(s, info, HG_MSG);
 		}

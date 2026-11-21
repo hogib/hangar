@@ -435,7 +435,19 @@ many were available (fewer at the start of a stream or after a gap).
 `provenance` pairs a module's inputs with its output: what the module computed. `asof`
 pairs things no module connected: the command the gate sent with the state the vehicle
 was in; a later message with an earlier one, for prediction (positive offsets, which
-make the row wait). Stamps are `stamp_ns`, or `publish_ns` for a message without one.
+make the row wait).
+
+**Stamps.** For an `asof` join a message's stamp is its `stamp_ns`, or its `publish_ns`
+when `stamp_ns` is 0 (a message published without a stamp:
+[01-topics](01-topics.md#slot-header)); the anchor's time is read the same way. The
+part joined is the message with the highest sequence number among those whose stamp
+is at or before *anchor time + offset*. The live join (`hg_find_stamp`, over the ring)
+and the offline one (`hgr_find_stamp`, over the file) apply this one rule, so a topic
+published without stamps (`policy.<name>.active`, a `.params` topic) joins by publish
+time in both. The rule supposes what [01-topics](01-topics.md#reading) asks of every
+writer, that a topic's stamps do not go back as its sequence numbers rise; on a topic
+that breaks it the two searches may pick different messages
+([Offline](#offline-the-same-rows-from-a-recording)).
 
 **Lateness.** A message is published some time after it is stamped, and the pairer
 reads it later still. Live, the pairer joins an `asof` part once *anchor publish time +

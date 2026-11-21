@@ -210,6 +210,43 @@ static void test_read_seq_and_find_stamp(void)
 	hg_pub_close(p);
 }
 
+// A message published with stamp 0 ("unknown", docs/01) is searched by its
+// publish time, as a recording of it is (hgr_find_stamp) and as docs/06
+// "Joins" reads stamps. Compared raw, 0 was at or before every t and the
+// newest message in the ring was the answer whatever was asked.
+static void test_find_stamp_without_stamp(void)
+{
+	hg_pub *p = open_words("ps.nostamp", 16);
+	hg_sub *s = hg_sub_open("ps.nostamp", WORDS_TYPE);
+	uint64_t pub[4] = { 0 };
+	for (uint64_t n = 1; n <= 3; n++) {
+		fill(buf, n);
+		CHECK_EQ_INT(hg_publish(p, buf, sizeof buf, 0), 0);
+		CHECK_EQ_INT(hg_read_seq(s, n, buf, sizeof buf, &info), HG_MSG);
+		CHECK_EQ_INT(info.stamp_ns, 0);
+		pub[n] = info.publish_ns;
+		sleep_ms(2);
+	}
+	CHECK(pub[1] < pub[2] && pub[2] < pub[3]);
+	CHECK_EQ_INT(hg_find_stamp(s, pub[1] + (pub[2] - pub[1]) / 2, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 1);
+	CHECK(intact(buf, &info));
+	CHECK_EQ_INT(hg_find_stamp(s, pub[2], buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 2);
+	CHECK_EQ_INT(hg_find_stamp(s, UINT64_MAX, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 3);
+	CHECK_EQ_INT(hg_find_stamp(s, pub[1] - 1, buf, sizeof buf, &info), HG_GONE);
+	// A stamped message among them is searched by its stamp.
+	fill(buf, 4);
+	CHECK_EQ_INT(hg_publish(p, buf, sizeof buf, pub[3] + 1), 0);
+	CHECK_EQ_INT(hg_find_stamp(s, pub[3] + 1, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 4);
+	CHECK_EQ_INT(hg_find_stamp(s, pub[3], buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 3);
+	hg_sub_close(s);
+	hg_pub_close(p);
+}
+
 static void test_odd_seq_from_dead_writer(void)
 {
 	// A writer that died mid-publish left slot 10 (message 11) odd and, in
@@ -413,6 +450,7 @@ int main(void)
 	RUN_TEST(test_slack);
 	RUN_TEST(test_late_joiner_starts_at_newest);
 	RUN_TEST(test_read_seq_and_find_stamp);
+	RUN_TEST(test_find_stamp_without_stamp);
 	RUN_TEST(test_odd_seq_from_dead_writer);
 	RUN_TEST(test_closed);
 	RUN_TEST(test_types_and_introspection);
