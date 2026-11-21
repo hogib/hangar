@@ -250,7 +250,8 @@ Run on loopback only (two roots, two ports, the lab profiles' real modules;
 `tools/rov/rehearse.sh`, 2026-11-21): the link up, `topside_mavlink` `link up`, `hangar
 call safety.check` answered across, armed and disarmed from the topside with the fake
 ArduSub on the serial line, and with the topside stopped an arm on the vehicle refused
-once its bridge had called the link lost (about 3 s; before that it is still accepted).
+once its bridge had called the link lost (about 3 s). Since then the safety module
+refuses earlier: 1.5 s after the last packet, half of `tether_timeout` (its suite).
 Not yet on the tether.
 
 ## Results, 2026-11-19

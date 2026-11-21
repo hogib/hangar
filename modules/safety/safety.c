@@ -725,6 +725,11 @@ static int checklist(uint64_t now, char *detail, size_t len)
 			FAIL("%s %s", link_topic, link_state_name(TE.link.state));
 		else if (tether_lost(now, why))
 			FAIL("%s", why);
+		/* The bridge says `up` for its own 3 s after the last packet. An
+		 * arm on what is left of tether_timeout would be ended by the
+		 * trigger a moment later: a packet within half of it, or no arm. */
+		else if (now > TE.contact_ns && now - TE.contact_ns >= mod_s_to_ns(P.tether_timeout) / 2)
+			FAIL("tether: no packet from the topside for %.1f s", (double)(now - TE.contact_ns) / 1e9);
 	}
 	if (have_autopilot) {
 		if (!IN.have_ap)

@@ -54,8 +54,10 @@ Files: `mavlink.module`, `topside_mavlink.module`, the example `mavlink.conf`,
   neutral input is no thrust, and because phase 1's `surface` and `hold` reach the
   thrusters as `MANUAL_CONTROL` and nothing else: a module that stopped sending would
   hand the vehicle to ArduSub's own ground-station failsafe in place of hangar's
-  action. docs/07 and docs/10 ask for that stop at `tether_timeout`; it is not built
-  ("Until the bridge" below).
+  action. That is the decision (2026-11-21; docs/07 and docs/10 asked for a stop at
+  `tether_timeout` before): with `surface` or `hold`, ArduSub's ground-station
+  failsafe stands behind a dead module, not behind a tether lost with the module
+  alive.
 - `mavlink.arm` (Allow `safety`): refused unless the newest `safety.state` is fresh and
   says `arming`, ArduSub is disarmed and in MANUAL, and `params` is 1; otherwise
   `MAV_CMD_COMPONENT_ARM_DISARM`, `accepted`, and the `PreArm:`/`Arm:` texts collected
@@ -315,7 +317,7 @@ pseudo-terminal.
   not stop `MANUAL_CONTROL` at `tether_timeout` and does not subscribe to
   `safety.params`. Marked `until the bridge` in the code and the manifests. What the
   vehicle module sends on a lost tether instead is in "The vehicle's module" above,
-  and `test_tether` of the chain suite pins it. Whether to build the stop is open: it
+  and `test_tether` of the chain suite pins it. The stop will not be built: it
   only matters with `action_tether` `surface` or `hold`, and there it would replace
   hangar's action with ArduSub's `FS_GCS_ENABLE` action, since both cannot drive.
 - The topics crossing the tether (`safety.state`, `ardusub.state`, `nav.*`,

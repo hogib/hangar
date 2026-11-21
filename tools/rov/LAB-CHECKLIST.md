@@ -110,7 +110,7 @@ With the bridge the trigger is on: arming needs the link up. Stay in step 3's se
 
 | | Do | Pass |
 |---|---|---|
-| ☐ | Link down (stop the laptop's topside: `BRIDGE=1 tools/rov/rov.sh topside down`), **wait until the Pi's `bridge` line in `lab.sh status` no longer says `up`** (about 3 s), then try to arm on the Pi: `hangar call safety.arm` | Refused: `bridge.vehicle.link connecting`. (In the 3 s before the vehicle's bridge calls the link lost, an arm is still accepted: seen in the rehearsal. Write down whether the tether trigger then ends it) |
+| ☐ | Link down (stop the laptop's topside: `BRIDGE=1 tools/rov/rov.sh topside down`), wait 2 s, then try to arm on the Pi: `hangar call safety.arm` | Refused: `tether: no packet from the topside for … s` (from 1.5 s after the last packet, half of `tether_timeout`), and `bridge.vehicle.link connecting` once the Pi's bridge has called the link lost (about 3 s) |
 | ☐ | Topside up again (`BRIDGE=1 tools/rov/rov.sh topside up`; `lab.sh status` shows the link), arm, then **unplug the tether** at the laptop | Neutral failsafe and ArduSub disarmed about 3 s after the unplug (`tether_timeout`). Time it |
 | ☐ | Plug in again; when the link is up, `hangar call safety.clear` | Cleared; arming works again. Before the link is back, `clear` is refused |
 | ☐ | Armed, kill the **vehicle's** bridge: on the Pi `pkill -KILL -f "[h]angar-bridge"` | Neutral within about 0.3 s (the `input` trigger: the link topic went stale). The manager restarts the bridge; when the link is up, `clear` |

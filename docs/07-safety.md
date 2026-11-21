@@ -54,7 +54,10 @@ char reason[64]       # why: a refused arm, ArduSub's refusal, a trigger's cause
 is `ready` (from `hangar.vehicle.modules`, which also means its rated topics are
 fresh), no failsafe trigger is active, `vehicle.leak` is fresh and dry,
 `power.battery` is fresh and above `battery_min`, and `bridge.vehicle.link` is fresh
-and `up` ([The tether](#failsafe); not on a machine without a bridge, below).
+and `up` with a packet from the topside within half of `tether_timeout`
+([The tether](#failsafe); not on a machine without a bridge, below). Half, because
+the bridge says `up` for its own 3 s after the last packet: an arm in that time
+would be ended by the `tether` trigger a moment later.
 In phase 1 it also needs ArduSub disarmed, in MANUAL, and reporting the parameters
 `hangar ardusub-setup` set (`FS_*`, the joystick gains, the button functions,
 `SYSID_MYGCS`), as the vehicle's `mavlink` module reads them
@@ -449,20 +452,20 @@ not there to act: ground station lost, leak and battery, set by `hangar ardusub-
 and checked at every arm. The vehicle's `mavlink` module sends no `HEARTBEAT` under the
 ground station's id; its `MANUAL_CONTROL`, sent under that id at 50 Hz, is the contact
 ArduSub's GCS failsafe watches, so that failsafe acts `FS_GCS_TIMEOUT` after the module
-stops sending: when it dies, and when it stops on purpose, once `bridge.vehicle.link`
-has reported no packet from the topside for `tether_timeout`
-([10-mavlink](10-mavlink.md#arming-and-failsafe)). On tether loss it therefore stands
-behind hangar's `tether` trigger, whatever hangar did. *As built (2026-11-21): the
-safety module's `tether` trigger reads the link; the `mavlink` module does not yet
-stop `MANUAL_CONTROL` at `tether_timeout` (`modules/mavlink/README.md`, "Until the
-bridge"): it goes on at 50 Hz with what the gate hands it. With the default action,
-`neutral`, that is neutral input and a disarm, and nothing more is needed; with
-`action_tether` set to `surface` or `hold` it is the mux's command with ArduSub armed,
-and ArduSub's GCS failsafe does not stand behind the trigger until the module stops.
-Stopping would also end hangar's own `surface` or `hold`, which reach the thrusters as
-`MANUAL_CONTROL` and nothing else, and leave the action to `FS_GCS_ENABLE`: the two
-are alternatives, not layers. The chain suite's `test_tether` pins what is sent in
-both cases.*
+stops sending, which is when it dies
+([10-mavlink](10-mavlink.md#arming-and-failsafe)).
+
+**On a lost tether the module does not stop** (decided 2026-11-21; an earlier version
+of this page had it stop `MANUAL_CONTROL` at `tether_timeout`, to put ArduSub's GCS
+failsafe behind hangar's `tether` trigger). It goes on at 50 Hz with what the gate
+hands it. With the default action, `neutral`, that is neutral input and a disarm, and
+ArduSub's failsafe would add nothing. With `action_tether` set to `surface` or `hold`
+it is the mux's command with ArduSub armed: in phase 1 those actions reach the
+thrusters as `MANUAL_CONTROL` and nothing else, so a module that stopped would end
+hangar's action and leave the vehicle to `FS_GCS_ENABLE`. The two are alternatives,
+not layers, and hangar's is kept. What it costs: with `surface` or `hold`, ArduSub's
+GCS failsafe stands behind a dead module, not behind a tether lost with the module
+alive. The chain suite's `test_tether` pins what is sent in both cases.
 
 If the vehicle's `mavlink` module dies, its `Neutral` command sends ArduSub neutral
 manual control and a disarm, and ArduSub, no longer hearing from its ground station,
@@ -506,9 +509,9 @@ recorded. None is optional.
 6. **The tether pulled**, in `manual` with a stick held: the pilot's command drops to
    zero within `pilot.wrench`'s `StaleAfter`, and the `tether` failsafe fires at
    `tether_timeout`. Pulled again with the `tether` action set to `surface`, so that
-   ArduSub stays armed: ArduSub's GCS failsafe acts `FS_GCS_TIMEOUT` after the module
-   stops sending manual control. *(As built the module does not stop: the second half
-   shows `surface` driven by hangar and no GCS failsafe; [Phase 1](#phase-1-ardusub-drives-the-thrusters).)*
+   ArduSub stays armed: the mux's `surface` command goes on reaching ArduSub as manual
+   control, and ArduSub's GCS failsafe does not act
+   ([Phase 1](#phase-1-ardusub-drives-the-thrusters)).
 7. **A policy not promoted** producing large commands: nothing reaches the thrusters.
 8. **Pilot override** during `assisted` and `residual:<name>`: the pilot's axis wins at
    once.

@@ -1244,6 +1244,23 @@ static void test_tether(void)
 	pump(300);
 	clear_ok();
 	CHECK_EQ_INT(last_state.triggers, 0);
+	/* The link still says `up` and its last packet is 600 ms old (the bridge
+	 * calls a link lost only after its own 3 s): no arm on what is left of
+	 * tether_timeout. A packet within half of it, and the arm passes. */
+	link_say(1, 3, 1);
+	pump(600);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "0") == 0);
+	CHECK_EQ_INT(call("arm"), 1);
+	CHECK(strstr(cli_out, "HG_E_REFUSED") != NULL && strstr(cli_out, "tether: no packet from the topside for") != NULL);
+	if (!strstr(cli_out, "tether: no packet"))
+		printf("    arm: %s\n", cli_out);
+	pump(100);
+	CHECK_EQ_INT(last_state.state, 0);
+	link_say(1, 3, 0);
+	pump(300);
+	CHECK_EQ_INT(call("check"), 0);
+	CHECK(strcmp(cli_field(cli_out, "ok"), "1") == 0);
 	/* Disarmed, a lost tether is no failsafe (a vehicle on deck with the
 	 * topside off), for any length of time; it is a refused arm. */
 	link_say(1, 1, 1);

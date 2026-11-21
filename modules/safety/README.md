@@ -24,7 +24,9 @@ arms, disarms, enters failsafe and publishes `safety.state`. Binary `hangar-safe
 - The checklist: every module of `required` ready in `hangar.vehicle.modules`, no
   trigger active, `vehicle.leak` fresh and dry, `power.battery` fresh and above
   `battery_min`, `nav.depth` fresh, `bridge.vehicle.link` fresh and `up` with a packet
-  from the topside within `tether_timeout` (with `tether_enabled`), and, with an
+  from the topside within half of `tether_timeout` (with `tether_enabled`: the bridge
+  says `up` for its own 3 s after the last packet, and an arm in that time would be
+  ended by the trigger a moment later), and, with an
   autopilot behind the actuators,
   `ardusub.state` fresh, disarmed, in MANUAL, with `params` 1. A refusal names the
   first check that failed; `check` names them all.

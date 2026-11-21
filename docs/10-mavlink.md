@@ -114,14 +114,12 @@ deployed version). The `mavlink` module is that ground station: it sends
 `MANUAL_CONTROL` under that id, and **no `HEARTBEAT`**. ArduSub counts
 `MANUAL_CONTROL` from that id as contact with its ground station and as pilot input,
 so its ground-station and pilot-input failsafes fire `FS_GCS_TIMEOUT` after the module
-stops sending: when the module dies, and when it stops `MANUAL_CONTROL` on purpose,
-once `bridge.vehicle.link` has reported no packet from the topside for the safety
-module's `tether_timeout` (from `safety.params`). On tether loss ArduSub therefore acts
-behind hangar's `tether` trigger, whatever hangar did. *As built (2026-11-21) the stop
-on purpose is not: the module keeps sending at 50 Hz after the `tether` trigger,
-neutral and a disarm with the default action, the mux's command with ArduSub armed
-with `surface` or `hold` (`modules/mavlink/README.md`, "The vehicle's module";
-[07-safety](07-safety.md#phase-1-ardusub-drives-the-thrusters)).*
+stops sending, which is when the module dies. On a lost tether it does not stop
+(decided 2026-11-21): it keeps sending at 50 Hz after the safety module's `tether`
+trigger, neutral and a disarm with the default action, the mux's command with ArduSub
+armed with `surface` or `hold`, since those actions reach the thrusters as
+`MANUAL_CONTROL` alone (`modules/mavlink/README.md`, "The vehicle's module";
+[07-safety](07-safety.md#phase-1-ardusub-drives-the-thrusters)).
 
 ### ArduSub's parameters
 
