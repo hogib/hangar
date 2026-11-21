@@ -505,7 +505,8 @@ Fixed size, from the spec:
 u64 anchor_seq
 u64 anchor_stamp_ns
 u8  boot_id[16]      # the boot that numbered the anchor: its topic's origin_boot,
-                     # or this machine's boot id for a local anchor
+                     # or, for a local anchor, the boot id of the machine it was
+                     # published on (below)
 u32 missing          # bit i: part i missing
 u32 flags            # bit 0 reset: recurrent state starts over before this row;
                      # bit 1 masked: the row failed Where;
@@ -530,7 +531,13 @@ window that `count` does not fill. A policy hands its model the same bytes for a
 missing input ([09-learning](09-learning.md#features-at-run-time)).
 
 `boot_id` and `anchor_seq`, with the anchor's topic id, identify the anchor message
-across reboots and across the tether ([08-bridge](08-bridge.md#mirrored-topics)). A
+across reboots and across the tether ([08-bridge](08-bridge.md#mirrored-topics)). For
+a local anchor (`origin_boot` all zero) the pairer writes the boot id of the machine it
+runs on, and the offline build the one the session was recorded on, `BootId` in the
+session's `session.ini`, never that of the machine the build runs on: the same 16
+bytes in both rows wherever and whenever the build is run. A session whose
+`session.ini` is missing or names no `BootId` builds rows with `boot_id` zero, and the
+build says so. A
 part's `seq` is in its own topic's numbering, whose boot is that topic's
 `origin_boot` in the recording. `emitted_ns` is the same value live and offline, since
 it follows from the anchor's `publish_ns` and the spec; it is what the offline build

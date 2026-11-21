@@ -292,7 +292,11 @@ each part value at the offsets of the type it was published with.
 - `Sink=` (deviation 2) stands in for the bridge's delivery of `dataset.<name>` to
   the topside; the topic itself is published as docs/06 says.
 - Epochs in the build (deviation 10).
-- `boot_id` is the anchor topic's `origin_boot` when set, this machine's otherwise;
-  only the second case is exercised.
+- `boot_id` is the anchor topic's `origin_boot` when set; otherwise this machine's
+  live, and offline the session's (`BootId` in `session.ini`: the build ran on the
+  recording machine's boot id until 2026-11-21, so rows built after a reboot or on the
+  topside differed from the live ones in these 16 bytes, and sessions of different
+  boots got one id; `test_build_takes_the_sessions_boot`). Only the local case is
+  exercised.
 - The trainer's side (`hangar.stream`, the PyTorch dataset) is docs/09's and not here;
   `python/hangar/dataset.py` reads the rows and the spec.

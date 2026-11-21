@@ -194,6 +194,37 @@ static void close_session(const struct hg_ds_spec *spec, struct part_file *ancho
 			hgr_reader_close(&parts[i].r);
 }
 
+/* The boot the session was recorded on: BootId= of <session>/session.ini, 32
+ * hex digits (the recorder writes it; a black-box dump's has it too). 0, or
+ * -1 when the file is not there or names none. */
+static int session_boot(const char *session, unsigned char boot[16])
+{
+	char path[700], line[512];
+	bfmt(path, sizeof path, "%s/session.ini", session);
+	FILE *f = fopen(path, "re");
+	if (!f)
+		return -1;
+	int rc = -1;
+	while (rc < 0 && fgets(line, sizeof line, f)) {
+		if (strncmp(line, "BootId=", 7) != 0)
+			continue;
+		const char *p = line + 7;
+		int k = 0;
+		for (; k < 32; k++) {
+			int c = p[k], v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+				       c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+			if (v < 0)
+				break;
+			boot[k / 2] = (unsigned char)(k % 2 ? boot[k / 2] | v : v << 4);
+		}
+		if (k == 32 && (p[32] == '\n' || p[32] == '\r' || p[32] == 0))
+			rc = 0;
+		break;
+	}
+	fclose(f);
+	return rc;
+}
+
 /* ---- build ---------------------------------------------------------------------- */
 
 static int cmd_build(int argc, char **argv)
@@ -238,14 +269,22 @@ static int cmd_build(int argc, char **argv)
 	unsigned char *scratch = malloc(rt.scratch_bytes + 8);
 	if (!row || !scratch)
 		return dfail("out of memory");
+	/* The rows' boot_id is the boot that numbered the anchor (docs/06 "The
+	 * row"): the header's origin_boot for a mirrored topic; for a local one
+	 * the boot the session was recorded on, which session.ini names. Not
+	 * this machine's: the build runs after a reboot, or on the topside, and
+	 * the live rows carry the vehicle's boot at the time. */
 	unsigned char boot[16];
 	int zero = 1;
 	for (int i = 0; i < 16; i++)
 		zero &= anchor.r.h->origin_boot[i] == 0;
-	if (zero)
-		hg_ds_boot_id(boot);
-	else
+	if (!zero) {
 		memcpy(boot, anchor.r.h->origin_boot, 16);
+	} else if (session_boot(session, boot) < 0) {
+		memset(boot, 0, 16);
+		fprintf(stderr, "hangar dataset: %s/session.ini names no BootId: the rows' boot_id is zero, not the boot "
+				"that recorded them\n", session);
+	}
 	struct hg_ds_source src[HG_DS_MAX_PARTS];
 	for (int i = 0; i < spec.n_parts; i++)
 		src[i] = hg_ds_source_file(&parts[i].r);

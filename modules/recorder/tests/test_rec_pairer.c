@@ -382,6 +382,71 @@ static void test_live_equals_offline(void)
 	hgr_reader_close(&off);
 }
 
+/* The rows' boot_id is the boot that numbered the anchor: for a local
+ * anchor the recording's, which session.ini names (BootId=), not the boot of
+ * the machine the build runs on. The comparison above cannot tell the two
+ * apart, since the suite builds on the boot that recorded; here the
+ * session's BootId is checked against the live rows, then rewritten to
+ * another boot's (a session built after a reboot, or on the topside) and
+ * built again. Before, every row carried the build machine's boot id. A
+ * session with no BootId builds rows with boot_id zero, and says so. */
+static void test_build_takes_the_sessions_boot(void)
+{
+	char ini[800], cmd[2400], out[8192], built[800];
+	rfmt(ini, sizeof ini, "%s/session.ini", session);
+	static char text[8192];
+	rfmt(text, sizeof text, "%s", read_file(ini));
+	char *b = strstr(text, "\nBootId=");
+	CHECK(b != NULL);
+	if (!b)
+		return;
+	b += 8;
+	unsigned char here[16], rec[16], other[16];
+	hg_ds_boot_id(here);
+	for (int i = 0; i < 16; i++) {
+		unsigned v = 0;
+		CHECK_EQ_INT(sscanf(b + 2 * i, "%2x", &v), 1);
+		rec[i] = (unsigned char)v;
+		other[i] = (unsigned char)(0xa0 + i);
+	}
+	CHECK(memcmp(rec, here, 16) == 0); /* recorded on this boot */
+	struct hgr_reader r;
+	CHECK_EQ_INT(hgr_open(&r, offline), 0);
+	CHECK(r.count > 0 && memcmp((const unsigned char *)hgr_payload_at(&r, 0) + 16, rec, 16) == 0);
+	hgr_reader_close(&r);
+	/* The same session, as if recorded on another boot. */
+	memcpy(b, "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", 32);
+	CHECK_EQ_INT(write_file(ini, text), 0);
+	rfmt(built, sizeof built, "%s/offline-other.hgr", R_root);
+	rfmt(cmd, sizeof cmd, "%s dataset build %s %s -o %s 2>&1", R_hangar, spec_path, session, built);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 0);
+	CHECK(strstr(out, "boot") == NULL); /* nothing to warn of */
+	CHECK_EQ_INT(hgr_open(&r, built), 0);
+	CHECK(r.count > 100);
+	int wrong = 0;
+	for (uint64_t i = 0; i < r.count; i++)
+		wrong += memcmp((const unsigned char *)hgr_payload_at(&r, i) + 16, other, 16) != 0;
+	CHECK_EQ_INT(wrong, 0);
+	hgr_reader_close(&r);
+	/* No BootId in session.ini: zero, with a warning; the build still succeeds. */
+	memcpy(b - 7, "Xoot", 4);
+	CHECK_EQ_INT(write_file(ini, text), 0);
+	CHECK_EQ_INT(run(out, sizeof out, cmd), 0);
+	CHECK(strstr(out, "names no BootId") != NULL);
+	CHECK_EQ_INT(hgr_open(&r, built), 0);
+	wrong = 0;
+	for (uint64_t i = 0; i < r.count; i++)
+		for (int k = 0; k < 16; k++)
+			wrong += ((const unsigned char *)hgr_payload_at(&r, i))[16 + k] != 0;
+	CHECK_EQ_INT(wrong, 0);
+	hgr_reader_close(&r);
+	memcpy(b - 7, "Boot", 4);
+	memcpy(b, "", 0);
+	for (int i = 0; i < 16; i++)
+		rfmt(cmd, sizeof cmd, "%02x", rec[i]), memcpy(b + 2 * i, cmd, 2);
+	CHECK_EQ_INT(write_file(ini, text), 0);
+}
+
 /* Exit status 78: a spec that does not exist, a bad pairer.conf, and a
  * manifest (wiring) whose dataset outputs differ from the configuration. */
 static void test_refusals(void)
@@ -650,6 +715,7 @@ int main(void)
 	RUN_TEST(test_live_rows_and_status);
 	RUN_TEST(test_stop_and_build);
 	RUN_TEST(test_live_equals_offline);
+	RUN_TEST(test_build_takes_the_sessions_boot);
 	RUN_TEST(test_refusals);
 	RUN_TEST(test_pairs_long_inputs);
 	RUN_TEST(test_damaged_recordings);
