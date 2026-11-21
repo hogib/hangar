@@ -4,7 +4,8 @@ Everything below runs on the laptop, from a checkout of hangar, with the laptop 
 vehicle's tether (Fathom-X: the laptop is 192.168.2.1, the Pi 192.168.2.10).
 `tools/rov/lab.sh` drives the Pi over SSH and writes down what it changes (on the laptop,
 with a copy on the Pi), so that `down` can put it all back. The values for the lab's BlueROV2 are in
-`tools/rov/lab.conf`; what is behind each step is in `tools/rov/README.md`.
+`tools/rov/lab.conf`; what is behind each step is in `tools/rov/README.md`. What to try
+at the next visit, in order, is in [LAB-CHECKLIST.md](LAB-CHECKLIST.md).
 
 **Props off** until the arm and disarm work on the bench (README, "A session, in order").
 
