@@ -12,3 +12,4 @@ u64  misses          # this part: joins that found no message
 u64  latency_ns      # this part: the largest latency measured, from publication to the join
 u32  slots           # this part's ring depth
 u32  needed_slots    # the depth the measured latency needs: (Slots - 1) / rate above it
+u64  closed_early    # rows published before their emitted_ns, because more than Pending anchors waited

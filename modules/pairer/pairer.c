@@ -56,7 +56,9 @@ struct dataset {
 	int pending_gap;
 	struct hg_ds_state state;
 	unsigned char boot[16];
-	uint64_t rows, dropped, masked, forced;
+	uint64_t rows, dropped, masked;
+	uint64_t forced;               /* rows closed before their emitted_ns: more than Pending anchors waited */
+	uint64_t forced_logged, forced_log_ns;
 	uint64_t misses[HG_DS_MAX_PARTS], latency_max[HG_DS_MAX_PARTS];
 	/* until the bridge: the rows also go to a file, where a test and a
 	 * topside without a bridge can read them. */
@@ -359,6 +361,25 @@ static void try_bind(struct dataset *d)
 	}
 	d->rt->schema.type.name = "dataset";
 	d->anchor_id = ai.topic_id;
+	/* Rows wait wait_ns for their emitted_ns: at the anchor's declared rate
+	 * that many of them wait at once, and two more for the pairer's own
+	 * latency. With fewer in Pending every row would be closed early, joined
+	 * with what had arrived by then and not what the build joins, unflagged:
+	 * refused here, where the number to set is known. (An event-topic anchor
+	 * declares no rate: its early closes are counted and logged, note_forced.) */
+	if (ai.rate_mhz && d->rt->wait_ns > 0) {
+		uint64_t need = ((uint64_t)d->rt->wait_ns / 1000u * ai.rate_mhz + 999999999u) / 1000000000u + 2;
+		if (need > (uint64_t)conf.pending) {
+			logf_("%s: its rows wait %lld ms, %llu of them at once at the %g Hz %s declares: Pending=%d holds "
+			      "fewer; set Pending=%llu or more in pairer.conf", d->name, (long long)(d->rt->wait_ns / 1000000),
+			      (unsigned long long)need - 2, ai.rate_mhz / 1000.0, d->spec.anchor, conf.pending,
+			      (unsigned long long)need);
+			char line[128];
+			bfmt(line, sizeof line, "%s needs Pending=%llu, has %d", d->name, (unsigned long long)need, conf.pending);
+			hg_status(line);
+			exit(78);
+		}
+	}
 	free(d->apayload);
 	free(d->scratch);
 	d->apayload = malloc(ai.type->payload_bytes + 8);
@@ -442,6 +463,20 @@ static int emit(struct dataset *d, struct pending *p, const char **which)
 	return 0;
 }
 
+/* A row was closed before its emitted_ns. Said at most once a second, with
+ * the count since the last line; pairer.status carries the total. */
+static void note_forced(struct dataset *d, uint64_t now, int at_exit)
+{
+	if (d->forced == d->forced_logged || (!at_exit && d->forced_log_ns && now - d->forced_log_ns < 1000000000u))
+		return;
+	logf_("%s: %llu rows closed before their emitted_ns, with the parts that had arrived: more than Pending=%d "
+	      "anchors waited (rows wait %lld ms). The build may join other messages for them, with no flag",
+	      d->name, (unsigned long long)(d->forced - d->forced_logged), conf.pending,
+	      (long long)(d->rt->wait_ns / 1000000));
+	d->forced_logged = d->forced;
+	d->forced_log_ns = now;
+}
+
 /* Pending rows whose wait is over, in order. */
 static void flush(struct dataset *d, uint64_t now, int all)
 {
@@ -488,6 +523,7 @@ static void read_anchor(struct dataset *d)
 			d->phead = (d->phead + 1) % d->pcap;
 			d->pcount--;
 			d->forced++;
+			note_forced(d, hg_now_ns(), 0);
 		}
 		struct pending *p = &d->pend[(d->phead + d->pcount) % d->pcap];
 		d->pcount++;
@@ -531,6 +567,7 @@ static void publish_status(void)
 			s.rows = d->rows;
 			s.dropped = d->dropped;
 			s.masked = d->masked;
+			s.closed_early = d->forced;
 			if (i >= 0) {
 				bfmt(s.part, sizeof s.part, "%s", d->spec.parts[i].name);
 				s.misses = d->misses[i];
@@ -552,6 +589,11 @@ static void publish_status(void)
 		}
 		size_t l = strlen(line);
 		bfmt(line + l, sizeof line - l, "%s%s %llu rows", l ? "; " : "", d->name, (unsigned long long)d->rows);
+		if (d->forced) {
+			l = strlen(line);
+			bfmt(line + l, sizeof line - l, " (%llu closed early: Pending=%d)", (unsigned long long)d->forced,
+			     conf.pending);
+		}
 	}
 	hg_status(line);
 }
@@ -646,7 +688,9 @@ int main(int argc, char **argv)
 		for (int k = 0; k < conf.n; k++)
 			if (D[k].bound && D[k].pcount) {
 				uint64_t e = D[k].pend[D[k].phead].emitted_ns;
-				int ms = e > now ? (int)((e - now) / 1000000u) : 0;
+				/* Rounded up: cut to whole milliseconds, the last fraction of
+				 * one before the row was due was a loop of zero waits. */
+				int ms = e > now ? (int)((e - now + 999999u) / 1000000u) : 0;
 				if (ms < timeout)
 					timeout = ms;
 			}
@@ -701,6 +745,10 @@ int main(int argc, char **argv)
 		if (!d->bound)
 			continue;
 		flush(d, 0, 1);
+		if (d->forced) {
+			note_forced(d, hg_now_ns(), 1);
+			logf_("%s: %llu rows in all were closed before their emitted_ns", d->name, (unsigned long long)d->forced);
+		}
 		if (!d->bound)
 			continue;
 		if (d->sink_open)

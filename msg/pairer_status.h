@@ -18,9 +18,10 @@ typedef struct pairer_status {
     uint64_t latency_ns;    // this part: the largest latency measured, from publication to the join
     uint32_t slots;         // this part's ring depth
     uint32_t needed_slots;  // the depth the measured latency needs: (Slots - 1) / rate above it
+    uint64_t closed_early;  // rows published before their emitted_ns, because more than Pending anchors waited
 } pairer_status;
 extern const struct hg_type PAIRER_STATUS_TYPE;   // defined in msg/pairer_status.c, also generated
-_Static_assert(sizeof(struct pairer_status) == 136, "layout");
+_Static_assert(sizeof(struct pairer_status) == 144, "layout");
 _Static_assert(offsetof(struct pairer_status, dataset) == 0, "layout");
 _Static_assert(offsetof(struct pairer_status, part) == 32, "layout");
 _Static_assert(offsetof(struct pairer_status, index) == 80, "layout");
@@ -33,4 +34,5 @@ _Static_assert(offsetof(struct pairer_status, misses) == 112, "layout");
 _Static_assert(offsetof(struct pairer_status, latency_ns) == 120, "layout");
 _Static_assert(offsetof(struct pairer_status, slots) == 128, "layout");
 _Static_assert(offsetof(struct pairer_status, needed_slots) == 132, "layout");
+_Static_assert(offsetof(struct pairer_status, closed_early) == 136, "layout");
 #endif

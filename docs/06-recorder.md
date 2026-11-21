@@ -621,9 +621,20 @@ policy does; the others at the row's `emitted_ns` ([Joins](#joins)). It applies
 `Where` and `Filter`, sets the row's flags, and publishes each row on
 `dataset.<name>`, an event topic.
 
+The rows waiting for their `emitted_ns` are held in a buffer of `Pending` rows per
+dataset (`[Pairer]` `Pending=`, 256 by default, 4 to 65536). A spec whose wait, at the
+anchor's declared rate, needs more than that (wait × rate, and two rows for the
+pairer's own latency) is refused when the dataset is bound, exit status 78, with the
+number to set. An event-topic anchor declares no rate; when more of its messages wait
+than `Pending` holds, the oldest row is closed at once with the parts that have
+arrived. Such a row was joined before its `emitted_ns` and the offline build may join
+a later message for it, published before `emitted_ns`, so that neither row carries a
+flag: the pairer counts these rows in `pairer.status` (`closed_early`, and on its
+status line) and logs them, at most once a second and in total when it stops.
+
 A part that has already left its ring cannot be joined: the row marks it missing, and
 the pairer counts it. Its status (`pairer.status`) gives, for each dataset and part,
-the rows, the misses, and the part's measured latency: from the joined message's
+the rows, the rows closed early, the misses, and the part's measured latency: from the joined message's
 publication to the moment the pairer read it, its own wait included. From that it says
 how deep the part's ring must be, since `(Slots − 1) / rate` must exceed the latency
 (`cam.raw: detector latency 180 ms, ring holds 100 ms: needs 8 slots`).

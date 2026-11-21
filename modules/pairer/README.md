@@ -113,8 +113,12 @@ joins at once the parts that do not wait (provenance joins and asof joins with
 `offset + Lateness <= 0`) and queues the row; rows whose `emitted_ns` has passed have
 their other parts joined, are finished and published, in order, with the anchor's
 stamp. When more anchors are waiting than `Pending` holds, the oldest row closes
-early with what has arrived (counted, logged at exit). `pairer.status` carries, in a
-round a second, one message per dataset (rows, dropped, masked) and one per part
+early with what has arrived: counted in `pairer.status` (`closed_early`) and on the
+status line, logged at most once a second and in total at exit; a spec whose wait at
+the anchor's declared rate needs more than `Pending` is refused at bind (78) with the
+number to set (`test_pending_overflow`; until 2026-11-21 the count was kept and shown
+nowhere). `pairer.status` carries, in a
+round a second, one message per dataset (rows, dropped, masked, closed early) and one per part
 (misses, the largest latency from a message's publication to its join, the part's
 ring depth and the depth that latency needs, `(Slots - 1) / rate` above it, as a
 power of two).
@@ -249,8 +253,10 @@ each part value at the offsets of the type it was published with.
    code): the trainer's transport is the bridge, which does not exist, and the live
    rows had to be compared with the build's somewhere.
 3. **`Pending=`** bounds the rows waiting for their `emitted_ns`; docs/06 does not say
-   what happens when anchors arrive faster than rows close. The oldest row closes
-   early, with what has arrived, and the count is logged at exit.
+   what happens when anchors arrive faster than rows close (it does now: "Live: the
+   pairer"). The oldest row closes early, with what has arrived; the count is in
+   `pairer.status`, in the log and on the status line, and a rated anchor whose wait
+   needs more than `Pending` is refused at bind.
 4. **A row references its anchor message** when the wiring allows the reference (the
    anchor among the dataset output's `Inputs` or `Sources` in the manifest); unwired,
    or when it does not, the row is published without references. docs/06 does not

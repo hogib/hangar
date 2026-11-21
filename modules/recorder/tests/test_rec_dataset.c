@@ -165,6 +165,10 @@ static void test_spec_refusals(void)
 	refused("[Dataset]\nAnchor=a.b\nMissing=zero\n", "flag or drop");
 	refused("[Dataset]\nAnchor=a.b\nResetAfter=soon\n", "duration");
 	refused("[Dataset]\nAnchor=a.b\nLateness=-5ms\n", "duration");
+	/* Forms python/hangar/dataset.py was found to take (review 2026-11-21,
+	 * finding 20): this parser is the vehicle's, and so the rule. */
+	refused("[Dataset]\nAnchor=a.b\nResetAfter=-1ms\n", "duration");
+	refused("[Dataset]\nAnchor=a.b\n[Input x]\nJoin=provenance\nFields=y y\n", "listed twice");
 	refused("[Dataset]\nAnchor=a.b\nColour=red\n", "unknown key");
 	refused("[Dataset]\nAnchor=a.b\n[Output x]\n", "unknown section");
 	refused("[Dataset]\nAnchor=a.b\n[Input]\nJoin=provenance\n", "needs a part name");
@@ -186,6 +190,12 @@ static void test_spec_refusals(void)
 	/* The name itself. */
 	struct hg_ds_spec s;
 	char err[300];
+	/* A duration may have a fraction when it is a whole number of
+	 * nanoseconds (hg_parse_duration): 1.5s here as in Python. */
+	const char frac[] = "[Dataset]\nAnchor=a.b\nLateness=1.5s\n[Input x]\nJoin=asof:-0.5ms\n";
+	CHECK_EQ_INT(hg_ds_parse(frac, strlen(frac), "frac", &s, err, sizeof err), 0);
+	CHECK_EQ_INT(s.lateness_ns, 1500000000);
+	CHECK_EQ_INT(s.parts[0].offset_ns, -500000);
 	CHECK(hg_ds_parse(CLONE, strlen(CLONE), "Bad-Name", &s, err, sizeof err) < 0);
 	CHECK(hg_ds_parse(CLONE, strlen(CLONE), "", &s, err, sizeof err) < 0);
 	/* A file: the stem is the name, and it must end in .dataset. */

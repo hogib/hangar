@@ -708,6 +708,71 @@ static void test_part_retyped(void)
 	hgr_reader_close(&r);
 }
 
+/* More anchors waiting than Pending holds: the oldest row is closed before
+ * its emitted_ns, with what has arrived, so it may differ from the build's
+ * row with no flag in either. The pairer counts such rows in pairer.status
+ * (closed_early) and logs them, at most once a second and at exit; and it
+ * refuses to start (78) on a spec whose wait at the anchor's declared rate
+ * needs more than Pending, naming the number. Before, the count was kept
+ * and shown nowhere. */
+static void test_pending_overflow(void)
+{
+	char path[700], text[1024];
+	/* Rows wait 600 ms (asof:+500ms and the default Lateness); the anchor is
+	 * an event topic, so nothing is known at bind. */
+	rfmt(path, sizeof path, "%s/etc/hangar/datasets/crowded.dataset", R_root);
+	CHECK_EQ_INT(write_file(path, "[Dataset]\nAnchor=crowd.a\nAnchorRole=input\n\n"
+				      "[Input ahead]\nTopic=crowd.a\nJoin=asof:+500ms\nRole=label\n"), 0);
+	rfmt(path, sizeof path, "%s/etc/hangar/pairer-crowded.conf", R_root);
+	rfmt(text, sizeof text, "[Pairer]\nDatasets=crowded\nDatasetDir=%s/etc/hangar/datasets\nPending=4\n", R_root);
+	CHECK_EQ_INT(write_file(path, text), 0);
+	pid_t pid = spawn("pairer-crowded", NULL, R_pairer, path, (char *)NULL);
+	CHECK(wait_file_contains(log_path("pairer-crowded"), "1 datasets", 5000));
+	char toy[700];
+	rfmt(toy, sizeof toy, "%s/retype", R_toys);
+	/* 40 anchors 10 ms apart: ten times what Pending=4 holds for 600 ms. */
+	pid_t pub = spawn("crowd", NULL, toy, "--topic", "crowd.a", "--first", "u64 v", "--then", "u64 v", "--count", "20",
+			  "--gap-ms", "10", (char *)NULL);
+	CHECK_EQ_INT(wait_pid_ms(pub, 5000), 0);
+	hg_sub *st = hg_sub_open_from("pairer.status", &PAIRER_STATUS_TYPE, HG_OLDEST);
+	CHECK(st != NULL);
+	struct pairer_status ps;
+	struct hg_info info;
+	uint64_t early = 0, rows = 0, t0 = now_ms();
+	while (now_ms() - t0 < 3000 && rows < 40) {
+		while (hg_next(st, &ps, sizeof ps, &info) == HG_MSG)
+			if (strcmp(ps.dataset, "crowded") == 0 && !ps.part[0]) {
+				early = ps.closed_early;
+				rows = ps.rows;
+			}
+		sleep_ms(50);
+	}
+	CHECK_EQ_INT(rows, 40);
+	CHECK_EQ_INT(early, 36); /* all but the four that were still waiting when the anchors stopped */
+	CHECK(wait_file_contains(log_path("pairer-crowded"), "crowded: 36 rows closed before their emitted_ns", 2000) ||
+	      file_contains(log_path("pairer-crowded"), "rows closed before their emitted_ns"));
+	CHECK(file_contains(log_path("pairer-crowded"), "Pending=4"));
+	CHECK_EQ_INT(stop_child(pid), 0);
+	CHECK(file_contains(log_path("pairer-crowded"), "crowded: 36 rows in all were closed before their emitted_ns"));
+	if (st)
+		hg_sub_close(st);
+	/* The same wait on an anchor with a declared rate: known at bind, refused. */
+	rfmt(path, sizeof path, "%s/etc/hangar/datasets/crowded2.dataset", R_root);
+	CHECK_EQ_INT(write_file(path, "[Dataset]\nAnchor=crowd.r\nAnchorRole=input\n\n"
+				      "[Input ahead]\nTopic=crowd.r\nJoin=asof:+500ms\nRole=label\n"), 0);
+	rfmt(path, sizeof path, "%s/etc/hangar/pairer-crowded2.conf", R_root);
+	rfmt(text, sizeof text, "[Pairer]\nDatasets=crowded2\nDatasetDir=%s/etc/hangar/datasets\nPending=4\n", R_root);
+	CHECK_EQ_INT(write_file(path, text), 0);
+	pub = spawn("crowd-rated", NULL, toy, "--topic", "crowd.r", "--first", "u64 v", "--then", "u64 v", "--count", "100",
+		    "--gap-ms", "20", "--rate", "50", (char *)NULL);
+	pid = spawn("pairer-crowded2", NULL, R_pairer, path, (char *)NULL);
+	CHECK_EQ_INT(wait_pid_ms(pid, 5000), 78);
+	/* 600 ms at 50 Hz is 30 rows, and two for the pairer's own latency. */
+	CHECK(file_contains(log_path("pairer-crowded2"), "Pending=4"));
+	CHECK(file_contains(log_path("pairer-crowded2"), "Pending=32"));
+	stop_child(pub);
+}
+
 int main(void)
 {
 	rec_setup("pairer");
@@ -720,6 +785,7 @@ int main(void)
 	RUN_TEST(test_pairs_long_inputs);
 	RUN_TEST(test_damaged_recordings);
 	RUN_TEST(test_part_retyped);
+	RUN_TEST(test_pending_overflow);
 	RUN_TEST(test_unbound_does_not_spin); /* last: its pairer publishes pairer.status too */
 	if (rows_sub)
 		hg_sub_close(rows_sub);

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "pairer_status.h"
 
-static const struct hg_field pairer_status_fields[12] = {
+static const struct hg_field pairer_status_fields[13] = {
     {"dataset", HG_CHAR, 32, 0, ""},
     {"part", HG_CHAR, 48, 32, "the part's name; \"\" on the dataset's own line"},
     {"index", HG_U8, 1, 80, "position in this round"},
@@ -15,6 +15,7 @@ static const struct hg_field pairer_status_fields[12] = {
     {"latency_ns", HG_U64, 1, 120, "this part: the largest latency measured, from publication to the join"},
     {"slots", HG_U32, 1, 128, "this part's ring depth"},
     {"needed_slots", HG_U32, 1, 132, "the depth the measured latency needs: (Slots - 1) / rate above it"},
+    {"closed_early", HG_U64, 1, 136, "rows published before their emitted_ns, because more than Pending anchors waited"},
 };
 
 const struct hg_type PAIRER_STATUS_TYPE = {
@@ -34,10 +35,11 @@ const struct hg_type PAIRER_STATUS_TYPE = {
         "u64  latency_ns      # this part: the largest latency measured, from publication to the join\n"
         "u32  slots           # this part's ring depth\n"
         "u32  needed_slots    # the depth the measured latency needs: (Slots - 1) / rate above it\n"
+        "u64  closed_early    # rows published before their emitted_ns, because more than Pending anchors waited\n"
         ,
-    .schema_bytes = 819,
-    .hash = 0xf56c3772654381e4ull,   // FNV-1a 64 of the canonical form
-    .payload_bytes = 136,
-    .n_fields = 12,
+    .schema_bytes = 923,
+    .hash = 0x1c39421bbe2782d7ull,   // FNV-1a 64 of the canonical form
+    .payload_bytes = 144,
+    .n_fields = 13,
     .fields = pairer_status_fields,
 };
