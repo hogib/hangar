@@ -773,6 +773,60 @@ static void test_pending_overflow(void)
 	stop_child(pub);
 }
 
+/* A mirrored anchor whose sender rebooted: a new epoch, numbered by another
+ * boot. The rows of each epoch carry that epoch's boot id, and the first row
+ * of the new one carries reset. Before, the boot id was taken once, when the
+ * dataset was bound, and every later row carried the first sender's. */
+static void test_anchor_epoch_boot(void)
+{
+	char path[700], text[1024], dir[700];
+	rfmt(path, sizeof path, "%s/etc/hangar/datasets/epochs.dataset", R_root);
+	CHECK_EQ_INT(write_file(path, "[Dataset]\nAnchor=mir.a\nAnchorRole=input\n"), 0);
+	rfmt(dir, sizeof dir, "%s/sink-epochs", R_root);
+	mkdir_p(dir, 0755);
+	rfmt(path, sizeof path, "%s/etc/hangar/pairer-epochs.conf", R_root);
+	rfmt(text, sizeof text, "[Pairer]\nDatasets=epochs\nDatasetDir=%s/etc/hangar/datasets\nSink=%s\n", R_root, dir);
+	CHECK_EQ_INT(write_file(path, text), 0);
+	unsigned char boot_a[16], boot_b[16];
+	memset(boot_a, 0xa1, 16);
+	memset(boot_b, 0xb2, 16);
+	static struct hg_schema sch;
+	CHECK_EQ_INT(hg_schema_parse("u64 v\n", 6, &sch, NULL, 0), 0);
+	hg_pub *mir = hg_pub_open_mirror("mir.a", &sch.type, boot_a, 1, NULL);
+	CHECK(mir != NULL);
+	if (!mir)
+		return;
+	pid_t pid = spawn("pairer-epochs", NULL, R_pairer, path, (char *)NULL);
+	CHECK(wait_file_contains(log_path("pairer-epochs"), "epochs: 0 parts", 5000));
+	for (uint64_t s = 1; s <= 3; s++) {
+		CHECK_EQ_INT(hg_publish_seq(mir, s, 0, &s, sizeof s, hg_now_ns(), NULL, 0), 0);
+		sleep_ms(50);
+	}
+	sleep_ms(200);
+	hg_pub_close(mir);
+	mir = hg_pub_open_mirror("mir.a", &sch.type, boot_b, 1, NULL);
+	CHECK(mir != NULL);
+	for (uint64_t s = 1; s <= 3 && mir; s++) {
+		CHECK_EQ_INT(hg_publish_seq(mir, s, 0, &s, sizeof s, hg_now_ns(), NULL, 0), 0);
+		sleep_ms(50);
+	}
+	sleep_ms(300);
+	CHECK_EQ_INT(stop_child(pid), 0);
+	if (mir)
+		hg_pub_close(mir);
+	struct hgr_reader r;
+	rfmt(path, sizeof path, "%s/dataset.epochs.hgr", dir);
+	CHECK_EQ_INT(hgr_open(&r, path), 0);
+	CHECK_EQ_INT(r.count, 6);
+	for (uint64_t i = 0; i < r.count && i < 6; i++) {
+		const unsigned char *row = hgr_payload_at(&r, i);
+		CHECK_EQ_INT(r64(row, 0), i % 3 + 1);
+		CHECK(memcmp(row + 16, i < 3 ? boot_a : boot_b, 16) == 0);
+		CHECK_EQ_INT((r32(row, 36) & HG_DS_ROW_RESET) != 0, i % 3 == 0);
+	}
+	hgr_reader_close(&r);
+}
+
 int main(void)
 {
 	rec_setup("pairer");
@@ -786,6 +840,7 @@ int main(void)
 	RUN_TEST(test_damaged_recordings);
 	RUN_TEST(test_part_retyped);
 	RUN_TEST(test_pending_overflow);
+	RUN_TEST(test_anchor_epoch_boot);
 	RUN_TEST(test_unbound_does_not_spin); /* last: its pairer publishes pairer.status too */
 	if (rows_sub)
 		hg_sub_close(rows_sub);
