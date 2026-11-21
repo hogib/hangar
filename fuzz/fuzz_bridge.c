@@ -5,7 +5,13 @@
  * replay window), on_hello and the handshake's state, on_pong and the clock
  * estimate, on_data and the reliable stream's reassembly (drain_records), the
  * records on it (on_info, on_schema, on_message, and through them
- * hg_schema_parse and the mirrored topic's file), on_ack, on_beacon.
+ * hg_schema_parse and the mirrored topic's file), on_ack, on_beacon; and the
+ * files (docs/08 "Files"): the records of a file arriving (on_fbegin,
+ * on_fdata, on_fend, on_fabort) and, for a file being sent, the status the
+ * other side answers with (on_fstatus) and bridge.send itself (on_send).
+ * Whatever the peer names, nothing may appear on disk but under the
+ * directory of a [Files] section of this side, under a name that could be a
+ * file's, or the hidden name of a transfer under way (check_files).
  *
  * bridge.c is included whole, so the harness calls its static functions and
  * sets its state; nothing in the module was changed for it. Sends go to a
@@ -27,7 +33,7 @@
 #include "bridge.c"
 #undef main
 
-static char dir[256];
+static char dir[256], state[300];
 static uint64_t peer_seq;
 static const struct sockaddr_in from = { .sin_family = AF_INET, .sin_port = 0x1234, .sin_addr = { 0x0100007f } };
 
@@ -50,8 +56,77 @@ static void empty_dir(int all)
 	closedir(d);
 }
 
+/* The bridge's state directory: outbox/ and files/<dest>/, nothing else, and
+ * in a destination's directory only names a file may have and the hidden
+ * names of transfers. With wipe, emptied. */
+static void check_files(int wipe)
+{
+	static const char *top[] = { "outbox", "files", NULL }, *dests[] = { "w", "logs", NULL };
+	char p[700], q[1100];
+	struct dirent *e;
+	DIR *d = opendir(state);
+	while (d && (e = readdir(d))) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+			continue;
+		int known = 0;
+		for (int i = 0; top[i]; i++)
+			known |= !strcmp(e->d_name, top[i]);
+		FZ_CHECK(known);
+	}
+	if (d)
+		closedir(d);
+	snprintf(p, sizeof p, "%s/files", state);
+	d = opendir(p);
+	while (d && (e = readdir(d))) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+			continue;
+		int known = 0;
+		for (int i = 0; dests[i]; i++)
+			known |= !strcmp(e->d_name, dests[i]);
+		FZ_CHECK(known);
+	}
+	if (d)
+		closedir(d);
+	for (int i = 0; dests[i]; i++) {
+		int visible = 0;
+		snprintf(p, sizeof p, "%s/files/%s", state, dests[i]);
+		d = opendir(p);
+		while (d && (e = readdir(d))) {
+			if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+				continue;
+			int part = strncmp(e->d_name, ".part-", 6) == 0 && strlen(e->d_name) == 22;
+			FZ_CHECK(part || bc_file_name_ok(e->d_name));
+			visible += !part;
+			struct stat st;
+			snprintf(q, sizeof q, "%s/%s", p, e->d_name);
+			FZ_CHECK(lstat(q, &st) == 0 && S_ISREG(st.st_mode) && st.st_size <= (64 << 10));
+			if (wipe)
+				unlink(q);
+		}
+		if (d)
+			closedir(d);
+		FZ_CHECK(visible <= 2); /* MaxFiles=2 */
+	}
+	snprintf(p, sizeof p, "%s/outbox", state);
+	d = wipe ? opendir(p) : NULL;
+	while (d && (e = readdir(d))) {
+		snprintf(q, sizeof q, "%s/%s", p, e->d_name);
+		unlink(q);
+	}
+	if (d)
+		closedir(d);
+}
+
 static void cleanup(void)
 {
+	static const char *sub[] = { "files/w", "files/logs", "files", "outbox", "", NULL };
+	char p[700];
+	files_reset();
+	check_files(1);
+	for (int i = 0; sub[i]; i++) {
+		snprintf(p, sizeof p, "%s/%s", state, sub[i]);
+		rmdir(p);
+	}
 	empty_dir(1);
 	rmdir(dir);
 }
@@ -67,6 +142,12 @@ static void setup(void)
 	if (!mkdtemp(dir))
 		abort();
 	setenv("HANGAR_TOPIC_DIR", dir, 1);
+	/* The state directory beside the topics, not in them: empty_dir()
+	 * unlinks what the topic directory holds. */
+	snprintf(state, sizeof state, "%s-state", dir);
+	setenv("HANGAR_STATE_DIR", state, 1);
+	unsetenv("HANGAR_BRIDGE_TEST_FILE_CORRUPT");
+	unsetenv("HANGAR_BRIDGE_TEST_FILE_STALL_MS");
 	unsetenv("HANGAR_CONTROL");
 	unsetenv("HANGAR_WIRING");
 	unsetenv("HANGAR_WIRING_FILE");
@@ -92,6 +173,7 @@ static void reset(unsigned mode)
 		free(B.rx[i].sch);
 		free(B.rx[i].schema);
 	}
+	files_reset();
 	struct prec *precs = B.precs;
 	int cap_prec = B.cap_prec;
 	memset(&B, 0, sizeof B);
@@ -131,6 +213,7 @@ static void reset(unsigned mode)
 	}
 	if (mode & FZB_MIRROR_OK)
 		B.peer_info = B.config_match = B.mirror_ok = 1;
+	files_init();
 }
 
 /* A datagram as a peer holding `key` would send it, with the sequence number seq. */
@@ -171,6 +254,8 @@ static void tick(void)
 		estimate();
 	s_resend_check();
 	s_pump();
+	F.tokens = 1e9; /* FileRate= accrues with time, and an input takes none */
+	files_tick();
 	publish_status();
 }
 
@@ -183,6 +268,13 @@ static void check_state(void)
 	FZ_CHECK(B.nsamp >= 0 && B.nsamp <= (int)(sizeof B.samp / sizeof B.samp[0]));
 	FZ_CHECK(ncands >= 0 && ncands <= 8);
 	FZ_CHECK(B.rings <= RINGS_MAX);
+	FZ_CHECK(F.nq >= 0 && F.nq <= FILE_QUEUE);
+	FZ_CHECK(F.ndone >= 0 && F.ndone <= 4);
+	FZ_CHECK(!F.in.active || (F.in.fd >= 0 && F.in.dirfd >= 0 && F.in.fc && F.in.have <= F.in.size &&
+				  F.in.size <= F.in.fc->max_size && bc_file_name_ok(F.in.name)));
+	for (int i = 0; i < F.nq; i++)
+		FZ_CHECK(F.q[i].fd >= 0 && F.q[i].pos <= F.q[i].size && F.q[i].hashed <= F.q[i].size &&
+			 F.q[i].pos <= F.q[i].hashed && F.q[i].size <= F.q[i].fc->max_size);
 }
 
 /* A beacon, tagged or not, decides nothing (docs/08 "Discovery"): not the
@@ -276,6 +368,61 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 			sealed(K_HELLO, BC_SAFETY, b, sizeof b, B.key);
 			break;
 		}
+		case FZB_SEND: {
+			/* An operator's bridge.send, as hg_serve would hand it over. */
+			struct bridge_send_req rq;
+			struct bridge_send_rep rp;
+			char reason[HG_CALL_REASON] = "", path[700];
+			hg_call_ctx c = { .caller = "admin:fuzz", .method = "send" };
+			if (len < 1)
+				break;
+			memset(&rq, 0, sizeof rq);
+			memset(&rp, 0, sizeof rp);
+			snprintf(rq.dest, sizeof rq.dest, "%s", p[0] & 1 ? "logs" : "w");
+			size_t at = 1;
+			if (p[0] & 2) {
+				size_t nl = len - 1 < 8 ? len - 1 : 8;
+				memcpy(rq.name, p + 1, nl);
+				at += nl;
+			} else {
+				snprintf(rq.name, sizeof rq.name, "f.bin");
+			}
+			char name[sizeof rq.name + 1];
+			memcpy(name, rq.name, sizeof rq.name);
+			name[sizeof rq.name] = 0;
+			if (bc_file_name_ok(name)) {
+				snprintf(path, sizeof path, "%s/outbox/%s", state, name);
+				int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+				if (fd >= 0) {
+					if (write(fd, p + at, len - at) < 0)
+						(void)0;
+					close(fd);
+				}
+			}
+			int nq = F.nq;
+			int rc = on_send(&c, &rq, &rp, reason);
+			FZ_CHECK(rc == HG_OK ? F.nq == nq + 1 && rp.id != 0 : F.nq == nq && reason[0]);
+			break;
+		}
+		case FZB_FSTATUS: {
+			/* What the other side answers about the file being sent: its id is
+			 * drawn here, so the input cannot name it. */
+			unsigned char rec[5 + 18 + HG_CALL_REASON], b[BODY_MAX];
+			if (len < 9 || !F.nq)
+				break;
+			size_t rl = len - 9 < HG_CALL_REASON - 1 ? len - 9 : HG_CALL_REASON - 1;
+			put32(rec, (uint32_t)(1 + 18 + rl));
+			rec[4] = R_FSTATUS;
+			put64(rec + 5, F.q[0].id);
+			rec[13] = p[0];
+			memcpy(rec + 14, p + 1, 8);
+			rec[22] = (unsigned char)rl;
+			memcpy(rec + 23, p + 9, rl);
+			put64(b, B.r_expect);
+			memcpy(b + 8, rec, 23 + rl);
+			sealed(K_DATA, BC_CALL, b, 8 + 23 + rl, key_now(K_DATA));
+			break;
+		}
 		case FZB_PONG: {
 			unsigned char b[24];
 			memset(b, 0, sizeof b);
@@ -291,10 +438,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		size -= len;
 	}
 	FZ_NOTE("keyed %d up %d peer_info %d mirror_ok %d clock %d: %llu rejected, %u topics in, %llu msgs in, %llu late, "
-		"%d candidates, stream at %llu",
+		"%d candidates, stream at %llu; files: %d made visible, one %s, %d to send",
 		B.keyed, B.up, B.peer_info, B.mirror_ok, B.have_offset, (unsigned long long)B.st.rejected, B.st.topics_rx,
 		(unsigned long long)B.st.msgs_rx, (unsigned long long)B.st.dropped_late, ncands,
-		(unsigned long long)B.r_expect);
+		(unsigned long long)B.r_expect, F.ndone, F.in.active ? "arriving" : "not arriving", F.nq);
+	check_files(0);
+	files_reset();
+	check_files(1);
 	reset(0);
 	empty_dir(0);
 	return 0;

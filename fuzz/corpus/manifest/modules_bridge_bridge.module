@@ -11,5 +11,13 @@ User=hg-bridge
 
 [Bridge]
 
+# Files across the tether (docs/08 "Files"): never called from the other side.
+# Which callers may send to which destination is [Files <dest>] Allow= in
+# bridge.conf; this list is who may ask at all.
+[Serve send]
+Request=bridge_send_req
+Reply=bridge_send_rep
+Allow=* admin
+
 [Health]
 Watchdog=2s

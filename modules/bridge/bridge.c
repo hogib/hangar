@@ -1328,7 +1328,7 @@ static void on_message(const unsigned char *b, size_t n)
 #define FILE_AHEAD (16u << 10)    /* file bytes on the stream ahead of whatever comes next: a call waits behind at most this */
 #define FILE_QUEUE 8              /* files accepted and not yet ended */
 #define FILE_STALL_NS 60000000000ull /* a transfer that moves nothing for this long is given up, on either side */
-#define FILE_SYNC_BYTES (1u << 20)
+#define FILE_SYNC_BYTES (256u << 10) /* writeback is started every so many bytes received */
 
 enum { X_NEW, X_WAIT, X_SEND, X_ENDED };
 enum { FS_READY = 1, FS_DONE, FS_FAILED };
@@ -1535,6 +1535,9 @@ static void on_fbegin(const unsigned char *b, size_t n)
 	if (!id || take_str(&b, &n, dest, sizeof dest) < 0 || take_str(&b, &n, name, sizeof name) < 0 ||
 	    take_str(&b, &n, from, sizeof from) < 0)
 		return;
+	for (char *q = from; *q; q++)
+		if ((unsigned char)*q < 0x21 || (unsigned char)*q > 0x7e)
+			*q = '?'; /* the peer's word for its caller: logged and published, as text */
 	for (int i = 0; i < F.ndone; i++)
 		if (F.done[i] == id) {
 			f_status_put(id, FS_DONE, size, NULL); /* it came whole on the link before this one */
@@ -1600,6 +1603,16 @@ static void on_fbegin(const unsigned char *b, size_t n)
 	f_status_put(id, FS_READY, 0, NULL);
 }
 
+/* Asks the kernel to start writing what has arrived, and does not wait for
+ * it: this loop also carries the pilot's commands, and a wait for the
+ * storage (an SD card's tens or hundreds of milliseconds) would hold them.
+ * So a file is renamed without having been synced: see on_fend. */
+static void in_writeback(void)
+{
+	(void)sync_file_range(F.in.fd, (off_t)F.in.synced, (off_t)(F.in.have - F.in.synced), SYNC_FILE_RANGE_WRITE);
+	F.in.synced = F.in.have;
+}
+
 static void on_fdata(const unsigned char *b, size_t n)
 {
 	if (n < 17 || !F.in.active || get64(b) != F.in.id)
@@ -1627,10 +1640,8 @@ static void on_fdata(const unsigned char *b, size_t n)
 	blake2s_update(&F.in.h, b, n);
 	F.in.have += n;
 	F.in.progress_ns = now_ns();
-	if (F.in.have - F.in.synced >= FILE_SYNC_BYTES) {
-		(void)fdatasync(F.in.fd); /* a megabyte at a time: the last sync is then short */
-		F.in.synced = F.in.have;
-	}
+	if (F.in.have - F.in.synced >= FILE_SYNC_BYTES)
+		in_writeback();
 }
 
 static void on_fend(const unsigned char *b, size_t n)
@@ -1648,13 +1659,18 @@ static void on_fend(const unsigned char *b, size_t n)
 		in_discard("the hash of what arrived is not the sender's", 1);
 		return;
 	}
-	if (fdatasync(F.in.fd) < 0 || renameat(F.in.dirfd, F.in.tmp, F.in.dirfd, F.in.name) < 0) {
+	/* Whole and checked: under its name from here. Not synced first (see
+	 * in_writeback): while the machine runs, the name holds the whole file
+	 * or nothing; after a power cut within the kernel's writeback delay it
+	 * may hold less, and whoever reads it checks it (the policy's check 1
+	 * holds a weights file to the hash load_weights names). */
+	in_writeback();
+	if (renameat(F.in.dirfd, F.in.tmp, F.in.dirfd, F.in.name) < 0) {
 		char r[HG_CALL_REASON];
 		snprintf(r, sizeof r, "keeping it: %s", strerror(errno));
 		in_discard(r, 1);
 		return;
 	}
-	(void)fsync(F.in.dirfd);
 	close(F.in.fd);
 	files_prune(F.in.dirfd, F.in.fc, F.in.name);
 	close(F.in.dirfd);
@@ -1862,8 +1878,10 @@ static int on_send(const hg_call_ctx *c, const void *req_, void *rep_, char *rea
 	struct stat st;
 	if (fd < 0 || fstat(fd, &st) < 0) {
 		mod_fmt(reason, HG_CALL_REASON, "outbox/%.20s: %s", name, strerror(errno));
-	} else if (!S_ISREG(st.st_mode)) {
-		mod_fmt(reason, HG_CALL_REASON, "outbox/%.20s: not a regular file", name);
+	} else if (!S_ISREG(st.st_mode) || st.st_nlink != 1) {
+		/* One name, in the outbox: not a second link to a file that lives
+		 * elsewhere, which the bridge would read with its own rights. */
+		mod_fmt(reason, HG_CALL_REASON, "outbox/%.20s: not a regular file of one link", name);
 	} else if (st.st_size < 1 || (uint64_t)st.st_size > fc->max_size) {
 		mod_fmt(reason, HG_CALL_REASON, "empty, or over MaxSize= (%llu bytes)", (unsigned long long)fc->max_size);
 	} else {

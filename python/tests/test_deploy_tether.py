@@ -430,7 +430,7 @@ class DeployAcrossTheTether(unittest.TestCase):
             f.write(bytes((i * 7 + 3) % 256 for i in range(5000)))
         r = learn.deploy(junk, "toy")
         self.assertEqual(r["state"], "rejected", r)
-        self.assertIn(r["check"], (1, 2, 3), r)
+        self.assertEqual(r["check"], 2, r)
         self.assertEqual(self.active(self.V), before)
 
     def test_5_what_send_refuses(self):

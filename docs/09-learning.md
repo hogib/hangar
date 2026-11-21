@@ -87,8 +87,14 @@ up, `policy.<name>.active` and `policy.<name>.load` (event topics, `reliable`) m
 up, and `policy_*.*` in `[Calls] Remote=`, which has the bridges mirror `trainer.req`
 down and `policy_<name>.rep` up, reliably, at `call` priority
 ([08-bridge](08-bridge.md#calls-across-the-tether)): the trainer waits on the first
-two, and the operator promotes on the first. `deploy` gives up after 60 s without a
-`policy.<name>.load` message for its file, and says so.
+two, and the operator promotes on the first. For the file it needs a
+`[Files policy_<name>]` section with `Direction=down`, whose `Allow` names who sends
+(`trainer`, and `admin` for an operator's shell), and, in the policy's spec on the
+vehicle, `Incoming=` naming the directory the vehicle's bridge keeps that
+destination's files in ([08-bridge](08-bridge.md#files)). `deploy` gives up when the
+bridge reports the file failed, after `send_timeout` (120 s) without the bridge's word
+on it, and after 60 s without a `policy.<name>.load` message for its file, and says
+which.
 
 ## Policy modules
 
@@ -159,6 +165,7 @@ Name=depth_ff
 Dataset=depth_ff
 Arch=4be1c0d2a97f3e18
 TickBudget=50%
+Incoming=/var/lib/hangar/bridge/files/policy_depth_ff
 ```
 
 | `[Policy]` key | Default | |
@@ -167,6 +174,7 @@ TickBudget=50%
 | `Dataset` | — (required) | The spec that builds the inputs, and whose `ResetAfter` resets recurrent state; it must be usable by a policy ([Features at run time](#features-at-run-time)) |
 | `Arch` | — (required) | The architecture hash a weights file must have |
 | `TickBudget` | `50%` | The largest share of the tick period the model steps of one tick may take together: the running model's step, plus during a warm-up the new model's ([Loading weights](#loading-weights)) |
+| `Incoming` | `incoming/` in the policy's state directory | The directory `load_weights` finds the file it names in, an absolute path. For weights sent across the tether: the directory the bridge keeps the files of `[Files policy_<name>]` in, which the policy reads and has no need to write ([08-bridge](08-bridge.md#files)). The default is the policy's own, for a trainer on the policy's machine |
 
 A policy's topics:
 
@@ -359,8 +367,10 @@ travel with the weights and cannot drift from them.
 
 ## Loading weights
 
-`policy_<name>.load_weights {name, hash}`, naming a file the bridge received
-([08-bridge](08-bridge.md#files)). The reply comes at once (`accepted`, with the
+`policy_<name>.load_weights {name, hash}`, naming a file in the policy's incoming
+directory (`Incoming=` in its spec): one the bridge received
+([08-bridge](08-bridge.md#files)), or one a trainer on the policy's own machine put
+there. The reply comes at once (`accepted`, with the
 version it will get, or refused while another load is in progress); the work happens
 beside the tick path, on a worker thread of the policy module running at the lowest
 priority (`SCHED_IDLE`), so that it never delays a tick. Its progress is on
@@ -492,6 +502,8 @@ manager like any other, so that the policies' `Allow` lists name it `topside:tra
 Description=Trainer: depth feed-forward
 Exec=/usr/bin/python3 /home/pilot/train/depth_ff.py
 User=hg-trainer
+# The bridge's outbox, where a file waits for bridge.send, is its group's to write.
+SupplementaryGroups=hg-bridge
 
 [Subscribe dataset.depth_ff]
 [Subscribe policy.depth_ff.active]
@@ -525,10 +537,21 @@ caller, so its calls are `trainer`'s and reach the vehicle as `topside:trainer`.
 manager through `hangar call`, whether it runs as the module or from a shell, so its
 calls are `admin:<user>`'s if the user is in `hangar-admin` and reach the vehicle as
 `topside:admin:<user>`, which the policies' `Allow` lists must name; any other user is
-refused. And `deploy` copies the weights file into the policy's `incoming` directory
-itself instead of sending it with `bridge.send`, which works only where the trainer and
-the policy share a file system: the bench and the simulator
-([12-tools](12-tools.md#the-python-package)).
+refused. The same holds for its call to `bridge.send`, so the `[Files]` section's
+`Allow` names `admin` ([12-tools](12-tools.md#the-python-package)).
+
+The file itself goes as designed. `deploy` writes it into the topside bridge's outbox,
+calls `bridge.send` with the destination `policy_<name>`, waits on
+`bridge.topside.files` for the transfer to end `sent` with the hash it computed, then
+calls `load_weights` through the bridge and waits on the mirrored `policy.<name>.load`.
+On the policy's own machine (the bench, the simulator) it copies the file into the
+policy's incoming directory instead, as it did before the bridge sent files. Which of
+the two it does is `via`: `"bridge"` or `"local"` when the caller says, and otherwise
+decided from what this machine shows, in this order: `incoming=` given, local; the
+manager's `hangar.<role>.modules` lists `policy_<name>`, local; the policy's incoming
+directory exists here, local; this machine's bridge publishes `bridge.<role>.files`,
+bridge; none of these, an error that says so. `deploy_route(policy)` returns the
+choice and its reason, and the result of `deploy` has it as `via`.
 
 ```python
 import time
@@ -558,7 +581,8 @@ batches of single rows and has nothing to carry; the example below is one, and
 | `with_loss(rows, fields)` | per row of a numpy array of rows: whether a stream reading `fields` gives it loss (`chunk.mask`'s rule, below) |
 | `carry(state, fresh)` | the recurrent state, detached from the graph, zeroed for the slots marked fresh |
 | `export(model, file, stream, outputs)` | the `.hgw` file: graph, tensors, bindings to the stream's input fields and to `outputs`, probes and lineage from the stream's buffer, checked against the vehicle's `runtime_info` and against the model (below) |
-| `deploy(model or file, policy, stream, outputs)` | export, the file to the policy (`bridge.send` in the design; a copy into its `incoming` directory as built), `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
+| `deploy(model or file, policy, stream, outputs, via=None)` | export, the file to the policy (`bridge.send` across the tether, a copy into its incoming directory on the policy's own machine: above), `load_weights`, and wait on `policy.<name>.load`. Returns the load's end: `state` (`done` or `rejected`), `check`, `reason`, `version`, `hash`, `via` |
+| `send_file(file, dest)`, `deploy_route(policy)` | a file to a `[Files <dest>]` of the other side, waited for; which way `deploy` would take, and why |
 | `revert(policy)`, `watch(policy)` | |
 
 **Stateful chunks.** With `seq_len`, each of the `batch` slots follows one run of rows
@@ -861,6 +885,21 @@ What version 1 leaves out, each a step that changes nothing already built:
   `Allow` is denied; a request whose deadline passed during a policy restart is dropped
   unexecuted; `deploy` reports a reply that never comes as a timeout and gives up after
   60 s without a `load` message.
+- Deploying across the tether (`python/tests/test_deploy_tether.py`, in the Python
+  suite): two managers in two roots joined only by their bridges on loopback, a toy
+  policy on the vehicle whose spec names the bridge's directory as `Incoming=`, the
+  trainer's manifest on the topside. `deploy` of a weights file of 75 KB from the
+  topside: sent, loaded, the policy's `active` naming it on the vehicle and on the
+  mirrored topic. The tether cut during the transfer for longer than the link's
+  timeout: no file under its name, the running model unchanged, `deploy` waiting;
+  mended: loaded. A byte changed on the way: `deploy` raises, nothing on the vehicle,
+  the running model unchanged. A file whose probe does not hold, and one that is not a
+  weights file: delivered, and rejected by the policy's checks 6 and 2. `send_file` to
+  a destination the configuration lacks and under a name that is none: refused, the
+  outbox left empty. On the vehicle's root the route is `local`, and a deploy with
+  `incoming=` loads. The calls there are an operator's (`topside:admin:<user>`), not
+  `topside:trainer`'s, and the model is a file written by the test, not one exported
+  from PyTorch.
 - Names: a module running `hangar-policy` whose name is not `policy_<Name>`, or which
   lacks one of the three outputs, refused.
 - Promotion: `mux.set_mode` with a hash other than the running model's refused; in

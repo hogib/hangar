@@ -10,7 +10,9 @@
 	"[Mirror pilot.wrench]\nDirection=down\nPriority=command\nExpectRate=50\nStaleAfter=100ms\nMaxAge=100ms\n" \
 	"[Mirror ardusub.param *.req *.rep]\nDirection=up\nDelivery=reliable\n" \
 	"[Mirror *.req *.rep]\nDirection=down\nDelivery=reliable\n" \
-	"[Calls]\nRemote=safety.* mux.*\n"
+	"[Calls]\nRemote=safety.* mux.*\n" \
+	"[Files w]\nDirection=down\nMaxSize=64KB\nMaxFiles=2\nAllow=admin\n" \
+	"[Files logs]\nDirection=up\nMaxSize=64KB\nAllow=admin\n"
 
 /* The first byte of an input: the state the bridge is in when the first
  * datagram arrives. */
@@ -35,6 +37,10 @@ enum {
 	FZB_PONG = 8,       /* t2, t3: a sealed pong for the last ping sent */
 	FZB_SEALED_AT = 9,  /* a signed byte, then as FZB_SEALED: sealed with the sequence number that far from
 			     * the last one used (0: the same again), for the replay window */
+	FZB_SEND = 10,      /* bridge.send by an operator: a byte (bit 0: the destination logs, else w; bit 1: the
+			     * name is the next 8 bytes as they are, else f.bin), then the file's bytes, put in
+			     * the outbox under that name when it can be one */
+	FZB_FSTATUS = 11,   /* a status record for the file being sent, on the stream: state, u64 offset, reason */
 	FZB_OPS
 };
 

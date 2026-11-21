@@ -2,7 +2,8 @@
 
 The `bridge` module of docs/08, stage 1: the two machines found and authenticated, the
 topics `bridge.conf` lists carried up and down with their sequence numbers, boot ids and
-stamps, and calls across the tether as their request and reply topics. With it the
+stamps, calls across the tether as their request and reply topics, and files
+(`bridge.send`). With it the
 topside role runs on the laptop and the vehicle role on the Pi, each under its own
 manager, with no same-host shim (`tools/rov/README.md`, "The topside on the laptop").
 The shim (`HANGAR_PEER_TOPIC_DIR`) stays, and stays the lab's default.
@@ -11,13 +12,14 @@ The shim (`HANGAR_PEER_TOPIC_DIR`) stays, and stays the lab's default.
 
 | File | |
 |---|---|
-| `bridge.c` | the module: the link, the handshake, the two deliveries, the clock, `bridge.<role>.link` |
+| `bridge.c` | the module: the link, the handshake, the two deliveries, the clock, `bridge.<role>.link`, files |
 | `bridge_conf.h`, `bridge_conf.c` | `bridge.conf`'s reader and checks, and its hash; the manager links it too |
 | `blake2s.h`, `blake2s.c` | BLAKE2s (RFC 7693), keyed; the manager links it too |
 | `bridge.module`, `bridge.conf` | the manifest and the configuration templates (docs/08's example) |
 | `bridge.mk` | `hangar-bridge` and `make check-bridge` |
 | `tests/test_bridge.c` | the suite |
 | `../../msg/bridge_link.msg` | `bridge.<role>.link` |
+| `../../msg/bridge_file.msg`, `bridge_send_req.msg`, `bridge_send_rep.msg` | `bridge.<role>.files`, and the method `send` |
 
 C11, libc and lib/hg only. The manager's side is in `hangard/` (`manifest.c`
 `load_bridge`, `derive_bridge`; `wiring.c` mirror lines; `control.c` the mirrored open
@@ -117,6 +119,23 @@ and calls to the other side).
   `rejected`, `retransmits`, `clamped`, `dropped_old`, `dropped_late`, messages each
   way, topics in), the clock's offset and uncertainty, `detail`. The status line says
   the same in short.
+- **Files** (docs/08 "Files"). `[Files <dest>]` sections of `bridge.conf` say what may
+  cross and which way; `FileRate=` in `[Bridge]` holds them. `bridge.send {dest,
+  name}` takes `<name>` from `outbox/` in the bridge's state directory (opened without
+  following a link, a regular file of one link, within `MaxSize`, its name removed),
+  queues it (8 at most) and answers with an id. One file at a time goes as records
+  on the reliable stream: begin, data in chunks of 1 024 bytes, end with the
+  BLAKE2s-256 of the whole; the receiver answers ready (with the offset it has), done
+  or failed. The receiver checks the begin against its own `[Files]`, writes to
+  `files/<dest>/.part-<id>`, hashes as it writes, and renames to `<name>` only when
+  size and hash hold; then it removes the oldest files past `MaxFiles`. A chunk goes
+  on the stream only while under 16 KB waits there and `FileRate` allows it. A new
+  link begins the file again from the receiver's offset. Nothing moving for 60 s
+  ends a transfer on either side. `bridge.<role>.files` has one message per transfer
+  that ended, on both sides. The manager adds that topic when the conf has a
+  `[Files]` section; `send` is a `[Serve send]` of `bridge.module`, never called from
+  the other side (the bridge gets no `subglob *.req`), and `bridge.rep` and
+  `bridge.req` are never sent.
 - **Waiting.** One `epoll`: the socket, the eventfd of `hg_wait_fd` over the named
   topics it sends, and a 10 ms timer (glob matches, pings, resends, the status topic).
   Every subscription in the wait set is read on every wake, so nothing is left unread. Idle with the link up: under 1 % of a core.
@@ -151,13 +170,37 @@ and calls to the other side).
 8. **The release string is `HANGAR_VERSION` at build** (`dev` without it), so two
    development builds of different trees match on the release and differ only by
    their msg/ hashes.
+9. **Files are held to `FileRate=`, a key docs/08 did not have, and are not ordered by
+   priority.** With one reliable stream and no priorities enforced (below), `bulk`
+   for a file is: its own rate (a quarter of `MaxRate` by default), and a chunk put
+   on the stream only while under 16 KB waits there, so a request has at most that
+   in front of it. A stream kept busier than that by other reliable topics for 60 s
+   fails the file.
+10. **A file lands in the bridge's state directory, under its destination**
+   (`files/<dest>/<name>`), not in `/var/lib/hangar/bridge/files/<name>`, and its
+   mode is 0640 with the bridge's own group, not group `hangar`: a destination is
+   what `bridge.conf` lets through, and its reader is given that one directory.
+11. **A received file is renamed without a sync.** `fdatasync` in the loop that also
+   carries `pilot.wrench` would hold commands for as long as the storage takes;
+   writeback is started as the data arrives (`sync_file_range`) and not waited for.
+   After a power cut a name may hold less than the file; its reader checks it.
+12. **The request topic of a module that calls `bridge.send` is sent across** when
+   `[Calls] Remote=` has any entry, whether or not the module calls anything of the
+   other side: the bridge's wiring has one `sub` line for a topic it reads as a server
+   and for one it sends. The other side's servers skip requests not addressed to
+   them. With no `Remote=` no request topic is sent.
+13. **`bridge.<role>.files` reports what ended, on both sides**, with a `state`,
+   where docs/08 had it list files received.
 
 ## Not in this stage (TODO)
 
 - Priorities under the rate cap: `MaxRate` is read and not enforced, `Priority=` is
   carried in each datagram's header and orders nothing, and `bridge.<role>.budget` is
   not published.
-- Files across the tether (`bridge.send`, docs/08 "Files").
+- Files: a queue that survives a restart of the sending bridge (it is the process's:
+  a file accepted and not yet sent is lost with it, with no message saying so);
+  recordings coming up after a dive (nothing calls `send` for them, and `MaxSize` is
+  at most 256 MB).
 - The video budget (docs/08 "Video").
 - `hangar upgrade-vehicle`.
 - `hangar check`'s report of `config_match` and of a module enabled on both machines;
@@ -179,9 +222,9 @@ Two managers, a vehicle and a topside, in two roots with two topic directories, 
 with a bridge, and no `HANGAR_PEER_TOPIC_DIR`; between the bridges a UDP forwarder in
 the test process that drops, replays, changes and forges datagrams on demand, holds
 back one kind of datagram, and records what the topside sends so that a run can send
-it again. Ten runs, each with managers of its own; `test_bridge --only <run>` runs
+it again. Thirteen runs, each with managers of its own; `test_bridge --only <run>` runs
 one (`main`, `mismatch`, `clocks`, `hold`, `replay`, `auto`, `writer`, `limits`,
-`beacon`, `peer`).
+`beacon`, `peer`, `files`, `filestall`, `filerekey`).
 
 `main`: the topside's bridge runs with a fake 5 s clock offset on the wire. Checked,
 as one run printed them (2026-11-20, loopback, this laptop):
@@ -267,9 +310,45 @@ The other runs, each written for a review finding and seen to fail before its fi
   every datagram of the real peer refused as old after it, the link down 3 s
   later).
 
+- `files` (2026-11-21, loopback, this laptop; `FileRate=800kbit`, `MaxSize=512KB`,
+  `MaxFiles=3`): 150 KB down in 1.6 s (1.5 s at the rate), no file under its name
+  while 20 KB of it were there, then the same bytes, mode 0640, the hash in both
+  sides' messages the file's own, the outbox empty; a `hangar call` across during it
+  answered in 10 ms, and `pilot.depth` (50 Hz, `command`) arrived whole, 80 messages,
+  at most 20.1 ms apart. The tether cut with 60 KB of 300 KB across until both links
+  were down, and mended: the 60 KB kept under the hidden name meanwhile, then the
+  whole file, on the same keys and stream. The vehicle's bridge restarted with 60 KB
+  of 200 KB across: sent again from the start, nothing hidden left. A file whose
+  first byte the sending bridge changes after hashing (the environment tells it to):
+  failed on both sides with the reason, no file, nothing hidden. Two sends, the
+  second during the first: both arrive in order. The two oldest files removed by
+  `MaxFiles`. Nine refusals of `send`, each with its reason, nothing taken from the
+  outbox: a name with a path, a hidden name, a missing file, one over `MaxSize`, a
+  symbolic link and a second hard link to the bridge's key, an unknown destination,
+  one of the other direction, a caller the section's `Allow` does not name. The
+  topside's 15 requests on the vehicle's mirrored admin topic and no reply of the
+  vehicle's bridge to any. A file up.
+- `filestall`: both bridges give a file up after 1.5 s without progress (the
+  environment; 60 s in use). The topside's bridge restarted with 50 KB of 300 KB
+  across: the vehicle reports the file failed and nothing is left. The tether cut
+  before a send for longer than the wait: the topside reports it failed; with the
+  link back nothing of it is on the vehicle, and the next file goes through.
+- `filerekey`: both bridges forget their keys when the link goes down (the
+  environment; in use the keys are kept). The tether cut with 60 KB of 300 KB
+  across, mended: a new link, the sender begins the file again and goes on from byte
+  60 416, what the vehicle had; the same bytes arrive, neither bridge restarted.
+
 The manifest suite (`check-hangard_manifest`) covers the manager's side: no
 `BridgeConf`, a bad one, a second `[Bridge]`, the wiring derived from a conf, and the
-shipped example on both roles.
+shipped example on both roles; for files, eleven `[Files]` and `FileRate` settings
+that are refused, `bridge.<role>.files` in the wiring only with a `[Files]` section,
+and no `subglob *.req` for the bridge under `Remote=*.*`. The fuzz harness
+(`fuzz/fuzz_bridge.c`) feeds the receiving side file records as a peer with the key
+could write them and the sending side statuses and `send` requests, and checks after
+every input that the state directory holds nothing but `outbox/` and
+`files/<dest>/`, with names a file may have or the hidden name of a transfer.
+`python/tests/test_deploy_tether.py` sends weights to a policy through two bridges
+(docs/09 "Tests").
 
 ## Unverified
 
@@ -284,6 +363,12 @@ shipped example on both roles.
   link is made, and only when both have been heard or have answered by then
   (docs/08 "Discovery"). A second vehicle switched on after the topside linked
   with the first is not reported.
+- **Files with modules under their own users**: the outbox written by a module in the
+  bridge's group, a destination read by a policy in it. Every suite runs as one user.
+- **Files against the storage.** The receiving bridge writes in its loop; what an SD
+  card that stalls a `write` does to `pilot.wrench` on the Pi is not measured. Nor is
+  a power cut between a rename and writeback, a file over 300 KB, or a transfer on a
+  tether that loses datagrams.
 - **A new link with reliable topics resuming** from the oldest unacknowledged
   message: the `writer` run takes the link down and back on the same keys, and the
   restarts of the other runs make new links, but no run checks a reliable topic

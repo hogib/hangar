@@ -275,7 +275,8 @@ call not listed, and takes slots, rates, inputs, call types, sizes, deadlines an
 
 Each has 16 slots. The bridge's are `bridge.<role>.link` (10 Hz), `bridge.<role>.budget`
 (1 Hz, the rate left for video, [08-bridge](08-bridge.md#video-and-the-tether)),
-`bridge.<role>.files` (event) and the method `send`, with its `bridge.rep`
+`bridge.<role>.files` (event, when the configuration has a `[Files]` section) and the
+`bridge.rep` of its method `send`, which its manifest declares
 ([08-bridge](08-bridge.md#the-bridge-module)). They are checked, created and flagged
 like any declared output. An output declared `Type=dataset:<name>` also gets a
 generated type: the row schema, which the manager builds from

@@ -95,6 +95,14 @@ Direction=up
 Priority=dataset
 Delivery=reliable
 
+# Trained weights for a policy (docs/09): what the topside's trainer, or an
+# operator, sends with bridge.send lands on the vehicle in
+# /var/lib/hangar/bridge/files/policy_depth_ff/.
+[Files policy_depth_ff]
+Direction=down
+MaxSize=16MB
+Allow=trainer admin
+
 [Calls]
 Remote=safety.* mux.* recorder.* mavlink.setup installer.* *.set_params policy_*.*
 ```
@@ -106,6 +114,7 @@ Remote=safety.* mux.* recorder.* mavlink.setup installer.* *.set_params policy_*
 | `Port` | `5614` | Data. Discovery is on 5613 (not `hellion`'s 5612, so both can run side by side: [11-electric-eye](11-electric-eye.md#ports)) |
 | `Peer` | `auto` | `auto` (discovery) or the other side's fixed `address`. The one key that may differ between the two copies; the configuration hash leaves it out |
 | `MaxRate` | `20Mbit` | Total sending rate of this side, all priorities ([Priority](#delivery)), the video stream outside the bridge included ([Video and the tether](#video-and-the-tether)) |
+| `FileRate` | a quarter of `MaxRate` | The rate files are held to ([Files](#files)); at most `MaxRate` |
 
 | `[Mirror <topic or glob> ...]` key | Default | |
 |---|---|---|
@@ -121,6 +130,16 @@ A `safety` or `command` mirror names its topics; a glob there is refused. The
 receiving side's readers act on `ExpectRate` and `StaleAfter`: on the vehicle,
 `pilot.wrench` goes stale 100 ms after the last command arrived, and the mux counts it
 as zero ([07-safety](07-safety.md#the-mux)).
+
+| `[Files <dest>]` key | Default | |
+|---|---|---|
+| `Direction` | — (required) | `up` or `down`: the one way files of this destination go |
+| `MaxSize` | `16MB` | The largest file, in bytes, `KB` or `MB`; at most `256MB`. Checked by the sender when it takes the file and by the receiver when one is begun |
+| `MaxFiles` | `4` | Files of this destination the receiving side keeps: when one more has arrived, the oldest are removed |
+| `Allow` | `admin` | Who may send to this destination: callers on the sending machine, as a method's `Allow` names them there (a module, `*`, `admin`) |
+
+A `[Files]` section names a destination, `[a-z0-9_]`, at most 32 characters, and no
+directory: where its files land is the receiving bridge's to decide ([Files](#files)).
 
 `[Calls] Remote=` lists the methods of the other side that this side's modules may
 call through the bridge. It is shorthand: each manager expands it into `[Mirror]`
@@ -145,6 +164,10 @@ User=hg-bridge
 
 [Bridge]
 
+[Serve send]
+Request=bridge_send_req
+Reply=bridge_send_rep
+
 [Health]
 Watchdog=1s
 ```
@@ -162,16 +185,19 @@ module's wiring from its `[Mirror]` sections and the expansion of `[Calls]`
 ([03-manager](03-manager.md#wiring)).
 
 The module is named `bridge` on both machines, the one module name the two share: like
-the manager, it is per-machine infrastructure. Its method `send` is never remote, its
-reply topic `bridge.rep` is never mirrored, and its own outputs carry the machine's
-role. The manager adds them, as it adds every module's implicit topics:
+the manager, it is per-machine infrastructure. Its method `send` is never remote
+(whatever `Remote=` matches, the bridge gets no `subglob *.req` line and so reads no
+request topic of the other side), its reply topic `bridge.rep` is never mirrored, and
+its own outputs carry the machine's role. The manager adds the outputs, as it adds
+every module's implicit topics; the method is declared in the manifest, as any
+module's is:
 
 | Output | Rate | |
 |---|---|---|
 | `bridge.<role>.link` | 10 Hz, and on change | the link's state ([Link status](#link-status)), published whether the link is up or not |
 | `bridge.<role>.budget` | 1 Hz, and on change | the rate `MaxRate` leaves for video ([Video and the tether](#video-and-the-tether)) |
-| `bridge.<role>.files` | event | files received ([Files](#files)) |
-| method `send` | | send a file ([Files](#files)); `Allow` is the default, `* admin`: every module on this machine and `admin` |
+| `bridge.<role>.files` | event | how each file sent or received ended ([Files](#files)); only with a `[Files]` section in the configuration |
+| method `send` | | send a file ([Files](#files)); `Allow` is the default, `* admin`: every module on this machine and `admin`. Which of them may send to which destination is the `[Files]` section's `Allow` |
 
 The topics the bridge receives count neither for its readiness nor against its health:
 they go silent whenever the link does, and a tether outage must not restart the
@@ -578,13 +604,128 @@ names unique across the pair, that is a configuration error.
 
 ## Files
 
-`bridge.send` (a call on the sending side) sends a file reliably, at `bulk` priority,
-in chunks, resuming after a disconnection, and checks a BLAKE2s-256 hash of the whole
-file before it is made visible. The receiver puts it in
-`/var/lib/hangar/bridge/files/<name>` (group `hangar`, mode 0640) and publishes
-`bridge.<role>.files`: `{name, size, hash, from, received_ns}`. Trained weights go
-down this way, sent by the topside's `trainer` module
-([09-learning](09-learning.md)), and recordings come up after a dive.
+A file crosses the tether when a `[Files <dest>]` section of the configuration
+([Configuration](#configuration)) says files of that destination go its way. Neither
+side is given a path:
+
+- on the sending side a file is `<name>` in the bridge's outbox,
+  `/var/lib/hangar/bridge/outbox/`;
+- on the receiving side it becomes `/var/lib/hangar/bridge/files/<dest>/<name>`, mode
+  0640, in the bridge's own state directory. Whoever uses the files of a destination
+  reads that directory and needs no right to write in it: a policy names it as
+  `Incoming=` in its spec ([09-learning](09-learning.md#policy-modules)).
+
+A name is 1 to 64 of `A-Z a-z 0-9 . _ -` and does not begin with a `.`; both bridges
+check it. There is no `/` in it and no `..`, so a name joined to a directory stays in
+it.
+
+**Sending.** `bridge.send {dest, name}` is a call to the bridge of the caller's own
+machine. It is refused, with the reason, when the configuration has no `[Files <dest>]`
+in this machine's sending direction; when the section's `Allow` does not name the
+caller; when the name is not one; when `outbox/<name>` is missing, is not a regular
+file with one link (a symbolic link is not followed), is empty or is over `MaxSize`;
+and when 8 files are waiting already. Otherwise the bridge opens the file, removes its
+name from the outbox (the file is the bridge's from there on) and replies at once with
+the transfer's `id`. Files go one at a time, in the order asked.
+
+**On the wire.** A file is records on the reliable stream ([Delivery](#delivery)), so
+its datagrams are acknowledged, resent and authenticated as any are:
+
+| Record | From | |
+|---|---|---|
+| begin | sender | `id` (random, 64 bits), size, `dest`, `name`, and the caller's token as the sending side names callers |
+| status | receiver | `ready` at the offset the receiver has (0 for a new file), `done`, or `failed` with one line of reason |
+| data | sender | `id`, offset, at most 1024 bytes |
+| end | sender | `id` and the BLAKE2s-256 of the whole file, as the sender read it |
+| abort | sender | `id`: the sender gave the file up |
+
+The receiver holds a begin to its own copy of the configuration (a `[Files <dest>]`
+toward this side, the name, the size within `MaxSize`), whatever the sender's copy
+says, and answers `failed` otherwise. It writes the data to a hidden name
+(`.part-<id>`) in the destination's directory, hashing as it writes, and takes data
+only at the offset it is at. At the end, if the size is the one announced and its hash
+of what it wrote is the sender's, it renames the file to `<name>` (replacing a file of
+that name), removes the oldest files beyond `MaxFiles`, and answers `done`; otherwise
+it removes what it wrote and answers `failed`. So nothing of a file is under its name
+before the whole of it has arrived and checked. The tag on each datagram says who sent
+it; the hash says the file is whole and the one the sender read, and catches a file
+that changed under the sender while it was resent, or a mistake in going on after a
+new link.
+
+The file is not synced to storage before it is renamed: the bridge's loop also carries
+the pilot's commands, and a wait for an SD card would hold them. While the machine
+runs, a name holds a whole file or nothing. After a power cut within the kernel's
+writeback delay it may hold less; the reader checks what it reads (a policy holds a
+weights file to the hash `load_weights` names, [09-learning](09-learning.md#loading-weights)).
+
+**Bulk.** Files are held to `FileRate`, and a chunk goes on the stream only while less
+than 16 KB waits there unacknowledged, so a request or a reply published during a
+transfer has at most that much file in front of it. This is what `bulk` priority is as
+built: the bridge has one reliable stream and does not yet order what it sends by
+priority, nor slow `dataset` and `bulk` by the round trip ([Delivery](#delivery)).
+`latest` topics (commands, telemetry) are datagrams of their own and wait behind
+nothing.
+
+**When the link drops.** A link that comes back keeps its keys and its streams
+([The link](#the-link)): the file goes on by the stream's own resends. A new link (one
+bridge was restarted) has new streams: the sender begins the file again and goes on
+from the offset the receiver answers, which is 0 when it was the receiving bridge that
+restarted, since a restarted bridge removes what an earlier one left unfinished. A
+sending bridge that restarts forgets its queue: those files are not sent, and no
+message on its side reports them failed (a caller that waits for one gives up on its
+own timeout). On either side a transfer in which nothing has moved
+for 60 s is given up: the receiver removes what it wrote, the sender reports the file
+failed.
+
+**How it ended.** `bridge.<role>.files`, an event topic, one message per transfer that
+ended, on the side that sent and on the side that received:
+
+| Field | |
+|---|---|
+| `id` | the transfer's id: `bridge.send`'s reply |
+| `state` | 1 sent (the other side has it, checked and under its name), 2 received, 3 failed sending, 4 failed receiving (nothing of it is visible) |
+| `dest`, `name`, `size` | |
+| `blake2s` | BLAKE2s-256 of the whole file, 64 hex digits; empty when it was never whole |
+| `from` | the caller of `bridge.send`: `trainer`, `admin:<user>`. On the receiving side it is the sender's word |
+| `at_ns` | this machine's `CLOCK_MONOTONIC` when the transfer ended |
+| `reason` | with a failure, one line |
+
+The caller of `send` waits for the message with its `id`: state 1 says the file is on
+the other side. A file's arrival starts nothing there. Loading weights is a call of its
+own, `policy_<name>.load_weights`, with its own `Allow` and the policy's checks
+([09-learning](09-learning.md#loading-weights)).
+
+**Who can do what.** This path writes files on the vehicle, so:
+
+- `send` is called on the sending machine only. The topside's requests travel down on
+  its mirrored admin topic like any, and the vehicle's bridge does not read them.
+- Two lists admit a caller: the method's `Allow` in the bridge's manifest (who may ask
+  at all) and the section's `Allow` (who may send to this destination; by default
+  operators only).
+- A caller admitted to a destination can put files of at most `MaxSize`, under names
+  of the characters above, into that destination's directory on the other side; it
+  can replace a file there by sending one of the same name, and push older files out
+  through `MaxFiles`. It cannot write anywhere else, cannot make the bridge read a
+  file outside the outbox, and cannot make the receiving side hold more than `MaxFiles`
+  files of `MaxSize` and one unfinished file.
+- The section's `Allow` is checked by the sending bridge. Someone who holds the key,
+  or has the other machine's bridge, is held only to what the receiving side checks:
+  the destinations of its own configuration, the names, `MaxSize`, `MaxFiles`. Such a
+  peer can also keep the receiver writing an unfinished file over and over, at the
+  rate the link carries; the storage's wear from that is not bounded.
+- The outbox is shared by everyone who may write in it. A file there can be replaced
+  by another writer before `send` takes it; the caller compares the `blake2s` of the
+  `sent` message with the hash of what it meant to send (`hangar.learn.deploy` does),
+  and for weights the policy's first check does the same on the vehicle.
+- Files travel as everything on the tether does: authenticated, not encrypted
+  ([The link](#the-link)).
+
+With modules under their own users ([13-deployment](13-deployment.md)), the bridge's
+state directory is `hg-bridge`'s, mode 0750, the outbox 0770 and a destination's
+directory 0750: a module that writes the outbox (the trainer) or reads a destination
+(a policy) has the bridge's group among its `SupplementaryGroups`, and with it can read
+every destination's files. The suites run every module as one user; the arrangement
+with separate users is not tested.
 
 ## Link status
 
@@ -680,7 +821,29 @@ them. The topside's recorder is a module of another name than the vehicle's
   `topside:pilot_console`, admitted only where `Allow` names it and refused by the
   default list; `hangar.topside.admin.req` read as `topside:admin:<user>`, and a
   `caller` field on any other topic ignored.
-- Files: resume after the link drops; a corrupted file never becomes visible.
+- Files (the bridge's suite, runs `files`, `filestall`, `filerekey`): a file of 150 KB
+  down at `FileRate=800kbit`, no file under its name while it arrives, then the same
+  bytes, mode 0640, the hash both sides name the file's own, the name gone from the
+  outbox, in the time the rate gives; during it a call across answered and a 50 Hz
+  `command` topic arriving whole. The tether cut midway for longer than the link's
+  timeout and mended: the partial kept under its hidden name, then the whole file, no
+  bridge restarted. The receiving bridge restarted midway: sent again from the start.
+  Both bridges made to forget their keys when the link goes down: a new link, and the
+  sender goes on from the byte the receiver had. A byte changed after the sender
+  hashed it: failed on both sides, nothing visible, nothing hidden left. Two sends at
+  once: both arrive, in order. `MaxFiles`: the oldest removed. Refused by `send`: a
+  name with a path, a hidden name, a missing file, one over `MaxSize`, a symbolic
+  link, a second hard link to the bridge's key, an unknown destination, one of the
+  other direction, a caller the section's `Allow` does not name. The topside's
+  requests arriving on the vehicle and its bridge answering none. A file up. The
+  sending bridge restarted midway, and the tether cut for longer than the wait (1.5 s
+  in the suite): given up on the side that waits, nothing left, and the next file
+  goes through. What a peer may put in a begin (a path as name or destination, a
+  hidden name, a size over `MaxSize`, data out of place or past the size) is in the
+  fuzz harness's seeds, which checks after every input that nothing is on disk but
+  under a destination's directory and a name a file may have. Not tested: separate
+  users, a power cut before writeback, files over a megabyte, a real tether, the
+  storage's speed on the Pi against the loop's latency.
 - Dataset rows with a `cam.nn` frame under 1% datagram loss: every row arrives whole.
 - Discovery, `Peer=auto` on both sides: with beacons of nine earlier `id`s of each
   side replayed from another address, with the beacons on the air sent again from

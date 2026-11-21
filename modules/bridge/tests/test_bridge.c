@@ -1944,14 +1944,45 @@ static long wait_part(const struct side *s, const char *dest, long bytes, long m
 	return part;
 }
 
+/* What has come on the vehicle's pilot.depth since the last look: the
+ * count, the seqs skipped, the longest time between two. Looked at often:
+ * its ring is 16 messages, a third of a second. */
+struct pilot_seen {
+	hg_sub *sub;
+	int msgs;
+	uint64_t gaps, late, prev;
+};
+
+static void pilot_look(struct pilot_seen *s)
+{
+	struct depth d;
+	struct hg_info in;
+	use(&V);
+	while (s->sub && hg_next(s->sub, &d, sizeof d, &in) == HG_MSG) {
+		s->msgs++;
+		s->gaps += in.gap;
+		if (s->prev && in.publish_ns - s->prev > s->late)
+			s->late = in.publish_ns - s->prev;
+		s->prev = in.publish_ns;
+	}
+}
+
 static void files_run(void)
 {
 	char out[1024], p[1024], hex[65];
 	setup_side(&V, "files", FILES_CONF);
 	manifest("bridge", "[Module]\nExec=%s %s\n[Bridge]\n%s", bridge_bin, V.conf, SERVE_SEND);
+	/* What a file must not hold up: a command topic and a call. */
+	manifest("server", "[Module]\nExec=%s/server\n"
+			   "[Serve adminonly]\nRequest=depth\nReply=depth\nAllow=admin topside:admin\n", T_toys);
+	manifest("pilotread", "[Module]\nExec=%s/listener --topic pilot.depth\n[Subscribe pilot.depth]\n", T_toys);
 	setup_side(&T, "files", FILES_CONF);
 	manifest("bridge", "[Module]\nExec=/usr/bin/env HANGAR_BRIDGE_TEST_FILE_CORRUPT=bad.bin %s %s\n[Bridge]\n%s", bridge_bin,
 		 T.conf, SERVE_SEND);
+	manifest("pilot", "[Module]\nExec=%s/talker --topic pilot.depth --rate 50\n"
+			  "[Publish pilot.depth]\nType=depth\nRate=50\n", T_toys);
+	manifest("tester", "[Module]\nExec=/bin/true\n[Restart]\nPolicy=never\n"
+			   "[Call server.adminonly]\nRequest=depth\nReply=depth\n");
 	start(&V);
 	start(&T);
 	struct bridge_link lv, lt;
@@ -1961,6 +1992,21 @@ static void files_run(void)
 	if (!up || !ev || !et)
 		return;
 	struct bridge_file fv, ft;
+	/* The pilot's topic on the vehicle, and the first call across (which
+	 * waits for the request and reply topics to exist on both sides). */
+	use(&V);
+	struct pilot_seen ps = { 0 };
+	uint64_t tw = now_ms();
+	while (!(ps.sub = hg_sub_open("pilot.depth", &DEPTH_TYPE)) && now_ms() - tw < 5000)
+		sleep_ms(20);
+	int called = 0;
+	use(&T);
+	while (!called && now_ms() - tw < 10000)
+		called = run_cli(out, sizeof out, 3000, "call", "server.adminonly", "depth_m=1.5", "--timeout", "1000",
+				 (char *)NULL) == 0 && strstr(out, "HG_OK");
+	pilot_look(&ps);
+	ps.msgs = 0;
+	ps.gaps = ps.late = 0;
 
 	/* One file down: nothing under its name until it is whole and checked. */
 	size_t na = 150000;
@@ -1968,10 +2014,29 @@ static void files_run(void)
 	outbox_put(&T, "a.hgw", a, na);
 	uint64_t t0 = now_ms();
 	uint64_t id = send_file(&T, "weights", "a.hgw", out, sizeof out);
-	long part = wait_part(&V, "weights", 20000, 5000);
+	long part = 0;
+	while (part < 20000 && now_ms() - t0 < 5000) {
+		part = wait_part(&V, "weights", 20000, 40);
+		pilot_look(&ps);
+	}
 	arrived_path(&V, "weights", "a.hgw", p, sizeof p);
 	int early = access(p, F_OK) == 0;
-	int got_v = wait_file(ev, id, 8000, &fv), got_t = wait_file(et, id, 3000, &ft);
+	/* A call across while the file is on its way. */
+	char cout[512];
+	use(&T);
+	uint64_t tc = now_ms();
+	int mid = run_cli(cout, sizeof cout, 3000, "call", "server.adminonly", "depth_m=2.5", "--timeout", "1000",
+			  (char *)NULL) == 0 && strstr(cout, "HG_OK") && strstr(cout, "2.5");
+	uint64_t call_ms = now_ms() - tc;
+	long part_after = wait_part(&V, "weights", 1, 0);
+	pilot_look(&ps);
+	/* The pilot's topic through the transfer: every message, none late. */
+	int got_v = 0;
+	while (!got_v && now_ms() - t0 < 10000) {
+		got_v = wait_file(ev, id, 40, &fv);
+		pilot_look(&ps);
+	}
+	int got_t = wait_file(et, id, 3000, &ft);
 	uint64_t took = now_ms() - t0;
 	hash_hex(a, na, hex);
 	struct stat st;
@@ -1988,6 +2053,14 @@ static void files_run(void)
 	       "the same bytes, the hash both sides name is the file's, from %s, mode %o, taken from the outbox; %llu ms at "
 	       "FileRate=800kbit%s%s",
 	       part, fv.state, ft.state, fv.from, mode, (unsigned long long)took, id ? "" : ": ", id ? "" : out);
+	EXPECT(called && mid && part_after > 0 && part_after < (long)na,
+	       "hangar call server.adminonly from the topside with the file on its way (%ld of 150000 bytes across when it "
+	       "returned): answered, %llu ms with the command's start",
+	       part_after, (unsigned long long)call_ms);
+	EXPECT(ps.msgs >= (int)(took / 20) * 8 / 10 && ps.gaps == 0 && ps.late < 100000000ull,
+	       "pilot.depth (command priority, 50 Hz) on the vehicle through the transfer: %d messages in %llu ms, %llu "
+	       "skipped, at most %.1f ms between two",
+	       ps.msgs, (unsigned long long)took, (unsigned long long)ps.gaps, (double)ps.late / 1e6);
 	/* FileRate holds it: 150 KB at 100 KB/s is 1.5 s. */
 	EXPECT(took >= 1200, "FileRate=800kbit: 150 KB took %llu ms (1500 at the rate)", (unsigned long long)took);
 
@@ -2089,6 +2162,7 @@ static void files_run(void)
 		{ "weights", "absent.hgw", "No such file", "a file that is not in the outbox" },
 		{ "weights", "big.hgw", "MaxSize", "a file over the section's MaxSize" },
 		{ "weights", "link.hgw", "outbox/link.hgw", "a symbolic link in the outbox (to the bridge's key)" },
+		{ "weights", "hard.hgw", "one link", "a second hard link to a file elsewhere (the bridge's key)" },
 		{ "nosuch", "x.hgw", "no such [Files]", "a destination bridge.conf does not have" },
 		{ "logs", "x.hgw", "no such [Files]", "a destination that goes the other way" },
 		{ "closed", "x.hgw", "Allow", "a destination whose Allow= does not name the caller" },
@@ -2096,11 +2170,15 @@ static void files_run(void)
 	unsigned char *big = pattern(600000, 7);
 	outbox_put(&T, "big.hgw", big, 600000);
 	outbox_put(&T, "x.hgw", d2, 100);
-	char key[1024], link[1024];
+	char key[1024], slink[1024];
 	tfmt(key, sizeof key, "%s/etc/hangar/bridge.key", T.root);
-	tfmt(link, sizeof link, "%s/var/lib/hangar/bridge/outbox/link.hgw", T.root);
-	if (symlink(key, link) < 0)
+	tfmt(slink, sizeof slink, "%s/var/lib/hangar/bridge/outbox/link.hgw", T.root);
+	if (symlink(key, slink) < 0)
 		printf("    symlink: %s\n", strerror(errno));
+	char hard[1024];
+	tfmt(hard, sizeof hard, "%s/var/lib/hangar/bridge/outbox/hard.hgw", T.root);
+	if (link(key, hard) < 0)
+		printf("    link: %s\n", strerror(errno));
 	int refused = 0;
 	char last[200] = "";
 	for (size_t i = 0; i < sizeof ref / sizeof ref[0]; i++) {
@@ -2112,12 +2190,21 @@ static void files_run(void)
 	}
 	arrived_dir(&V, "weights", &vis, &hid, &pb);
 	tfmt(p, sizeof p, "%s/var/lib/hangar/bridge/outbox/x.hgw", T.root);
-	int quiet = vis == 3 && hid == 0 && access(p, F_OK) == 0 && access(link, F_OK) == 0;
+	int quiet = vis == 3 && hid == 0 && access(p, F_OK) == 0 && access(slink, F_OK) == 0;
 	EXPECT(refused == (int)(sizeof ref / sizeof ref[0]) && quiet,
 	       "send refuses, each with its reason: a name with a path, a hidden name, a missing file, one over MaxSize, a "
-	       "symbolic link, an unknown destination, one of the other direction, a caller the section does not allow "
+	       "symbolic link, a hard link to a file elsewhere, an unknown destination, one of the other direction, a "
+	       "caller the section does not allow "
 	       "(%d of %zu%s%s); nothing was taken from the outbox, nothing arrived",
 	       refused, sizeof ref / sizeof ref[0], last[0] ? "; " : "", last);
+
+	/* send is never the other side's to call: the topside's requests went
+	 * down on its mirrored admin topic, and the vehicle's bridge answered
+	 * none of them. */
+	use(&V);
+	EXPECT(topic_seq("bridge.rep") == 0 && topic_seq("hangar.topside.admin.req") > 0,
+	       "the topside's %llu requests reached the vehicle on hangar.topside.admin.req; its bridge answered %llu of them",
+	       (unsigned long long)topic_seq("hangar.topside.admin.req"), (unsigned long long)topic_seq("bridge.rep"));
 
 	/* And up: the vehicle sends, the topside keeps. */
 	outbox_put(&V, "dive.log", d1, 50000);

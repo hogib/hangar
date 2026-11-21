@@ -11,7 +11,8 @@ lib/nn only.
 ## What it does
 
 - Reads its spec (`Name`, `Dataset`, `Arch`, `TickBudget`; `DatasetDir`, by default
-  `$HANGAR_ROOT/etc/hangar/datasets`) and the dataset spec; refuses a dataset an input
+  `$HANGAR_ROOT/etc/hangar/datasets`; `Incoming`, the directory `load_weights` finds
+  its files in, by default `incoming/` in the state directory) and the dataset spec; refuses a dataset an input
   join of which would have to wait (`hg_ds_policy_usable`), and a module name that is
   not `policy_<Name>`.
 - Ticks on each anchor message: the row's `input` parts built with `hg_ds_join` and
@@ -84,12 +85,26 @@ manager checks its schema is a dataset row (the six header fields first,
 itself: the pairer does, from the parts' types, and the policy's check 4 compares the
 hash a model was trained on with the one it builds the same way.
 
-## Until the bridge, L2 and sim_vehicle
+## Where the weights file comes from
 
-- `load_weights_req.name` names a file in `<state dir>/incoming/`: until the bridge's
-  `bridge.send` (docs/08) puts it there, the trainer writes it there itself
-  (`hangar.learn.deploy`, marked `until the bridge`), which only works where the trainer
-  and the policy share a file system (the bench, the sim).
+- `load_weights_req.name` names a file in the policy's incoming directory. By default
+  that is `<state dir>/incoming/`, which the policy makes and owns: a trainer on the
+  same machine writes the file there (`hangar.learn.deploy` with `via="local"`: the
+  bench, the sim).
+- Across the tether the file is sent with the bridge's `bridge.send` (docs/08 "Files")
+  and arrives in the vehicle bridge's own directory,
+  `/var/lib/hangar/bridge/files/policy_<name>/`. The policy's spec names that
+  directory as `Incoming=`; the policy reads there and needs no right to write. The
+  bridge does not write into the policy's state directory, and the policy's checks 1
+  to 8 are what stands between a file that arrived and a model that runs. With
+  `Incoming=` the policy does not make the directory, and its removal of the file
+  after a load fails where it may not write: the bridge keeps the newest `MaxFiles`.
+- Tested with `Incoming=` in `python/tests/test_deploy_tether.py` (two roots, two
+  bridges, one user for every module); the suite here uses the default. Not tested:
+  the policy and the bridge under different users.
+
+## L2 and sim_vehicle
+
 - The suite drives the toy dataset's topics itself; a policy on `nav.state` waits for
   the L2 estimator, and closed-loop runs for sim_vehicle.
 

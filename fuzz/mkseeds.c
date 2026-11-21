@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "blake2s.h"
 #include "bridge_conf.h"
 #include "depth.h"
 #include "fuzz_bridge.h"
@@ -513,6 +514,161 @@ static void bridge_seeds(void)
 	body.n = 0;
 	op(&s, FZB_TICK, &body);
 	put("bridge", "raw", &s);
+
+	/* Files (docs/08 "Files"), on the vehicle, which receives [Files w]: a
+	 * file whole (begin, two data records, the end with its hash), then the
+	 * same id begun again (answered done), then one whose hash is wrong. */
+	unsigned char content[1500], hash[32];
+	for (size_t i = 0; i < sizeof content; i++)
+		content[i] = (unsigned char)(i * 31 + 7);
+	blake2s(hash, 32, NULL, 0, content, sizeof content);
+	for (int wrong = 0; wrong < 2; wrong++) {
+		mode = FZB_KEYED | FZB_CLOCK | FZB_VEHICLE | FZB_MIRROR_OK;
+		add(&s, &mode, 1);
+		stream.n = 0;
+		body.n = 0;
+		le64(&body, 0x1122334455667788ull);
+		le64(&body, sizeof content);
+		name8(&body, "w");
+		name8(&body, "model.hgw");
+		name8(&body, "admin:pilot");
+		record(&stream, 4, &body);
+		body.n = 0;
+		le64(&body, 0x1122334455667788ull);
+		le64(&body, 0);
+		add(&body, content, 1024);
+		record(&stream, 5, &body);
+		op(&s, FZB_STREAM, &stream);
+		stream.n = 0;
+		body.n = 0;
+		le64(&body, 0x1122334455667788ull);
+		le64(&body, 1024);
+		add(&body, content + 1024, sizeof content - 1024);
+		record(&stream, 5, &body);
+		body.n = 0;
+		le64(&body, 0x1122334455667788ull);
+		hash[0] ^= (unsigned char)wrong;
+		add(&body, hash, 32);
+		record(&stream, 6, &body);
+		body.n = 0;
+		le64(&body, 0x1122334455667788ull);
+		le64(&body, sizeof content);
+		name8(&body, "w");
+		name8(&body, "model.hgw");
+		name8(&body, "admin:pilot");
+		record(&stream, 4, &body);
+		op(&s, FZB_STREAM, &stream);
+		body.n = 0;
+		op(&s, FZB_TICK, &body);
+		put("bridge", wrong ? "file-bad-hash" : "file-whole", &s);
+	}
+
+	/* What a peer may not name: a path as the name, as the destination; a
+	 * destination of the other direction; a size past MaxSize; data for no
+	 * file, out of place, past the size; an abort. */
+	mode = FZB_KEYED | FZB_CLOCK | FZB_VEHICLE | FZB_MIRROR_OK;
+	add(&s, &mode, 1);
+	static const char *bad[][2] = { { "w", "../../x" }, { "w", "/etc/passwd" }, { "w", ".part-0000000000000001" },
+					{ "../w", "x" }, { "logs", "x" }, { "w", "a/b" }, { "w", ".." } };
+	stream.n = 0;
+	for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+		body.n = 0;
+		le64(&body, 100 + i);
+		le64(&body, 10);
+		name8(&body, bad[i][0]);
+		name8(&body, bad[i][1]);
+		name8(&body, "trainer");
+		record(&stream, 4, &body);
+		body.n = 0;
+		le64(&body, 100 + i);
+		le64(&body, 0);
+		adds(&body, "0123456789");
+		record(&stream, 5, &body);
+	}
+	op(&s, FZB_STREAM, &stream);
+	stream.n = 0;
+	body.n = 0;
+	le64(&body, 7);
+	le64(&body, (64u << 10) + 1);
+	name8(&body, "w");
+	name8(&body, "big");
+	name8(&body, "");
+	record(&stream, 4, &body);
+	body.n = 0;
+	le64(&body, 8);
+	le64(&body, 20);
+	name8(&body, "w");
+	name8(&body, "ok.bin");
+	name8(&body, "");
+	record(&stream, 4, &body);
+	body.n = 0;
+	le64(&body, 8);
+	le64(&body, 5); /* not where the file is */
+	adds(&body, "0123456789");
+	record(&stream, 5, &body);
+	body.n = 0;
+	le64(&body, 9);
+	le64(&body, 20);
+	name8(&body, "w");
+	name8(&body, "ok.bin");
+	name8(&body, "");
+	record(&stream, 4, &body);
+	body.n = 0;
+	le64(&body, 9);
+	le64(&body, 0);
+	adds(&body, "0123456789012345678901234"); /* past its size */
+	record(&stream, 5, &body);
+	body.n = 0;
+	le64(&body, 10);
+	le64(&body, 20);
+	name8(&body, "w");
+	name8(&body, "ok.bin");
+	name8(&body, "");
+	record(&stream, 4, &body);
+	body.n = 0;
+	le64(&body, 10);
+	record(&stream, 7, &body);
+	op(&s, FZB_STREAM, &stream);
+	body.n = 0;
+	op(&s, FZB_TICK, &body);
+	put("bridge", "file-refused", &s);
+
+	/* The sending side, on the topside: bridge.send of a file of the outbox,
+	 * a tick (the begin), the status ready at 0, ticks (the data, the end),
+	 * done; then one refused by the other side, one the other side claims to
+	 * be ahead of, and names send does not take. */
+	mode = FZB_KEYED | FZB_CLOCK | FZB_MIRROR_OK;
+	add(&s, &mode, 1);
+	struct buf none = { 0 };
+	for (int k = 0; k < 3; k++) {
+		body.n = 0;
+		add(&body, "\0", 1);
+		add(&body, content, sizeof content);
+		op(&s, FZB_SEND, &body);
+		op(&s, FZB_TICK, &none);
+		body.n = 0;
+		add(&body, k == 1 ? "\3" : "\1", 1);
+		le64(&body, k == 2 ? 999999 : 0);
+		if (k == 1)
+			adds(&body, "no room");
+		op(&s, FZB_FSTATUS, &body);
+		op(&s, FZB_TICK, &none);
+		op(&s, FZB_TICK, &none);
+		body.n = 0;
+		add(&body, "\2", 1);
+		le64(&body, sizeof content);
+		op(&s, FZB_FSTATUS, &body);
+	}
+	body.n = 0;
+	add(&body, "\2", 1);
+	add(&body, "../x\0\0\0\0rest", 12);
+	op(&s, FZB_SEND, &body);
+	body.n = 0;
+	add(&body, "\1", 1); /* logs goes up: not the topside's to send */
+	adds(&body, "data");
+	op(&s, FZB_SEND, &body);
+	put("bridge", "file-send", &s);
+	free(none.p);
 	free(s.p);
 	free(body.p);
 	free(stream.p);

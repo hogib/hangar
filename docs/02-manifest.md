@@ -301,10 +301,13 @@ on them by futex, and reads the topics its globs match on a 10 ms timer of its o
 `[Calls]` it takes by glob, `*.req *.rep`, since the other side's callers are not known
 before the handshake. It also adds the
 bridge's own outputs, `bridge.<role>.link` (rated), `bridge.<role>.budget` (rated, the
-rate left for video: [08-bridge](08-bridge.md#video-and-the-tether)) and
-`bridge.<role>.files`, and its method `send` with the `bridge.rep` that serving it
+rate left for video: [08-bridge](08-bridge.md#video-and-the-tether)) and, when the
+configuration has a `[Files]` section, `bridge.<role>.files`. The bridge's method
+`send` is a `[Serve send]` section of its manifest like any method
+([08-bridge](08-bridge.md#the-bridge-module)), with the `bridge.rep` that serving it
 implies; `bridge.rep`, like the module's name, exists on both machines and is never
-mirrored. At most one module per machine.
+mirrored, and `send` is never one of the methods `[Calls] Remote=` makes callable
+from the other side. At most one module per machine.
 
 The topics the bridge receives keep the rate and staleness its `[Mirror]` sections give
 them, for their readers, but count neither for the bridge's readiness nor against its

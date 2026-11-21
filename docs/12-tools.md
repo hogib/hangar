@@ -258,7 +258,7 @@ any of it.
 | `hangar.topic` | A live topic read in place: `Topic(name)` or `open_topic(name, start="newest"` or `"oldest")`, `read()` for what is new, each message with its `seq`, `stamp_ns`, `flags`, `gap`, `refs` and payload, `decode()` through the file's own schema. It follows a file its writer replaced, as `hg_next` does. It does not wait: a caller polls |
 | `hangar.record` | A `.hgr` file: `open_recording(path)`, records by index, `find_seq`, `find_stamp`, and `array()`, the whole file as one structured `numpy.memmap` ([06-recorder](06-recorder.md#recording-files-hgr)) |
 | `hangar.dataset` | A dataset spec (`DatasetSpec.parse`, as lib/hg reads it, except that `Where` is not compiled) and a file of rows: `open_dataset(path)`, `roles()`, `fields("input")`, `fields("label")`, `rows()`, `array()`; rows with their `boot_id`, `emitted_ns` and their `reset`, `masked` and `late` flags ([06-recorder](06-recorder.md#the-row)) |
-| `hangar.learn` | The trainer's side of the loop: `stream` and `open_dataset` (a replay buffer, chunks with their loss mask, stateful chunks for recurrent models), `carry`, `with_loss`, `export`, `deploy`, `revert`, `watch`, `runtime_info`, `call` ([09-learning](09-learning.md#training)) |
+| `hangar.learn` | The trainer's side of the loop: `stream` and `open_dataset` (a replay buffer, chunks with their loss mask, stateful chunks for recurrent models), `carry`, `with_loss`, `export`, `deploy` (with `deploy_route` and `send_file`: the weights across the tether with `bridge.send`), `revert`, `watch`, `runtime_info`, `call` ([09-learning](09-learning.md#training)) |
 | `hangar.nn` | The weights file: `hgw` (writer, reader, the architecture hash), `reference` (lib/nn's ops in pure Python, the source of the probes and of lib/nn's golden vectors), `export_torch` (a PyTorch model to a graph, checked against the model itself) |
 
 Submodules are imported by name (`from hangar import topic`). `python/tests/run.py` runs
@@ -278,18 +278,29 @@ topside, which is x86-64; a compiled read for ARM is not built.
 `hangar-admin`; the vehicle sees them as `topside:admin:<user>`, which passes only where
 `Allow` names `topside:admin`, and any other user is refused by the control socket. This
 holds whether the script runs from a shell or as the topside module `trainer`: the
-package does not open a request topic of its own. `deploy` copies the weights file into
-the policy's `incoming` directory itself, which works only where the trainer and the
-policy share a file system (the bench, the simulator).
+package does not open a request topic of its own. `deploy` sends the weights file to a
+policy on the other machine with the bridge's `bridge.send`, also an operator's call
+here, so the `[Files]` section's `Allow` names `admin`
+([08-bridge](08-bridge.md#files)); on the policy's own machine (the bench, the
+simulator) it copies the file into the policy's incoming directory.
 
 **Not built.** What the design has and this version does not:
 
 - The trainer as a caller in its own name: `hangar.learn` doing what `hg_init` does
   (the wiring from `HANGAR_WIRING`, its module page, `trainer.req` opened through the
   manager) and publishing its requests there, so that the vehicle sees
-  `topside:trainer` ([09-learning](09-learning.md#training)). It needs a compiled
-  helper for the seqlock write and the futex wake.
-- `deploy` sending the file with `bridge.send` ([08-bridge](08-bridge.md)).
+  `topside:trainer` and the bridge's `[Files]` sections `trainer`
+  ([09-learning](09-learning.md#training)). A caller is the writer of its request
+  topic, and the manager gives that topic to the module's main process alone, by the
+  pid of the control socket's peer: a `hangar call` the script starts is another
+  process, so no option of the command can stand for the module. The script itself
+  has to ask the manager for `trainer.req` (the descriptor comes over the control
+  socket), keep the module's page, and publish: the seqlock write and the futex wake
+  of lib/hg, which Python cannot do soundly on its own. So it needs lib/hg's call path
+  bound into Python (a shared library of lib/hg and a `ctypes` layer, or a compiled
+  extension). The other way, the manager publishing on its admin topic in a module's
+  name, would change what that topic's `caller` field means to every server, and is
+  not taken.
 - Converters to MCAP (for Foxglove) and Parquet, and a report module (requests and
   replies paired by `call_id`, gaps, plots). Loop latency is `hangar dataset
   loop-latency`, above.
