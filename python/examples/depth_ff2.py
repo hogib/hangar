@@ -481,12 +481,12 @@ class _OracleStream(object):
             return 0
     replay = _Empty()
 
-    def lineage(self):
+    def lineage(self, session="live"):
         return []
 
-    def probes(self, n=8):
+    def probes(self, n=8, count=1):
         import numpy
-        return [policy_samples(n, numpy.random.default_rng(1)).tolist()]
+        return [policy_samples(n, numpy.random.default_rng(1 + k)).tolist() for k in range(count)]
 
 
 def main():

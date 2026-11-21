@@ -40,6 +40,11 @@ def row(seq, accel_made, vel_z, integral, heave, flags=0):
                       [accel_made, pwm, pwm, pwm, pwm, 7.0], False)
 
 
+def depth_ff2_inputs():
+    import depth_ff2
+    return list(depth_ff2.INPUTS)
+
+
 class Spec(unittest.TestCase):
     def test_usable_by_a_policy_and_waits_for_nothing(self):
         with open(os.path.join(PROFILE, "datasets", "depth_ff.dataset")) as f:
@@ -242,6 +247,22 @@ class Model(unittest.TestCase):
         with open(os.path.join(PROFILE, "policies", "depth_ff.policy")) as f:
             arch = [ln.split("=")[1].strip() for ln in f if ln.startswith("Arch=")][0]
         self.assertEqual("%016x" % hgw.arch_hash(g), arch)
+
+    def test_the_oracle_is_exported(self):
+        # --oracle: a model no rows trained, exported through learn.export
+        # with a stand-in for the stream. The stand-in had fallen behind
+        # export (lineage() without the session) and the command failed.
+        import subprocess
+        import tempfile
+        from hangar.nn import hgw
+        out = os.path.join(tempfile.mkdtemp(), "oracle.hgw")
+        p = subprocess.run([sys.executable, os.path.join(REPO, "python", "examples", "depth_ff2.py"), "--oracle",
+                            "--steps", "30", "--out", out], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stdout.decode())
+        f = hgw.read(out)
+        self.assertEqual([b.field for b in f.graph.inputs], depth_ff2_inputs())
+        self.assertEqual(f.header.lineage, [])
+        self.assertGreaterEqual(f.probes[0].steps, 8)
 
     def test_output_within_the_bound_whatever_the_weights(self):
         import depth_ff2
