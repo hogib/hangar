@@ -814,8 +814,10 @@ places. The integral of absolute error over both steps was 4.49 and 4.51 m s wit
 first model (4.44 to 4.58 over the ten blocks), **4.25 with the second** (4.15 to 4.32),
 lower in every run than before and after it; the controller alone 8.18; the two oracles
 4.44 and 4.20. So the second model follows the payload, and gets what there was to get.
-**These five runs are provisional**: they were made with other work on the machine and
-are to be made again on a quiet one.
+Those five runs were made with other work on the machine. Made again on a quiet one,
+the same day: 4.54 and 4.55 with the first model (4.44 to 4.58), **4.25 with the
+second** (4.19 to 4.31), lower in every run; the oracles 4.43, 4.45 and 4.21. The
+quiet set is the one to quote.
 
 What that result does not say. The gain is 5 % where the residual as such gives 45 %,
 and the gap between the two models' ranges is narrower than either range. It is all on

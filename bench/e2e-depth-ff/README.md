@@ -8,8 +8,8 @@ trim and inverts it: on 1 m steps the integral of absolute error falls by a thir
 half and a 4 N buoyancy change moves the vehicle 2.7 cm instead of 33, in each of
 five runs, as much as an oracle gains. Whether a later model follows a vehicle that
 changes was not shown by those runs; [Adaptation](#adaptation-a-change-the-policy-cannot-read)
-tests it with a change none of the policy's inputs shows, and in five provisional
-runs the model trained since is better than the one from before, by 5 %, at the
+tests it with a change none of the policy's inputs shows, and in five runs on a
+quiet machine the model trained since is better than the one from before, by 6 %, at the
 price of more thruster reversals and of the vehicle it was first trained on. docs/09
 describes the second design; what the first half quotes from docs/09 is its text at
 the time.
@@ -836,9 +836,9 @@ It says less than the first version claimed, on purpose. The network does not le
 from the acceleration and inverts it, and without an acceleration worth the name there
 is no label. And "the correction follows the vehicle as it changes" is shown for the
 loop's mechanics and for a change the policy reads from an input. For a change it has
-to learn there is one case, provisional until it is run on a quiet machine: a
+to learn there is one case, run twice, the second time on a quiet machine: a
 payload's drag, after which the model trained since was better than the one from
-before in each of five runs, by 0.21 m s in 4.5 (the oracles: 0.23), all of it on the
+before in each of five runs, by 0.27 m s in 4.5 (the oracles: 0.23), all of it on the
 step down, with two to four times the thruster reversals, and worse than the first
 model once the payload is off again. The changes tried before it (buoyancy, supply)
 and most of those tried on the few-line loop (mass, supply) leave a later model
@@ -979,16 +979,63 @@ thrusters' reversals and the policy's share of ticks at its bound in every block
 alone (A1). By the argument above M2 is expected to be worse there than M1; by how
 much is the cost of having one model at a time.
 
-### The runs of 2026-11-21: provisional
+### Again on a quiet machine, 2026-11-21: shown
 
-**These numbers are provisional.** The machine was not quiet: three other agents
+The same command (`E2E_LABEL=quiet tools/sim/e2e-adapt.sh`, the tree at `517dade`),
+once, seeds 1 to 5, with nothing else running: the load average was 0.1 to 0.6 at the
+start of each pair and 1.0 at its highest. No interval of a 50 Hz topic was over
+25 ms in any run, no message or row was lost, nothing was demoted, and no run was
+unfit. Reports: [2026-11-21-adapt-quiet/](2026-11-21-adapt-quiet/). **These are the
+numbers to quote**; the set made first, under load, is kept below with its analysis,
+and the two agree.
+
+With the payload, both steps together (`J`, m s):
+
+| Seed | Controller alone (P4) | M1 (P1) | **M2 (P2)** | M1 again (P3) | M1's mean less M2 | Reversals per second: P4, P1, P2, P3 |
+|---|---|---|---|---|---|---|
+| 1 | 8.19 | 4.54 | **4.31** | 4.56 | 0.24 | 0.03, 0.09, 0.49, 0.11 |
+| 2 | 8.20 | 4.52 | **4.26** | 4.54 | 0.27 | 0.03, 0.23, 0.91, 0.14 |
+| 3 | 8.18 | 4.57 | **4.19** | 4.55 | 0.37 | 0.03, 0.03, 0.66, 0.11 |
+| 4 | 8.20 | 4.57 | **4.19** | 4.58 | 0.38 | 0.03, 0.31, 0.54, 0.23 |
+| 5 | 8.17 | 4.44 | **4.25** | 4.48 | 0.21 | 0.03, 0.37, 0.26, 0.14 |
+| median (smallest to largest) | 8.19 (8.17 to 8.20) | 4.54 (4.44 to 4.57) | **4.25** (4.19 to 4.31) | 4.55 (4.48 to 4.58) | 0.27 (0.21 to 0.38) | 0.03, 0.23, 0.54, 0.14 |
+
+The oracle runs: the bare vehicle's oracle 4.43 (4.40 to 4.46) and 4.45 (4.41 to
+4.46), the payload's **4.21** (4.19 to 4.23), a gain of 0.23 (0.17 to 0.27) m s.
+
+By the criterion written down before any run: the oracles differ in each of the five
+runs, M2 is lower than M1 before and after it in each of the five, and the largest M2
+value, 4.31, is below the smallest of the ten M1 values, 4.44. **Adaptation is
+shown.** What the loaded set said of it holds here too:
+
+- **It is small**: 6 % of `J`, where the residual as such gives 45 % over the
+  controller alone. The gap between the two ranges is 0.13 m s, against ranges 0.12 and
+  0.14 wide.
+- **It is all on the step from 3 to 4 m**: M1 1.86 (1.84 to 1.92) and 1.89 (1.82 to
+  1.93), M2 **1.63** (1.62 to 1.71). From 4 to 3 m, 2.65 and 2.65 against 2.57 (2.56
+  to 2.68): inside the spread.
+- **M2 forgets the bare vehicle**: with the payload off, 3.23 (3.19 to 3.27) against
+  M1's 3.10 (3.04 to 3.14), worse in every run, the ranges apart; its overshoot on the
+  3 to 4 m step is 7.0 % (4.3 to 10.6) against 0.9.
+- **M2 reverses the thrusters more**: 0.54 a second (0.26 to 0.91) with the payload
+  against M1's 0.23 and 0.14, and 0.80 (0.23 to 1.37) without it against 0.17; the
+  controller alone 0.03. The payload's oracle does not (0.49 against 0.66 and 0.57).
+- **Not separated here either**: M2 was trained longer and on richer rows than M1,
+  and no model trained as long on the bare vehicle was run.
+
+One thing differs from the other nine runs and is not explained: in learned seed 1
+the median `nav.depth` to `thr.cmd` latency was 40.7 ms (p99 61.0), where every other
+run of both sets has 58 to 60. Its `J` values are inside the other seeds' ranges.
+
+### The runs of 2026-11-21, under load: the first set
+
+**These numbers were the provisional ones.** The machine was not quiet: three other agents
 were building and running test suites on it. The load average was 0.3 to 4.0 at the
 start of each pair of runs and reached 5.3 during the first (12 threads); the table
 has it per run. The runs were made two at a time, a learned and an oracle run of one
 seed together, each on six threads of its own (`taskset -c 0-5` and `6-11`), by
 `tools/sim/e2e-adapt.sh` at `ce24ed5`, once, seeds 1 to 5, none repeated. The set is
-to be made again on a quiet machine with the same command
-(`E2E_LABEL=quiet tools/sim/e2e-adapt.sh`); until then nothing below is final.
+made again on a quiet machine since (above), with the same verdict.
 Reports: [2026-11-21-adapt-provisional/](2026-11-21-adapt-provisional/), whose
 `summary.md` has every metric per seed.
 
@@ -1031,8 +1078,8 @@ vehicle with the payload in M2's:
 | 5 | 8.19 | 4.43 | **4.20** | 4.42 | 0.23 | 0.03, 0.63, 0.54, 0.43 |
 | median (smallest to largest) | 8.20 (8.19 to 8.21) | 4.44 (4.43 to 4.45) | **4.20** (4.19 to 4.23) | 4.45 (4.42 to 4.47) | 0.23 (0.22 to 0.26) | 0.03, 0.63, 0.40, 0.57 |
 
-**The criterion, as `--summarise` applied it: adaptation is shown** (provisionally:
-above).
+**The criterion, as `--summarise` applied it: adaptation is shown**, in this set and
+in the quiet one above.
 
 1. The oracles differ: 4.19 to 4.23 m s against 4.42 to 4.47, lower in each of the five
    runs than before and after. There was something to see: 0.23 m s, 5 % of `J`.

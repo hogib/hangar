@@ -1,0 +1,10 @@
+tools/sim/e2e-adapt.sh: seeds 1 2 3 4 5; 2 runs at a time; pinned: 1; extra: none
+tree: 517dade
+machine: Linux 7.3.4-arch1-2 x86_64; 12 threads; AMD Ryzen 5 5600H with Radeon Graphics
+governor: performance
+before learned 1 oracle 1: 2026-11-21T22:08:19+03:00; uptime: 22:08:19 up 1 day,  2:19,  1 user,  load average: 0.15, 0.84, 1.11
+before learned 2 oracle 2: 2026-11-21T22:25:53+03:00; uptime: 22:25:53 up 1 day,  2:36,  1 user,  load average: 0.11, 0.26, 0.53
+before learned 3 oracle 3: 2026-11-21T22:43:27+03:00; uptime: 22:43:27 up 1 day,  2:54,  1 user,  load average: 0.35, 0.40, 0.44
+before learned 4 oracle 4: 2026-11-21T23:01:02+03:00; uptime: 23:01:02 up 1 day,  3:11,  1 user,  load average: 0.10, 0.20, 0.29
+before learned 5 oracle 5: 2026-11-21T23:18:36+03:00; uptime: 23:18:36 up 1 day,  3:29,  1 user,  load average: 0.59, 0.46, 0.38
+after the last run: 2026-11-21T23:36:11+03:00; uptime: 23:36:11 up 1 day,  3:47,  1 user,  load average: 0.55, 0.43, 0.38
