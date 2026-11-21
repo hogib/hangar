@@ -19,7 +19,7 @@ import sys
 import time
 
 GROUPS = [
-    ('hangar', ('hangard', 'hangar-safety', 'hangar-mux', 'hangar-mavlink', 'hangar-encoder', 'dawn-patrold', 'recorder', 'pairer')),
+    ('hangar', ('hangard', 'hangar-safety', 'hangar-mux', 'hangar-mavlink', 'hangar-encoder', 'hangar-bridge', 'dawn-patrold', 'recorder', 'pairer')),
     ('electric-eye', ('eeye', 'hellion', 'ffmpeg', 'rpicam-vid')),
     ('MAVROS relay', ('mavros_node',)),
     # bench/ros2's pair and what a middleware runs beside it (iceoryx's RouDi, Zenoh's router)
