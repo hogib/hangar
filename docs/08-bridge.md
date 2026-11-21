@@ -616,8 +616,8 @@ side is given a path:
   `Incoming=` in its spec ([09-learning](09-learning.md#policy-modules)).
 
 A name is 1 to 64 of `A-Z a-z 0-9 . _ -` and does not begin with a `.`; both bridges
-check it. There is no `/` in it and no `..`, so a name joined to a directory stays in
-it.
+check it. There is no `/` in it and it is neither `.` nor `..`, so a name joined to a
+directory stays in it.
 
 **Sending.** `bridge.send {dest, name}` is a call to the bridge of the caller's own
 machine. It is refused, with the reason, when the configuration has no `[Files <dest>]`
@@ -674,7 +674,8 @@ restarted, since a restarted bridge removes what an earlier one left unfinished.
 sending bridge that restarts forgets its queue: those files are not sent, and no
 message on its side reports them failed (a caller that waits for one gives up on its
 own timeout). On either side a transfer in which nothing has moved
-for 60 s is given up: the receiver removes what it wrote, the sender reports the file
+for 60 s (for a queued file, counted from its turn) is given up: the receiver removes
+what it wrote, the sender reports the file
 failed.
 
 **How it ended.** `bridge.<role>.files`, an event topic, one message per transfer that

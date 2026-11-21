@@ -2282,19 +2282,27 @@ static void filestall_run(void)
 	int relinked = wait_link(&V, 1, 10000, &lv) && wait_link(&T, 1, 10000, &lt);
 	/* What was on the stream when the link went (the begin, then the
 	 * abort) may still come: the vehicle drops it as it reads it. */
-	outbox_put(&T, "c.hgw", a, 20000);
+	/* Two more, the second asked while the first is on its way: 250 KB at
+	 * 100 KB/s is longer than the 1.5 s wait, and the second waits behind
+	 * it for all of that without being given up. */
+	outbox_put(&T, "c.hgw", a, 250000);
+	outbox_put(&T, "d.hgw", a, 20000);
 	uint64_t idc = send_file(&T, "weights", "c.hgw", out, sizeof out);
-	struct bridge_file fc;
-	int got_c = wait_file(et2, idc, 8000, &fc);
+	uint64_t idd = send_file(&T, "weights", "d.hgw", out, sizeof out);
+	struct bridge_file fc, fd;
+	int got_c = wait_file(et2, idc, 10000, &fc);
+	int got_d = wait_file(et2, idd, 8000, &fd);
 	arrived_dir(&V, "weights", &vis, &hid, &pb);
 	arrived_path(&V, "weights", "b.hgw", p, sizeof p);
 	EXPECT(id && got_t && ft.state == 3 && relinked && access(p, F_OK) < 0,
 	       "the tether cut for longer than the wait: the topside's send ends failed (state %u, '%s'); with the link back, "
 	       "no b.hgw on the vehicle",
 	       ft.state, ft.reason);
-	EXPECT(idc && got_c && fc.state == 1 && arrived_is(&V, "weights", "c.hgw", a, 20000) && vis == 1 && hid == 0,
-	       "the next file after both failures: sent (state %u), the same bytes; it is the one file there, nothing hidden",
-	       fc.state);
+	EXPECT(idc && got_c && fc.state == 1 && arrived_is(&V, "weights", "c.hgw", a, 250000) && idd && got_d &&
+		       fd.state == 1 && arrived_is(&V, "weights", "d.hgw", a, 20000) && vis == 2 && hid == 0,
+	       "the next two files after both failures, the second queued behind the first for longer than the wait: sent "
+	       "(states %u, %u), the same bytes; they are the two files there, nothing hidden",
+	       fc.state, fd.state);
 	free(a);
 	hg_sub_close(ev);
 	hg_sub_close(et);

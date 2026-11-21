@@ -1698,6 +1698,10 @@ static void x_pop(int state, const char *reason)
 	close(x->fd);
 	F.nq--;
 	memmove(F.q, F.q + 1, (size_t)F.nq * sizeof F.q[0]);
+	/* The next one's turn starts now: the time it waited behind this one
+	 * is not time in which nothing of it moved. */
+	if (F.nq)
+		F.q[0].progress_ns = now_ns();
 }
 
 static void x_fail(const char *reason)

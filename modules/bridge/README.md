@@ -332,7 +332,10 @@ The other runs, each written for a review finding and seen to fail before its fi
   environment; 60 s in use). The topside's bridge restarted with 50 KB of 300 KB
   across: the vehicle reports the file failed and nothing is left. The tether cut
   before a send for longer than the wait: the topside reports it failed; with the
-  link back nothing of it is on the vehicle, and the next file goes through.
+  link back nothing of it is on the vehicle. Then two files, the second asked while
+  the first (250 KB, 2.5 s) is on its way: both arrive; the time a file waits in the
+  queue is not counted against it (before: the second was given up the moment its
+  turn came).
 - `filerekey`: both bridges forget their keys when the link goes down (the
   environment; in use the keys are kept). The tether cut with 60 KB of 300 KB
   across, mended: a new link, the sender begins the file again and goes on from byte
