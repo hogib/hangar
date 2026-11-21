@@ -68,11 +68,14 @@ static const char *current_test_name = "";
     printf("  %-4s %s\n", current_test_failures ? "FAIL" : "ok", #fn);         \
   } while (0)
 
+// A suite that ran no test has not passed: a filter that matches nothing
+// ($HD_ONLY in hangard's suites) is a failure, not a green run of nothing.
 #define TEST_MAIN_END()                                                        \
   do {                                                                         \
-    printf("%s: %d tests, %d failed checks\n",                                 \
-           checks_failed ? "FAILED" : "PASSED", tests_run, checks_failed);     \
-    return checks_failed ? 1 : 0;                                              \
+    int bad_ = checks_failed || !tests_run;                                    \
+    printf("%s: %d tests, %d failed checks\n", bad_ ? "FAILED" : "PASSED",     \
+           tests_run, checks_failed);                                          \
+    return bad_ ? 1 : 0;                                                       \
   } while (0)
 
 /* CPU used by a process, from /proc/<pid>/stat (utime + stime, in clock

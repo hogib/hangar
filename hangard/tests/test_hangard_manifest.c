@@ -300,6 +300,21 @@ static void fresh_set(void)
 	mf_set_init(&set, "vehicle", "installer", T_msg);
 }
 
+/* How many subscriptions to safety.state the module has, each checked to
+ * carry the publisher's type and rate. The caller checks the count: the
+ * checks in the loop say nothing when the loop finds none. */
+static int safety_state_subs(const struct mf_module *in)
+{
+	int n = 0;
+	for (int i = 0; i < in->n_subs; i++)
+		if (strcmp(in->subs[i].topic, "safety.state") == 0) {
+			n++;
+			CHECK(strcmp(in->subs[i].pub_type, "safety_state") == 0);
+			CHECK_EQ_INT(in->subs[i].rate_mhz, 10000);
+		}
+	return n;
+}
+
 /* Checks the set and expects name refused with a reason containing why at
  * the given line. */
 static void expect_graph(const char *name, int line, const char *why)
@@ -675,11 +690,7 @@ static void test_implicit(void)
 	CHECK_EQ_INT(in->n_subs, 2); // safety.state and hangar.vehicle.admin.req
 	CHECK(strcmp(in->subs[0].topic, "hangar.vehicle.admin.req") == 0 || strcmp(in->subs[0].topic, "safety.state") == 0);
 	// The implicit subscription to safety.state carries the publisher's type.
-	for (int i = 0; i < in->n_subs; i++)
-		if (strcmp(in->subs[i].topic, "safety.state") == 0) {
-			CHECK(strcmp(in->subs[i].pub_type, "safety_state") == 0);
-			CHECK_EQ_INT(in->subs[i].rate_mhz, 10000);
-		}
+	CHECK_EQ_INT(safety_state_subs(in), 1);
 	// A warning, not a refusal: a subscription nobody publishes.
 	fresh_set();
 	add("lonely", MOD "[Subscribe nobody.home]\n");
