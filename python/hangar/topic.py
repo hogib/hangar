@@ -2,8 +2,12 @@
 """A live topic, read in place (docs/01-topics.md): the file mapped
 read-only, the messages read as lib/hg's hg_next reads them. A slot holds
 message n whole when its seq word is 2n before and after the copy; a seq
-stepped over is a gap. The reader writes nothing, so it needs no wiring:
-any process that may read the topic directory may read the topic.
+stepped over is a gap. A file holds the messages after its first_seq: a
+reader opened "oldest" starts there (or at the oldest message safely in a
+ring that has wrapped), and when the writer replaces the file, the seqs
+between the last message read and the new file's first_seq are the gap of
+the next message. The reader writes nothing, so it needs no wiring: any
+process that may read the topic directory may read the topic.
 
     t = hangar.topic.Topic("dataset.depth_ff")       # $HANGAR_TOPIC_DIR or /dev/shm/hangar
     t.layout                                        # hangar.schema.Layout, from the file's schema
@@ -87,6 +91,7 @@ class Topic(object):
         self._m = None
         self._f = None
         self._start = start
+        self._pending = 0       # seqs stepped over since the last message returned
         self._open()
 
     def _open(self):
@@ -116,8 +121,11 @@ class Topic(object):
             if self.schema.strip() else None
         first = _u64(m, _OFF_FIRST_SEQ)
         if self._start == "oldest":
+            # hg_topic.c: s->last = w - first > k - 1 ? w - k + 1 : first.
+            # Message first_seq itself is in no file: the first to read is
+            # the one after it.
             w = _u64(m, _OFF_WRITE_SEQ)
-            self.last = max(first, w - self.slot_count + 2 if w >= self.slot_count else 1) - 1
+            self.last = max(first, w - self.slot_count + 1)
         else:
             self.last = _u64(m, _OFF_WRITE_SEQ)
         self._first = first
@@ -147,28 +155,41 @@ class Topic(object):
 
     def _replaced(self):
         """The writer replaced the file (a new generation): the new one, from
-        its first message; a gap for what was in neither."""
+        where this reader was. A writer that restarts goes on with its seqs,
+        so the last seq read stays, and read() counts what lies between it
+        and the new file's first_seq, which is in neither file, as a gap. A
+        file numbered below the last seq read is a topic made anew (lib/hg
+        knows it by its epoch): every message of it, from its first."""
         try:
             st = os.stat(self.path)
         except OSError:
             return False
         if st.st_ino == os.fstat(self._f.fileno()).st_ino:
             return False
+        last = self.last
         start, self._start = self._start, "oldest"
         try:
             self._open()
         finally:
             self._start = start
+        if last <= self.write_seq():
+            self.last = last
+        else:
+            self.last = self._first
         return True
 
     def read(self, limit=None):
         """The messages since the last read, in seq order: a list of Message."""
         out = []
-        pending = 0
+        pending = self._pending
         m = self._m
         k = self.slot_count
         while limit is None or len(out) < limit:
             W = _u64(m, _OFF_WRITE_SEQ)
+            if self.last < self._first:
+                # Messages before this file's first are in no file.
+                pending += self._first - self.last
+                self.last = self._first
             w = self.last + 1
             if w > W:
                 if self._replaced():
@@ -199,6 +220,7 @@ class Topic(object):
             self.last = w
             out.append(Message(w, stamp, publish, flags, gap,
                                [(tid, seq) for tid, _f, seq in refs], payload))
+        self._pending = pending     # for the next message, on a later read
         return out
 
     def decode(self, msg):
