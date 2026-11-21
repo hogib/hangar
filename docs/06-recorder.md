@@ -135,6 +135,13 @@ Frame topics default to `meta`: at 1280×720, raw frames are 55 MB/s. The video 
 is recorded as H.264 by the encoder module, which publishes `video.index`, one message
 per encoded frame: `{frame topic id, frame seq, file, pts}`. An analysis joins a frame
 to anything else by its seq, and decodes it from the MP4 when it needs the pixels.
+**As built, the vehicle records no video**, and every mention in this document of the
+encoder's MP4 files and of a session's `video/` on the vehicle is planned: the encoder
+writes no MP4, and `video.index` (published, and recorded like any topic) has the
+frame's `rtp_timestamp` in place of a `pts` and a `file` that is always empty. The only
+video recorded is on the topside, by `video_relay`, into a directory set by hand
+(`RecordDir=`) or into a session of `topside_recorder`, a module that does not exist
+yet ([11-electric-eye](11-electric-eye.md#video_relay)).
 Decoded pixels are not the bytes the vehicle's modules read, so no dataset is built
 from them. A network that needs frames in its rows reads a small topic made for it
 (`cam.nn`, 160×120 grey: 19 KB a frame), which is cheap enough to record and stream in

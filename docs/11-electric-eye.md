@@ -138,7 +138,7 @@ After B4 the video path of the camera's H.264 is hangar's alone: `encoder` →
 | `camera` | vehicle | `eeye`: `v4l2_in`, `rpicam_in`, `jpeg_decode`, `camera_ctrl` | `cam.raw` |
 | `vision` | vehicle (placement B) | `eeye`: `effect_chain`, `conv`, `point_opps`, `auto_vis`, `img_stats` | `cam.pilot` |
 | `cam_nn` | vehicle | new | `cam.nn` |
-| `encoder` | vehicle | `hellion`: RTP sink, relay | H.264 over RTP; `video.index`; MP4 into the session |
+| `encoder` | vehicle | `hellion`: RTP sink, relay | H.264 over RTP; `video.index`; MP4 into the session (planned: not built) |
 | `video_relay` | topside | `hellion`: relay, decoder, loopback sink, recorder | to QGroundControl unchanged; `cam.decoded` |
 | `pilot_console` | topside | `hellion`: page, HTTP server, preview hub | the operator's page |
 
@@ -232,6 +232,14 @@ directories belong to the group `hangar-rec` (mode 2770,
 [06-recorder](06-recorder.md#sessions)), so the encoder has
 `SupplementaryGroups=hangar-rec`.
 
+*As built (`modules/encoder/README.md`): the recording is planned, not built. The
+encoder writes no MP4 and follows no session. `video.index` (`msg/video_index.msg`) is
+published per frame sent with the frame topic id, the frame's number, its capture
+time, its `rtp_timestamp` (there is no `pts` field), size and kind; its `file` is
+always empty. Its readers are `video_relay`, which takes the frame numbers of
+`cam.decoded`'s references from it by name only (it reads the RTP timestamps, not the
+topic), and the console's page.*
+
 **The camera's own H.264** (`Source=uvc:/dev/videoN`, decided 2026-11-20). A UVC
 camera that encodes H.264 itself gives the encoder its access units ready made
 (`V4L2_PIX_FMT_H264`, one V4L2 buffer a frame): nothing is encoded on the vehicle. The
@@ -293,6 +301,20 @@ the tether has no `cam.decoded` message; `cam.decoded` itself has no gap.
 It also feeds the v4l2loopback webcam device and the topside's MP4 recording, which
 goes into the session of the topside's recorder (`topside_recorder`, following
 `topside_recorder.session`); it has `SupplementaryGroups=hangar-rec` for that.
+
+*As built, this is the only video recording there is, and it has not followed a
+session yet: `topside_recorder` does not exist (planned), so nothing publishes
+`topside_recorder.session`, and the MP4 is written only with `RecordDir=` set by hand,
+one file from the module's start. A recording never replaces a file that is there: a
+second recording for the same session, or after a restart of the module, goes into
+`<Name>-<id>-2.mp4`, `-3` and so on. A failed write ends the file and the module tries
+a new one at a keyframe, after 1 s and then up to 60 s between attempts; `MinFree=`
+(64 MiB by default) stops it before the disk is full; the status line says `not
+recording: <why>` meanwhile. Frame numbers taken from the 32-bit RTP timestamp are
+right for the first 13.25 h of a stream (`modules/video_relay/README.md`, deviation 9). The MP4's times start at zero at the first frame written and the vehicle's
+frame number of that frame is stored nowhere, so a sample cannot yet be tied back to a
+`video.index` message from the file alone (planned: the frame numbers in the file).
+There is no v4l2loopback device.*
 
 ### `pilot_console`
 
@@ -378,7 +400,8 @@ targets `hangar bench` reports against ([00-overview](00-overview.md#targets)).
 - Phase B: the equivalence hashes above; the latency target; every `cam.decoded`
   message referencing the vehicle frame it shows, through encoding, loss and
   keyframes, and `cam.decoded` counting up by one; `video.index` matching the MP4's
-  timestamps; parameters applied live and `@restart` ones by restart; the encoder's
+  timestamps (planned with the encoder's recording: no test has it, and the topside's
+  MP4 does not carry the frame numbers); parameters applied live and `@restart` ones by restart; the encoder's
   bitrate following `bridge.vehicle.budget` within a second, between its floor and its
   cap, and unchanged while the budget is stale.
 - `cam.nn` recorded in full, and a dataset with a `cam.nn` part built offline from a
