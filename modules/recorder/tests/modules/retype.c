@@ -7,6 +7,7 @@
  *
  *   retype --topic T --first "<msg text>" --then "<msg text>"
  *          [--count N (3)] [--rate R (0: an event topic)] [--gap-ms G (100)]
+ *          [--linger-ms L (0): waited before each close]
  *
  * Publishes N messages of the first type, closes, reopens T with the second
  * type and publishes N more. Message k (1, 2, ... over both types) has k in
@@ -44,6 +45,7 @@ int main(int argc, char **argv)
 	long count = toy_num(argc, argv, "--count", 3);
 	long rate = toy_num(argc, argv, "--rate", 0);
 	long gap = toy_num(argc, argv, "--gap-ms", 100);
+	long linger = toy_num(argc, argv, "--linger-ms", 0);
 	static struct hg_schema type[2];
 	if (parse(toy_arg(argc, argv, "--first", "u64 v"), &type[0]) < 0 ||
 	    parse(toy_arg(argc, argv, "--then", "f64 x\nf64 y"), &type[1]) < 0)
@@ -74,6 +76,9 @@ int main(int argc, char **argv)
 			toy_sleep_ms(gap);
 		}
 		free(payload);
+		/* A reader that has not yet taken the last messages loses them
+		 * when the file is replaced: --linger-ms gives it the time. */
+		toy_sleep_ms(linger);
 		hg_pub_close(p);
 	}
 	return 0;

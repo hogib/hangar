@@ -729,9 +729,12 @@ static void test_pending_overflow(void)
 	CHECK(wait_file_contains(log_path("pairer-crowded"), "1 datasets", 5000));
 	char toy[700];
 	rfmt(toy, sizeof toy, "%s/retype", R_toys);
-	/* 40 anchors 10 ms apart: ten times what Pending=4 holds for 600 ms. */
+	/* 40 anchors 10 ms apart: ten times what Pending=4 holds for 600 ms. The
+	 * toy replaces the topic after the 20th; it lingers 200 ms before that
+	 * (under the 600 ms, so the four rows then waiting stay open), or a
+	 * pairer not scheduled within 10 ms loses the 20th with the file. */
 	pid_t pub = spawn("crowd", NULL, toy, "--topic", "crowd.a", "--first", "u64 v", "--then", "u64 v", "--count", "20",
-			  "--gap-ms", "10", (char *)NULL);
+			  "--gap-ms", "10", "--linger-ms", "200", (char *)NULL);
 	CHECK_EQ_INT(wait_pid_ms(pub, 5000), 0);
 	hg_sub *st = hg_sub_open_from("pairer.status", &PAIRER_STATUS_TYPE, HG_OLDEST);
 	CHECK(st != NULL);
