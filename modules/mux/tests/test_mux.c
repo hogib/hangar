@@ -40,6 +40,19 @@ static struct {
 	uint64_t next_ns;
 } T = { .publish_pilot = 1, .publish_depth = 1, .depth_m = 2.0f, .safety_state = 1, .safety_enabled = 1 };
 
+/* What the outputs did on the way, for what cannot be judged from the newest
+ * message alone: every message is looked at as it is read, with its own stamp
+ * (the mux's clock at that tick), so this process running late changes
+ * nothing. Zeroed before each use. */
+static struct {
+	int ramp;                 /* watch surge between consecutive ctl.wrench */
+	float ramp_rate;          /* the steepest step seen, per second */
+	int ramp_mid;             /* a surge strictly inside (-0.9, 0.9) was seen */
+	uint32_t limits_seen;     /* every limit bit any mux.state carried */
+	uint8_t heave_src;        /* the source_heave to watch for; 0: none */
+	uint64_t heave_src_ns;    /* stamp of the first mux.state that had it */
+} W;
+
 static void copy_types(void)
 {
 	const char *src = getenv("HANGAR_MSG_SRC");
@@ -101,12 +114,22 @@ static void read_outputs(void)
 	struct wrench w;
 	struct hg_info info;
 	while (hg_next(S_cmd, &w, sizeof w, &info) == HG_MSG) {
+		if (W.ramp && have_cmd && !info.gap && info.stamp_ns > last_cmd_info.stamp_ns) {
+			float rate = fabsf(w.surge - last_cmd.surge) * 1e9f / (float)(info.stamp_ns - last_cmd_info.stamp_ns);
+			if (rate > W.ramp_rate)
+				W.ramp_rate = rate;
+			if (w.surge > -0.9f && w.surge < 0.9f)
+				W.ramp_mid = 1;
+		}
 		last_cmd = w;
 		last_cmd_info = info;
 		have_cmd = 1;
 	}
 	struct mux_state st;
 	while (hg_next(S_state, &st, sizeof st, &info) == HG_MSG) {
+		W.limits_seen |= st.limits;
+		if (W.heave_src && !W.heave_src_ns && st.source_heave == W.heave_src)
+			W.heave_src_ns = info.stamp_ns;
 		last_st = st;
 		have_st = 1;
 	}
@@ -148,6 +171,23 @@ static void pump(long ms)
 		hg_wait(subs, 2, 5);
 		read_outputs();
 	} while (hg_now_ns() < end);
+}
+
+/* Pumps until cond holds, up to 5 s; the CHECKs that follow say what was
+ * expected. A pump(ms) left in a test is a time that has to pass, and says
+ * why. */
+#define PUMP_UNTIL(cond)                                                       \
+	do {                                                                   \
+		for (uint64_t pu_t0 = now_ms(); !(cond) && now_ms() - pu_t0 < 5000;) \
+			pump(20);                                              \
+	} while (0)
+
+static int cmd_refs(const char *topic)
+{
+	for (uint32_t i = 0; i < last_cmd_info.n_inputs; i++)
+		if (last_cmd_info.inputs[i].topic_id == hg_topic_id(topic))
+			return 1;
+	return 0;
 }
 
 static void publish_active(uint64_t hash, uint8_t cause)
@@ -214,16 +254,18 @@ static void test_start(void)
 	CHECK(S_cmd && S_state && P_pilot && P_ctl && P_active && P_policy && P_depth && P_safety);
 	/* The mux is ready once ctl.wrench and mux.state have published. */
 	CHECK(wait_state("mux", "ready", 5000));
-	pump(300);
+	PUMP_UNTIL(have_cmd && have_st);
 	CHECK(have_cmd && have_st);
 	CHECK(strcmp(last_st.mode, "manual") == 0);
 	CHECK(near(last_cmd.surge, 0) && near(last_cmd.heave, 0));
-	/* 50 Hz: about 15 messages in 300 ms. */
-	uint64_t s0 = last_cmd_info.seq;
+	/* 50 Hz. Time must pass here: a rate is measured, over 400 ms or more,
+	 * from the messages' own stamps and not from how long the pump took. */
+	uint64_t s0 = last_cmd_info.seq, t0 = last_cmd_info.stamp_ns;
 	pump(400);
 	uint64_t n = last_cmd_info.seq - s0;
-	CHECK(n >= 15 && n <= 25);
-	printf("    %llu ctl.wrench messages in 400 ms\n", (unsigned long long)n);
+	double hz = last_cmd_info.stamp_ns > t0 ? (double)n * 1e9 / (double)(last_cmd_info.stamp_ns - t0) : 0;
+	CHECK(hz >= 37.5 && hz <= 62.5);
+	printf("    %llu ctl.wrench messages, %.1f Hz\n", (unsigned long long)n, hz);
 }
 
 static void test_manual_and_envelope(void)
@@ -233,7 +275,8 @@ static void test_manual_and_envelope(void)
 	T.pilot.yaw = -0.25f;
 	T.publish_ctl = 1;
 	T.ctl.heave = 0.4f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.surge, 0.5f) && near(last_cmd.yaw, -0.25f) && last_st.limits == 0 &&
+		   last_cmd_info.n_inputs == 1);
 	CHECK(near(last_cmd.surge, 0.5f) && near(last_cmd.yaw, -0.25f) && near(last_cmd.heave, 0));
 	CHECK_EQ_INT(last_st.source_surge, 1);
 	CHECK_EQ_INT(last_st.source_heave, 1);
@@ -244,31 +287,40 @@ static void test_manual_and_envelope(void)
 	CHECK(!(last_cmd_info.flags & HG_SLOT_STALE));
 	/* The envelope: 1.5 is held at max (1), and the limit bit says so. */
 	T.pilot.surge = 1.5f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.surge, 1.0f) && (last_st.limits & 1u));
 	CHECK(near(last_cmd.surge, 1.0f));
 	CHECK(last_st.limits & 1u);
-	/* The rate limit: a step from 1 to -1 takes 2 / rate_max (8/s) = 250 ms. */
+	/* The rate limit: a step from 1 to -1 takes 2 / rate_max (8/s) = 250 ms.
+	 * Judged on every message of the ramp by its own stamp, not by where the
+	 * output is 60 ms later on this process's clock: no step steeper than
+	 * rate_max, a value on the way seen, the limit bit seen. */
+	memset(&W, 0, sizeof W);
+	W.ramp = 1;
 	T.pilot.surge = -1.0f;
-	pump(60);
-	CHECK(last_cmd.surge > -0.9f && last_cmd.surge < 0.9f);
-	CHECK(last_st.limits & (1u << 6));
-	pump(400);
+	PUMP_UNTIL(near(last_cmd.surge, -1.0f) && !(last_st.limits & (1u << 6)));
+	W.ramp = 0;
 	CHECK(near(last_cmd.surge, -1.0f));
+	CHECK(W.ramp_mid);
+	CHECK(W.ramp_rate > 6.0f && W.ramp_rate < 8.5f);
+	CHECK(W.limits_seen & (1u << 6));
+	printf("    steepest step of the ramp: %.2f /s\n", (double)W.ramp_rate);
 	zero_pilot();
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.surge, 0));
 	CHECK(near(last_cmd.surge, 0));
 	/* A stale pilot counts as zero and is not referenced; the output is unflagged. */
 	T.pilot.surge = 0.5f;
-	pump(200);
+	PUMP_UNTIL(near(last_cmd.surge, 0.5f));
+	CHECK(near(last_cmd.surge, 0.5f));
 	T.publish_pilot = 0;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.surge, 0) && last_st.source_surge == 0 && last_cmd_info.n_inputs == 0);
 	CHECK(near(last_cmd.surge, 0));
 	CHECK_EQ_INT(last_st.source_surge, 0);
 	CHECK_EQ_INT(last_cmd_info.n_inputs, 0);
 	CHECK(!(last_cmd_info.flags & HG_SLOT_STALE));
 	T.publish_pilot = 1;
 	zero_pilot();
-	pump(200);
+	PUMP_UNTIL(last_st.source_surge == 1);
+	CHECK_EQ_INT(last_st.source_surge, 1);
 }
 
 static void test_assisted_and_override(void)
@@ -279,46 +331,54 @@ static void test_assisted_and_override(void)
 	/* Heave from the controller while the pilot leaves it alone; surge the pilot's. */
 	T.ctl.heave = 0.4f;
 	T.pilot.surge = 0.3f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0.4f) && near(last_cmd.surge, 0.3f) && last_st.source_heave == 2 &&
+		   last_cmd_info.n_inputs == 2);
 	CHECK(near(last_cmd.heave, 0.4f) && near(last_cmd.surge, 0.3f));
 	CHECK_EQ_INT(last_st.source_heave, 2);
 	CHECK_EQ_INT(last_st.source_surge, 1);
 	CHECK_EQ_INT(last_cmd_info.n_inputs, 2);
 	/* The pilot's heave above the deadband takes the axis at once... */
 	T.pilot.heave = -0.3f;
-	pump(200);
+	PUMP_UNTIL(near(last_cmd.heave, -0.3f) && last_st.source_heave == 1);
 	CHECK(near(last_cmd.heave, -0.3f));
 	CHECK_EQ_INT(last_st.source_heave, 1);
-	/* ...and keeps it for 1 s after letting go. */
+	/* ...and keeps it for 1 s after letting go. The release is published at
+	 * once, and the axis going back to the controller is timed by the stamp
+	 * of the mux.state that says so (published on the change): this process
+	 * running late does not move either. The axis is the pilot's, at zero,
+	 * in between. */
 	T.pilot.heave = 0;
-	uint64_t t0 = now_ms();
-	pump(500);
+	memset(&W, 0, sizeof W);
+	W.heave_src = 2;
+	T.next_ns = 0;
+	uint64_t t0 = hg_now_ns();
+	PUMP_UNTIL(near(last_cmd.heave, 0) || W.heave_src_ns);
 	CHECK(near(last_cmd.heave, 0));
 	CHECK_EQ_INT(last_st.source_heave, 1);
-	while (last_st.source_heave != 2 && now_ms() - t0 < 3000)
-		pump(20);
-	uint64_t dt = now_ms() - t0;
+	CHECK(!W.heave_src_ns);
+	PUMP_UNTIL(W.heave_src_ns);
 	CHECK_EQ_INT(last_st.source_heave, 2);
+	uint64_t dt = W.heave_src_ns > t0 ? (W.heave_src_ns - t0) / 1000000u : 0;
 	CHECK(dt >= 900 && dt < 1500);
 	printf("    override held %llu ms after release\n", (unsigned long long)dt);
-	pump(200);
+	PUMP_UNTIL(near(last_cmd.heave, 0.4f));
 	CHECK(near(last_cmd.heave, 0.4f));
 	/* A stale controller (computed from stale inputs) flags ctl.wrench while
 	 * it drives; the pilot's axes alone do not. */
 	T.ctl_stale = 1;
-	pump(200);
+	PUMP_UNTIL(last_cmd_info.flags & HG_SLOT_STALE);
 	CHECK(last_cmd_info.flags & HG_SLOT_STALE);
 	T.ctl_stale = 0;
-	pump(200);
+	PUMP_UNTIL(!(last_cmd_info.flags & HG_SLOT_STALE));
 	CHECK(!(last_cmd_info.flags & HG_SLOT_STALE));
 	/* The controller stops: its axis falls back to the pilot, nothing flagged. */
 	T.publish_ctl = 0;
-	pump(300);
+	PUMP_UNTIL(last_st.source_heave == 1 && near(last_cmd.heave, 0));
 	CHECK_EQ_INT(last_st.source_heave, 1);
 	CHECK(near(last_cmd.heave, 0));
 	CHECK(!(last_cmd_info.flags & HG_SLOT_STALE));
 	T.publish_ctl = 1;
-	pump(200);
+	PUMP_UNTIL(last_st.source_heave == 2);
 	CHECK_EQ_INT(last_st.source_heave, 2);
 }
 
@@ -330,37 +390,31 @@ static void test_depth_band(void)
 	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "mux", "depth_max=5", (char *)NULL), 0);
 	T.depth_m = 6.0f;
 	T.pilot.heave = -0.5f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0) && (last_st.limits & (1u << 12)) && cmd_refs("nav.depth"));
 	CHECK(near(last_cmd.heave, 0));
 	CHECK(last_st.limits & (1u << 12));
-	int depth_ref = 0;
-	for (uint32_t i = 0; i < last_cmd_info.n_inputs; i++)
-		if (last_cmd_info.inputs[i].topic_id == hg_topic_id("nav.depth"))
-			depth_ref = 1;
-	CHECK(depth_ref);
+	CHECK(cmd_refs("nav.depth"));
 	T.pilot.heave = 0.5f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0.5f) && !(last_st.limits & (1u << 12)));
 	CHECK(near(last_cmd.heave, 0.5f));
 	CHECK(!(last_st.limits & (1u << 12)));
 	/* The shallow side, depth_min 2: at 1 m a command pushing up (heave > 0)
-	 * is zeroed with the same bit, and a command down passes. Each value is
-	 * waited for, up to 3 s. */
+	 * is zeroed with the same bit, and a command down passes. */
 	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "mux", "depth_min=2", (char *)NULL), 0);
 	T.depth_m = 1.0f;
 	T.pilot.heave = 0.5f;
-	for (uint64_t t0 = now_ms(); !(near(last_cmd.heave, 0) && (last_st.limits & (1u << 12))) && now_ms() - t0 < 3000;)
-		pump(20);
+	PUMP_UNTIL(near(last_cmd.heave, 0) && (last_st.limits & (1u << 12)));
 	CHECK(near(last_cmd.heave, 0));
 	CHECK(last_st.limits & (1u << 12));
 	T.pilot.heave = -0.5f;
-	for (uint64_t t0 = now_ms(); !(near(last_cmd.heave, -0.5f) && !(last_st.limits & (1u << 12))) && now_ms() - t0 < 3000;)
-		pump(20);
+	PUMP_UNTIL(near(last_cmd.heave, -0.5f) && !(last_st.limits & (1u << 12)));
 	CHECK(near(last_cmd.heave, -0.5f));
 	CHECK(!(last_st.limits & (1u << 12)));
 	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "mux", "depth_min=0", (char *)NULL), 0);
 	T.depth_m = 2.0f;
 	T.pilot.heave = 0;
-	pump(1200); /* the override hold ends */
+	PUMP_UNTIL(last_st.source_heave == 2); /* the override hold ends */
+	CHECK_EQ_INT(last_st.source_heave, 2);
 }
 
 static void test_residual(void)
@@ -372,8 +426,13 @@ static void test_residual(void)
 	publish_active(0xabcdef, 1);
 	T.publish_policy = 1;
 	T.policy.heave = 0.5f;
-	pump(200);
-	r = set_mode("residual:p", 0x1234);
+	/* Nothing the mux publishes says it has read the active message: the
+	 * refusal changing its reason does. */
+	uint64_t t0 = now_ms();
+	do {
+		pump(20);
+		r = set_mode("residual:p", 0x1234);
+	} while (r.status == HG_E_REFUSED && strstr(r.reason, "no running model") && now_ms() - t0 < 5000);
 	CHECK_EQ_INT(r.status, HG_E_REFUSED);
 	CHECK(strstr(r.reason, "not the running model") != NULL);
 	r = set_mode("residual:q", 0xabcdef);
@@ -383,56 +442,57 @@ static void test_residual(void)
 	r = set_mode("residual:p", 0xabcdef);
 	CHECK_EQ_INT(r.status, HG_OK);
 	CHECK(strcmp(r.reason, "residual:p") == 0);
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0.6f) && last_st.source_heave == 4 && last_st.residual_active == 1 &&
+		   (last_st.limits & (1u << (13 + 2))) && cmd_refs("policy.p.wrench"));
 	CHECK(near(last_cmd.heave, 0.6f));
 	CHECK_EQ_INT(last_st.source_heave, 4);
 	CHECK_EQ_INT(last_st.residual_active, 1);
 	CHECK(last_st.limits & (1u << (13 + 2)));
 	CHECK(strcmp(last_st.mode, "residual:p") == 0);
-	int policy_ref = 0;
-	for (uint32_t i = 0; i < last_cmd_info.n_inputs; i++)
-		if (last_cmd_info.inputs[i].topic_id == hg_topic_id("policy.p.wrench"))
-			policy_ref = 1;
-	CHECK(policy_ref);
+	CHECK(cmd_refs("policy.p.wrench"));
 	/* Within the residual envelope: added as is. */
 	T.policy.heave = 0.1f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0.5f) && !(last_st.limits & (1u << 15)));
 	CHECK(near(last_cmd.heave, 0.5f));
 	CHECK(!(last_st.limits & (1u << 15)));
 	/* The pilot's override wins over both. */
 	T.pilot.heave = 0.3f;
-	pump(200);
+	PUMP_UNTIL(near(last_cmd.heave, 0.3f) && last_st.source_heave == 1);
 	CHECK(near(last_cmd.heave, 0.3f));
 	CHECK_EQ_INT(last_st.source_heave, 1);
 	T.pilot.heave = 0;
-	pump(1300);
+	PUMP_UNTIL(last_st.source_heave == 4); /* the override hold ends */
 	CHECK_EQ_INT(last_st.source_heave, 4);
 	/* A new active message (a load) with the same hash: the model swapped in
-	 * drives without demotion. */
+	 * drives without demotion. Time must pass here: nothing is expected to
+	 * change, and 300 ms is fifteen ticks in which a demotion would show. */
 	publish_active(0xabcdef, 1);
 	pump(300);
 	CHECK(strcmp(last_st.mode, "residual:p") == 0);
+	PUMP_UNTIL(near(last_cmd.heave, 0.5f));
 	CHECK(near(last_cmd.heave, 0.5f));
 	/* A message referencing the old active message is no contribution, and
 	 * no demotion: the mode stays, the controller drives alone. */
 	T.policy_ref_seq = hg_pub_next_seq(P_active) - 2;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0.4f) && last_st.residual_active == 0);
 	CHECK(strcmp(last_st.mode, "residual:p") == 0);
 	CHECK(near(last_cmd.heave, 0.4f));
 	CHECK_EQ_INT(last_st.residual_active, 0);
 	T.policy_ref_seq = 0;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0.5f));
 	CHECK(near(last_cmd.heave, 0.5f));
 	/* A model with another hash swapped in by a load drives in its place;
-	 * a later promotion names that model. */
+	 * a later promotion names that model. Time passes for the same reason
+	 * as above. */
 	publish_active(0x777777, 1);
 	pump(300);
 	CHECK(strcmp(last_st.mode, "residual:p") == 0);
+	PUMP_UNTIL(near(last_cmd.heave, 0.5f));
 	CHECK(near(last_cmd.heave, 0.5f));
 	const uint64_t running = 0x777777;
 	/* Demotion: the output flagged as computed from stale inputs. */
 	T.policy_stale = 1;
-	pump(200);
+	PUMP_UNTIL(strcmp(last_st.mode, "assisted") == 0 && near(last_cmd.heave, 0.4f));
 	CHECK(strcmp(last_st.mode, "assisted") == 0);
 	CHECK(near(last_cmd.heave, 0.4f));
 	T.policy_stale = 0;
@@ -443,18 +503,20 @@ static void test_residual(void)
 	/* Demotion: the policy stops publishing (skips a tick). */
 	r = set_mode("residual:p", running);
 	CHECK_EQ_INT(r.status, HG_OK);
-	pump(200);
+	PUMP_UNTIL(strcmp(last_st.mode, "residual:p") == 0);
 	CHECK(strcmp(last_st.mode, "residual:p") == 0);
 	T.publish_policy = 0;
-	pump(200);
+	PUMP_UNTIL(strcmp(last_st.mode, "assisted") == 0);
 	CHECK(strcmp(last_st.mode, "assisted") == 0);
 	T.publish_policy = 1;
+	pump(100); /* the policy's topic fresh again before promoting, as above */
 	/* Demotion: not finite. */
 	r = set_mode("residual:p", running);
 	CHECK_EQ_INT(r.status, HG_OK);
-	pump(100);
+	PUMP_UNTIL(strcmp(last_st.mode, "residual:p") == 0);
+	CHECK(strcmp(last_st.mode, "residual:p") == 0);
 	T.policy.heave = NAN;
-	pump(200);
+	PUMP_UNTIL(strcmp(last_st.mode, "assisted") == 0);
 	CHECK(strcmp(last_st.mode, "assisted") == 0);
 	T.policy.heave = 0.1f;
 	/* Demotion: held at the residual envelope for more than demote_saturation
@@ -466,10 +528,10 @@ static void test_residual(void)
 	              on its first tick as a skipped tick */
 	r = set_mode("residual:p", running);
 	CHECK_EQ_INT(r.status, HG_OK);
-	pump(300);
+	PUMP_UNTIL(strcmp(last_st.mode, "residual:p") == 0 && near(last_cmd.heave, 0.5f));
 	CHECK(strcmp(last_st.mode, "residual:p") == 0);
 	T.policy.heave = 0.9f;
-	uint64_t t0 = now_ms();
+	t0 = now_ms();
 	while (strcmp(last_st.mode, "assisted") != 0 && now_ms() - t0 < 3000)
 		pump(20);
 	uint64_t dt = now_ms() - t0;
@@ -477,7 +539,8 @@ static void test_residual(void)
 	CHECK(dt >= 150 && dt < 1500); /* 20% of a 1 s window, with room for a loaded runner */
 	printf("    saturation demotion after %llu ms\n", (unsigned long long)dt);
 	T.policy.heave = 0.1f;
-	/* A policy's output is never applied outside residual: assisted now. */
+	/* A policy's output is never applied outside residual: assisted now.
+	 * Time must pass: fifteen ticks in which it would show if it were. */
 	T.policy.heave = 0.9f;
 	pump(300);
 	CHECK(near(last_cmd.heave, 0.4f));
@@ -502,33 +565,36 @@ static void test_failsafe_actions(void)
 	T.safety_state = 2;
 	T.safety_action = 1;
 	T.safety_enabled = 1;
-	pump(400);
+	PUMP_UNTIL(near(last_cmd.heave, 0.5f) && near(last_cmd.surge, 0.4f) && last_st.source_surge == 1 &&
+		   last_st.source_heave == 0);
 	CHECK(near(last_cmd.heave, 0.5f));
 	CHECK(near(last_cmd.surge, 0.4f));
 	CHECK_EQ_INT(last_st.source_surge, 1);
 	CHECK_EQ_INT(last_st.source_heave, 0);
 	T.pilot.surge = 0;
-	pump(1200);
+	PUMP_UNTIL(last_st.source_surge == 0 && near(last_cmd.surge, 0)); /* the override hold ends */
+	CHECK_EQ_INT(last_st.source_surge, 0);
 	CHECK(near(last_cmd.surge, 0));
 	/* hold: heave from the depth controller while it is fresh, else zero. */
 	T.safety_action = 2;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, -0.3f) && last_st.source_heave == 2);
 	CHECK(near(last_cmd.heave, -0.3f));
 	CHECK_EQ_INT(last_st.source_heave, 2);
 	T.publish_ctl = 0;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0));
 	CHECK(near(last_cmd.heave, 0));
 	T.publish_ctl = 1;
 	/* neutral: everything zero. */
 	T.safety_action = 0;
 	T.safety_enabled = 0;
 	T.pilot.yaw = 0.5f;
-	pump(300);
+	PUMP_UNTIL(near(last_cmd.heave, 0) && near(last_cmd.yaw, 0.5f));
 	CHECK(near(last_cmd.heave, 0) && near(last_cmd.yaw, 0.5f)); /* the override still passes; the gate is closed */
 	T.pilot.yaw = 0;
 	T.safety_state = 1;
 	T.safety_enabled = 1;
-	pump(200);
+	PUMP_UNTIL(near(last_cmd.yaw, 0));
+	CHECK(near(last_cmd.yaw, 0));
 }
 
 static void test_shutdown(void)

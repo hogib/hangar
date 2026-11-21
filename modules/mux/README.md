@@ -63,7 +63,7 @@ that time, and the mux spun at a full core between its ticks.
 6. **The policy's hash is a `u64`** in `set_mode_req`, the `policy_active.hash` field's
    type; docs/07 says "the hash of the model" without a width.
 
-## Tests (`make check-mux`, 20 s)
+## Tests (`make check-mux`, 8 s)
 
 A manager with the module and the suite as every source (`tester`): the per-axis
 choice in manual and assisted, the envelope (1.5 held at 1, the limit bit), the rate
@@ -76,3 +76,12 @@ demotion rule (stale flag, skipped tick, non-finite, saturation ≈0.2 s of a 1 
 window), a policy's output never applied outside `residual`, `auto` and `policy:`
 refused, the stale flag following the controller when it drives and not when it does
 not, the failsafe actions.
+
+The suite waits for each value it expects (up to 5 s) and then checks it, so a late
+machine makes it slower and not wrong. What is a time is taken from the mux's own
+stamps: the output rate from the stamps of `ctl.wrench`, the rate limit as the
+steepest step between two consecutive messages (8.00 /s, and a value on the way and
+the limit bit seen), the hold from the release to the stamp of the `mux.state` that
+gives the axis back. A fixed wait is left only where nothing is expected to change (a
+model swapped in, a policy outside `residual`) and where the sources have to be fresh
+again after a CLI call; each says so.

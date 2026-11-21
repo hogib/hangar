@@ -108,6 +108,18 @@ static const char *paramer_status(void)
 	return m.status;
 }
 
+/* The status line is the module's next write after the change: waited for. */
+static int wait_paramer_status(const char *needle, long timeout_ms)
+{
+	uint64_t t0 = now_ms();
+	do {
+		if (strstr(paramer_status(), needle))
+			return 1;
+		sleep_ms(20);
+	} while (now_ms() - t0 < (uint64_t)timeout_ms);
+	return 0;
+}
+
 static void write_manifests(void)
 {
 	manifest("paramer", "[Module]\nExec=%s/paramer\n[Params]\nType=depth_hold_params\n[Health]\nWatchdog=2s\n", T_toys);
@@ -164,8 +176,7 @@ static void test_set_and_refusals(void)
 	CHECK(wait_file_contains(params_file, "\nkp = 2\n", 1000));
 	CHECK(file_contains(params_file, "# version 2, set by tester, "));
 	CHECK(file_contains(params_file, "\ngains = 1, 3, 0.5\n"));
-	sleep_ms(150);
-	CHECK(strstr(paramer_status(), "params v2 by tester kp=2 rate_hz=50 changes=1") != NULL);
+	CHECK(wait_paramer_status("params v2 by tester kp=2 rate_hz=50 changes=1", 5000));
 	// Stale: based on version 1.
 	req.base_version = 1;
 	req.p.kp = 2.5f;
@@ -342,8 +353,7 @@ static void test_restart_field(void)
 	// The mark is cleared: a later start says saved.
 	CHECK(!file_contains(params_file, ", restart"));
 	CHECK(file_contains(params_file, "\nrate_hz = 100\n"));
-	sleep_ms(150);
-	CHECK(strstr(paramer_status(), "by tester kp=1 rate_hz=100") != NULL);
+	CHECK(wait_paramer_status("by tester kp=1 rate_hz=100", 5000));
 }
 
 static void test_refused_while_pending(void)

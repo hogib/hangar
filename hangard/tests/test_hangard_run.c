@@ -67,13 +67,17 @@ static void test_start_and_ready(void)
 	// the protocol (identifier, unit, priority, level prefix, forwards).
 	static int conns[8];
 	int got = 0, saw_err_stream = 0;
-	for (int i = 0; i < 100 && got < 4; i++) {
-		int c = accept4(js, NULL, NULL, SOCK_NONBLOCK);
-		if (c < 0) {
-			sleep_ms(20);
+	// Each connection is waited for, and so is its header (the manager
+	// writes it in one piece right after connecting): up to 10 s for the four.
+	for (uint64_t t0 = now_ms(); got < 4 && now_ms() - t0 < 10000;) {
+		struct pollfd pf = { .fd = js, .events = POLLIN };
+		if (poll(&pf, 1, 100) <= 0)
 			continue;
-		}
-		sleep_ms(50);
+		int c = accept4(js, NULL, NULL, SOCK_NONBLOCK);
+		if (c < 0)
+			continue;
+		pf.fd = c;
+		poll(&pf, 1, 5000);
 		char buf[512] = "";
 		ssize_t n = read(c, buf, sizeof buf - 1);
 		if (n > 0) {
@@ -160,8 +164,7 @@ static void test_control_requests(void)
 	pid = m.pid;
 	r = ctl("restart talker");
 	CHECK(strncmp(r, "ok", 2) == 0);
-	sleep_ms(300);
-	CHECK(wait_state("talker", "ready", 5000));
+	CHECK(wait_new_pid("talker", pid, "ready", 5000));
 	CHECK(module_status("talker", &m) && m.pid != pid);
 	CHECK_EQ_INT(m.failures, 0); // a restart on request is not a failure
 }
@@ -327,9 +330,12 @@ static void test_cli(void)
 	setenv("HANGAR_TOPIC_DIR", path, 1);
 	if (topic_header("test.depth", h) == 0)
 		s1 = h64(h, H_WRITE_SEQ);
-	sleep_ms(200);
-	if (topic_header("test.depth", h) == 0)
-		s2 = h64(h, H_WRITE_SEQ);
+	// It keeps publishing: the write sequence moves, waited for up to 5 s.
+	for (uint64_t t0 = now_ms(); s2 <= s1 && now_ms() - t0 < 5000;) {
+		sleep_ms(20);
+		if (topic_header("test.depth", h) == 0)
+			s2 = h64(h, H_WRITE_SEQ);
+	}
 	setenv("HANGAR_TOPIC_DIR", T_topics, 1);
 	CHECK(s2 > s1);
 	kill(pid, SIGTERM);

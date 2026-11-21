@@ -649,10 +649,9 @@ static void test_part_retyped(void)
 			     "12", "--gap-ms", "50", (char *)NULL);
 	CHECK_EQ_INT(wait_pid_ms(part, 5000), 0);
 	CHECK_EQ_INT(wait_pid_ms(anchor, 5000), 0);
-	sleep_ms(200);
+	CHECK(wait_file_contains(log_path("pairer-retyped"), "retyped: 1 parts, 88-byte rows", 5000));
+	CHECK(wait_file_contains(log_path("pairer-retyped"), "retyped: the writer of rt.p restarted with another type", 5000));
 	CHECK_EQ_INT(wait_pid_ms(pid, 0), -1); /* still running */
-	CHECK(file_contains(log_path("pairer-retyped"), "retyped: 1 parts, 88-byte rows"));
-	CHECK(file_contains(log_path("pairer-retyped"), "retyped: the writer of rt.p restarted with another type"));
 	CHECK(!file_contains(log_path("pairer-retyped"), "the writer of rt.a restarted"));
 	CHECK(file_contains(log_path("pairer-retyped"), "retyped: 1 parts, 96-byte rows"));
 	/* The topic is of the row type bound now. */

@@ -66,9 +66,9 @@ static void test_adoption(void)
 	module_status("t2", &m2);
 	// Kill the manager under load: the modules keep publishing.
 	manager_kill9(mgr);
-	uint64_t s1 = topic_seq("t1.out");
-	sleep_ms(300);
-	uint64_t s2 = topic_seq("t1.out");
+	uint64_t s1 = topic_seq("t1.out"), s2 = s1;
+	for (uint64_t w0 = now_ms(); s2 <= s1 && now_ms() - w0 < 5000; s2 = topic_seq("t1.out"))
+		sleep_ms(20);
 	CHECK(s2 > s1);
 	CHECK(kill(m1.pid, 0) == 0 && kill(m2.pid, 0) == 0);
 	// t2 dies while no manager runs; its topic is not flagged yet.
@@ -142,7 +142,8 @@ static void test_system_state_kept(void)
 	CHECK(file_contains(T_log, "giveup: failed in the registry: left down"));
 	manifest_remove("giveup");
 	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
-	sleep_ms(200);
+	for (uint64_t w0 = now_ms(); strcmp(system_state(), "nominal") != 0 && now_ms() - w0 < 5000;)
+		sleep_ms(20);
 	CHECK(strcmp(system_state(), "nominal") == 0);
 }
 

@@ -244,7 +244,10 @@ static void test_roundtrip_and_provenance(void)
 		res = hg_call("server.echo", &DEPTH_TYPE, &d, &DEPTH_TYPE, &r, 1000);
 		CHECK_EQ_INT(res.status, HG_OK);
 	}
-	sleep_ms(100);
+	/* The server's status line follows its counters: waited for, up to 5 s. */
+	for (uint64_t w0 = now_ms();
+	     !(server_status("both ") > 0 && server_status("data ") > 10 && server_status("served ") >= 24) && now_ms() - w0 < 5000;)
+		sleep_ms(20);
 	CHECK(server_status("both ") > 0);
 	CHECK(server_status("data ") > 10);
 	CHECK(server_status("served ") >= 24);
@@ -423,7 +426,8 @@ static void test_server_restart(void)
 	// A new call after the restart is answered: the server reads on.
 	hg_call_result res = hg_call("server.echo", &DEPTH_TYPE, &d, &DEPTH_TYPE, &r, 1000);
 	CHECK_EQ_INT(res.status, HG_OK);
-	sleep_ms(100);
+	for (uint64_t w0 = now_ms(); server_status("served ") != 1 && now_ms() - w0 < 5000;)
+		sleep_ms(20);
 	CHECK_EQ_INT(server_status("served "), 1);
 }
 

@@ -904,7 +904,8 @@ static void test_long_parameter_file_refused(void)
 	long_params_file(path, "", cut - 4);
 	rc = run_cli(out, sizeof out, 5000, "param", "load", "paramer", path, (char *)NULL);
 	CHECK_EQ_INT(rc, 0);
-	sleep_ms(200);
+	for (uint64_t w0 = now_ms(); !(read_params(&m) == 0 && m.version == v0 + 1) && now_ms() - w0 < 5000;)
+		sleep_ms(20);
 	CHECK_EQ_INT(read_params(&m), 0);
 	CHECK(m.p.kp == 1.25f && m.version == v0 + 1);
 	/* The module's side: its saved file, at start. */
@@ -955,7 +956,8 @@ static void test_load_refuses_base_version(void)
 	/* The same file without the line loads. */
 	write_file(path, "# hangar parameters: depth_hold_params\nki = 0.7\n");
 	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "load", "paramer", path, (char *)NULL), 0);
-	sleep_ms(200);
+	for (uint64_t w0 = now_ms(); !(read_params(&after) == 0 && after.version == m.version + 1) && now_ms() - w0 < 5000;)
+		sleep_ms(20);
 	CHECK_EQ_INT(read_params(&after), 0);
 	CHECK(after.version == m.version + 1 && after.p.ki == 0.7f);
 }

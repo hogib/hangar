@@ -415,6 +415,7 @@ static double hz_of(const char *topic)
 	return strtod(p, NULL);
 }
 
+/* Time must pass here: CPU use is measured over ms. */
 static double cpu_of(pid_t pid, long ms)
 {
 	long long t0 = th_cpu_ticks(pid);
@@ -481,9 +482,15 @@ static void test_standalone(void)
 	atomic_store(&feeding, 1);
 	pthread_t feeder;
 	CHECK(pthread_create(&feeder, NULL, feed_cmd, NULL) == 0);
-	sleep_ms(3000);
-	double depth = echo_field("sim.pose", "pos", 2), pwm5 = echo_field("sim.thrust", "pwm", 4);
-	printf("    thr.cmd down for 3 s: depth %.2f m, sim.thrust pwm[4] %.0f\n", depth, pwm5);
+	/* Until it is half a metre down with that thrust: waited for, up to 20 s. */
+	double depth = 0, pwm5 = 0;
+	uint64_t t0 = now_ms();
+	do {
+		sleep_ms(100);
+		depth = echo_field("sim.pose", "pos", 2);
+		pwm5 = echo_field("sim.thrust", "pwm", 4);
+	} while (!(depth > 0.5 && pwm5 == cmd.pwm[4]) && now_ms() - t0 < 20000);
+	printf("    thr.cmd down for %.1f s: depth %.2f m, sim.thrust pwm[4] %.0f\n", (double)(now_ms() - t0) / 1e3, depth, pwm5);
 	CHECK(depth > 0.5);
 	CHECK(pwm5 == cmd.pwm[4]);
 	if (pwm5 != cmd.pwm[4]) {
@@ -499,17 +506,34 @@ static void test_standalone(void)
 	pthread_join(feeder, NULL);
 	/* thr.cmd stops: stale after its StaleAfter (3 periods), the thrusters
 	 * stop, and it floats back up. */
-	sleep_ms(500);
+	for (t0 = now_ms(); echo_field("sim.thrust", "pwm", 4) != 1500 && now_ms() - t0 < 5000;)
+		sleep_ms(20);
 	CHECK(echo_field("sim.thrust", "pwm", 4) == 1500);
+	/* It is still going down from the thrust: waited for until it rises, so
+	 * that what follows is the parameter's doing and not what is left of
+	 * the dive. */
+	double prev = echo_field("sim.pose", "pos", 2), d0 = prev;
+	int rising = 0;
+	for (t0 = now_ms(); !rising && now_ms() - t0 < 20000; prev = d0) {
+		sleep_ms(100);
+		d0 = echo_field("sim.pose", "pos", 2);
+		rising = d0 < prev;
+	}
+	CHECK(rising);
 	/* A live parameter change: 15 N heavier, it sinks without a restart. */
-	double d0 = echo_field("sim.pose", "pos", 2);
 	char out[2048];
 	CHECK_EQ_INT(run_cli(out, sizeof out, 5000, "param", "set", "sim_vehicle", "buoyancy=97.8", (char *)NULL), 0);
-	sleep_ms(3000);
-	double d1 = echo_field("sim.pose", "pos", 2);
+	/* Until it has sunk a metre from there: waited for, up to 20 s. */
+	double d1 = d0;
+	t0 = now_ms();
+	do {
+		sleep_ms(100);
+		d1 = echo_field("sim.pose", "pos", 2);
+	} while (!(d1 - d0 > 1.0) && now_ms() - t0 < 20000);
 	struct mstat m2;
 	CHECK(module_status("sim_vehicle", &m2) && m2.pid == m.pid);
-	printf("    buoyancy 114.8 to 97.8 N, live: %.2f m to %.2f m in 3 s, same pid\n", d0, d1);
+	printf("    buoyancy 114.8 to 97.8 N, live: %.2f m to %.2f m in %.1f s, same pid\n", d0, d1,
+	       (double)(now_ms() - t0) / 1e3);
 	CHECK(d1 - d0 > 1.0);
 }
 
@@ -570,7 +594,13 @@ static void test_sitl_physics(void)
 	shipped("sim_sitl", "modules/sim_vehicle/sim_vehicle.module", addr);
 	char out[2048];
 	run_cli(out, sizeof out, 5000, "reload", (char *)NULL);
-	sleep_ms(1000);
+	/* The module is started (it is ready only once frames come; the first
+	 * exchange below sends its frame again for 5 s until the socket answers). */
+	struct mstat ms;
+	memset(&ms, 0, sizeof ms);
+	for (uint64_t t0 = now_ms(); !(module_status("sim_sitl", &ms) && ms.pid > 0) && now_ms() - t0 < 5000;)
+		sleep_ms(20);
+	CHECK(ms.pid > 0);
 	int s = socket(AF_INET, SOCK_DGRAM, 0);
 	struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port),
 				  .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
