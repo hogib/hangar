@@ -306,7 +306,10 @@ hg_find_stamp(s, t_ns, &msg, &info);  // the newest message stamped at or before
 
 `hg_read_seq` and `hg_find_stamp` are random access into the ring, for the dataset
 pairer ([06-recorder](06-recorder.md#live-the-pairer)): a message no longer in the
-ring, or never in it (a seq a mirrored topic does not have), returns `HG_GONE`.
+ring, or never in it (a seq a mirrored topic does not have), returns `HG_GONE`. Both
+follow the topic to the file a restarted writer made, as `hg_next` does at the end of
+the old one: a subscription read only this way would otherwise read the dead writer's
+file for good.
 `hg_find_stamp` searches the ring from the newest seq back, checking each slot's `seq`
 as `hg_next` does and passing over seqs not in the ring, assuming stamps rise with
 sequence numbers, which a writer must keep. A message published with stamp 0 is

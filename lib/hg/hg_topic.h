@@ -192,7 +192,10 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
  * replaced file; a closed or dead writer is still reported, as by hg_next.
  * HG_NONE, or what hg_next would return instead of a message. */
 enum hg_result hg_skip(hg_sub *s);
-/* Random access: HG_GONE when seq is not in the ring. Neither moves hg_next. */
+/* Random access: HG_GONE when seq is not in the ring. Neither moves hg_next.
+ * Both follow a replaced file once the new one is at the path (hg_sub_reopens
+ * counts it); hg_next on the same subscription then reports what it had not
+ * read of the old file as a gap. */
 enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len,
 			   struct hg_info *info);
 /* The newest message stamped at or before t_ns: by its stamp_ns, or by its

@@ -247,6 +247,29 @@ static void test_find_stamp_without_stamp(void)
 	hg_pub_close(p);
 }
 
+// A subscription read only by seq and by stamp (a dataset part, a policy's
+// input) follows its topic to the file a restarted writer made, as one read
+// by hg_next does.
+static void test_random_access_follows_replacement(void)
+{
+	hg_pub *p = open_words("ps.replaced", 16);
+	hg_sub *s = hg_sub_open("ps.replaced", WORDS_TYPE);
+	pub_n(p, 3);
+	CHECK_EQ_INT(hg_find_stamp(s, UINT64_MAX, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 3);
+	hg_pub_close(p);
+	p = open_words("ps.replaced", 16); // the writer restarted: a new file, the seqs go on
+	pub_n(p, 2);
+	CHECK_EQ_INT(hg_find_stamp(s, UINT64_MAX, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 5);
+	CHECK(intact(buf, &info));
+	CHECK_EQ_INT(hg_read_seq(s, 4, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 4);
+	CHECK_EQ_INT(hg_sub_reopens(s), 1);
+	hg_sub_close(s);
+	hg_pub_close(p);
+}
+
 static void test_odd_seq_from_dead_writer(void)
 {
 	// A writer that died mid-publish left slot 10 (message 11) odd and, in
@@ -451,6 +474,7 @@ int main(void)
 	RUN_TEST(test_late_joiner_starts_at_newest);
 	RUN_TEST(test_read_seq_and_find_stamp);
 	RUN_TEST(test_find_stamp_without_stamp);
+	RUN_TEST(test_random_access_follows_replacement);
 	RUN_TEST(test_odd_seq_from_dead_writer);
 	RUN_TEST(test_closed);
 	RUN_TEST(test_types_and_introspection);

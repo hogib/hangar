@@ -659,6 +659,7 @@ struct hg_sub {
 	int fd_dir;                 /* the same, for the hg_wait_fd helper: written under FD.lock */
 	int gave_up;                /* a read has said that no new file came within REOPEN_GIVE_UP_NS */
 	uint32_t reopen_word;       /* the old file's futex_word as of reopen_since */
+	uint64_t follow_tried_ns;   /* random access last looked for the replacing file then */
 	uint32_t mask;
 	uint32_t payload_bytes;
 	uint32_t rate_mhz;
@@ -2141,6 +2142,39 @@ enum hg_result hg_skip(hg_sub *s)
 	}
 }
 
+/* Random access into a file flagged replaced: the file now at the path, when
+ * there is one. A reader in order meets a replacement at the end of the old
+ * file (at_end); a subscription read only by seq and by stamp (a dataset
+ * part, a policy's input) never gets there, and went on reading the dead
+ * writer's file for good. The path is looked at every 10 ms at most while it
+ * still holds the old file or none. hg_next on the same subscription counts
+ * what it had not read of the old file as a gap. HG_MSG, or what
+ * ensure_attached says of the new file (its payload may be larger). */
+#define FOLLOW_RETRY_NS 10000000u
+static enum hg_result follow_replaced(hg_sub *s, size_t buf_len)
+{
+	if (!(atomic_load_explicit(&s->h->flags, memory_order_acquire) & HG_FLAG_REPLACED))
+		return HG_MSG;
+	uint64_t now = hg_now_ns();
+	if (s->follow_tried_ns && now - s->follow_tried_ns < FOLLOW_RETRY_NS)
+		return HG_MSG;
+	s->follow_tried_ns = now;
+	struct mapping m;
+	int e = errno;
+	if (map_topic_ro(s->path, &m) < 0) {
+		errno = e;
+		return HG_MSG;
+	}
+	if (m.dev == s->dev && m.ino == s->ino) {
+		munmap(m.h, m.len);
+		return HG_MSG;
+	}
+	use_mapping(s, &m);
+	s->reopens++;
+	s->follow_tried_ns = 0;
+	return ensure_attached(s, buf_len);
+}
+
 enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len, struct hg_info *info)
 {
 	memset(info, 0, sizeof *info);
@@ -2149,6 +2183,8 @@ enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len, s
 		return finish(s, info, HG_ERROR);
 	}
 	enum hg_result a = ensure_attached(s, buf_len);
+	if (a == HG_MSG)
+		a = follow_replaced(s, buf_len);
 	if (a != HG_MSG)
 		return finish(s, info, a);
 	uint64_t W = atomic_load_explicit(&s->h->write_seq, memory_order_acquire);
@@ -2174,6 +2210,8 @@ enum hg_result hg_find_stamp(hg_sub *s, uint64_t t_ns, void *buf, size_t buf_len
 		return finish(s, info, HG_ERROR);
 	}
 	enum hg_result a = ensure_attached(s, buf_len);
+	if (a == HG_MSG)
+		a = follow_replaced(s, buf_len);
 	if (a != HG_MSG)
 		return finish(s, info, a);
 	/* From the newest seq back to the oldest that can still be in the ring,
