@@ -25,7 +25,7 @@ RECORDER_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodule
 RECORDER_BIN := $(BUILDDIR)/recorder
 PAIRER_BIN := $(BUILDDIR)/pairer
 RECORDER_TOYDIR := $(TESTDIR)/recorder-modules
-RECORDER_TOYS := prov_chain
+RECORDER_TOYS := prov_chain retype
 RECORDER_TESTS := rec_hgr rec_dataset rec_recorder rec_pairer
 RECORDER_LIB_TESTS := rec_hgr rec_dataset
 

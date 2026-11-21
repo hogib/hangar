@@ -134,8 +134,8 @@ static int open_topic_file(const char *session, const char *topic, struct part_f
 	char plus[700];
 	bfmt(plus, sizeof plus, "%s/%s+1.hgr", session, topic);
 	if (access(plus, F_OK) == 0) {
-		bfmt(why, whylen, "%s has more than one epoch in this session (%s+1.hgr), which the build does not join yet",
-		     topic, topic);
+		bfmt(why, whylen, "%s has more than one file in this session (%s+1.hgr: a new epoch, or its writer "
+		     "restarted with another type), which the build does not join yet", topic, topic);
 		hgr_reader_close(&pf->r);
 		return -1;
 	}

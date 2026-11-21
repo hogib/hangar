@@ -165,6 +165,25 @@ that start again and the sender's new boot id in `origin_boot`. The recorder clo
 that topic's recording and continues in `<topic>+<k>.hgr` (k = 1, 2, …), so that one
 file never holds two numberings. A new epoch is not a gap.
 
+A local topic whose writer restarts gets a new topic file too, in which its sequence
+numbers go on ([01-topics](01-topics.md#header)). When the new file is read as the old
+one was (the same type hash, payload size, schema text, declared rate and
+`StaleAfter`), the recording goes on in the same `.hgr`. When any of them differs (a
+module upgraded to another message type, a `dataset.<name>` topic after its spec
+changed, a frame topic after the camera took another size), the recorder ends that
+topic's file with the last message of the old writer, logs the change
+(`nav.depth: its writer restarted with another type (...)`), and records the topic
+from the first message of the new writer in `<topic>+<k>.hgr`, under a header made
+from the new file: its schema, type hash, payload and record size, rate, and the
+policy and black-box class the `[Record]` sections give that type. A file therefore
+never holds a record its header does not describe. The sequence numbers run on from
+one file to the next, so a new type is not a gap either; the topic's black box starts
+over, as at a new epoch. k counts the topic's files within the session, whichever of
+the two started them, and is the header's `epoch` field
+([Recording files](#recording-files-hgr)). The offline build reads `<topic>.hgr` alone
+and refuses a session that holds a `<topic>+1.hgr` for a topic its spec names
+([Offline](#offline-the-same-rows-from-a-recording)).
+
 At the start of a session it also records the newest message of every event topic
 (the parameters in force, the system state, the module states, the last request and
 reply of each module), so the state at the start is known without waiting for a
@@ -211,7 +230,7 @@ their files with mode 0640: on the vehicle `encoder`, `mavlink` and the policy m
 | `session.ini` | session id, boot id, host, software versions, start and stop times on both clocks, why it started and stopped, the note; the other side's session id and boot id ([08-bridge](08-bridge.md#recordings-on-both-sides)) |
 | `manifests/` | a copy of every enabled manifest: the wiring graph, and so the meaning of every provenance link |
 | `msg/` | the message types in use |
-| `<topic>.hgr` | one file per recorded topic; `<topic>+<k>.hgr` for each later epoch of a mirrored topic |
+| `<topic>.hgr` | one file per recorded topic; `<topic>+<k>.hgr` for each later epoch of a mirrored topic, and for each time a topic's writer restarted with another type ([Draining](#draining)) |
 | `hangar.clock.hgr` | once a second: the monotonic clock, the wall clock, and the time daemon's estimated offset |
 | `video/` | the encoder's MP4 files |
 | `weights/` | every weights file a policy swapped in during the session, as `<hash>.hgw` ([09-learning](09-learning.md#loading-weights)) |
@@ -250,8 +269,9 @@ record = [ record header: 128 bytes ][ payload ]   (payload absent under `meta`)
 The **header** holds `magic` (`"HGREC001"`), the topic's name, topic id, type hash,
 payload size, record size, the policy, the session id, `origin_boot` (the boot id of
 the machine that numbered the messages, for a mirrored topic; all zero for a local
-one), and the topic's schema text, at the same offsets as in a topic file's header
-([01-topics](01-topics.md#header)) where the field is the same.
+one), `epoch` (u32 at offset 272: the k of `<topic>+<k>.hgr`, 0 for a topic's first
+file in the session), and the topic's schema text, at the same offsets as in a topic
+file's header ([01-topics](01-topics.md#header)) where the field is the same.
 
 The **record header** is the slot header of the message
 ([01-topics](01-topics.md#slot-header)), with two changes: offset 0 holds the message's
@@ -645,7 +665,10 @@ is in [08-bridge](08-bridge.md).
   `(Slots − 1) / rate` passes the drain check, and a warning for a ring that does not;
   a stalled disk produces gaps, recorded as gaps; messages left out by a rate-limited
   mirror recorded as such, not as losses; a mirrored topic's new epoch continued in a
-  new file; a cut-off file reads up to its last whole record.
+  new file; a topic whose writer restarts with another type (an event topic, a rated
+  one, one whose payload grows from 8 bytes to 64 KB) continued in a new file under the
+  new header, and one whose writer restarts with the same type in the same file; a
+  cut-off file reads up to its last whole record.
 - Globs: a topic created after the recorder started is recorded; `[Record]` sections
   match first to last (`cam.nn` full, `cam.raw` meta); `every:N` and `rate:<Hz>` keep
   the same messages in two recordings started at different times.

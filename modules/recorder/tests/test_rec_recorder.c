@@ -133,7 +133,9 @@ static void test_setup(void)
 	R_toys = getenv("RECORDER_TOYS");
 	CHECK(R_bin && R_toys);
 	write_wirings();
-	write_conf("manual", "64KB", NULL);
+	/* re.big (test_type_change) grows to 64 KB a message: 16 of them are
+	 * not for a black box of 64 KB, whose shares the dump test counts. */
+	write_conf("manual", "64KB", "[Record re.big]\nBlackBox=off\n");
 	char toy[700];
 	rfmt(toy, sizeof toy, "%s/prov_chain", R_toys);
 	chain_pid = spawn("chain", NULL, toy, "--rate", "100", "--slots", "16", "--prefix", "chain", (char *)NULL);
@@ -423,6 +425,113 @@ static void test_write_failure(void)
 	CHECK(file_contains(p, "WriteErrors=") && !file_contains(p, "WriteErrors=0\n"));
 }
 
+/* A topic whose writer restarts with another type while a session records
+ * it (docs/06 "Draining"): the first file ends with the last message of the
+ * old type and the topic goes on in <topic>+1.hgr under the new type's
+ * header, so no file holds two types; a writer that restarts with the same
+ * type goes on in the same file. Before, the new type's messages went into
+ * the first file under the old header, and an event topic whose payload had
+ * grown was copied over the end of the buffer that kept its newest message
+ * (64 KB into 8 bytes). */
+static void check_retyped(const char *session, const char *name, int k0, const char *schema, uint32_t payload_bytes,
+			  uint32_t epoch)
+{
+	struct hgr_reader r;
+	if (open_rec(session, name, &r) < 0) {
+		CHECK(!"a file of the retyped topic is missing");
+		return;
+	}
+	static struct hg_schema sch;
+	char why[200] = "";
+	CHECK_EQ_INT(hgr_schema(&r, &sch, why, sizeof why), 0);
+	if (why[0])
+		printf("    %s: %s\n", name, why);
+	CHECK_EQ_INT(r.payload_bytes, payload_bytes);
+	CHECK_EQ_INT(r.h->schema_bytes, strlen(schema));
+	CHECK(r.h->schema_bytes == strlen(schema) && memcmp(r.h->schema, schema, strlen(schema)) == 0);
+	CHECK_EQ_INT(r.h->epoch, epoch);
+	CHECK_EQ_INT(r.count, 3);
+	for (uint64_t i = 0; i < r.count && i < 3; i++) {
+		const struct hgr_record *rec = hgr_at(&r, i);
+		const unsigned char *p = hgr_payload_at(&r, i);
+		CHECK_EQ_INT(rec->seq, (uint64_t)k0 + i);
+		CHECK_EQ_INT(rec->flags & HGR_REC_GAP, 0);
+		CHECK_EQ_INT(p[0], k0 + (int)i);
+		CHECK_EQ_INT(p[payload_bytes - 1], k0 + (int)i + 1);
+	}
+	hgr_reader_close(&r);
+}
+
+static void test_type_change(void)
+{
+	struct recorder_start req;
+	memset(&req, 0, sizeof req);
+	rfmt(req.note, sizeof req.note, "types change");
+	CHECK_EQ_INT(call("recorder.start", &req, &RECORDER_START_TYPE).status, HG_OK);
+	struct recorder_status st;
+	CHECK(wait_status(1, 2000, &st));
+	char toy[700];
+	rfmt(toy, sizeof toy, "%s/retype", R_toys);
+	/* An event topic that grows a little, one that grows past every buffer
+	 * the recorder has, a rated one, and one that restarts as it was. */
+	pid_t p[4];
+	p[0] = spawn("retype-small", NULL, toy, "--topic", "re.small", "--first", "u64 v", "--then", "f64 x\\nf64 y",
+		     (char *)NULL);
+	p[1] = spawn("retype-big", NULL, toy, "--topic", "re.big", "--first", "u64 v", "--then", "u8 big[65536]",
+		     (char *)NULL);
+	p[2] = spawn("retype-rated", NULL, toy, "--topic", "re.rated", "--first", "u64 v", "--then", "u8 b[24]", "--rate",
+		     "10", (char *)NULL);
+	p[3] = spawn("retype-same", NULL, toy, "--topic", "re.same", "--first", "u64 v", "--then", "u64 v", (char *)NULL);
+	for (int i = 0; i < 4; i++)
+		CHECK_EQ_INT(wait_pid_ms(p[i], 5000), 0);
+	sleep_ms(300);
+	/* The recorder is still there, and says what it did. */
+	CHECK_EQ_INT(waitpid(rec_pid, NULL, WNOHANG), 0);
+	CHECK(wait_file_contains(log_path("recorder"), "re.big: its writer restarted with another type", 2000));
+	CHECK(!file_contains(log_path("recorder"), "re.same: its writer restarted with another type"));
+	CHECK_EQ_INT(call("recorder.stop", NULL, &EMPTY_TYPE).status, HG_OK);
+	CHECK(wait_status(0, 2000, &st));
+	sleep_ms(200);
+	char s[700];
+	rfmt(s, sizeof s, "%s", find_session("20"));
+	check_retyped(s, "re.small", 1, "u64 v\n", 8, 0);
+	check_retyped(s, "re.small+1", 4, "f64 x\nf64 y\n", 16, 1);
+	check_retyped(s, "re.big", 1, "u64 v\n", 8, 0);
+	check_retyped(s, "re.big+1", 4, "u8 big[65536]\n", 65536, 1);
+	check_retyped(s, "re.rated", 1, "u64 v\n", 8, 0);
+	check_retyped(s, "re.rated+1", 4, "u8 b[24]\n", 24, 1);
+	/* The same type again: one file, six records, no gap. */
+	struct hgr_reader r;
+	CHECK_EQ_INT(open_rec(s, "re.same", &r), 0);
+	CHECK_EQ_INT(r.count, 6);
+	for (uint64_t i = 0; i < r.count; i++) {
+		CHECK_EQ_INT(hgr_at(&r, i)->seq, i + 1);
+		CHECK_EQ_INT(hgr_at(&r, i)->flags & HGR_REC_GAP, 0);
+		CHECK_EQ_INT(((const unsigned char *)hgr_payload_at(&r, i))[0], i + 1);
+	}
+	hgr_reader_close(&r);
+	char path[1024];
+	rfmt(path, sizeof path, "%s/re.same+1.hgr", s);
+	CHECK(!exists(path));
+	/* The next session's first record of each event topic is its newest
+	 * message, under the type it has now. */
+	CHECK_EQ_INT(call("recorder.start", &req, &RECORDER_START_TYPE).status, HG_OK);
+	CHECK(wait_status(1, 2000, &st));
+	sleep_ms(200);
+	CHECK_EQ_INT(call("recorder.stop", NULL, &EMPTY_TYPE).status, HG_OK);
+	CHECK(wait_status(0, 2000, &st));
+	sleep_ms(200);
+	rfmt(s, sizeof s, "%s", find_session("20"));
+	CHECK_EQ_INT(open_rec(s, "re.big", &r), 0);
+	CHECK_EQ_INT(r.payload_bytes, 65536);
+	CHECK_EQ_INT(r.count, 1);
+	if (r.count == 1) {
+		CHECK_EQ_INT(hgr_at(&r, 0)->seq, 6);
+		CHECK_EQ_INT(((const unsigned char *)hgr_payload_at(&r, 0))[65535], 7);
+	}
+	hgr_reader_close(&r);
+}
+
 /* The black box: dumped on `dump`, within 64 KB, classes in order. */
 static void test_blackbox_dump(void)
 {
@@ -625,6 +734,7 @@ int main(void)
 	RUN_TEST(test_session_by_call);
 	RUN_TEST(test_every_n_and_shallow_ring);
 	RUN_TEST(test_write_failure);
+	RUN_TEST(test_type_change);
 	RUN_TEST(test_blackbox_dump);
 	RUN_TEST(test_blackbox_triggers);
 	RUN_TEST(test_autostart_armed);

@@ -72,7 +72,7 @@ exists), with `session.ini`, `manifests/` (a copy of `$HANGAR_ROOT/etc/hangar/mo
 `msg/` (a copy of `$HANGAR_ROOT/usr/share/hangar/msg/*.msg`), `video/`, `weights/`,
 `hangar.clock.hgr` (once a second: the monotonic and the wall clock) and one
 `<topic>.hgr` per recorded topic, `<topic>+<k>.hgr` for each later epoch of a mirrored
-topic. At the start of a session the newest message of every event topic is written
+topic and for each restart of a topic's writer with another type. At the start of a session the newest message of every event topic is written
 first, so the state at the start is known without waiting for a change; the message
 that started a session by `AutoStart` is its first record, the one that stopped it its
 last. A session stops when the free space falls under `MinFree`, and the status line
@@ -156,7 +156,7 @@ MP4 recorder, so these are `rec_*`.
 | `rec_hgr` | the header and record layouts to the byte; a round trip of depth messages read from a topic with a gap and a decimation; a `meta` file; a cut-off file read up to its last whole record; the searches by seq and by stamp (publish time when the stamp is 0); a file that is not a recording refused |
 | `rec_hgr32` | built `-m32`, skipped where the compiler has no 32-bit libc: a recording of 4 GiB and more refused with `EFBIG` where `size_t` is 32 bits, not mapped with its length modulo 4 GiB |
 | `rec_dataset` | the dataset library ([modules/pairer/README.md](../pairer/README.md)) |
-| `rec_recorder` | the recorder as a process, wired by a file, the toy chain publishing, the suite as `tester` making its calls: sessions by call with their layout, `session.ini`, `hangar.clock.hgr`, every message of a rated topic in order, `every:2` and `meta` from the first matching section, the same seqs kept by `every:2` in two sessions, the newest event message at a session's start, `tester.req` and `recorder.rep` recorded with the reply naming its request, a mirrored topic's two epochs in two files with the decimation flag kept; a 2-slot ring at 200 Hz warned of and its losses recorded as gaps that add up; a file that cannot grow (a size limit on the recorder) logged, counted, no partial record left in it and the gap on the first record written afterwards; the black box dumped on `dump`, on failsafe and on a module's exit, within 64 KB with the event topics whole and the rated ones sharing; `AutoStart=armed`; exit 78 for a `Dir` of the wrong mode and for four bad `recorder.conf` files |
+| `rec_recorder` | the recorder as a process, wired by a file, the toy chain publishing, the suite as `tester` making its calls: sessions by call with their layout, `session.ini`, `hangar.clock.hgr`, every message of a rated topic in order, `every:2` and `meta` from the first matching section, the same seqs kept by `every:2` in two sessions, the newest event message at a session's start, `tester.req` and `recorder.rep` recorded with the reply naming its request, a mirrored topic's two epochs in two files with the decimation flag kept; three topics whose writer restarts with another type (an event topic, one growing from 8 bytes to 64 KB, a rated one) each in two files under two headers with the recorder alive, and one restarting with the same type in one file; a 2-slot ring at 200 Hz warned of and its losses recorded as gaps that add up; a file that cannot grow (a size limit on the recorder) logged, counted, no partial record left in it and the gap on the first record written afterwards; the black box dumped on `dump`, on failsafe and on a module's exit, within 64 KB with the event topics whole and the rated ones sharing; `AutoStart=armed`; exit 78 for a `Dir` of the wrong mode and for four bad `recorder.conf` files |
 | `rec_pairer` | the pairer and the build on one run ([modules/pairer/README.md](../pairer/README.md)) |
 
 `make check-tsan-recording` and `check-asan-recording` (run by `check-tsan` and
@@ -223,6 +223,15 @@ decide. Nothing here changes behaviour silently.
 12. **Epochs** are tested with `hg_pub_open_mirror` standing in for the bridge: a
     replaced file with another `origin_boot` continues in `<topic>+<k>.hgr`, and the
     black box ring of that topic starts over, so one file never holds two numberings.
+    **A writer that restarts with another type** (docs/06 "Draining") is found the same
+    way, by `hg_sub_reopens` after each read: `topic_replaced` compares the new file's
+    type hash, payload size, schema, rate and `StaleAfter` with the header in use and,
+    when one differs, settles the topic again as at its first attach (policy, class,
+    header, the buffer of an event topic's newest message, the black box ring, the read
+    buffer) and bumps k if a file of the topic is open in the session. Until
+    2026-11-21 everything was settled once per topic: the new type went into the old
+    file under the old header, and an event topic's larger payload was copied over the
+    end of the buffer of its newest message (`test_type_change`).
 13. **The calls are served only when wired.** Without a wiring (no manifest) the
     library has no `serve` lines; the recorder logs that and runs with `AutoStart`.
 14. **No suite runs it under the manager.** The suites wire the recorder by a file and

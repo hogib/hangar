@@ -50,7 +50,8 @@ struct rtopic {
 	int attached;
 	int is_frame;
 	struct rec_policy pol;
-	uint32_t k;                 /* epoch within the session: <topic>+<k>.hgr */
+	uint32_t k;                 /* the topic's file within the session: <topic>+<k>.hgr */
+	uint64_t reopens;           /* hg_sub_reopens() when the topic was last looked at */
 	int have_epoch;
 	uint32_t epoch;
 	int file_open;
@@ -61,6 +62,7 @@ struct rtopic {
 	int have_last;
 	struct hgr_record last_rec;
 	unsigned char *last_payload;
+	uint32_t last_bytes;        /* what last_payload holds: the payload size it was allocated for */
 	int role;                   /* 0 none, 1 safety.state, 2 hangar.<role>.system, 3 hangar.<role>.modules */
 	uint32_t off_state, off_name;
 };
@@ -168,11 +170,14 @@ static void regrant(void)
 		logf_("black box: out of memory while granting budgets");
 }
 
-/* A topic has attached: its metadata, policy, black-box budget and header
- * are settled here, once; nothing below allocates per message. */
+/* A topic has attached, or its file was replaced by one that is read
+ * another way (topic_replaced): its metadata, policy, black-box budget and
+ * header are settled here, from the file now open; nothing below allocates
+ * per message. */
 static void topic_attach(int i)
 {
 	struct rtopic *t = &topics[i];
+	t->reopens = hg_sub_reopens(t->sub);
 	if (hg_sub_meta(t->sub, &t->meta) < 0)
 		return;
 	uint32_t slen = 0;
@@ -202,10 +207,16 @@ static void topic_attach(int i)
 	}
 	if (grow_scratch(t->meta.payload_bytes + 8) < 0)
 		logf_("%s: cannot grow the read buffer to %u bytes", t->name, t->meta.payload_bytes);
+	/* The newest message of an event topic, in a buffer of this file's
+	 * payload size. */
+	free(t->last_payload);
+	t->last_payload = NULL;
+	t->last_bytes = 0;
+	t->have_last = 0;
 	if (t->keep_last) {
-		free(t->last_payload);
 		t->last_payload = malloc(t->meta.payload_bytes ? t->meta.payload_bytes : 8);
-		t->have_last = 0;
+		if (t->last_payload)
+			t->last_bytes = t->meta.payload_bytes;
 	}
 	/* The header, as every file of this topic starts, the epoch set per file. */
 	hgr_header_init(&hdrs[i], &t->meta, schema, slen, t->pol.policy == HGR_OFF ? HGR_FULL : t->pol.policy,
@@ -238,6 +249,45 @@ static void topic_attach(int i)
 	logf_("%s: %s%s, black box %s", t->name, t->pol.text, t->is_frame ? " (frame)" : "",
 	      t->pol.class == REC_BB_OFF ? "off" : t->pol.class == REC_BB_LOW ? "low" :
 	      t->pol.class == REC_BB_NORMAL ? "normal" : "high");
+}
+
+/* The topic's file was replaced (its writer restarted, hg_pub_open: the seqs
+ * go on). A writer of the same type goes on in the same recording. One of
+ * another type, payload size, schema, declared rate or StaleAfter is another
+ * stream: everything settled at attach is settled again from the new file,
+ * the recording of the old one ends and the topic continues in
+ * <topic>+<k>.hgr under the new header, so no file holds records its header
+ * does not describe (docs/06 "Draining"). The black box of the topic starts
+ * over for the same reason. Called before the first message of the new file
+ * is recorded. */
+static void topic_replaced(int i)
+{
+	struct rtopic *t = &topics[i];
+	t->reopens = hg_sub_reopens(t->sub);
+	struct hg_topic_meta m;
+	if (hg_sub_meta(t->sub, &m) < 0)
+		return;
+	uint32_t slen = 0;
+	const char *schema = hg_sub_schema(t->sub, &slen);
+	if (slen > sizeof hdrs[i].schema)
+		slen = sizeof hdrs[i].schema;
+	if (m.type_hash == t->meta.type_hash && m.payload_bytes == t->meta.payload_bytes &&
+	    m.rate_mhz == t->meta.rate_mhz && m.stale_after_ns == t->meta.stale_after_ns && schema &&
+	    slen == hdrs[i].schema_bytes && memcmp(schema, hdrs[i].schema, slen) == 0) {
+		/* Read as before. origin_boot stays the header's until a message
+		 * of a new epoch says otherwise (record_message). */
+		memcpy(m.origin_boot, t->meta.origin_boot, 16);
+		t->meta = m;
+		return;
+	}
+	logf_("%s: its writer restarted with another type (%016llx, %u bytes; was %016llx, %u bytes)%s", t->name,
+	      (unsigned long long)m.type_hash, m.payload_bytes, (unsigned long long)t->meta.type_hash,
+	      t->meta.payload_bytes, t->file_open ? ": its recording goes on in a new file" : "");
+	if (t->file_open) {
+		t->k++;
+		t->file_open = 0;
+	}
+	topic_attach(i);
 }
 
 /* For a recorder with no calls to wait on: sleeps, and answers as hg_wait
@@ -581,8 +631,10 @@ static void record_message(int i, const struct hg_info *info, const void *payloa
 	t->records++;
 	if (t->have_epoch && info->epoch != t->epoch) {
 		/* A new epoch: a new file, and the black box starts over so one
-		 * file never holds two numberings. */
-		t->k++;
+		 * file never holds two numberings. (A file that topic_replaced
+		 * has just ended is not counted twice.) */
+		if (t->file_open)
+			t->k++;
 		t->file_open = 0;
 		rings[i].count = 0;
 		rings[i].head = 0;
@@ -606,7 +658,7 @@ static void record_message(int i, const struct hg_info *info, const void *payloa
 		bb_push(&rings[i], &r, payload);
 	if (t->keep_last && t->last_payload) {
 		t->last_rec = r;
-		memcpy(t->last_payload, payload, t->meta.payload_bytes);
+		memcpy(t->last_payload, payload, t->last_bytes);
 		t->have_last = 1;
 	}
 	if (active && t->pol.policy != HGR_OFF) {
@@ -660,6 +712,11 @@ static void drain(void)
 		for (uint32_t n = 0; n < limit; n++) {
 			struct hg_info info;
 			enum hg_result r = hg_next(t->sub, scratch, scratch_cap, &info);
+			int err = errno;
+			/* The read may have followed the topic to a new file: what it
+			 * returns from here on is that file's, and is recorded as such. */
+			if (hg_sub_reopens(t->sub) != t->reopens)
+				topic_replaced(i);
 			if (r == HG_MSG) {
 				record_message(i, &info, scratch);
 				continue;
@@ -668,14 +725,10 @@ static void drain(void)
 				t->busy++;
 				continue;
 			}
-			if (r == HG_ERROR && errno == EMSGSIZE) {
-				/* The file was replaced by one with a larger payload. */
-				struct hg_topic_meta m;
-				if (hg_sub_meta(t->sub, &m) == 0 && grow_scratch(m.payload_bytes + 8) == 0) {
-					t->meta = m;
-					continue;
-				}
-			}
+			/* The new file's payload is larger than the read buffer was:
+			 * topic_replaced has grown it, unless there is no memory. */
+			if (r == HG_ERROR && err == EMSGSIZE && scratch_cap >= t->meta.payload_bytes)
+				continue;
 			break;
 		}
 	}
