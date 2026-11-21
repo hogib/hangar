@@ -224,6 +224,10 @@ class Chunker(object):
         for b, s in enumerate(self.slots):
             if s.pos is None or s.pos < rp.base or s.pos >= rp.end:
                 self._start(s)
+            elif not s.fresh and rp.at(s.pos).starts_run:
+                # The chunk before filled exactly and the run ended with it:
+                # this one starts a run, from zero state, at its first row.
+                s.fresh, s.warm = True, False
             F[b] = s.fresh
             t = 0
             i = s.pos

@@ -74,6 +74,25 @@ class Chunks(unittest.TestCase):
             c = ch.next()
             self.assertTrue(c.fresh[0])
 
+    def test_reset_at_the_first_row_of_the_next_chunk(self):
+        # A chunk that fills exactly, the next row a reset (a lost row, a new
+        # boot): the slot went on there with fresh False, and carry() kept
+        # the state of the run before across the reset.
+        for second in (row(5, learn.RESET), row(5, lost=True), row(5, boot=B1)):
+            rows = [row(1, learn.RESET), row(2), row(3), row(4), second] + \
+                [row(i, boot=second.boot) for i in range(6, 13)]
+            ch = self.chunker(rows, 4)
+            ch.slots[0].pos, ch.slots[0].fresh, ch.slots[0].warm = 0, True, False
+            c = ch.next()
+            self.assertEqual(list(c.inputs[0, :, 0]), [1, 2, 3, 4])
+            c = ch.next()
+            self.assertEqual(list(c.inputs[0, :, 0]), [5, 6, 7, 8])
+            self.assertTrue(c.fresh[0])                      # a run starts here: zero state
+            self.assertEqual(list(c.mask[0]), [1, 1, 1, 1])  # from its start: no warm-up
+            c = ch.next()
+            self.assertEqual(list(c.inputs[0, :, 0]), [9, 10, 11, 12])
+            self.assertFalse(c.fresh[0])
+
     def test_inside_a_run_warms_up(self):
         rows = [row(1, learn.RESET)] + [row(i) for i in range(2, 21)]
         ch = self.chunker(rows, 3)
