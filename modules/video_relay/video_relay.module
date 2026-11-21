@@ -20,6 +20,14 @@ Type=frame
 Slots=4
 Inputs=vehicle:video.index
 
+# The encoder's index as the bridge mirrors it (bridge.conf [Mirror
+# video.index]): its newest seq is a frame number in full, which keeps the
+# numbers right past the RTP timestamp's wrap (13.25 h of frames), for a relay
+# started late and across a reboot of the vehicle. Without it the module
+# runs all the same, on the timestamp alone.
+[Subscribe video.index]
+Type=video_index
+
 # The topside recorder's sessions: a session starting is a recording into its
 # video/ (video_relay.conf Session=).
 [Subscribe topside_recorder.session]

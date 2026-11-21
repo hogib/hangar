@@ -310,8 +310,11 @@ second recording for the same session, or after a restart of the module, goes in
 `<Name>-<id>-2.mp4`, `-3` and so on. A failed write ends the file and the module tries
 a new one at a keyframe, after 1 s and then up to 60 s between attempts; `MinFree=`
 (64 MiB by default) stops it before the disk is full; the status line says `not
-recording: <why>` meanwhile. Frame numbers taken from the 32-bit RTP timestamp are
-right for the first 13.25 h of a stream (`modules/video_relay/README.md`, deviation 9). The MP4's times start at zero at the first frame written and the vehicle's
+recording: <why>` meanwhile. Frame numbers come from the 32-bit RTP timestamp, which wraps
+after 13.25 h of frames: the relay reads the mirrored `video.index` to stay right past
+that, at a late start and across a reboot of the vehicle, and starts a new file when
+the count starts again; without the mirrored topic a relay started after the wrap is
+wrong (`modules/video_relay/README.md`, "Frame numbers past the wrap" and deviation 9). The MP4's times start at zero at the first frame written and the vehicle's
 frame number of that frame is stored nowhere, so a sample cannot yet be tied back to a
 `video.index` message from the file alone (planned: the frame numbers in the file).
 There is no v4l2loopback device.*

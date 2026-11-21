@@ -52,6 +52,39 @@ struct depack_au {
 
 void depack_init(struct depack *d, uint8_t pt);
 
+/* ---- The stream's time, 64 bits from the 32 that RTP carries --------------------- */
+
+/* The encoder's timestamp is the frame's number times 90000 / FrameRate, cut
+ * to 32 bits: it wraps after 2^32 / 90000 s = 13 h 15 min of frames. */
+#define TS_NO_HINT UINT64_MAX
+#define TS_BACK 90000u    /* 1 s: further back than this is not the same count going on */
+#define TS_SLACK 900000u  /* 10 s more than twice the time that passed: no count runs that far ahead */
+
+struct ts_unwrap {
+	int seen;
+	uint64_t last;    /* the last value returned */
+	uint64_t last_ns; /* when its access unit arrived */
+};
+
+/* The 64-bit timestamp of an access unit that arrived at now_ns.
+ *
+ * hint: the full timestamp of a frame of the same count known from elsewhere
+ * (the mirrored video.index message), within 2^31 ticks (6 h 37 min) of this
+ * one either way; TS_NO_HINT when there is none. With a hint the answer is the
+ * value nearest to it. Without one it is the value nearest to the last one
+ * returned (a wrap seen is a wrap counted), the 32 bits themselves for the
+ * first: a stream first seen after its first wrap is then low by 2^32, which
+ * only a hint puts right.
+ *
+ * *restarted (when not NULL) is 1 when the value does not go on from the last
+ * one: it is more than TS_BACK behind it, or further ahead than twice the time
+ * that passed between the two arrivals plus TS_SLACK. Frame numbers never do
+ * either while one count runs: the count started again (the vehicle rebooted),
+ * or a hint has just put a wrong value right. Without a hint the answer is
+ * then the 32 bits themselves, a count from zero; that is what tells a reboot
+ * from a wrap when the last timestamp was above 2^31. */
+uint64_t ts_unwrap(struct ts_unwrap *u, uint32_t ts, uint64_t now_ns, uint64_t hint, int *restarted);
+
 /* Takes one RTP packet; returns how many access units it completed, each
  * whole and decodable from what came before, in out[0] (and out[1]). Two when
  * a packet of a new timestamp completes the previous access unit (its marker

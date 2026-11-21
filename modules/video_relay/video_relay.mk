@@ -22,7 +22,7 @@ ifeq ($(origin AVCODEC_LIBS),undefined)
 AVCODEC_LIBS := $(shell $(PKG_CONFIG) --libs libavcodec libavutil 2>/dev/null)
 endif
 
-VIDEO_RELAY_LIB_SRC := msg/recorder_session.c lib/hg/hg_ini.c
+VIDEO_RELAY_LIB_SRC := msg/recorder_session.c msg/video_index.c lib/hg/hg_ini.c
 VIDEO_RELAY_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodules/common -Imodules/video_relay \
 	-Imodules/encoder $(AVCODEC_CFLAGS)
 VIDEO_RELAY_BIN := $(BUILDDIR)/hangar-video-relay

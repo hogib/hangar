@@ -28,6 +28,7 @@
 #include "h264.h"
 #include "hg_topic.h"
 #include "mp4.h"
+#include "video_index.h"
 
 #define FRAMES 60
 #define PERIOD 3000u /* 90 kHz at 30 frames/s */
@@ -139,10 +140,12 @@ static void collect(void *ctx, const uint8_t *p, size_t len)
 }
 
 /* All 60 access units as RTP, frame i with timestamp (first + i) × PERIOD. */
+static uint32_t pk_ssrc = 0x1234; /* the encoder draws another at each start */
+
 static void packetize(size_t max_packet, uint64_t first)
 {
 	static struct rtp_h264 r;
-	rtp_h264_init(&r, 0x1234, 96, max_packet);
+	rtp_h264_init(&r, pk_ssrc, 96, max_packet);
 	npk = 0;
 	for (int i = 0; i < FRAMES; i++) {
 		cur_frame = i;
@@ -245,6 +248,94 @@ static void test_sps_size(void)
 	uint8_t bad[3] = { 0x67, 0xff, 0xff };
 	uint32_t w, h;
 	CHECK_EQ_INT(h264_sps_size(bad, sizeof bad, &w, &h), -1);
+}
+
+/* ---- The stream's time past the 32 bits (README, deviation 9) --------------------- */
+
+#define WRAP (1ull << 32)
+/* The first frame number whose timestamp is past the first wrap, and some:
+ * 2^32 / 3000 = 1 431 655.77. */
+#define LATE_FRAME 1431700ull
+
+static uint64_t frame_of(uint64_t ts)
+{
+	return (ts * 30 + 45000) / 90000; /* as video_relay.c takes it, at 30 frames/s */
+}
+
+static void test_timestamps(void)
+{
+	const uint64_t S = 1000000000ull;
+	uint64_t now = 100 * S, v;
+	int again, ok = 1;
+
+	/* Across the wrap, a frame every 33 ms: counted, the numbers go on. */
+	struct ts_unwrap u = { 0 };
+	uint64_t t = 1431650ull * PERIOD; /* six frames before it */
+	for (uint64_t i = 0; i < 12; i++) {
+		v = ts_unwrap(&u, (uint32_t)(t + i * PERIOD), now += S / 30, TS_NO_HINT, &again);
+		ok &= v == t + i * PERIOD && !again && frame_of(v) == 1431650 + i;
+	}
+	CHECK(ok);
+	CHECK(v > WRAP);
+	/* The encoder restarted without a reboot, 3 s of frames later: its
+	 * numbers go on, and so do these. */
+	v = ts_unwrap(&u, (uint32_t)(t + 100 * PERIOD), now += 3 * S, TS_NO_HINT, &again);
+	CHECK(v == t + 100 * PERIOD && !again);
+	/* The vehicle rebooted, 40 s later: a count from zero, and said so.
+	 * (The low 32 bits were below 2^31 here: before, the wrap counted
+	 * stayed in every number after it.) */
+	v = ts_unwrap(&u, 2 * PERIOD, now += 40 * S, TS_NO_HINT, &again);
+	CHECK(v == 2 * PERIOD && again && frame_of(v) == 2);
+	v = ts_unwrap(&u, 3 * PERIOD, now += S / 30, TS_NO_HINT, &again);
+	CHECK(v == 3 * PERIOD && !again);
+
+	/* A reboot while the last timestamp was above 2^31: before, the jump
+	 * back was counted as a wrap. A wrap would be 2^30 ticks (3 h 19 min of
+	 * frames) in 40 s: a count from zero. */
+	struct ts_unwrap r = { 0 };
+	ts_unwrap(&r, 0xC0000000u, now, TS_NO_HINT, &again);
+	v = ts_unwrap(&r, 5 * PERIOD, now + 40 * S, TS_NO_HINT, &again);
+	CHECK(v == 5 * PERIOD && again);
+	/* What is left of it: a reboot within TS_SLACK and twice its own time
+	 * of the wrap cannot be told from the wrap without the vehicle's numbers. */
+	struct ts_unwrap r2 = { 0 };
+	ts_unwrap(&r2, (uint32_t)(WRAP - 30 * 90000u), now, TS_NO_HINT, &again);
+	v = ts_unwrap(&r2, 5 * PERIOD, now + 40 * S, TS_NO_HINT, &again);
+	CHECK(v == WRAP + 5 * PERIOD && !again);
+	/* An hour of silence, the count an hour on: the same count. */
+	struct ts_unwrap q = { 0 };
+	ts_unwrap(&q, 1000 * PERIOD, now, TS_NO_HINT, &again);
+	v = ts_unwrap(&q, 1000 * PERIOD + 3600u * 90000u, now + 3600 * S, TS_NO_HINT, &again);
+	CHECK(v == 1000ull * PERIOD + 3600ull * 90000 && !again);
+
+	/* A late start: the stream first seen after its first wrap. Without
+	 * the vehicle's numbers the 32 bits are all there is: low by 2^32, the
+	 * frame number by 1 431 655.77 (the limit the README states). */
+	uint64_t full = LATE_FRAME * PERIOD;
+	struct ts_unwrap l = { 0 };
+	v = ts_unwrap(&l, (uint32_t)full, now, TS_NO_HINT, &again);
+	CHECK(v == full - WRAP && !again);
+	CHECK(frame_of(v) == 44);
+	/* The vehicle's number for the frame before, from video.index: right
+	 * from then on, and said to be another count once. */
+	v = ts_unwrap(&l, (uint32_t)(full + PERIOD), now + S / 30, full, &again);
+	CHECK(v == full + PERIOD && again && frame_of(v) == LATE_FRAME + 1);
+	v = ts_unwrap(&l, (uint32_t)(full + 2 * PERIOD), now + 2 * S / 30, full + PERIOD, &again);
+	CHECK(v == full + 2 * PERIOD && !again);
+	/* With it there at the first frame: right at once; the message may be
+	 * of a frame after this one, */
+	struct ts_unwrap h = { 0 };
+	v = ts_unwrap(&h, (uint32_t)full, now, full + 3 * PERIOD, &again);
+	CHECK(v == full && !again && frame_of(v) == LATE_FRAME);
+	/* or of one on the other side of a wrap. */
+	struct ts_unwrap w = { 0 };
+	v = ts_unwrap(&w, (uint32_t)(2 * WRAP + PERIOD), now, 2 * WRAP - PERIOD, &again);
+	CHECK(v == 2 * WRAP + PERIOD && !again);
+	v = ts_unwrap(&w, (uint32_t)(2 * WRAP - 2 * PERIOD), now, 2 * WRAP + PERIOD, &again);
+	CHECK(v == 2 * WRAP - 2 * PERIOD);
+	/* A reboot, with the new count's message there: its numbers, said. */
+	v = ts_unwrap(&h, 3 * PERIOD, now + 40 * S, 2 * PERIOD, &again);
+	CHECK(v == 3 * PERIOD && again && frame_of(v) == 3);
 }
 
 /* ---- The MP4 writer ----------------------------------------------------------------- */
@@ -657,6 +748,128 @@ static int mp4_files(const char *dir, char *first, size_t len)
 	return n;
 }
 
+/* One frame sent, and the frame number cam.decoded names for it; 0 when none
+ * came within 2 s. */
+static uint64_t frame_number_of(int tx, struct sockaddr_in *to, int q, hg_sub *dec, int f)
+{
+	static uint8_t frame[320 * 240 * 2 + 64];
+	struct hg_info info;
+	int relay_ok = 1;
+	uint64_t number = 0;
+	send_frame(tx, to, q, f, -1, &relay_ok);
+	hg_sub *w[1] = { dec };
+	for (uint64_t t0 = now_ns(); !number && now_ns() - t0 < 2000000000ull;) {
+		hg_wait(w, 1, 200);
+		while (hg_next(dec, frame, sizeof frame, &info) == HG_MSG)
+			number = info.n_inputs == 1 ? info.inputs[0].seq : 0;
+	}
+	return number;
+}
+
+/* video.index as the bridge mirrors it: one message, the vehicle's seq. */
+static int mirror_index(hg_pub *mir, uint64_t seq)
+{
+	struct video_index vi;
+	memset(&vi, 0, sizeof vi);
+	vi.rtp_timestamp = (uint32_t)(seq * PERIOD);
+	vi.frame_seq = seq;
+	return hg_publish_seq(mir, seq, 0, &vi, sizeof vi, now_ns(), NULL, 0);
+}
+
+/* A relay started when the vehicle has sent more than 13.25 h of frames, and
+ * the vehicle rebooting under it: the numbers cam.decoded names are the
+ * vehicle's, from the mirrored video.index. Before, the first were low by
+ * 1 431 655.77 frames, and the second high by as much whenever the last
+ * timestamp before the reboot was above 2^31. Each count is a file. */
+static void test_late_start_and_reboot(void)
+{
+	int qport, rport;
+	int q = udp_bound(&qport);
+	int tx = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	int tmp = udp_bound(&rport);
+	close(tmp);
+	CHECK(q >= 0 && tx >= 0);
+	char conf[700], log[700], rec[700];
+	snprintf(rec, sizeof rec, "%s/rec-late", root);
+	snprintf(conf, sizeof conf, "%s/video_relay_late.conf", root);
+	snprintf(log, sizeof log, "%s/video_relay_late.log", root);
+	write_text(conf,
+		   "[VideoRelay]\nBind=127.0.0.1:%d\nRelay=127.0.0.1:%d\nFrameRate=30\nFrames=vehicle:video.index\n"
+		   "Decode=yes\nThreads=2\nSession=\nRecordDir=%s\nName=late\n",
+		   rport, qport, rec);
+	/* The vehicle's index, mirrored before the relay starts: its newest
+	 * message is the frame before the first one sent, and then each frame's
+	 * is there before the frame (test_timestamps has it behind). */
+	unsigned char boot_a[16] = { 1 }, boot_b[16] = { 2 };
+	hg_pub *mir = hg_pub_open_mirror("video.index", &VIDEO_INDEX_TYPE, boot_a, LATE_FRAME - 1, NULL);
+	CHECK(mir != NULL);
+	if (!mir)
+		return;
+	CHECK_EQ_INT(mirror_index(mir, LATE_FRAME - 1), 0);
+	pid_t pid = spawn_relay(conf, log);
+	CHECK(wait_listening(log, 10000));
+	hg_sub *dec = hg_sub_open("cam.decoded", NULL);
+	CHECK(dec != NULL);
+	if (!dec)
+		return;
+	/* What the relay of the test before left on the topic is not this one's. */
+	static uint8_t old[320 * 240 * 2 + 64];
+	struct hg_info old_info;
+	while (hg_next(dec, old, sizeof old, &old_info) == HG_MSG)
+		;
+	struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons((uint16_t)rport),
+				  .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+	packetize(1200, LATE_FRAME);
+	int ok = 1;
+	uint64_t first = 0;
+	for (int f = 0; f < 10; f++) {
+		mirror_index(mir, LATE_FRAME + (uint64_t)f);
+		uint64_t n = frame_number_of(tx, &to, q, dec, f);
+		if (!f)
+			first = n;
+		ok &= n == LATE_FRAME + (uint64_t)f;
+	}
+	printf("    started after the wrap: frame %llu is named %llu\n", (unsigned long long)LATE_FRAME, (unsigned long long)first);
+	CHECK(ok);
+	/* The vehicle reboots: its index starts again, under another boot id,
+	 * and so does the stream (a new packetizer, frames from 2). The old
+	 * count's index is not believed across the new stream, whether or not
+	 * the new one's is read yet (a real reboot also leaves it more than
+	 * HINT_FRESH_NS old). */
+	hg_pub_close(mir);
+	mir = hg_pub_open_mirror("video.index", &VIDEO_INDEX_TYPE, boot_b, 1, NULL);
+	CHECK(mir != NULL);
+	if (mir)
+		CHECK_EQ_INT(mirror_index(mir, 1), 0);
+	pk_ssrc = 0x5678;
+	packetize(1200, 2);
+	pk_ssrc = 0x1234;
+	ok = 1;
+	for (int f = 0; f < 10; f++) {
+		uint64_t n = frame_number_of(tx, &to, q, dec, f);
+		if (!f)
+			first = n;
+		ok &= n == 2 + (uint64_t)f;
+	}
+	printf("    after a reboot of the vehicle: frame 2 is named %llu\n", (unsigned long long)first);
+	CHECK(ok);
+	CHECK_EQ_INT(stop(pid), 0);
+	CHECK(log_has(log, "the frame numbers start again at 2"));
+	if (!ok || !log_has(log, "the frame numbers start again at 2")) {
+		char cmd[800];
+		snprintf(cmd, sizeof cmd, "cat %s", log);
+		fflush(stdout);
+		run(cmd);
+	}
+	/* Two counts, two files: a file's times run from its first frame. */
+	CHECK_EQ_INT(mp4_files(rec, NULL, 0), 2);
+	if (mir)
+		hg_pub_close(mir);
+	hg_sub_close(dec);
+	close(q);
+	close(tx);
+}
+
 /* With RecordDir= there is no session message to start a recording again:
  * one failure ended it for the life of the module, and nothing looked at the
  * free space. Now a recording that is wanted and not open is tried again at
@@ -776,16 +989,20 @@ int main(void)
 	unsetenv("HANGAR_WIRING");
 	snprintf(relay_wiring, sizeof relay_wiring, "%s/video_relay.wiring", root);
 	write_text(relay_wiring,
-		   "hangar-wiring 1\nmodule video_relay\nrole topside\npub cam.decoded type=frame slots=4 inputs=vehicle:video.index\n");
+		   "hangar-wiring 1\nmodule video_relay\nrole topside\npub cam.decoded type=frame slots=4 inputs=vehicle:video.index\n"
+		   "sub video.index type=video_index\n");
 	snprintf(tester_wiring, sizeof tester_wiring, "%s/tester.wiring", root);
-	write_text(tester_wiring, "hangar-wiring 1\nmodule tester\nrole topside\nsub cam.decoded type=frame\n");
+	write_text(tester_wiring, "hangar-wiring 1\nmodule tester\nrole topside\nsub cam.decoded type=frame\n"
+					 "mirror video.index\n");
 	load_fixture();
 	RUN_TEST(test_depack_round_trip);
 	RUN_TEST(test_depack_loss);
 	RUN_TEST(test_sps_size);
+	RUN_TEST(test_timestamps);
 	RUN_TEST(test_mp4);
 	RUN_TEST(test_mp4_keeps_what_is_there);
 	RUN_TEST(test_module);
+	RUN_TEST(test_late_start_and_reboot);
 	RUN_TEST(test_recording_goes_on);
 	RUN_TEST(test_conf_refused);
 	if (!getenv("VIDEO_RELAY_KEEP")) {

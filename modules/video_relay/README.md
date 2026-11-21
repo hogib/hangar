@@ -35,7 +35,8 @@ hangar-video-relay /etc/hangar/video_relay.conf
 The encoder's RTP timestamp is the frame's number times 90 000 / `FrameRate`. The
 number is the seq of the encoder's `video.index` message for that frame
 (`modules/encoder/README.md`, "Frame identity"). The module recovers it (the timestamp
-unwrapped to 64 bits, times `FrameRate` / 90 000, rounded) and publishes each decoded
+made 64 bits, "Frame numbers past the wrap" below; times `FrameRate` / 90 000,
+rounded) and publishes each decoded
 frame with one provenance reference, `(vehicle:video.index, number)`: `Frames=` in the
 configuration and `Inputs=` in the manifest. A join from a decoded frame back to the
 vehicle therefore finds the frame's `video.index` message, and through it the capture
@@ -51,6 +52,33 @@ and counted, and the vehicle's numbers for them have no `cam.decoded` message.
 A **new stream**, meaning another SSRC or sequence numbers far behind the last (more
 than 64 packets: the encoder restarted), starts over at its first keyframe. A packet a
 little behind the newest is late and dropped.
+
+### Frame numbers past the wrap
+
+The RTP timestamp carries the low 32 bits of `number × 90000 / FrameRate`, which wrap
+every 13 h 15 min of frames. The relay makes 64 bits of them (`ts_unwrap`, `depack.c`):
+
+- **From the vehicle's own numbers when it has them.** The manifest subscribes
+  `video.index` (the topic of `Frames=`, as the bridge mirrors it: `bridge.conf`
+  `[Mirror video.index]`). The newest message's seq is a frame number in full; the
+  frame's timestamp is the 64-bit value nearest to that message's. This is right for a
+  relay started at any time, and across a reboot of the vehicle. A message is believed
+  for 5 s and not across a new stream, so an index left from before a reboot is not
+  applied to the video after it. The message's `rtp_timestamp` must be what its seq
+  gives at `FrameRate`; otherwise it is not used, and the log says so once.
+- **Otherwise from the last frame**: the value nearest to the last one, so a wrap the
+  relay sees is counted.
+- **A count that starts again is told from one that goes on** by the time that
+  passed: a timestamp more than 1 s behind the last, or further ahead than twice the
+  time between the two arrivals plus 10 s, is not the same count. Without the index
+  the numbers then start from the 32 bits themselves (the vehicle rebooted: a count
+  from zero); with it they are the index's. An encoder restarted without a reboot
+  goes on with its numbers, and so does the relay, new SSRC or not.
+
+When the count starts again the log says `the frame numbers start again at <n>` and
+**the recording goes into a new file** (`-2`, `-3`, as below) from the next keyframe:
+a file's times run from its first frame, and a second count in it would run backwards.
+What cannot be told without the index is deviation 9.
 
 ## Recording
 
@@ -138,6 +166,17 @@ The RTP is made by the encoder's own packetizer (`modules/encoder/h264.c`).
 - **The depacketizer:** a round trip at 1200- and 300-byte packets (FU-A everywhere),
   every NAL unit equal and every timestamp right; a lost packet of frame 10 skipping
   10–29 and nothing else; bad packets counted.
+- **The timestamps past 32 bits** (`test_timestamps`, on `ts_unwrap` alone): twelve
+  frames across the wrap counted; an encoder restarted 3 s later going on; a reboot
+  40 s later a count from zero, with the last timestamp below 2³¹ after a wrap and
+  above it; a reboot 30 s of frames before a wrap taken for the wrap (the limit); an
+  hour's silence the same count; a late start low by 2³² without the index and right
+  with it, the index's frame before, after, or across a wrap from this one; a reboot
+  with the new index.
+- **A relay started after the wrap, and a reboot** (`test_late_start_and_reboot`, the
+  module over loopback with the suite as the bridge's mirror of `video.index`): frame
+  1 431 700 named 1 431 700 (44 before the fix), then a new stream and a new index
+  from frame 2 named 2; two files.
 - **The SPS:** 320×240.
 - **The MP4:** 60 fragments, `ftyp` first; ffprobe reads 60 frames, and 30 from the
   file cut at two thirds (skipped, and said, without ffprobe).
@@ -179,25 +218,26 @@ The RTP is made by the encoder's own packetizer (`modules/encoder/h264.c`).
 8. **Not here yet:** the v4l2loopback webcam device that hellion fed (docs/11 lists
    it); and `topside_recorder`, whose session the recording follows, does not exist yet
    (`RecordDir=` stands in).
-9. **Frame numbers are right for the first 13.25 h of video since the vehicle's
-   boot only, unless the relay has seen the stream from before that** (2026-11-21, by
-   reading; not fixed). The encoder sends `frame number × 90000 / FrameRate` as a
-   32-bit RTP timestamp, the number being `video.index`'s seq, which goes on across
-   restarts of the encoder and starts again at a reboot; it wraps after 2³²/90000 s =
-   13 h 15 min of frames. The
-   relay counts the wraps it sees (`unwrap`), so a relay running through a wrap keeps
-   the numbers right. A relay *started* after a wrap begins with a high part of 0:
-   every `cam.decoded` reference is then low by 2³² × FrameRate / 90000 frames
-   (1 431 655.77 at 30 frames/s: not a whole number, so the error is not even a
-   constant shift), and the MP4's times with it. And the high part is not reset when
-   the numbers start again: after a reboot of the vehicle while the last timestamp
-   was above 2³¹, the jump back is counted as a wrap, and every number after it is
-   1 431 655 too high. What it needs is the frame number from the vehicle rather than
-   from the timestamp: the mirrored `video.index` message's seq, once the bridge
-   carries that topic, to seed the high part at start and after a restart of the
-   stream. Resetting the high part on every depacketizer restart instead would be
-   wrong: the depacketizer starts over on a new SSRC and on a burst of lost packets
-   too, and an encoder restarted without a reboot goes on with its numbers, so after
-   a real wrap that reset would lose the high part.
+9. **Frame numbers past 13.25 h of video need the mirrored `video.index`**
+   (found 2026-11-21 by reading; fixed the same day as far as it can be). The
+   encoder sends `frame number × 90000 / FrameRate` as a 32-bit RTP timestamp, the
+   number being `video.index`'s seq, which goes on across restarts of the encoder and
+   starts again at a reboot; it wraps after 2³²/90000 s = 13 h 15 min of frames. The
+   wire format is unchanged. What the relay does with it is in "Frame numbers past the
+   wrap" above; what is left:
+   - *Without the mirrored `video.index`* (no bridge, the topic not mirrored, the link
+     down for more than 5 s, `Frames=` naming another topic, or `FrameRate` not the
+     encoder's, which is said once in the log): a relay **started** after the first
+     wrap names every frame low by 2³² × FrameRate / 90000 (1 431 655.77 at
+     30 frames/s: not a whole number, so not even a constant shift) until the index
+     arrives. A relay that has seen the stream since before the wrap counts it.
+   - *Without it, a reboot of the vehicle within about 10 s plus twice the reboot's
+     length of a wrap* (some minute in every 13 h 15 min) is taken for the wrap, and
+     the numbers after it are high by the same amount.
+   - Before the fix a relay started late was low in every case, and a reboot while
+     the last timestamp was above 2³¹ (half of the time) was counted as a wrap,
+     whatever the bridge mirrored; the high part, once counted, also stayed in the
+     numbers after a reboot. The file went on through a reboot with times that ran
+     backwards.
 10. **Pixel formats:** 4:2:0 and 4:2:2, limited or full range (the camera's H.264 is
    4:2:0 limited); anything else is dropped and said once.

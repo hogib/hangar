@@ -35,6 +35,7 @@
 #include "hg_ini.h"
 #include "mp4.h"
 #include "recorder_session.h"
+#include "video_index.h"
 
 #define WHO "hangar-video-relay"
 #define MAX_TARGETS 8
@@ -542,24 +543,65 @@ static void read_session(void)
 /* ---- The loop -------------------------------------------------------------------- */
 
 static struct depack D;
-static uint64_t ts_hi; /* the RTP timestamp's wraps */
-static uint32_t ts_last;
-static int ts_seen;
+static struct ts_unwrap U;
 static char status[256];
 
-static uint64_t unwrap(uint32_t ts)
+/* The vehicle's own frame numbers, when Frames= names the encoder's
+ * video.index and the bridge mirrors it here: the newest message's seq is a
+ * frame number in full, which the 32-bit timestamp is not after 13.25 h of
+ * frames (README, deviation 9). Read at each access unit, never waited on.
+ * A message is believed for HINT_FRESH_NS, and not across a new stream: the
+ * vehicle may have rebooted, and the index of its new count comes a moment
+ * after its video or before it. An encoder restarted without a reboot has
+ * its next message here with its next frame. */
+#define HINT_FRESH_NS 5000000000ull
+static hg_sub *sub_frames;
+static struct {
+	int have;
+	uint64_t ts, seen_ns;
+	uint64_t resyncs;
+	int said_mismatch, said_used;
+} H;
+
+static uint64_t frames_hint(uint64_t now)
 {
-	if (ts_seen && ts < ts_last && ts_last - ts > 0x80000000u)
-		ts_hi += 1ull << 32;
-	ts_last = ts;
-	ts_seen = 1;
-	return ts_hi | ts;
+	if (!sub_frames)
+		return TS_NO_HINT;
+	if (H.resyncs != D.resyncs) {
+		H.resyncs = D.resyncs;
+		H.have = 0;
+	}
+	struct video_index vi;
+	struct hg_info info;
+	if (hg_latest(sub_frames, &vi, sizeof vi, &info) == HG_MSG) {
+		uint64_t ts = info.seq * 90000u / C.fps; /* as the encoder computes it */
+		H.have = (uint32_t)ts == vi.rtp_timestamp;
+		H.ts = ts;
+		H.seen_ns = now > info.age_ns ? now - info.age_ns : 0;
+		if (!H.have && !H.said_mismatch++)
+			mod_log(WHO, "%s: message %llu carries RTP timestamp %u, not %u: is FrameRate (%u) the encoder's? "
+				"Frame numbers from the RTP timestamp alone",
+				C.frames, (unsigned long long)info.seq, vi.rtp_timestamp, (uint32_t)ts, C.fps);
+	}
+	if (!H.have || now - H.seen_ns > HINT_FRESH_NS)
+		return TS_NO_HINT;
+	if (!H.said_used++)
+		mod_log(WHO, "frame numbers checked against %s as the bridge mirrors it", C.frames);
+	return H.ts;
 }
 
 static void on_au(const struct depack_au *au, uint64_t arrival_ns)
 {
-	uint64_t ts = unwrap(au->ts);
+	int restarted;
+	uint64_t ts = ts_unwrap(&U, au->ts, arrival_ns, frames_hint(arrival_ns), &restarted);
 	uint64_t number = (ts * C.fps + 45000) / 90000; /* the encoder's: number × 90000 / fps */
+	if (restarted) {
+		/* The numbers do not go on from the last frame's: the vehicle
+		 * rebooted, or its numbers have just become known. A file's times
+		 * run from its first frame, so what follows is a file of its own. */
+		mod_log(WHO, "the frame numbers start again at %llu", (unsigned long long)number);
+		rec_stop("the frame numbers started again");
+	}
 	if (rec.fd < 0 && rec_want && au->keyframe && arrival_ns >= rec_retry_ns)
 		rec_open(arrival_ns);
 	if (rec.fd >= 0 && mp4_write(&rec, au->data, au->len, ts, 90000u / C.fps, au->keyframe) < 0) {
@@ -648,6 +690,10 @@ int main(int argc, char **argv)
 	depack_init(&D, C.pt);
 	if (C.decode && decoder_open() < 0)
 		return 78;
+	sub_frames = hg_sub_open(strchr(C.frames, ':') + 1, &VIDEO_INDEX_TYPE);
+	if (!sub_frames)
+		mod_log(WHO, "%s is not read here (%s): frame numbers from the RTP timestamp alone, right for the first "
+			"13.25 h of frames since the vehicle's boot", C.frames, strerror(errno));
 	if (C.session[0]) {
 		sub_session = hg_sub_open(C.session, &RECORDER_SESSION_TYPE);
 		if (!sub_session)

@@ -184,3 +184,34 @@ int depack_push(struct depack *d, const uint8_t *pkt, size_t len, struct depack_
 		n++;
 	return n;
 }
+
+/* The value nearest to ref whose low 32 bits are ts; ts itself where that
+ * would be before zero. */
+static uint64_t ts_nearest(uint64_t ref, uint32_t ts)
+{
+	int64_t d = (int32_t)(ts - (uint32_t)ref);
+	if (d < 0 && (uint64_t)-d > ref)
+		return ts;
+	return d < 0 ? ref - (uint64_t)-d : ref + (uint64_t)d;
+}
+
+uint64_t ts_unwrap(struct ts_unwrap *u, uint32_t ts, uint64_t now_ns, uint64_t hint, int *restarted)
+{
+	uint64_t v = hint != TS_NO_HINT ? ts_nearest(hint, ts) : u->seen ? ts_nearest(u->last, ts) : ts;
+	int again = 0;
+	if (u->seen) {
+		/* 90 kHz ticks in the time between the two arrivals. */
+		uint64_t passed = now_ns > u->last_ns ? (now_ns - u->last_ns) / 1000u * 9u / 100u : 0;
+		if (v + TS_BACK < u->last || (v > u->last && v - u->last > 2 * passed + TS_SLACK)) {
+			again = 1;
+			if (hint == TS_NO_HINT)
+				v = ts;
+		}
+	}
+	u->seen = 1;
+	u->last = v;
+	u->last_ns = now_ns;
+	if (restarted)
+		*restarted = again;
+	return v;
+}
