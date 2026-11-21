@@ -2,6 +2,13 @@
 # operator equivalence hashes; cross builds for the vehicle targets; a minute
 # of fuzzing per harness; the static analysers.
 #
+# The Python suite (python/tests, run by `make check`) skips the tests that
+# need numpy or PyTorch where they are not installed, which is most of
+# hangar.learn's and hangar.nn's. The gcc job installs both (CPU wheels, in a
+# virtual environment kept in the cache) and sets HANGAR_PYTHON_NO_SKIP, so a
+# skipped test fails there; the other jobs run what the system python3 can
+# and print how many tests skipped.
+#
 # The aarch64 job runs the suites natively on GitHub's arm64 runners (the
 # repository is public, so they are free): the futex suites cannot run under
 # qemu user mode, which has no futex_waitv. A Pi 4 or 5 is still the target
@@ -35,6 +42,22 @@ jobs:
       - name: ffmpeg (the encoder's suite has ffmpeg decode its RTP)
         if: matrix.cc == 'gcc'
         run: sudo apt-get install -y -q --no-install-recommends ffmpeg
+      - name: Python environment from the cache
+        if: matrix.cc == 'gcc'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/hangar-e2e-venv
+          key: pyenv-${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04-torch-cpu-v1
+      - name: numpy and PyTorch (the whole Python suite, no test skipped)
+        if: matrix.cc == 'gcc'
+        # The environment bench/e2e-depth-ff/README.md describes. With the
+        # cache restored, venv and pip find everything there and do nothing.
+        # To take newer wheels, change the key above.
+        run: |
+          sudo apt-get install -y -q --no-install-recommends python3-venv
+          python3 -m venv "$HOME/.cache/hangar-e2e-venv"
+          "$HOME/.cache/hangar-e2e-venv/bin/pip" install --index-url https://download.pytorch.org/whl/cpu torch numpy
+          "$HOME/.cache/hangar-e2e-venv/bin/python" -c 'import numpy, torch; print("numpy", numpy.__version__, "torch", torch.__version__)'
       - name: Zig
         if: matrix.cc == 'zig'
         run: |
@@ -44,7 +67,7 @@ jobs:
       - name: Build and check
         run: |
           case "${{ matrix.cc }}" in
-            gcc)   make -j"$(nproc)" check ;;
+            gcc)   HANGAR_PYTHON_NO_SKIP=1 make -j"$(nproc)" check PYTHON="$HOME/.cache/hangar-e2e-venv/bin/python" ;;
             clang) make -j"$(nproc)" check CC=clang HOSTCC=clang ;;
             zig)   make -j"$(nproc)" check CC="zig cc" HOSTCC="zig cc" ;;
           esac
