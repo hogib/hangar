@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -364,10 +365,28 @@ static int write_all(int fd, const uint8_t *p, size_t n)
 int mp4_open(struct mp4w *w, const char *path)
 {
 	memset(w, 0, sizeof *w);
-	w->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
+	w->fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0640);
 	w->timescale = 90000;
 	w->seq = 1;
 	return w->fd < 0 ? -1 : 0;
+}
+
+int mp4_open_new(struct mp4w *w, const char *dir, const char *stem, char *path, size_t len)
+{
+	for (int k = 1; k <= 9999; k++) {
+		int n = k == 1 ? snprintf(path, len, "%s/%s.mp4", dir, stem) : snprintf(path, len, "%s/%s-%d.mp4", dir, stem, k);
+		if (n < 0 || (size_t)n >= len) {
+			w->fd = -1;
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+		if (mp4_open(w, path) == 0)
+			return 0;
+		if (errno != EEXIST)
+			return -1;
+	}
+	errno = EEXIST;
+	return -1;
 }
 
 int mp4_write(struct mp4w *w, const uint8_t *au, size_t len, uint64_t ts, uint32_t duration, int keyframe)

@@ -23,8 +23,17 @@ struct mp4w {
 	size_t cap;
 };
 
-/* Creates path (mode 0640). 0, or -1 with errno. */
+/* Creates path (mode 0640). 0, or -1 with errno. A path that exists is
+ * refused, EEXIST: a recording that is there is never replaced or cut. */
 int mp4_open(struct mp4w *w, const char *path);
+
+/* Creates the first of <dir>/<stem>.mp4, <dir>/<stem>-2.mp4, <dir>/<stem>-3.mp4
+ * and so on that does not exist yet, and writes its name to path. A second
+ * recording under one name (a module restarted during a session, a session
+ * announced twice) is a further part beside the first: appending would put a
+ * second header and timestamps from zero into one file, and what is there may
+ * end in a fragment cut short. 0, or -1 with errno. */
+int mp4_open_new(struct mp4w *w, const char *dir, const char *stem, char *path, size_t len);
 
 /* One frame: Annex B, its 64-bit RTP timestamp (unwrapped), its duration in
  * RTP ticks, whether it is a keyframe. 1 written, 0 skipped (before the first

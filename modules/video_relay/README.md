@@ -60,6 +60,29 @@ declared in the manifest). A session starting means a recording into
 from the module's start into `<RecordDir>/<Name>-<time>.mp4` instead, for the bench and
 the tests. Files are mode 0640; a missing `video/` is made 2770 (docs/06, "Sessions").
 
+**A file that is there is never replaced or cut.** The file is created with `O_EXCL`;
+when the name is taken the recording goes into `<Name>-<id>-2.mp4`, then `-3`, and so
+on (`mp4_open_new`). That is the case of a module restarted during a session (the new
+process reads the session's `active` message again), and of `RecordDir=` restarted
+within the same second. A new part, not an append: appended, a second header and
+timestamps from zero would follow a file that may end in a fragment cut short, and no
+player reads past that. A session announced again while it is being recorded changes
+nothing: the open file goes on. Until 2026-11-21 the file was opened with `O_TRUNC`,
+and a restart emptied everything the session had recorded.
+
+**A recording that is wanted and not open is tried again.** When the file cannot be
+created (the directory is not writable, the name is too long), when a write fails, or
+when the file system has less than `MinFree` free (looked at before a file is made
+and once a second while recording), the file is closed, the status line says `not
+recording: <why>`, the log says it once per reason, and a new part is opened at a
+keyframe after 1 s, then 2 s, doubling to 60 s between attempts. A file this process
+made and wrote nothing into is removed. Before, one failed write ended the recording
+for the life of the module (with `RecordDir=` no session message starts it again), and
+the recording grew until the disk was full for every other writer on it.
+
+Not done: no rotation (one file per recording, of any length), no `fsync`, and the
+write still happens in the loop that relays the pilot's picture.
+
 The MP4 is fragmented, one fragment per frame:
 - the header (`ftyp`, then `moov` with an empty sample table and `mvex`) is written at
   the first keyframe, from its SPS and PPS;
@@ -83,9 +106,10 @@ cuts one at two thirds).
 | `Session` | `topside_recorder.session` | the recorder session topic followed; empty for none |
 | `RecordDir` | none | record from the start into this directory |
 | `Name` | `video_relay` | the MP4 files' prefix |
+| `MinFree` | `64M` | bytes (or with `K`, `M`, `G`) that must be free in the recording's file system: under it nothing is recorded; `0` for no check |
 
 The status line says frames per second, kbit/s, frames, decoded, packets lost, frames
-skipped, and whether it is recording.
+skipped, and `recording` or `not recording: <why>` while a recording is wanted.
 
 ## Building
 
@@ -155,5 +179,25 @@ The RTP is made by the encoder's own packetizer (`modules/encoder/h264.c`).
 8. **Not here yet:** the v4l2loopback webcam device that hellion fed (docs/11 lists
    it); and `topside_recorder`, whose session the recording follows, does not exist yet
    (`RecordDir=` stands in).
-9. **Pixel formats:** 4:2:0 and 4:2:2, limited or full range (the camera's H.264 is
+9. **Frame numbers are right for the first 13.25 h of video since the vehicle's
+   boot only, unless the relay has seen the stream from before that** (2026-11-21, by
+   reading; not fixed). The encoder sends `frame number × 90000 / FrameRate` as a
+   32-bit RTP timestamp, the number being `video.index`'s seq, which goes on across
+   restarts of the encoder and starts again at a reboot; it wraps after 2³²/90000 s =
+   13 h 15 min of frames. The
+   relay counts the wraps it sees (`unwrap`), so a relay running through a wrap keeps
+   the numbers right. A relay *started* after a wrap begins with a high part of 0:
+   every `cam.decoded` reference is then low by 2³² × FrameRate / 90000 frames
+   (1 431 655.77 at 30 frames/s: not a whole number, so the error is not even a
+   constant shift), and the MP4's times with it. And the high part is not reset when
+   the numbers start again: after a reboot of the vehicle while the last timestamp
+   was above 2³¹, the jump back is counted as a wrap, and every number after it is
+   1 431 655 too high. What it needs is the frame number from the vehicle rather than
+   from the timestamp: the mirrored `video.index` message's seq, once the bridge
+   carries that topic, to seed the high part at start and after a restart of the
+   stream. Resetting the high part on every depacketizer restart instead would be
+   wrong: the depacketizer starts over on a new SSRC and on a burst of lost packets
+   too, and an encoder restarted without a reboot goes on with its numbers, so after
+   a real wrap that reset would lose the high part.
+10. **Pixel formats:** 4:2:0 and 4:2:2, limited or full range (the camera's H.264 is
    4:2:0 limited); anything else is dropped and said once.

@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -334,6 +335,60 @@ static void test_mp4(void)
 	}
 }
 
+/* A recording that is there is never replaced. mp4_open truncated its path,
+ * and the path of a session's recording is the same for the whole session:
+ * a relay restarted during a session, or a second `active` message for it,
+ * emptied everything the session had recorded. */
+static void test_mp4_keeps_what_is_there(void)
+{
+	char dir[700], path[800];
+	snprintf(dir, sizeof dir, "%s/keep", root);
+	CHECK_EQ_INT(mkdir(dir, 0755), 0);
+	snprintf(path, sizeof path, "%s/relay-s1.mp4", dir);
+	struct mp4w w;
+	CHECK_EQ_INT(mp4_open(&w, path), 0);
+	for (int i = 0; i < 30; i++)
+		CHECK_EQ_INT(mp4_write(&w, au[i].p, au[i].len, (uint64_t)(i + 1) * PERIOD, PERIOD, i % 30 == 0), 1);
+	mp4_close(&w);
+	struct stat a, b;
+	CHECK(stat(path, &a) == 0 && a.st_size > 1000);
+	/* The same path again, as after a restart: refused, the file untouched. */
+	errno = 0;
+	int rc = mp4_open(&w, path);
+	CHECK(rc < 0 && errno == EEXIST);
+	if (rc == 0)
+		mp4_close(&w);
+	CHECK(stat(path, &b) == 0);
+	if (b.st_size != a.st_size)
+		printf("    %s: %lld bytes before the second open, %lld after\n", path, (long long)a.st_size, (long long)b.st_size);
+	CHECK_EQ_INT((long)b.st_size, (long)a.st_size);
+	/* What the module does instead: the next part beside it, -2, then -3. */
+	char got[800], want[800];
+	for (int part = 2; part <= 3; part++) {
+		CHECK_EQ_INT(mp4_open_new(&w, dir, "relay-s1", got, sizeof got), 0);
+		snprintf(want, sizeof want, "%s/relay-s1-%d.mp4", dir, part);
+		CHECK(strcmp(got, want) == 0);
+		for (int i = 0; i < 30; i++)
+			CHECK_EQ_INT(mp4_write(&w, au[i].p, au[i].len, (uint64_t)(i + 1) * PERIOD, PERIOD, i % 30 == 0), 1);
+		mp4_close(&w);
+		int ftyp_first;
+		CHECK_EQ_INT(count_boxes(got, "moof", &ftyp_first), 30);
+		CHECK(ftyp_first);
+	}
+	CHECK(stat(path, &b) == 0);
+	CHECK_EQ_INT((long)b.st_size, (long)a.st_size);
+	int ftyp_first;
+	CHECK_EQ_INT(count_boxes(path, "moof", &ftyp_first), 30);
+	/* A name with nothing there is taken as it is. */
+	CHECK_EQ_INT(mp4_open_new(&w, dir, "relay-s2", got, sizeof got), 0);
+	snprintf(want, sizeof want, "%s/relay-s2.mp4", dir);
+	CHECK(strcmp(got, want) == 0);
+	mp4_close(&w);
+	/* A directory that is not there is an error, not a loop over names. */
+	errno = 0;
+	CHECK(mp4_open_new(&w, "/nonexistent-hangar-dir", "x", got, sizeof got) < 0 && errno == ENOENT);
+}
+
 /* ---- The module --------------------------------------------------------------------- */
 
 static int udp_bound(int *port)
@@ -577,6 +632,118 @@ static void test_module(void)
 	close(tx);
 }
 
+/* 1 when the file holds the text. */
+static int log_has(const char *log, const char *needle)
+{
+	static char buf[65536];
+	FILE *f = fopen(log, "r");
+	size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+	if (f)
+		fclose(f);
+	buf[n] = 0;
+	return strstr(buf, needle) != NULL;
+}
+
+/* The MP4 files in dir; the first one's name in `first` when not NULL. */
+static int mp4_files(const char *dir, char *first, size_t len)
+{
+	char pat[800];
+	snprintf(pat, sizeof pat, "%s/*.mp4", dir);
+	glob_t g;
+	int n = glob(pat, 0, NULL, &g) == 0 ? (int)g.gl_pathc : 0;
+	if (n && first)
+		snprintf(first, len, "%s", g.gl_pathv[0]);
+	globfree(&g);
+	return n;
+}
+
+/* With RecordDir= there is no session message to start a recording again:
+ * one failure ended it for the life of the module, and nothing looked at the
+ * free space. Now a recording that is wanted and not open is tried again at
+ * a keyframe (after 1 s, doubling to 60 s), and nothing is recorded under
+ * MinFree. */
+static void test_recording_goes_on(void)
+{
+	int qport, rport;
+	int q = udp_bound(&qport);
+	int tx = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	int tmp = udp_bound(&rport);
+	close(tmp);
+	CHECK(q >= 0 && tx >= 0);
+	struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons((uint16_t)rport),
+				  .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+	char conf[700], log[700], rec[700];
+	int relay_ok = 1;
+	snprintf(conf, sizeof conf, "%s/video_relay_rec.conf", root);
+
+	/* More free space wanted than any disk has: nothing is created, and the
+	 * log says why. The relay goes on relaying. */
+	snprintf(rec, sizeof rec, "%s/rec-full", root);
+	snprintf(log, sizeof log, "%s/video_relay_full.log", root);
+	write_text(conf,
+		   "[VideoRelay]\nBind=127.0.0.1:%d\nRelay=127.0.0.1:%d\nFrameRate=30\nDecode=no\nSession=\n"
+		   "RecordDir=%s\nName=test\nMinFree=8000000000G\n",
+		   rport, qport, rec);
+	pid_t pid = spawn_relay(conf, log);
+	CHECK(wait_listening(log, 10000));
+	packetize(1200, 1);
+	for (int f = 0; f < FRAMES; f++)
+		send_frame(tx, &to, q, f, -1, &relay_ok);
+	CHECK_EQ_INT(stop(pid), 0);
+	CHECK(relay_ok);
+	CHECK(log_has(log, "under MinFree"));
+	CHECK_EQ_INT(mp4_files(rec, NULL, 0), 0);
+
+	/* A directory that cannot be written, and then can: the recording
+	 * starts at a later keyframe, in the same process. */
+	if (geteuid() == 0) {
+		printf("    (the unwritable directory skipped: root writes anywhere)\n");
+	} else {
+		snprintf(rec, sizeof rec, "%s/rec-ro", root);
+		snprintf(log, sizeof log, "%s/video_relay_ro.log", root);
+		CHECK_EQ_INT(mkdir(rec, 0555), 0);
+		write_text(conf,
+			   "[VideoRelay]\nBind=127.0.0.1:%d\nRelay=127.0.0.1:%d\nFrameRate=30\nDecode=no\nSession=\n"
+			   "RecordDir=%s\nName=test\n",
+			   rport, qport, rec);
+		pid = spawn_relay(conf, log);
+		CHECK(wait_listening(log, 10000));
+		uint64_t first = 1;
+		packetize(1200, first);
+		for (int f = 0; f < FRAMES; f++)
+			send_frame(tx, &to, q, f, -1, &relay_ok);
+		CHECK(log_has(log, "not recording into"));
+		CHECK(log_has(log, strerror(EACCES)));
+		CHECK(!log_has(log, ": recording into"));
+		CHECK_EQ_INT(mp4_files(rec, NULL, 0), 0);
+		CHECK_EQ_INT(chmod(rec, 0755), 0);
+		/* The next attempt is at a keyframe no sooner than the wait (1 s
+		 * after the first failure, doubling): frames go on until it has
+		 * come, each pass of 60 beginning with a keyframe. */
+		int passes = 0;
+		while (mp4_files(rec, NULL, 0) == 0 && passes < 200) {
+			sleep_ms(300);
+			first += FRAMES;
+			packetize(1200, first);
+			for (int f = 0; f < FRAMES; f++)
+				send_frame(tx, &to, q, f, -1, &relay_ok);
+			passes++;
+		}
+		printf("    recording again after %d more passes of %d frames\n", passes, FRAMES);
+		CHECK_EQ_INT(stop(pid), 0);
+		CHECK(relay_ok);
+		char mp4[800] = "";
+		CHECK_EQ_INT(mp4_files(rec, mp4, sizeof mp4), 1);
+		int ftyp_first = 0;
+		int moofs = mp4[0] ? count_boxes(mp4, "moof", &ftyp_first) : 0;
+		printf("    %s: %d fragments\n", mp4, moofs);
+		CHECK(ftyp_first);
+		CHECK(moofs == 30 || moofs == 60); /* from the keyframe at which it was opened */
+	}
+	close(q);
+	close(tx);
+}
+
 static void test_conf_refused(void)
 {
 	char conf[700], log[700];
@@ -617,7 +784,9 @@ int main(void)
 	RUN_TEST(test_depack_loss);
 	RUN_TEST(test_sps_size);
 	RUN_TEST(test_mp4);
+	RUN_TEST(test_mp4_keeps_what_is_there);
 	RUN_TEST(test_module);
+	RUN_TEST(test_recording_goes_on);
 	RUN_TEST(test_conf_refused);
 	if (!getenv("VIDEO_RELAY_KEEP")) {
 		snprintf(mk, sizeof mk, "rm -rf %s", root);

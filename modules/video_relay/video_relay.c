@@ -21,6 +21,8 @@
 #include <netdb.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/timerfd.h>
 
 #include <libavcodec/avcodec.h>
@@ -50,8 +52,9 @@ static struct {
 	char session[64];         /* the recorder session topic followed; "" none */
 	char record_dir[256];     /* record always, into this directory; "" none */
 	char name[48];            /* the MP4 files' prefix */
+	uint64_t min_free;        /* bytes free below which nothing is recorded; 0: not looked at */
 } C = { .bind = "5610", .fps = 30, .pt = 96, .frames = "vehicle:video.index", .decode = 1, .threads = 2,
-	.name = "video_relay" };
+	.name = "video_relay", .min_free = 64ull << 20 };
 
 /* ---- video_relay.conf ---------------------------------------------------------- */
 
@@ -143,6 +146,17 @@ static int on_key(void *ctx, const char *key, const char *value, int line, char 
 			return -1;
 		}
 		snprintf(C.record_dir, sizeof C.record_dir, "%s", value);
+	} else if (strcmp(key, "MinFree") == 0) {
+		/* Bytes, or with K, M or G (powers of 1024). */
+		char *end;
+		errno = 0;
+		unsigned long long x = strtoull(value, &end, 10);
+		unsigned shift = *end == 'K' ? 10 : *end == 'M' ? 20 : *end == 'G' ? 30 : 0;
+		if (errno || end == value || value[0] == '-' || (shift && end[1]) || (!shift && *end) || x > (1ull << 33)) {
+			snprintf(err, errlen, "MinFree: bytes, or a number with K, M or G; 0 for no check");
+			return -1;
+		}
+		C.min_free = x << shift;
 	} else if (strcmp(key, "Name") == 0) {
 		if (!*value || strlen(value) >= sizeof C.name || strchr(value, '/')) {
 			snprintf(err, errlen, "Name: a file name prefix");
@@ -400,27 +414,101 @@ static struct mp4w rec = { .fd = -1 };
 static char rec_path[512];
 static uint64_t rec_files;
 
+/* What should be recorded, whether or not a file is open for it: the
+ * session's video/ and id, or RecordDir and the start's time. While wanted
+ * and not open (the directory cannot be written, the disk is full, a write
+ * failed) it is tried again at a keyframe, after rec_wait_ns, which doubles
+ * from 1 s to 60 s; one failure does not end the recording for good. */
+static int rec_want;
+static char want_dir[300], want_tag[64];
+static char rec_why[128];       /* why not, while wanted and not open; in the status line */
+static uint64_t rec_retry_ns, rec_wait_ns;
+
 static void rec_stop(const char *why)
 {
 	if (rec.fd < 0)
 		return;
 	mod_log(WHO, "recording stopped (%s): %s, %llu frames, %llu bytes", why, rec_path, (unsigned long long)rec.frames,
 		(unsigned long long)rec.bytes);
+	int empty = rec.bytes == 0;
 	mp4_close(&rec);
+	/* A file this process made and wrote nothing into (stopped before the
+	 * first keyframe, or its first write failed) is not left behind. */
+	struct stat st;
+	if (empty && stat(rec_path, &st) == 0 && st.st_size == 0)
+		unlink(rec_path);
+}
+
+/* Not recording although wanted: says why (once per reason in the log) and
+ * sets the next attempt. */
+static void rec_wait(const char *why, uint64_t now)
+{
+	if (strcmp(why, rec_why)) {
+		mod_fmt(rec_why, sizeof rec_why, "%s", why);
+		mod_log(WHO, "not recording into %s: %s; trying again at a keyframe", want_dir, why);
+	}
+	rec_wait_ns = !rec_wait_ns ? 1000000000ull : rec_wait_ns >= 30000000000ull ? 60000000000ull : rec_wait_ns * 2;
+	rec_retry_ns = now + rec_wait_ns;
+}
+
+/* Bytes free for this user in dir's file system; UINT64_MAX when unknown. */
+static uint64_t free_bytes(const char *dir)
+{
+	struct statvfs v;
+	if (statvfs(dir, &v) < 0)
+		return UINT64_MAX;
+	return (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
+}
+
+/* Opens a file for what is wanted: a new one, never one that is there. */
+static void rec_open(uint64_t now)
+{
+	if (mkdir(want_dir, 02770) == 0)
+		(void)chmod(want_dir, 02770); /* the umask may have cleared the group's bits */
+	uint64_t fr = free_bytes(want_dir);
+	if (C.min_free && fr < C.min_free) {
+		char why[128];
+		mod_fmt(why, sizeof why, "%llu MiB free, under MinFree %llu MiB", (unsigned long long)(fr >> 20),
+			(unsigned long long)(C.min_free >> 20));
+		rec_wait(why, now);
+		return;
+	}
+	char stem[128];
+	mod_fmt(stem, sizeof stem, "%s-%s", C.name, want_tag);
+	if (mp4_open_new(&rec, want_dir, stem, rec_path, sizeof rec_path) < 0) {
+		rec_wait(strerror(errno), now);
+		return;
+	}
+	rec_files++;
+	rec_why[0] = 0;
+	mod_log(WHO, "recording into %s", rec_path);
 }
 
 static void rec_start(const char *dir, const char *tag)
 {
 	rec_stop("a new recording");
-	if (mkdir(dir, 02770) == 0)
-		(void)chmod(dir, 02770); /* the umask may have cleared the group's bits */
-	mod_fmt(rec_path, sizeof rec_path, "%s/%s-%s.mp4", dir, C.name, tag);
-	if (mp4_open(&rec, rec_path) < 0) {
-		mod_log(WHO, "%s: %s", rec_path, strerror(errno));
-		return;
-	}
-	rec_files++;
-	mod_log(WHO, "recording into %s", rec_path);
+	rec_want = 1;
+	mod_fmt(want_dir, sizeof want_dir, "%s", dir);
+	mod_fmt(want_tag, sizeof want_tag, "%s", tag);
+	rec_why[0] = 0;
+	rec_wait_ns = 0;
+	rec_open(hg_now_ns());
+}
+
+/* The recording is no longer wanted (the session stopped, the module stops). */
+static void rec_end(const char *why)
+{
+	rec_want = 0;
+	rec_why[0] = 0;
+	rec_stop(why);
+}
+
+/* The file that is open cannot go on: closed, and another is tried later. */
+static void rec_fail(const char *why, uint64_t now)
+{
+	rec_stop(why);
+	rec_wait_ns = 0;
+	rec_wait(why, now);
 }
 
 static hg_sub *sub_session;
@@ -439,9 +527,14 @@ static void read_session(void)
 		if (s.active && s.path[0]) {
 			char dir[300];
 			mod_fmt(dir, sizeof dir, "%s/video", s.path);
-			rec_start(dir, s.id[0] ? s.id : "session");
+			const char *tag = s.id[0] ? s.id : "session";
+			/* The session already being recorded, announced again: the
+			 * file that is open goes on. */
+			if (rec_want && strcmp(dir, want_dir) == 0 && strcmp(tag, want_tag) == 0)
+				continue;
+			rec_start(dir, tag);
 		} else if (!s.active) {
-			rec_stop("the session stopped");
+			rec_end("the session stopped");
 		}
 	}
 }
@@ -467,9 +560,13 @@ static void on_au(const struct depack_au *au, uint64_t arrival_ns)
 {
 	uint64_t ts = unwrap(au->ts);
 	uint64_t number = (ts * C.fps + 45000) / 90000; /* the encoder's: number × 90000 / fps */
+	if (rec.fd < 0 && rec_want && au->keyframe && arrival_ns >= rec_retry_ns)
+		rec_open(arrival_ns);
 	if (rec.fd >= 0 && mp4_write(&rec, au->data, au->len, ts, 90000u / C.fps, au->keyframe) < 0) {
+		char why[128];
+		mod_fmt(why, sizeof why, "a write failed: %s", strerror(errno));
 		mod_log(WHO, "%s: %s", rec_path, strerror(errno));
-		rec_stop("a write failed");
+		rec_fail(why, arrival_ns);
 	}
 	if (dec)
 		decode(au, number, arrival_ns);
@@ -507,7 +604,22 @@ static void status_line(uint64_t now)
 	last_ns = now;
 	last_frames = D.frames;
 	last_bytes = rx_bytes;
-	char line[256];
+	/* Once a second while recording: stop before the disk is full, where
+	 * other writers (the recorder) would fail with this one. */
+	if (rec.fd >= 0 && C.min_free) {
+		uint64_t fr = free_bytes(want_dir);
+		if (fr < C.min_free) {
+			char why[128];
+			mod_fmt(why, sizeof why, "%llu MiB free, under MinFree %llu MiB", (unsigned long long)(fr >> 20),
+				(unsigned long long)(C.min_free >> 20));
+			rec_fail(why, now);
+		}
+	}
+	char line[256], recording[160] = "";
+	if (rec.fd >= 0)
+		mod_fmt(recording, sizeof recording, "; recording");
+	else if (rec_want)
+		mod_fmt(recording, sizeof recording, "; not recording: %s", rec_why[0] ? rec_why : "waiting for a keyframe");
 	char relay[64] = "; no relay";
 	if (C.n_relay && relay_errors)
 		mod_fmt(relay, sizeof relay, "; %llu relay errors", (unsigned long long)relay_errors);
@@ -515,7 +627,7 @@ static void status_line(uint64_t now)
 		relay[0] = 0;
 	mod_fmt(line, sizeof line, "%.1f frames/s, %.0f kbit/s; %llu frames, %llu decoded, %llu lost packets, %llu skipped%s%s",
 		fps, kbps, (unsigned long long)D.frames, (unsigned long long)decoded, (unsigned long long)D.lost,
-		(unsigned long long)D.skipped, rec.fd >= 0 ? "; recording" : "", relay);
+		(unsigned long long)D.skipped, recording, relay);
 	if (strcmp(line, status)) {
 		snprintf(status, sizeof status, "%s", line);
 		hg_status(line);
@@ -597,7 +709,7 @@ int main(int argc, char **argv)
 		read_session();
 		status_line(hg_now_ns());
 	}
-	rec_stop("stopping");
+	rec_end("stopping");
 	mod_log(WHO, "stopping: %llu packets (%llu relayed, %llu relay errors), %llu frames, %llu decoded, %llu lost packets, %llu frames skipped, %llu stream restarts, %llu recordings; decode %.2f ms a frame on average, %.2f ms at most",
 		(unsigned long long)D.packets, (unsigned long long)relayed, (unsigned long long)relay_errors,
 		(unsigned long long)D.frames, (unsigned long long)decoded, (unsigned long long)D.lost,
