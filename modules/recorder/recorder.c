@@ -80,6 +80,11 @@ static hg_pub *status_pub, *session_pub;
 static volatile sig_atomic_t stopping;
 static char host[64];
 static unsigned char boot[16];
+/* When the recorder started, and what safety.state last said: a message
+ * published before the start is history (the rings are read from their
+ * oldest message), which sets what is known and triggers nothing. */
+static uint64_t started_ns;
+static int armed = -1;
 
 /* The session. */
 static int active;
@@ -482,6 +487,13 @@ static void session_start(const char *by, const char *note)
 		logf_("%s", status_reason);
 		return;
 	}
+	struct statvfs vs;
+	if (conf.min_free && statvfs(conf.dir, &vs) == 0 && (uint64_t)vs.f_bavail * vs.f_frsize < conf.min_free) {
+		bfmt(status_reason, sizeof status_reason, "not started: under MinFree (%llu MB free)",
+		     (unsigned long long)((uint64_t)vs.f_bavail * vs.f_frsize >> 20));
+		logf_("%s", status_reason);
+		return;
+	}
 	if (writer_room(&W) < START_ROOM) {
 		bfmt(status_reason, sizeof status_reason, "the writer is behind: no room in its buffer for a session");
 		logf_("%s", status_reason);
@@ -640,13 +652,17 @@ static void dump(const char *reason)
 
 /* ---- Draining --------------------------------------------------------------- */
 
-static void note_special(struct rtopic *t, const unsigned char *payload)
+/* What a message of a trigger topic says. act 0: a message from before the
+ * recorder started, replayed from the ring. The arm and disarm of an hour
+ * ago are not a session to record now, nor a module's old exit a dump of an
+ * empty black box (both happened, at every restart of the recorder); the
+ * state they leave is kept, and main() starts a session if it is armed. */
+static void note_special(struct rtopic *t, const unsigned char *payload, int act)
 {
 	uint8_t state = payload[t->off_state];
 	if (t->role == 1) {
-		static int armed = -1;
 		int now_armed = state == 1;
-		if (conf.autostart == REC_ARMED && armed != now_armed) {
+		if (act && conf.autostart == REC_ARMED && armed != now_armed) {
 			if (now_armed && !active)
 				session_start("autostart:armed", "");
 			else if (!now_armed && active && strcmp(session_by, "autostart:armed") == 0)
@@ -655,7 +671,7 @@ static void note_special(struct rtopic *t, const unsigned char *payload)
 		armed = now_armed;
 	} else if (t->role == 2) {
 		static int sys_state = -1;
-		if (state == 2 && sys_state != 2)
+		if (act && state == 2 && sys_state != 2)
 			dump("failsafe");
 		sys_state = state;
 	} else if (t->role == 3) {
@@ -682,7 +698,7 @@ static void note_special(struct rtopic *t, const unsigned char *payload)
 		modules[slot].state = state;
 		/* starting, ready or unhealthy, then backoff or failed: the exit
 		 * was nobody's request (a stop goes through stopping). */
-		if (prev <= 2 && (state == 3 || state == 4)) {
+		if (act && prev <= 2 && (state == 3 || state == 4)) {
 			char why[96];
 			bfmt(why, sizeof why, "module %s exited", name);
 			dump(why);
@@ -750,7 +766,7 @@ static void record_message(int i, const struct hg_info *info, const void *payloa
 	 * session here, goes in as its first (an event topic's newest message
 	 * is written by session_start already). */
 	if (t->role)
-		note_special(t, payload);
+		note_special(t, payload, info->publish_ns >= started_ns);
 	if (!was_active && active && !t->keep_last && t->pol.policy != HGR_OFF &&
 	    !(t->pol.every_n > 1 && info->seq % t->pol.every_n != 0)) {
 		if (!t->file_open)
@@ -952,9 +968,12 @@ int main(int argc, char **argv)
 	      (long long)(conf.blackbox_ns / 1000000000), (unsigned long long)(conf.blackbox_mem >> 20),
 	      conf.autostart == REC_BOOT ? "boot" : conf.autostart == REC_ARMED ? "armed" : "manual");
 	hg_ready();
+	started_ns = hg_now_ns();
 	drain();
 	if (conf.autostart == REC_BOOT)
 		session_start("autostart:boot", "");
+	else if (conf.autostart == REC_ARMED && armed == 1)
+		session_start("autostart:armed", ""); /* armed before the recorder started, and still */
 	publish_status();
 	uint64_t last_drain = hg_now_ns(), last_tick = last_drain;
 	while (!stopping) {

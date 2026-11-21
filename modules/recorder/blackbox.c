@@ -113,6 +113,16 @@ struct bb_dump *bb_take(struct bb_ring *rings, const struct hgr_header *hdrs, in
 			continue;
 		struct bb_dump_topic *t = &d->topics[d->n++];
 		t->hdr = hdrs[i];
+		/* The header is the one a session's file of the topic starts with;
+		 * the ring holds every message, whatever that file keeps (every:N,
+		 * rate:<Hz>), and the dump's file says what is in it. A `meta` ring
+		 * holds headers alone, as its header says. */
+		if (t->hdr.policy == HGR_EVERY || t->hdr.policy == HGR_RATE) {
+			t->hdr.policy = HGR_FULL;
+			t->hdr.policy_n = 1;
+			memset(t->hdr.policy_text, 0, sizeof t->hdr.policy_text);
+			memcpy(t->hdr.policy_text, "full", 4);
+		}
 		t->ring = rings[i];
 		unsigned char *fresh = malloc((size_t)rings[i].cap * rings[i].rec_bytes);
 		rings[i].buf = fresh;

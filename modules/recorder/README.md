@@ -228,6 +228,17 @@ decide. Nothing here changes behaviour silently.
     `recorder.session` and `recorder.rep`, so a session holds its own status history and
     the replies to the calls that drove it, as docs/06 wants of every call; the start
     message of `recorder.session` references the `start` request.
+    **History triggers nothing**: a message published before the recorder started
+    (`publish_ns` before `started_ns`) updates what `note_special` knows, the armed
+    state and each module's state, and starts no session and no dump; `main` starts
+    the `AutoStart=armed` session if the newest of them says armed. Until 2026-11-21
+    every restart of the recorder replayed the ring: a session per arm and disarm
+    still in `safety.state`, and a dump of an empty black box for a module's old exit
+    (`test_autostart_armed`). A start under `MinFree` is refused
+    (`test_minfree_refuses_start`); it used to start, copy the manifests and stop
+    within a second, at every arm. A dump's header says `full` for a topic the
+    session records `every:N`, since the ring holds every message
+    (`test_blackbox_dump`).
 12. **Epochs** are tested with `hg_pub_open_mirror` standing in for the bridge: a
     replaced file with another `origin_boot` continues in `<topic>+<k>.hgr`, and the
     black box ring of that topic starts over, so one file never holds two numberings.

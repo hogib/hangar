@@ -202,7 +202,7 @@ A recording is a **session**, started and stopped by the recorder's calls or by 
 |---|---|---|
 | `AutoStart` | `armed` | `boot`: always recording. `armed`: while the vehicle is armed ([07-safety](07-safety.md)). `manual`: only by `recorder.start` |
 | `Dir` | `/var/lib/hangar/recordings` | Where sessions are made (below) |
-| `MinFree` | `1GB` | Stop a session below this much free space, and say so |
+| `MinFree` | `1GB` | Stop a session below this much free space, refuse to start one, and say so |
 | `BlackBox` | `60s` | Length of the black box, 0 to turn it off |
 | `BlackBoxMemory` | `32MB` | Its largest size in RAM |
 
@@ -211,6 +211,13 @@ A recording is a **session**, started and stopped by the recorder's calls or by 
 | `recorder.start` | start a session, with an optional note |
 | `recorder.stop` | |
 | `recorder.dump` | write the black box now |
+
+The recorder reads every ring from its oldest message when it starts, so that what
+was published while it was away is in the black box and in a session started at once.
+Those messages are history and trigger nothing: an arm and a disarm from before its
+start do not make a session, an old failsafe or module exit does not dump the black
+box. What they leave is the state: a recorder with `AutoStart=armed` that starts while
+the vehicle is armed starts its session then.
 
 `recorder.status` (an event topic, published on change and once a second while recording) carries the state, the
 session, bytes written, free space, gaps so far, and, for each topic in the black box,
@@ -278,6 +285,9 @@ back each topic actually reaches is in `recorder.status` and in the dump's
 
 The recorder writes the black box to disk, as a session of its own, when the system
 enters failsafe, when a module exits without being asked to, and on `recorder.dump`.
+The black box holds every message of a topic, also of one that a session records
+`every:N` or `rate:<Hz>`, and the header of its file in a dump says `full`; a topic
+recorded `meta` is kept as headers there too.
 The moments before an incident are kept even when nobody was recording.
 
 ## Recording files (`.hgr`)

@@ -567,6 +567,21 @@ static void test_blackbox_dump(void)
 		CHECK(strcmp(r.h->session, strrchr(d, '/') + 1) == 0);
 		for (uint64_t k = 1; k < r.count; k++)
 			CHECK(hgr_at(&r, k)->seq > hgr_at(&r, k - 1)->seq);
+		if (i == 0) {
+			/* chain.a is recorded every:2 in a session; the black box holds
+			 * every message of it, and the dump's header says what the file
+			 * holds, not what a session's would. */
+			CHECK(r.count >= 4);
+			for (uint64_t k = 1; k < r.count; k++)
+				CHECK_EQ_INT(hgr_at(&r, k)->seq, hgr_at(&r, k - 1)->seq + 1);
+			CHECK_EQ_INT(r.h->policy, HGR_FULL);
+			CHECK_EQ_INT(r.h->policy_n, 1);
+			CHECK(strcmp(r.h->policy_text, "full") == 0);
+		}
+		if (i == 1) {
+			CHECK_EQ_INT(r.h->policy, HGR_META); /* chain.b: headers alone, in the ring too */
+			CHECK_EQ_INT(r.record_bytes, 128);
+		}
 		if (i == 2)
 			c_count = r.count;
 		if (i == 4)
@@ -794,7 +809,69 @@ static void test_autostart_armed(void)
 	CHECK(r.count >= 2);
 	CHECK_EQ_INT(((const struct safety_state *)hgr_payload_at(&r, 0))->state, 1);
 	hgr_reader_close(&r);
+	/* A recorder that restarts reads every ring from its oldest message, so
+	 * that what was published while it was away is in the black box. What
+	 * those messages say happened before it started and is not acted on
+	 * again: safety.state's ring holds an arm and a disarm, and
+	 * hangar.vehicle.modules' a module's exit (test_blackbox_triggers); the
+	 * restarted recorder replayed both, a session of a few milliseconds and a
+	 * dump of an empty black box at every restart. */
+	/* (Past the 2 s deadline of this suite's last calls first. The instance
+	 * stopped here answered none, so it leaves no reply in recorder.rep, and
+	 * the next one takes a request still in tester.req within its deadline
+	 * for unanswered and runs it again: lib/hg/hg_call.c, not this test's
+	 * subject.) */
+	sleep_ms(2100);
+	stop_child(rec_pid);
+	int sessions = count_sessions("20"), dumps = count_sessions("blackbox-");
+	rec_pid = start_recorder(conf_path);
+	CHECK(wait_file_contains(log_path("recorder"), "AutoStart=armed", 5000));
+	sleep_ms(1500);
+	CHECK(wait_status(0, 2000, &st));
+	CHECK_EQ_INT(count_sessions("20"), sessions);
+	CHECK_EQ_INT(count_sessions("blackbox-"), dumps);
+	/* What the newest of them says is the state now: armed while the
+	 * recorder was away, it records from its start. */
+	stop_child(rec_pid);
+	ss.state = 1;
+	ss.outputs_enabled = 1;
+	hg_publish(saf, &ss, sizeof ss, hg_now_ns());
+	sleep_ms(100);
+	rec_pid = start_recorder(conf_path);
+	CHECK(wait_status(1, 5000, &st));
+	CHECK_EQ_INT(count_sessions("20"), sessions + 1);
+	rfmt(p, sizeof p, "%s/session.ini", find_session("20"));
+	CHECK(wait_file_contains(p, "StartedBy=autostart:armed", 2000));
+	ss.state = 0;
+	ss.outputs_enabled = 0;
+	hg_publish(saf, &ss, sizeof ss, hg_now_ns());
+	CHECK(wait_status(0, 2000, &st));
+	CHECK_EQ_INT(count_sessions("20"), sessions + 1);
 	hg_pub_close(saf);
+}
+
+/* A recorder under MinFree does not start a session it would stop at its
+ * next look at the disk a second later (with AutoStart=armed: at every arm,
+ * each time a directory with the manifests copied in). The start is
+ * refused with the reason. */
+static void test_minfree_refuses_start(void)
+{
+	stop_child(rec_pid);
+	char conf[700];
+	rfmt(conf, sizeof conf, "%s/etc/hangar/recorder-minfree.conf", R_root);
+	/* More than any tmpfs of a test machine has free. */
+	CHECK_EQ_INT(write_file(conf, "[Recorder]\nAutoStart=manual\nBlackBox=0\nMinFree=4194304GB\n"), 0);
+	rec_pid = start_recorder(conf);
+	struct recorder_status st;
+	CHECK(wait_status(0, 5000, &st));
+	int before = count_sessions("20");
+	struct recorder_start req;
+	memset(&req, 0, sizeof req);
+	hg_call_result r = call("recorder.start", &req, &RECORDER_START_TYPE);
+	CHECK_EQ_INT(r.status, HG_E_REFUSED);
+	CHECK(strstr(r.reason, "MinFree") != NULL);
+	CHECK_EQ_INT(count_sessions("20"), before);
+	CHECK(wait_file_contains(log_path("recorder"), "under MinFree", 2000));
 }
 
 /* Exit status 78: a Dir with the wrong mode, and a conf that does not parse. */
@@ -846,6 +923,7 @@ int main(void)
 	RUN_TEST(test_session_ini_survives_a_failed_rewrite);
 	RUN_TEST(test_session_end_is_not_dropped);
 	RUN_TEST(test_autostart_armed);
+	RUN_TEST(test_minfree_refuses_start);
 	RUN_TEST(test_refusals);
 	RUN_TEST(test_teardown);
 	rec_teardown();
