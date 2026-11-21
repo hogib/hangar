@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay, auto, writer, limits).
+ * clocks, hold, replay, auto, writer, limits, beacon, peer).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -66,6 +66,7 @@ static struct sockaddr_in fwd_v, fwd_t;
 static atomic_int fwd_drop_pct, fwd_stop, fwd_tamper; /* tamper: 1 replay, 2 modify, 3 forge, 4 and 5 the tag */
 static atomic_long fwd_count;
 static atomic_int fwd_drop_kind_v; /* a datagram kind (4 pong) not passed on to the vehicle; 0 none */
+static atomic_long fwd_hello_v;    /* hellos the vehicle sent */
 
 /* What the topside sent, in order, as someone on the tether would record it. */
 #define REC_MAX 16384
@@ -89,6 +90,8 @@ static void *forwarder(void *arg)
 			continue;
 		const struct sockaddr_in *to = ntohs(from.sin_port) == V.port ? &fwd_t : &fwd_v;
 		atomic_fetch_add(&fwd_count, 1);
+		if (to == &fwd_t && n > 4 && d[4] == 1)
+			atomic_fetch_add(&fwd_hello_v, 1);
 		if (to == &fwd_v && atomic_load(&fwd_rec_on) && n <= (ssize_t)sizeof recs[0].d) {
 			int k = atomic_load(&fwd_nrec);
 			if (k < REC_MAX) {
@@ -1376,6 +1379,422 @@ static void limits_run(void)
 	       have ? mv.slot_count : 0, have ? mt.slot_count : 0, have ? mt.payload_bytes + 128 : 0);
 }
 
+/* ---- Discovery on loopback ---------------------------------------------------- */
+
+/* The key of setup_side's bridge.key. The suite holds it to stand for two
+ * things: a second machine that holds the key (the twin vehicle below, the
+ * third machine of peer_run), and a recording. A beacon cannot be recorded
+ * here: a bridge sends it to the broadcast address, which no second socket on
+ * loopback is sure to hear. So the suite writes the lines the bridges would
+ * have sent, each with the tag a recording of it would carry, and whoever
+ * sends them again in a run needs no key to do it. */
+static const unsigned char TEST_KEY[32] = { 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15,
+					    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
+
+#define AIR_V 1u       /* the vehicle's beacon, heard by the topside, once a second */
+#define AIR_T 2u       /* the topside's, heard by the vehicle */
+#define AIR_STALE 4u   /* nine beacons of earlier ids of each side, ten times a second, from another address */
+#define AIR_MOVED 8u   /* the two beacons now on the air, sent again from another address */
+#define AIR_HELLOS 16u /* an old hello of each side at the other, ten times a second, from another address */
+#define AIR_TWIN 32u   /* a second vehicle with the key: its beacon, and its answer to every hello */
+#define ID_V 0x0a000001u
+#define ID_T 0x0b000001u
+#define ID_STALE_V 0x0c000100u
+#define ID_STALE_T 0x0c000200u
+#define ID_TWIN 0x0d000001u
+static atomic_uint air_what, air_id_t;
+static atomic_int air_stop;
+static atomic_long air_atk_got, air_twin_asked;
+static int air_relay, air_atk, air_twin, air_twin_port;
+
+static void send_beacon(int sock, int dport, const char *role, int port, uint32_t id)
+{
+	char line[200];
+	unsigned char tg[16];
+	int n = snprintf(line, sizeof line, "HANGAR/1 role=%s pair=test port=%d id=%08x", role, port, id);
+	blake2s(tg, 16, TEST_KEY, 32, line, (size_t)n);
+	n += snprintf(line + n, sizeof line - (size_t)n, " tag=");
+	for (int i = 0; i < 16; i++)
+		n += snprintf(line + n, sizeof line - (size_t)n, "%02x", tg[i]);
+	struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons((uint16_t)dport) };
+	to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	sendto(sock, line, (size_t)n, 0, (const struct sockaddr *)&to, sizeof to);
+}
+
+/* A hello of pair test under the key: role 1 the vehicle, 2 the topside. */
+#define HELLO_LEN (24 + 92 + 16)
+static void make_hello(unsigned char *d, int role, uint32_t id, const unsigned char *nonce, const unsigned char *echo)
+{
+	uint32_t bl = 92;
+	uint64_t seq = 1;
+	memset(d, 0, HELLO_LEN);
+	memcpy(d, "HGB1", 4);
+	d[4] = 1;
+	memcpy(d + 12, &bl, 4);
+	memcpy(d + 16, &seq, 8);
+	unsigned char *b = d + 24;
+	b[0] = (unsigned char)role;
+	memcpy(b + 4, &id, 4);
+	memcpy(b + 8, "test", 4);
+	memcpy(b + 40, nonce, 16);
+	memset(b + 56, 0xee, 16);
+	if (echo)
+		memcpy(b + 72, echo, 16);
+	blake2s(d + 24 + 92, 16, TEST_KEY, 32, d, 24 + 92);
+}
+
+/* What the two bridges hear beside each other's datagrams. Their own beacons
+ * name the forwarder's port, so their hellos and their link go through it. */
+static void *air(void *arg)
+{
+	(void)arg;
+	unsigned char old_t[HELLO_LEN], old_v[HELLO_LEN], nonce[16], buf[1500];
+	memset(nonce, 0x51, sizeof nonce);
+	make_hello(old_t, 2, ID_STALE_T, nonce, NULL);
+	memset(nonce, 0x52, sizeof nonce);
+	make_hello(old_v, 1, ID_STALE_V, nonce, NULL);
+	memset(nonce, 0x53, sizeof nonce); /* the twin's */
+	struct sockaddr_in v = fwd_v, t = fwd_t;
+	for (unsigned i = 0; !atomic_load(&air_stop); i++) {
+		unsigned w = atomic_load(&air_what);
+		if (i % 5 == 0) {
+			if (w & AIR_HELLOS) {
+				sendto(air_atk, old_t, sizeof old_t, 0, (const struct sockaddr *)&v, sizeof v);
+				sendto(air_atk, old_v, sizeof old_v, 0, (const struct sockaddr *)&t, sizeof t);
+			}
+			/* Ten times a second, not once: a topside's bridge that has
+			 * just started has then heard of both vehicles before either
+			 * answers it, which is the case this is about. */
+			if (w & AIR_TWIN)
+				send_beacon(air_twin, T.dport, "vehicle", air_twin_port, ID_TWIN);
+			if ((w & AIR_T) && i % 50 == 0)
+				send_beacon(air_relay, V.dport, "topside", fwd_port, atomic_load(&air_id_t));
+			if ((w & AIR_V) && i % 50 == 0)
+				send_beacon(air_relay, T.dport, "vehicle", fwd_port, ID_V);
+			if (w & AIR_MOVED) {
+				send_beacon(air_atk, V.dport, "topside", fwd_port, atomic_load(&air_id_t));
+				send_beacon(air_atk, T.dport, "vehicle", fwd_port, ID_V);
+			}
+			for (uint32_t k = 0; (w & AIR_STALE) && k < 9; k++) {
+				send_beacon(air_atk, V.dport, "topside", fwd_port, ID_STALE_T + k);
+				send_beacon(air_atk, T.dport, "vehicle", fwd_port, ID_STALE_V + k);
+			}
+		}
+		while (recv(air_atk, buf, sizeof buf, MSG_DONTWAIT) > 0)
+			atomic_fetch_add(&air_atk_got, 1);
+		for (;;) {
+			struct sockaddr_in from;
+			socklen_t fl = sizeof from;
+			ssize_t n = recvfrom(air_twin, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+			if (n <= 0)
+				break;
+			if (!(w & AIR_TWIN) || n != HELLO_LEN || buf[4] != 1)
+				continue;
+			unsigned char h[HELLO_LEN];
+			make_hello(h, 1, ID_TWIN, nonce, buf + 24 + 40);
+			sendto(air_twin, h, sizeof h, 0, (const struct sockaddr *)&from, fl);
+			atomic_fetch_add(&air_twin_asked, 1);
+		}
+		usleep(20000);
+	}
+	return NULL;
+}
+
+struct both {
+	long up_ms;                    /* when both links were first up; -1: never */
+	int n, amb_v, amb_t, up_v, up_t; /* samples, 20 ms apart: how many ambiguous, how many up */
+};
+
+/* Watches both links for ms, or until both are up. */
+static struct both watch_both(long ms, int until_up)
+{
+	struct both s = { .up_ms = -1 };
+	struct bridge_link lv, lt;
+	uint64_t t0 = now_ms();
+	do {
+		int hv = read_link(&V, &lv) == 0, ht = read_link(&T, &lt) == 0;
+		s.n++;
+		s.amb_v += hv && lv.state == 4;
+		s.amb_t += ht && lt.state == 4;
+		s.up_v += hv && lv.state == 3;
+		s.up_t += ht && lt.state == 3;
+		if (s.up_ms < 0 && hv && ht && lv.state == 3 && lt.state == 3)
+			s.up_ms = (long)(now_ms() - t0);
+		if (until_up && s.up_ms >= 0)
+			break;
+		sleep_ms(20);
+	} while (now_ms() - t0 < (uint64_t)ms);
+	return s;
+}
+
+/* Both bridges started again: no keys, no candidates, nothing remembered. */
+static int restart_bridges(void)
+{
+	use(&V);
+	pid_t bv = pid_of(&V, "bridge");
+	ctl("restart bridge");
+	use(&T);
+	pid_t bt = pid_of(&T, "bridge");
+	ctl("restart bridge");
+	int ok = wait_new_pid("bridge", bt, "ready", 5000);
+	use(&V);
+	return wait_new_pid("bridge", bv, "ready", 5000) && ok;
+}
+
+/* Peer=auto on both sides (docs/08 "Discovery"). A beacon's tag is under the
+ * shared key, which never changes, and nothing in a beacon says when it was
+ * made: one sent again checks like the first time. So no beacon may decide
+ * anything: not who the peer is, not where it is, not that there are two.
+ * What is on the air beside the two bridges' own beacons, each time with both
+ * bridges started again so that a link has to be made:
+ *
+ * - beacons of nine earlier ids of each side (a bridge draws a new id at
+ *   every start), from another address;
+ * - the beacons now on the air, sent again from another address;
+ * - an old hello of each side at the other, ten times a second;
+ * - a second vehicle that holds the key and answers: the one case in which
+ *   the topside must choose none, and say so.
+ *
+ * And what a restart of the peer costs with nobody else there. */
+static void beacon_run(void)
+{
+	V.peer = T.peer = "auto";
+	V.dport = free_port();
+	T.dport = free_port();
+	setup_side(&V, "bcn", NULL);
+	setup_side(&T, "bcn", NULL);
+	struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)fwd_port) };
+	a.sin_addr.s_addr = htonl(0x7f000002); /* 127.0.0.2: whoever else is on the tether */
+	int p;
+	air_relay = udp_bound(&p);
+	air_twin = udp_bound(&air_twin_port);
+	air_atk = socket(AF_INET, SOCK_DGRAM, 0);
+	if (bind(air_atk, (struct sockaddr *)&a, sizeof a) < 0) {
+		EXPECT(0, "a socket on 127.0.0.2:%d: %s", fwd_port, strerror(errno));
+		return;
+	}
+	atomic_store(&air_stop, 0);
+	atomic_store(&air_id_t, ID_T);
+	atomic_store(&air_what, AIR_V | AIR_T);
+	pthread_t th;
+	pthread_create(&th, NULL, air, NULL);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	uint64_t t0 = now_ms();
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "Peer=auto on both sides, each hearing the other's beacon: link up %.2f s after the managers' start (%s)",
+	       (now_ms() - t0) / 1e3, up ? lv.peer_addr : "-");
+	if (!up)
+		goto out;
+
+	/* The peer's bridge restarts: a new id in its beacons from then on. */
+	uint32_t id0 = lv.peer_id;
+	use(&T);
+	pid_t b0 = pid_of(&T, "bridge");
+	atomic_store(&air_id_t, ID_T + 1);
+	t0 = now_ms();
+	ctl("restart bridge");
+	int amb = 0, notup = 0, re = 0;
+	while (!re && now_ms() - t0 < 8000) {
+		if (read_link(&V, &lv) == 0) {
+			amb += lv.state == 4;
+			notup += lv.state != 3;
+			re = lv.state == 3 && lv.peer_id != id0 && read_link(&T, &lt) == 0 && lt.state == 3;
+		}
+		sleep_ms(20);
+	}
+	use(&T);
+	wait_new_pid("bridge", b0, "ready", 5000);
+	EXPECT(re && amb == 0,
+	       "the topside's bridge restarted (a new id): linked again after %.2f s; the vehicle's link not up in %d "
+	       "samples of 20 ms, ambiguous in %d",
+	       (now_ms() - t0) / 1e3, notup, amb);
+
+	/* The topside off for 3.5 s and back: the vehicle's link is down by then
+	 * (3 s), and the beacon of the bridge before is not 5 s old yet. */
+	atomic_store(&air_what, AIR_V);
+	use(&T);
+	manager_stop(T.mgr);
+	T.mgr = 0;
+	rm_tree(T.topics);
+	sleep_ms(3500);
+	int down = read_link(&V, &lv) == 0 && lv.state != 3;
+	atomic_store(&air_id_t, ID_T + 2);
+	atomic_store(&air_what, AIR_V | AIR_T);
+	t0 = now_ms();
+	start(&T);
+	struct both s = watch_both(8000, 1);
+	EXPECT(down && s.up_ms >= 0 && s.amb_v == 0,
+	       "the topside off for 3.5 s and back (a new id, the old one heard under 5 s ago): link up %.2f s after its "
+	       "manager's start; the vehicle ambiguous in %d samples of 20 ms",
+	       (now_ms() - t0) / 1e3, s.amb_v);
+
+	/* Beacons of earlier ids, from another address, at both sides. */
+	atomic_store(&air_what, AIR_V | AIR_T | AIR_STALE);
+	sleep_ms(300);
+	atomic_store(&air_atk_got, 0);
+	int again = restart_bridges();
+	s = watch_both(8000, 1);
+	EXPECT(again && s.up_ms >= 0 && s.amb_v == 0 && s.amb_t == 0,
+	       "nine earlier ids of each side replayed at 10 Hz from 127.0.0.2, both bridges started again: %s (%.2f s); "
+	       "ambiguous in %d and %d of %d samples; %ld datagrams sent to 127.0.0.2",
+	       s.up_ms >= 0 ? "link up" : "no link", (s.up_ms >= 0 ? s.up_ms : 8000) / 1e3, s.amb_v, s.amb_t, s.n,
+	       atomic_load(&air_atk_got));
+	if (s.up_ms < 0) {
+		/* How long it lasts: as long as the replay, and the candidates' 5 s. */
+		atomic_store(&air_what, AIR_V | AIR_T);
+		s = watch_both(12000, 1);
+		printf("    the replay stopped: %s after %.2f s\n", s.up_ms >= 0 ? "link up" : "still no link",
+		       (s.up_ms >= 0 ? s.up_ms : 12000) / 1e3);
+	}
+
+	/* The beacons now on the air, sent again from another address. */
+	atomic_store(&air_what, AIR_V | AIR_T | AIR_MOVED);
+	sleep_ms(300);
+	atomic_store(&air_atk_got, 0);
+	again = restart_bridges();
+	s = watch_both(8000, 1);
+	EXPECT(again && s.up_ms >= 0,
+	       "the two beacons on the air sent again from 127.0.0.2 at 10 Hz, both bridges started again: %s (%.2f s); "
+	       "%ld datagrams sent to 127.0.0.2",
+	       s.up_ms >= 0 ? "link up" : "no link", (s.up_ms >= 0 ? s.up_ms : 8000) / 1e3, atomic_load(&air_atk_got));
+	sleep_ms(500);
+	read_link(&V, &lv);
+	long got0 = atomic_load(&air_atk_got);
+	sleep_ms(1500);
+	EXPECT(s.up_ms < 0 || (strncmp(lv.peer_addr, "127.0.0.1:", 10) == 0 && atomic_load(&air_atk_got) == got0),
+	       "with the link up: the vehicle's peer is %s, and %ld datagrams went to 127.0.0.2 in 1.5 s", lv.peer_addr,
+	       atomic_load(&air_atk_got) - got0);
+
+	/* Old hellos, ten a second at each side from another address. */
+	atomic_store(&air_what, AIR_V | AIR_T | AIR_HELLOS);
+	sleep_ms(300);
+	again = restart_bridges();
+	s = watch_both(8000, 1);
+	EXPECT(again && s.up_ms >= 0, "an old hello of each side at the other, 10 Hz from 127.0.0.2, both bridges started again: %s (%.2f s)",
+	       s.up_ms >= 0 ? "link up" : "no link", (s.up_ms >= 0 ? s.up_ms : 8000) / 1e3);
+
+	/* A second vehicle with the key, there and answering. */
+	atomic_store(&air_twin_asked, 0);
+	atomic_store(&air_what, AIR_V | AIR_T | AIR_TWIN);
+	sleep_ms(300);
+	again = restart_bridges();
+	s = watch_both(7000, 0);
+	read_link(&T, &lt);
+	EXPECT(again && s.up_t == 0 && s.up_v == 0 && s.amb_t > s.n / 2 && atomic_load(&air_twin_asked) > 0,
+	       "two vehicles with the key, both answering, for 7 s: the topside up in %d of %d samples, ambiguous in %d "
+	       "('%s'); the second vehicle was sent %ld hellos",
+	       s.up_t, s.n, s.amb_t, lt.detail, atomic_load(&air_twin_asked));
+	atomic_store(&air_what, AIR_V | AIR_T);
+	s = watch_both(15000, 1);
+	EXPECT(s.up_ms >= 0, "the second vehicle gone: %s after %.2f s", s.up_ms >= 0 ? "link up" : "no link",
+	       (s.up_ms >= 0 ? s.up_ms : 15000) / 1e3);
+out:
+	atomic_store(&air_stop, 1);
+	pthread_join(th, NULL);
+	close(air_relay);
+	close(air_twin);
+	close(air_atk);
+}
+
+/* Peer=<address> (docs/08 "The link"): the peer is that address and port. A
+ * datagram from anywhere else is not read, whatever it is: a recorded hello
+ * (no key needed), and a datagram of the session itself with a sequence number
+ * far ahead, which only a holder of the key can make (here the suite, as a
+ * third machine that has it). Neither may make this side send anything, nor
+ * move its replay window: the second, taken, would have every datagram of the
+ * real peer refused as old from then on. */
+static void peer_run(void)
+{
+	setup_side(&V, "peer", NULL);
+	setup_side(&T, "peer", NULL);
+	atomic_store(&fwd_rec_on, 1);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "link up, both sides with a fixed Peer= (%s)", up ? lv.peer_addr : "-");
+	if (!up)
+		return;
+	sleep_ms(500);
+	int port, n = atomic_load(&fwd_nrec), h1 = -1, sample = -1;
+	int atk = udp_bound(&port);
+	uint64_t hi = 0;
+	for (int i = 0; i < n; i++) {
+		uint64_t seq;
+		memcpy(&seq, recs[i].d + 16, 8);
+		if (recs[i].d[4] == 1 && h1 < 0)
+			h1 = i;
+		if (recs[i].d[4] != 1) {
+			sample = i;
+			if (seq > hi)
+				hi = seq;
+		}
+	}
+	unsigned char buf[1500];
+	read_link(&V, &lv);
+	uint64_t rej0 = lv.rejected;
+	long hv0 = atomic_load(&fwd_hello_v);
+	for (int i = 0; h1 >= 0 && i < 50; i++) {
+		sendto(atk, recs[h1].d, recs[h1].len, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
+		usleep(2000);
+	}
+	sleep_ms(300);
+	int got = 0;
+	while (recv(atk, buf, sizeof buf, MSG_DONTWAIT) > 0)
+		got++;
+	read_link(&V, &lv);
+	EXPECT(h1 >= 0 && lv.state == 3 && lv.rejected - rej0 >= 50 && atomic_load(&fwd_hello_v) == hv0 && got == 0,
+	       "the topside's recorded hello from another port, 50 times: %llu refused; the vehicle sent %ld hello(s) to "
+	       "its peer and %d datagram(s) back",
+	       (unsigned long long)(lv.rejected - rej0), atomic_load(&fwd_hello_v) - hv0, got);
+
+	/* The session's key for what the topside sends, from the nonces of its
+	 * hello: K_down = BLAKE2s-256(key, "down" | n_v | n_t). */
+	unsigned char kdown[32], tag[16];
+	int keys = 0;
+	for (int i = 0; i < n && !keys && sample >= 0; i++) {
+		unsigned char in[36];
+		if (recs[i].d[4] != 1 || recs[i].len != HELLO_LEN)
+			continue;
+		memcpy(in, "down", 4);
+		memcpy(in + 4, recs[i].d + 24 + 72, 16);
+		memcpy(in + 20, recs[i].d + 24 + 40, 16);
+		blake2s(kdown, 32, TEST_KEY, 32, in, 36);
+		blake2s(tag, 16, kdown, 32, recs[sample].d, (size_t)recs[sample].len - 16);
+		keys = memcmp(tag, recs[sample].d + recs[sample].len - 16, 16) == 0;
+	}
+	unsigned char f[24 + 8 + 16];
+	if (keys) {
+		uint32_t bl = 8;
+		uint64_t seq = hi + 1000000;
+		memset(f, 0, sizeof f);
+		memcpy(f, recs[sample].d, 24); /* the magic and the link's id */
+		f[4] = 3;                      /* a ping */
+		f[5] = 0;
+		memcpy(f + 12, &bl, 4);
+		memcpy(f + 16, &seq, 8);
+		blake2s(f + 32, 16, kdown, 32, f, 32);
+		read_link(&V, &lv);
+		rej0 = lv.rejected;
+		sendto(atk, f, sizeof f, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
+	}
+	int notup = 0, samples = 0;
+	uint64_t t0 = now_ms();
+	while (keys && now_ms() - t0 < 4500) {
+		samples++;
+		notup += read_link(&V, &lv) != 0 || lv.state != 3;
+		sleep_ms(20);
+	}
+	EXPECT(keys && notup == 0 && lv.rejected - rej0 == 1,
+	       "a ping of this session, its sequence number a million ahead, from another port (%s): %llu refused; the "
+	       "vehicle's link not up in %d of %d samples over 4.5 s",
+	       keys ? "made with the key" : "the session's key not found", (unsigned long long)(lv.rejected - rej0), notup,
+	       samples);
+	close(atk);
+}
+
 static const struct run {
 	const char *name;
 	void (*fn)(void);
@@ -1388,6 +1807,8 @@ static const struct run {
 	{ "auto", auto_run },
 	{ "writer", writer_run },
 	{ "limits", limits_run },
+	{ "beacon", beacon_run },
+	{ "peer", peer_run },
 };
 
 int main(int argc, char **argv)

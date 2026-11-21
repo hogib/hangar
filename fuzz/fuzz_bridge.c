@@ -166,6 +166,7 @@ static const unsigned char *key_now(int kind)
 static void tick(void)
 {
 	choose_peer();
+	hello_tick(now_ns());
 	if (B.have_offset && B.nsamp)
 		estimate();
 	s_resend_check();
@@ -182,6 +183,18 @@ static void check_state(void)
 	FZ_CHECK(B.nsamp >= 0 && B.nsamp <= (int)(sizeof B.samp / sizeof B.samp[0]));
 	FZ_CHECK(ncands >= 0 && ncands <= 8);
 	FZ_CHECK(B.rings <= RINGS_MAX);
+}
+
+/* A beacon, tagged or not, decides nothing (docs/08 "Discovery"): not the
+ * peer, not its address, not the link's keys or whether it is up. */
+static void a_beacon(const char *line, size_t n)
+{
+	int have_peer = B.have_peer, up = B.up, keyed = B.keyed, pending = B.pending;
+	struct sockaddr_in peer = B.peer;
+	uint32_t link_id = B.link_id;
+	on_beacon(line, n, &from);
+	FZ_CHECK(B.have_peer == have_peer && B.up == up && B.keyed == keyed && B.pending == pending);
+	FZ_CHECK(B.link_id == link_id && memcmp(&B.peer, &peer, sizeof peer) == 0);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -220,7 +233,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 				sealed_at(peer_seq + (uint64_t)(int64_t)(int8_t)p[0], p[1], p[2], p + 3, len - 3, key_now(p[1]));
 			break;
 		case FZB_BEACON:
-			on_beacon((const char *)p, len, &from);
+			a_beacon((const char *)p, len);
 			break;
 		case FZB_BEACON_TAG: {
 			char line[256], want[40];
@@ -232,7 +245,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 			for (int i = 0; i < 16; i++)
 				snprintf(want + 2 * i, 3, "%02x", tg[i]);
 			int n = snprintf(line + len, sizeof line - len, " tag=%s", want);
-			on_beacon(line, len + (size_t)n, &from);
+			a_beacon(line, len + (size_t)n);
 			break;
 		}
 		case FZB_STREAM: {
