@@ -1,0 +1,146 @@
+[    0.0] start variant=learned seed=2 quick=False change=buoyancy
+[    0.6] armed
+[    0.6] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[    0.7] target depth=3.0 tag=descent
+[   30.7] phase what=train
+[   30.7] target depth=3.3 tag=train
+[   40.7] trainer steps=598 plant_loss=1.24e-03 policy_loss=5.00e-04 rows=1523 lost=0 rest=-0.085
+[   40.7] target depth=3.0 tag=train
+[   50.7] trainer steps=1195 plant_loss=2.79e-04 policy_loss=6.32e-04 rows=2023 lost=0 rest=-0.075
+[   50.7] target depth=3.6 tag=train
+[   60.7] target depth=2.8 tag=train
+[   60.7] trainer steps=1792 plant_loss=5.07e-04 policy_loss=3.83e-04 rows=2524 lost=0 rest=-0.086
+[   70.7] target depth=3.1 tag=train
+[   70.7] trainer steps=2389 plant_loss=4.66e-04 policy_loss=4.01e-04 rows=3025 lost=0 rest=-0.086
+[   80.7] target depth=4.0 tag=train
+[   80.7] trainer steps=2986 plant_loss=4.36e-04 policy_loss=2.21e-04 rows=3525 lost=0 rest=-0.086
+[   90.7] target depth=3.5 tag=train
+[   90.7] trainer steps=3583 plant_loss=4.64e-04 policy_loss=1.26e-04 rows=4026 lost=0 rest=-0.085
+[  100.7] target depth=3.0 tag=train
+[  100.7] trainer steps=4180 plant_loss=1.78e-03 policy_loss=3.14e-04 rows=4526 lost=0 rest=-0.085
+[  110.7] target depth=2.5 tag=train
+[  110.7] trainer steps=4778 plant_loss=1.89e-03 policy_loss=3.41e-04 rows=5027 lost=0 rest=-0.085
+[  120.7] target depth=3.4 tag=train
+[  120.7] trainer steps=5375 plant_loss=8.68e-04 policy_loss=4.12e-04 rows=5528 lost=0 rest=-0.085
+[  130.7] target depth=4.2 tag=train
+[  130.7] trainer steps=5971 plant_loss=4.01e-04 policy_loss=1.41e-04 rows=6028 lost=0 rest=-0.086
+[  140.7] target depth=3.0 tag=train
+[  140.8] trainer steps=6568 plant_loss=2.61e-03 policy_loss=3.69e-04 rows=6528 lost=0 rest=-0.086
+[  150.7] target depth=3.0 tag=train:return
+[  150.8] trainer steps=7165 plant_loss=6.40e-04 policy_loss=2.32e-04 rows=7029 lost=0 rest=-0.085
+[  160.8] trainer steps=7762 plant_loss=2.65e-03 policy_loss=3.21e-04 rows=7529 lost=0 rest=-0.085
+[  170.7] deploy.begin model=M1
+[  171.3] deploy model=M1 version=1 state=done check=0 reason= hash=8ae9353c575dd9e0 commands=-0.233 to +0.122 rest=-0.084 seconds=0.222203504 steps=8351 plant_loss=0.00043310836190357804 policy_loss=0.00018784204439725727
+[  171.3] phase what=B1 assisted, nominal
+[  171.3] block.begin tag=B1 mode=assisted
+[  171.3] target depth=3.0 tag=B1:hold
+[  171.3] trainer steps=8352 plant_loss=1.12e-03 policy_loss=2.18e-04 rows=8057 lost=0 rest=-0.084
+[  181.4] trainer steps=8949 plant_loss=4.11e-04 policy_loss=1.78e-04 rows=8558 lost=0 rest=-0.085
+[  191.3] target depth=4.0 tag=B1:down
+[  191.4] trainer steps=9541 plant_loss=4.14e-04 policy_loss=1.91e-04 rows=9059 lost=0 rest=-0.084
+[  201.4] trainer steps=10137 plant_loss=1.82e-03 policy_loss=1.40e-04 rows=9559 lost=0 rest=-0.085
+[  211.4] trainer steps=10732 plant_loss=1.03e-03 policy_loss=2.06e-04 rows=10059 lost=0 rest=-0.084
+[  216.3] target depth=3.0 tag=B1:up
+[  221.4] trainer steps=11327 plant_loss=4.42e-04 policy_loss=2.33e-04 rows=10559 lost=0 rest=-0.085
+[  231.4] trainer steps=11922 plant_loss=5.41e-04 policy_loss=1.40e-04 rows=11060 lost=0 rest=-0.084
+[  241.3] block.end tag=B1
+[  241.3] phase what=T1 assisted, 4 N heavier and back
+[  241.3] transient tag=T1 seconds=40.0
+[  241.3] buoyancy value=110.8 tag=T1
+[  241.4] trainer steps=12517 plant_loss=4.11e-04 policy_loss=3.19e-04 rows=11560 lost=0 rest=-0.085
+[  251.4] trainer steps=13112 plant_loss=1.22e-03 policy_loss=2.64e-04 rows=12060 lost=0 rest=-0.004
+[  261.4] trainer steps=13707 plant_loss=1.40e-03 policy_loss=7.52e-04 rows=12561 lost=0 rest=+0.088
+[  271.4] trainer steps=14302 plant_loss=8.95e-04 policy_loss=2.72e-04 rows=13061 lost=0 rest=+0.087
+[  281.3] transient tag=T1:back seconds=40.0
+[  281.3] buoyancy value=114.8 tag=T1:back
+[  281.4] trainer steps=14898 plant_loss=1.25e-03 policy_loss=3.58e-04 rows=13561 lost=0 rest=+0.088
+[  291.4] trainer steps=15493 plant_loss=7.65e-04 policy_loss=3.49e-04 rows=14061 lost=0 rest=+0.006
+[  301.4] trainer steps=16088 plant_loss=8.30e-04 policy_loss=3.89e-04 rows=14562 lost=0 rest=-0.085
+[  311.4] trainer steps=16683 plant_loss=4.79e-04 policy_loss=2.37e-04 rows=15063 lost=0 rest=-0.085
+[  321.3] phase what=H1 promotion: residual:depth_ff with M1
+[  321.3] transient tag=H1 seconds=20.0
+[  321.3] set_mode mode=residual:depth_ff hash=8ae9353c575dd9e0 reply={'mode': 'residual:depth_ff'}
+[  321.4] trainer steps=17278 plant_loss=6.18e-04 policy_loss=3.22e-04 rows=15563 lost=0 rest=-0.085
+[  331.4] trainer steps=17873 plant_loss=1.90e-03 policy_loss=1.31e-04 rows=16063 lost=0 rest=-0.079
+[  341.3] phase what=B2 residual M1, nominal
+[  341.3] block.begin tag=B2 mode=residual:depth_ff
+[  341.3] target depth=3.0 tag=B2:hold
+[  341.5] trainer steps=18468 plant_loss=6.76e-04 policy_loss=3.35e-04 rows=16563 lost=0 rest=-0.085
+[  351.5] trainer steps=19062 plant_loss=6.87e-04 policy_loss=5.06e-04 rows=17063 lost=0 rest=-0.084
+[  361.3] target depth=4.0 tag=B2:down
+[  361.5] trainer steps=19657 plant_loss=7.09e-04 policy_loss=3.96e-04 rows=17564 lost=0 rest=-0.082
+[  371.5] trainer steps=20251 plant_loss=5.69e-04 policy_loss=3.22e-04 rows=18065 lost=0 rest=-0.085
+[  381.5] trainer steps=20846 plant_loss=1.04e-03 policy_loss=4.93e-04 rows=18566 lost=0 rest=-0.085
+[  386.3] target depth=3.0 tag=B2:up
+[  391.5] trainer steps=21440 plant_loss=1.04e-03 policy_loss=5.08e-04 rows=19066 lost=0 rest=-0.078
+[  401.5] trainer steps=22034 plant_loss=8.47e-04 policy_loss=2.49e-04 rows=19566 lost=0 rest=-0.078
+[  411.3] block.end tag=B2
+[  411.3] phase what=T2 residual M1, 4 N heavier
+[  411.4] transient tag=T2 seconds=40.0
+[  411.4] buoyancy value=110.8 tag=T2
+[  411.5] trainer steps=22628 plant_loss=5.01e-03 policy_loss=2.74e-04 rows=20067 lost=0 rest=-0.078
+[  421.5] trainer steps=23223 plant_loss=1.18e-03 policy_loss=1.71e-04 rows=20567 lost=0 rest=+0.094
+[  431.5] trainer steps=23818 plant_loss=9.29e-04 policy_loss=4.24e-04 rows=21068 lost=0 rest=+0.095
+[  441.5] trainer steps=24412 plant_loss=7.87e-04 policy_loss=4.47e-04 rows=21568 lost=0 rest=+0.094
+[  451.4] phase what=B3 residual M1, heavier
+[  451.4] block.begin tag=B3 mode=residual:depth_ff
+[  451.4] target depth=3.0 tag=B3:hold
+[  451.6] trainer steps=25006 plant_loss=7.96e-04 policy_loss=1.91e-04 rows=22068 lost=0 rest=+0.096
+[  461.6] trainer steps=25600 plant_loss=8.64e-04 policy_loss=1.64e-04 rows=22568 lost=0 rest=+0.094
+[  471.4] target depth=4.0 tag=B3:down
+[  471.6] trainer steps=26194 plant_loss=6.76e-04 policy_loss=1.06e-04 rows=23069 lost=0 rest=+0.098
+[  481.6] trainer steps=26788 plant_loss=8.18e-04 policy_loss=2.23e-04 rows=23569 lost=0 rest=+0.094
+[  491.6] trainer steps=27383 plant_loss=7.47e-04 policy_loss=1.66e-04 rows=24070 lost=0 rest=+0.094
+[  496.4] target depth=3.0 tag=B3:up
+[  501.6] trainer steps=27978 plant_loss=7.51e-04 policy_loss=1.88e-04 rows=24571 lost=0 rest=+0.096
+[  511.6] trainer steps=28573 plant_loss=3.19e-03 policy_loss=1.02e-04 rows=25071 lost=0 rest=+0.094
+[  521.4] block.end tag=B3
+[  521.6] trainer steps=29167 plant_loss=1.15e-03 policy_loss=8.41e-05 rows=25572 lost=0 rest=+0.097
+[  531.4] phase what=S2 deploy M2 during the hold
+[  531.4] transient tag=S2 seconds=20.0
+[  531.4] deploy.begin model=M2
+[  532.0] deploy model=M2 version=2 state=done check=0 reason= hash=29a29da8fb7783e6 commands=-0.140 to +0.180 rest=+0.091 seconds=0.216856978 steps=29745 plant_loss=0.002685744781047106 policy_loss=0.0002094027731800452
+[  532.0] trainer steps=29746 plant_loss=5.58e-04 policy_loss=1.66e-04 rows=26092 lost=0 rest=+0.094
+[  542.0] reset_state.begin
+[  542.0] reset_state model=M2
+[  542.0] trainer steps=30340 plant_loss=8.70e-04 policy_loss=1.10e-04 rows=26593 lost=0 rest=+0.095
+[  552.0] phase what=B4 residual M2, heavier
+[  552.0] block.begin tag=B4 mode=residual:depth_ff
+[  552.0] target depth=3.0 tag=B4:hold
+[  552.0] trainer steps=30933 plant_loss=5.39e-04 policy_loss=9.29e-05 rows=27093 lost=0 rest=+0.093
+[  562.1] trainer steps=31528 plant_loss=8.25e-04 policy_loss=5.74e-05 rows=27593 lost=0 rest=+0.094
+[  572.0] target depth=4.0 tag=B4:down
+[  572.1] trainer steps=32122 plant_loss=1.27e-03 policy_loss=8.68e-05 rows=28094 lost=0 rest=+0.094
+[  582.1] trainer steps=32717 plant_loss=1.63e-03 policy_loss=6.33e-05 rows=28595 lost=0 rest=+0.093
+[  592.1] trainer steps=33311 plant_loss=4.98e-04 policy_loss=1.03e-04 rows=29095 lost=0 rest=+0.095
+[  597.0] target depth=3.0 tag=B4:up
+[  602.1] trainer steps=33905 plant_loss=1.12e-03 policy_loss=2.92e-04 rows=29596 lost=0 rest=+0.094
+[  612.1] trainer steps=34499 plant_loss=1.59e-03 policy_loss=1.61e-04 rows=30096 lost=0 rest=+0.097
+[  622.0] block.end tag=B4
+[  622.0] phase what=H2 back to assisted
+[  622.0] transient tag=H2 seconds=20.0
+[  622.0] set_mode mode=assisted hash=0000000000000000 reply={'mode': 'assisted'}
+[  622.1] trainer steps=35093 plant_loss=8.81e-04 policy_loss=1.25e-04 rows=30597 lost=0 rest=+0.093
+[  632.1] trainer steps=35687 plant_loss=5.49e-04 policy_loss=1.65e-04 rows=31098 lost=0 rest=+0.089
+[  642.0] phase what=B5 assisted, heavier
+[  642.0] block.begin tag=B5 mode=assisted
+[  642.0] target depth=3.0 tag=B5:hold
+[  642.2] trainer steps=36281 plant_loss=1.38e-03 policy_loss=1.94e-04 rows=31598 lost=0 rest=+0.089
+[  652.2] trainer steps=36875 plant_loss=4.18e-04 policy_loss=9.54e-05 rows=32098 lost=0 rest=+0.088
+[  662.0] target depth=4.0 tag=B5:down
+[  662.2] trainer steps=37469 plant_loss=1.68e-03 policy_loss=9.57e-05 rows=32599 lost=0 rest=+0.088
+[  672.2] trainer steps=38063 plant_loss=3.73e-04 policy_loss=9.84e-05 rows=33100 lost=0 rest=+0.090
+[  682.2] trainer steps=38657 plant_loss=1.12e-03 policy_loss=1.25e-04 rows=33600 lost=0 rest=+0.088
+[  687.1] target depth=3.0 tag=B5:up
+[  692.2] trainer steps=39250 plant_loss=8.32e-04 policy_loss=1.22e-04 rows=34100 lost=0 rest=+0.088
+[  702.2] trainer steps=39843 plant_loss=4.24e-04 policy_loss=1.27e-04 rows=34601 lost=0 rest=+0.088
+[  712.1] block.end tag=B5
+[  712.1] phase what=T3 assisted, back to nominal
+[  712.1] transient tag=T3 seconds=40.0
+[  712.1] buoyancy value=114.8 tag=T3
+[  712.2] trainer steps=40437 plant_loss=5.70e-04 policy_loss=9.85e-05 rows=35102 lost=0 rest=+0.089
+[  722.2] trainer steps=41031 plant_loss=1.03e-03 policy_loss=4.85e-04 rows=35602 lost=0 rest=-0.001
+[  732.2] trainer steps=41624 plant_loss=2.10e-03 policy_loss=4.34e-04 rows=36102 lost=0 rest=-0.084
+[  742.2] trainer steps=42217 plant_loss=6.86e-04 policy_loss=3.54e-04 rows=36603 lost=0 rest=-0.086
+[  752.1] disarmed
+[  754.1] session path=/dev/shm/hg-ql2/var/lib/hangar/recorder/sessions/20261121-095650-mousev

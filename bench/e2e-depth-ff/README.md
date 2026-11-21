@@ -777,6 +777,27 @@ modules' timers happened to fall (the loop's latency above) as much as the simul
 noise, and "smallest to largest of five" is a little narrower than what a sixth run can
 give. The supplementary runs were not repeated.
 
+**Again on a quiet machine, 2026-11-21** (`2026-11-21-quiet/`, main at `1aa7d17`). Much of
+the load above was not the other agents' but six busy loops left running by an earlier
+test. With those stopped, the ten runs (learned and oracle, seeds 1 to 5) were made
+again, two at a time, each on three physical cores of its own (`taskset -c 0-5` and
+`6-11`; load average 0.2 to 3.4 at each pair's start). No run had an interval over 30 ms
+on any of the five topics, the recorder lost nothing, no row was lost, and the policy
+read another `ctl.depth_hold.target` than the pairer at 1 anchor of 375 455 (49 of
+375 721 before). The depth numbers are the loaded runs' to within their spread:
+
+| Median of 5 (smallest to largest) | Assisted | Learned | Oracle |
+|---|---|---|---|
+| Nominal, 3 to 4 m: IAE (m s) | 1.86 (1.86 to 1.87) | 1.22 (1.21 to 1.26) | 1.22 (1.21 to 1.23) |
+| Nominal, 4 to 3 m: IAE (m s) | 3.03 (2.99 to 3.04) | 1.86 (1.81 to 1.90) | 1.89 (1.87 to 1.91) |
+| 4 N heavier, M1, 3 to 4 m | 2.72 (2.69 to 2.73) | 1.31 (1.25 to 1.35) | 1.34 (1.32 to 1.36) |
+| 4 N heavier, M1, 4 to 3 m | 2.19 (2.17 to 2.20) | 1.42 (1.38 to 1.44) | 1.34 (1.33 to 1.35) |
+| Buoyancy −4 N: peak (cm) | 32.9 (32.7 to 33.0) | 2.7 (2.7 to 2.8) | 3.0 (2.8 to 3.3) |
+| Nominal hold, rms (cm) | 2.01 (1.98 to 2.05) | 2.00 (1.98 to 2.03) | 2.03 (1.99 to 2.06) |
+
+`2026-11-21-quiet/summary.md` is the whole table. Nothing in the verdict below changes;
+these are the runs to quote. The supplementary supply runs were not made again.
+
 ### What this says about docs/09's claim, second design
 
 docs/09 now describes this design, and what it says of it was measured: a network that
