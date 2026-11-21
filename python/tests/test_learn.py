@@ -191,6 +191,33 @@ class ReplayBuffer(unittest.TestCase):
         self.assertRaises(ValueError, learn._duration_ns, "ten")
 
 
+class _Codec(object):
+    inputs, labels, hash = ["a"], ["b"], 0
+
+
+def three_runs(seq_len=None):
+    """Runs of 30, 100 and 10 rows (seqs 1-30, 31-130, 131-140), the newest last."""
+    rows = [row(i, learn.RESET if i in (1, 31, 131) else 0) for i in range(1, 141)]
+    return learn._Stream(_Codec(), 2, seq_len, replay(rows), "dataset.t")
+
+
+class Probes(unittest.TestCase):
+    def test_from_the_newest_run_long_enough(self):
+        s = three_runs()
+        self.assertEqual([x[0] for x in s.probes(8)[0]], list(range(131, 139)))
+        self.assertEqual([x[0] for x in s.probes(60)[0]], list(range(31, 91)))
+        self.assertEqual([[x[0] for x in p] for p in s.probes(20, count=3)],
+                         [list(range(31, 51)), list(range(1, 21)), list(range(31, 51))])
+
+    def test_never_across_a_reset(self):
+        # No run of 120 rows: the newest 120 rows were taken, across two
+        # resets, for a probe the vehicle steps from zero state without
+        # one. The longest unbroken run is taken, short as it is.
+        s = three_runs()
+        self.assertEqual([x[0] for x in s.probes(120)[0]], list(range(31, 131)))
+        self.assertEqual(learn._Stream(_Codec(), 2, None, replay([]), "t").probes(8), [[]])
+
+
 @unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
 class FromFile(unittest.TestCase):
     PATH = os.path.join(FIXTURES, "dataset.chain.hgr")
@@ -316,6 +343,19 @@ class WithTorch(unittest.TestCase):
         self.assertEqual(f.header.lineage[0].rows, len(s.replay))
         self.assertRaises(learn.LearnError, learn.export, model, path, s, ["heave"],
                           runtime={"dataset_hash": s.dataset_hash ^ 1})
+
+    def test_export_s_probe_is_twenty_chunks_of_an_unbroken_run(self):
+        # docs/09 "The weights file": one probe at least 20 x the chunk
+        # length, from an unbroken recorded run. export took 8 rows.
+        import tempfile
+        from hangar.nn import hgw
+        model = torch.nn.Sequential(torch.nn.Linear(1, 1))
+        path = os.path.join(tempfile.mkdtemp(), "m.hgw")
+        for seq_len, first, steps in ((3, 31.0, 60), (None, 31.0, 20), (50, 31.0, 100)):
+            learn.export(model, path, three_runs(seq_len), ["heave"])
+            p = hgw.read(path).probes
+            self.assertEqual(len(p), 1)
+            self.assertEqual((p[0].steps, p[0].inputs[0][0][0]), (steps, first), seq_len)
 
     def test_export_writes_the_lineage_it_is_given(self):
         # steps, parent_hash and the session were 0, 0 and "live" in every

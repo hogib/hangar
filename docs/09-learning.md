@@ -343,7 +343,7 @@ its settings), and the summary of its **lineage**:
 | buffers | per buffer: name, shape |
 | inputs | per model input: its buffer, and the row fields it is bound to, in order (a part's fields, its `count`, its missing bit) |
 | outputs | the output buffer, and the fields of the output topic's type it fills, in order |
-| probes | input sequences from zero state, and the expected output at every step; one of them at least 20 × the chunk length, from an unbroken recorded run |
+| probes | input sequences from zero state, and the expected output at every step; one of them at least 20 × the chunk length, from an unbroken recorded run, when the trainer's buffer holds one ([Training](#training)) |
 | lineage | one entry per source of rows, any number: vehicle boot id (u8[16]), recorder session id or `live`, first and last `anchor_seq` and stamp, rows used from it |
 
 A reader skips a section whose name it does not know, so sections can be added
@@ -589,6 +589,14 @@ are the vehicle's clock, which starts again at a reboot, so the buffer's span an
 last 2 minutes are measured on a time of its own that goes on across a change of boot,
 the new boot's first row at the time of the row before it: the rows of the boot before
 are dropped once the new boot has given a span of rows.
+
+**Probes.** Unless the script gives its own, `export` writes one probe: the inputs of
+the first 20 × `seq_len` rows (20 rows for a model without state) of the newest
+unbroken run in the buffer that is that long, a run being the rows from one `reset`,
+lost row or change of boot to the next. When no run in the buffer is that long, the
+longest one is taken whole, so the probe is shorter than the 20 chunks but never
+crosses a reset the vehicle would not make while it steps the probe.
+`stream.probes(n, count)` gives others.
 
 **What can be exported.** The exporter does not read a model's `forward()`: the graph
 is the model's child modules, one op each (`Linear`, `LSTM`, `ReLU`, `Tanh`, `Sigmoid`,

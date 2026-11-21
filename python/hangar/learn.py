@@ -9,7 +9,7 @@
         out, h = model(torch.from_numpy(chunk.inputs), h)
         loss = (((out - torch.from_numpy(chunk.labels)) ** 2).mean(-1) * torch.from_numpy(chunk.mask)).sum()
         ...
-        learn.deploy(model, policy="depth_ff", stream=stream, outputs=["heave"], probes=stream.probes(8))
+        learn.deploy(model, policy="depth_ff", stream=stream, outputs=["heave"])
 
 stream() reads the live dataset.<name> topic in place (hangar.topic) into a
 replay buffer; open_dataset() does the same over a built dataset file.
@@ -425,17 +425,31 @@ class _Stream(object):
             yield self.next_chunk()
 
     def probes(self, n=8, count=1):
-        """`count` sequences of n input rows for export's probes: from a run's
-        start when the buffer has one that long (a probe starts from zero
-        state, as a run does), else the newest n rows."""
-        rp = self.replay
+        """`count` sequences of n input rows for export's probes, each the
+        first n rows of an unbroken run in the buffer (a probe starts from
+        zero state, as a run does, and the vehicle steps it without a
+        reset): the newest run that long, then the one before it, and round
+        again. With no run of n rows, the longest there is, short of n."""
+        rows = list(self.replay.rows)
+        runs, s = [], 0     # [start, end) between the rows that start a run
+        for i in range(1, len(rows) + 1):
+            if i == len(rows) or rows[i].starts_run:
+                runs.append((s, i))
+                s = i
+        runs.reverse()
+        long = [r for r in runs if r[1] - r[0] >= n] or \
+            sorted(runs, key=lambda r: r[0] - r[1])[:1]     # stable: the newest of the longest
         out = []
-        starts = [i for i in range(rp.base, rp.end - n + 1)
-                  if rp.at(i).starts_run and not any(rp.at(j).starts_run for j in range(i + 1, i + n))]
         for k in range(count):
-            i = starts[-1 - k] if k < len(starts) else max(rp.base, rp.end - n)
-            out.append([list(rp.at(j).x) for j in range(i, min(i + n, rp.end))])
+            s, e = long[k % len(long)] if long else (0, 0)
+            out.append([list(r.x) for r in rows[s:min(e, s + n)]])
         return out
+
+    def default_probes(self):
+        """export's probe when the caller gives none: 20 chunks' length of
+        an unbroken run (docs/09 "The weights file"), 20 rows for a model
+        without state."""
+        return self.probes(20 * (self.seq_len or 1))
 
     def lineage(self, session="live"):
         """hgw.Lineage per boot over the rows in the buffer (at most 8)."""
@@ -614,13 +628,19 @@ def export(model, path, stream, outputs, probes=None, runtime=None, name=None, w
             raise LearnError("the stream's row type %016x is not the policy's %016x (another spec, or "
                              "other topics)" % (stream.dataset_hash, runtime["dataset_hash"]))
     graph = export_torch.export(model, path, stream.input_fields, outputs,
-                                probe_inputs=probes if probes is not None else stream.probes(8),
+                                probe_inputs=probes if probes is not None else _default_probes(stream),
                                 header=hdr, lineage=hdr.lineage,
                                 runtime_ops=(runtime or {}).get("ops"), run=run)
     if runtime and runtime.get("arch") and hgw.arch_hash(graph) != runtime["arch"]:
         os.unlink(path)
         raise LearnError("architecture %016x, the policy's Arch is %016x" % (hgw.arch_hash(graph), runtime["arch"]))
     return path
+
+
+def _default_probes(stream):
+    if hasattr(stream, "default_probes"):
+        return stream.default_probes()
+    return stream.probes(20 * (stream.seq_len or 1))    # a stand-in for a stream
 
 
 def _dataset_name(topic_name):
