@@ -90,6 +90,16 @@ def label_fields(lag=LAG):
     return [MADE] + ["thr.out.%d.pwm[%d]" % (k, ch) for ch in sorted(VERTICAL)] + [REST_SLOT]
 
 
+def with_loss(rows, lag=LAG):
+    """Per row of a numpy array of dataset rows: whether the trainer gives it
+    loss. learn's rule (chunk.mask) on the fields this example reads: not
+    masked, ctl.depth_hold.target and made joined, and thr.out's window back
+    to the command `lag` ticks before the anchor (a count of lag + 1 or
+    more). The analysis of a run asks here, so that it counts the rows the
+    trainer took."""
+    return learn.with_loss(rows, INPUTS + label_fields(lag))
+
+
 def applied_heave(Y):
     """The heave applied, in the wrench's units, from the vertical pulse
     widths (Y[..., 1:5])."""
@@ -105,9 +115,11 @@ def is_still(accel_made, vel_z):
 
 class RestTracker(object):
     """The heave at rest, row by row in the rows' order: the running mean of
-    the heave applied over the still rows so far. It is written into each
-    row's label vector (Y_REST). Until a still row has been seen it is the
-    integrator's value."""
+    the heave applied over the still rows so far, of those with loss (a
+    masked row is nobody's command, and one without its thr.out message has
+    zeros for pulse widths, which read as full heave up). It is written into
+    each row's label vector (Y_REST). Until a still row has been seen it is
+    the integrator's value."""
 
     def __init__(self):
         self.rest = None
@@ -118,7 +130,7 @@ class RestTracker(object):
         h = 0.0
         for k, ch in enumerate(sorted(VERTICAL)):
             h += VERTICAL[ch] * max(-1.0, min(1.0, (r.y[Y_PWM + k] - PWM_STOP) / PWM_FULL))
-        if not r.flags & learn.MASKED and is_still(r.y[Y_MADE], r.x[W]):
+        if r.loss and is_still(r.y[Y_MADE], r.x[W]):
             self.rest = h if self.rest is None else self.rest + (h - self.rest) / REST_ROWS
             self.lo = self.rest if self.lo is None else min(self.lo, self.rest)
             self.hi = self.rest if self.hi is None else max(self.hi, self.rest)
@@ -144,7 +156,7 @@ class RestTracker(object):
         outermost hundredths left out: where phi has been fitted."""
         v = []
         for r in stream.replay.rows:
-            if not r.flags & learn.MASKED:
+            if r.loss:
                 v.append(sum(VERTICAL[ch] * max(-1.0, min(1.0, (r.y[Y_PWM + k] - PWM_STOP) / PWM_FULL))
                              for k, ch in enumerate(sorted(VERTICAL))))
         if not v:

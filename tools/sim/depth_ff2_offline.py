@@ -65,7 +65,7 @@ def arrays(stream):
     rows = list(stream.replay.rows)
     X = numpy.array([r.x for r in rows], numpy.float64)
     Y = numpy.array([r.y for r in rows], numpy.float64)
-    keep = numpy.array([not r.flags & learn.MASKED for r in rows])
+    keep = numpy.array([r.loss for r in rows])
     P = numpy.stack([depth_ff2.applied_heave(Y), Y[:, depth_ff2.Y_REST], X[:, W]], -1)
     return P, Y[:, depth_ff2.Y_MADE], X, keep
 

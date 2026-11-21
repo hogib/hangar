@@ -252,7 +252,11 @@ def rows(s, ev, res, trainer=None):
     integ = ds["ctl.depth_hold.target.integral"].astype(numpy.float64)
     applied = sum(depth_ff2.VERTICAL[ch] * ((ds["thr.out.%d.pwm" % k][:, ch].astype(numpy.float64) - depth_ff2.PWM_STOP)
                                              / depth_ff2.PWM_FULL) for ch in depth_ff2.VERTICAL)
-    keep = (ds["flags"] & learn.MASKED == 0) & (ds["thr.out._count"] == depth_ff2.WINDOW)
+    # The rows the trainer gives loss, by the trainer's own rule.
+    keep = depth_ff2.with_loss(ds)
+    out["passed Where, without loss (a part missing, or thr.out's window short of the command)"] = int(
+        ((ds["flags"] & learn.MASKED == 0) & ~keep).sum())
+    out["thr.out's window not full"] = int((ds["thr.out._count"] != depth_ff2.WINDOW).sum())
     lab = {}
     for name in ["train"] + [b[0] for b in E.BLOCKS]:
         sp = span_of(ev, name)

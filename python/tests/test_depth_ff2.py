@@ -81,6 +81,42 @@ class Rest(unittest.TestCase):
         self.assertAlmostEqual(t.lo, -0.085, places=4)
         self.assertAlmostEqual(t.hi, 0.088, places=3)
 
+    def test_a_row_without_its_command_says_nothing(self):
+        # thr.out missing, or its window not yet back to the command LAG
+        # ticks ago: the pulse widths are zeros, which read as full heave up
+        # (+1.0). Such a row is no still row and no command the rows hold.
+        import depth_ff2
+        rp = learn.Replay(None)
+        s = learn._Stream(depth_ff2._SynthCodec(), 4, None, rp, "t")
+        t = depth_ff2.RestTracker()
+        t.attach(s)
+        for k in range(200):
+            rp.add(row(1 + k, 0.0, 0.0, 0.0, -0.08))
+        for k in range(100):
+            r = learn._Row(300 + k, (300 + k) * 20_000_000, b"\x01" * 16, 0, [0.0, 0.0, 0.0],
+                           [0.0, 0.0, 0.0, 0.0, 0.0, 7.0], False, partial=True)
+            rp.add(r)
+        self.assertAlmostEqual(r.y[depth_ff2.Y_REST], -0.08, places=6)
+        self.assertEqual(t.applied(s), (-0.08, -0.08))
+
+    @unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
+    def test_the_rows_with_loss_are_the_stream_s(self):
+        # The analysis (tools/sim/e2e_depth_ff2.py) and the trainer take the
+        # same rows: depth_ff2.with_loss is learn's rule on the example's
+        # fields. The command LAG ticks back is message WINDOW-1-LAG of the
+        # window, there once the count reaches LAG + 1.
+        import depth_ff2
+        names = ["flags", "missing", "nav.state.vel_z", "ctl.depth_hold.target._seq", "ctl.depth_hold.target._count",
+                 "ctl.depth_hold.target.accel_z", "ctl.depth_hold.target.integral", "made._seq", "made._count",
+                 "made.accel", "thr.out._seq", "thr.out._count"] + ["thr.out.%d.pwm" % k for k in range(8)]
+        rows = numpy.zeros(6, [(n, "<u4") for n in names])
+        rows["ctl.depth_hold.target._count"] = rows["made._count"] = 1
+        rows["thr.out._count"] = [8, depth_ff2.LAG + 1, depth_ff2.LAG, 0, 8, 8]
+        rows["missing"] = [0, 0, 0, 4, 1, 0]
+        rows["ctl.depth_hold.target._count"][4] = 0
+        rows["flags"][5] = learn.MASKED
+        self.assertEqual(list(depth_ff2.with_loss(rows)), [True, True, False, False, False, False])
+
     def test_attached_every_row_of_the_buffer_has_it(self):
         import depth_ff2
         rp = learn.Replay(None)
