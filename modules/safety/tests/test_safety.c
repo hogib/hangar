@@ -1296,6 +1296,31 @@ static void test_tether(void)
 	T.ap_armed = 0;
 	pump(300);
 	clear_ok();
+	/* The module restarted in a failsafe that drives, with the tether fine:
+	 * it comes back with the triggers it had. The link's newest message is
+	 * read at start like any input's; were only the messages after the
+	 * start read, the first tick would find no link, add `input` and
+	 * `tether`, and turn a surface into neutral. */
+	CHECK_EQ_INT(param_set("safety", "action_tether=0", NULL, NULL, NULL), 0);
+	arm_ok();
+	T.leak_wet = 1;
+	CHECK(wait_safety(2, 1, 2000));
+	CHECK_EQ_INT(last_state.triggers, 1u << 2);
+	for (int i = 0; i < 2; i++) {
+		CHECK(crash_and_restart(NULL));
+		CHECK(wait_latched(1, 5000));
+		pump(600);
+		if (last_state.triggers != 1u << 2)
+			printf("    after restart %d: triggers %u, action %u, reason '%s'\n", i + 1, last_state.triggers,
+			       last_state.action, last_state.reason);
+		CHECK_EQ_INT(last_state.triggers, 1u << 2);
+		CHECK_EQ_INT(last_state.action, 1);
+		CHECK(last_state.outputs_enabled);
+	}
+	T.leak_wet = 0;
+	T.ap_armed = 0;
+	pump(300);
+	clear_ok();
 	/* As before for the tests that follow: no bridge, the trigger off. */
 	CHECK_EQ_INT(param_set("safety", "action_tether=0", "tether_enabled=0", "tether_timeout=3", NULL), 0);
 	link_say(0, 0, 0);
