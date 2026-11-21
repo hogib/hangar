@@ -528,6 +528,174 @@ class TestExporter(unittest.TestCase):
             self.assertEqual(f.probes[0].outputs[2][0], f32s(ref[2][0]))
 
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+@unittest.skipUnless(torch is not None, "PyTorch is not installed")
+class TestExporterRunsTheModel(unittest.TestCase):
+    """export() runs the model itself on the probes and refuses a file whose
+    graph is another function: the exporter takes a model for its children
+    in the order they were declared, and forward() may be anything."""
+
+    X = [[1.0, -2.0, 0.5], [0.2, 0.1, -0.7]]
+
+    def export(self, model, probes=None, n_out=1, **kw):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m.hgw")
+            export_torch.export(model, path, ["a", "b", "c"], ["y%d" % k for k in range(n_out)],
+                                probe_inputs=[self.X] if probes is None else probes, **kw)
+            return hgw.read(path)
+
+    def refused(self, model, **kw):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m.hgw")
+            with self.assertRaises(export_torch.ExportError) as cm:
+                export_torch.export(model, path, ["a", "b", "c"], ["y"], probe_inputs=kw.pop("probes", [self.X]), **kw)
+            self.assertFalse(os.path.exists(path))   # nothing written
+            return str(cm.exception)
+
+    def test_children_in_order_exports_and_the_probes_are_the_model_s(self):
+        torch.manual_seed(0)
+        m = torch.nn.Sequential(torch.nn.Linear(3, 8), torch.nn.Tanh(), torch.nn.Linear(8, 1)).eval()
+        f = self.export(m)
+        with torch.no_grad():
+            want = m(torch.tensor(self.X))[:, 0].tolist()
+        for s in range(2):
+            self.assertAlmostEqual(f.probes[0].outputs[s][0][0], want[s], places=5)
+
+    def test_a_skip_connection_is_refused(self):
+        class Skip(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.l1 = torch.nn.Linear(3, 8)
+                self.t1 = torch.nn.Tanh()
+                self.l2 = torch.nn.Linear(8, 1)
+
+            def forward(self, x):
+                return self.l2(self.t1(self.l1(x))) + 0.5 * x[..., :1]
+
+        torch.manual_seed(0)
+        why = self.refused(Skip().eval())
+        self.assertIn("forward()", why)
+        self.assertIn("probe 0 step 0", why)
+        # Without probes of the caller's the model is run all the same.
+        self.assertIn("forward()", self.refused(Skip().eval(), probes=[]))
+
+    def test_a_functional_activation_is_refused(self):
+        class Functional(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.l1 = torch.nn.Linear(3, 8)
+                self.l2 = torch.nn.Linear(8, 1)
+
+            def forward(self, x):
+                return self.l2(torch.tanh(self.l1(x)))
+
+        torch.manual_seed(0)
+        self.assertIn("forward()", self.refused(Functional().eval()))
+
+    def test_children_applied_in_another_order_or_twice_are_refused(self):
+        class Order(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.out = torch.nn.Linear(3, 1)     # declared first, applied last
+                self.act = torch.nn.Tanh()
+                self.mid = torch.nn.Linear(3, 3)
+
+            def forward(self, x):
+                return self.out(self.act(self.mid(x)))
+
+        class Twice(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.l1 = torch.nn.Linear(3, 3)
+                self.t1 = torch.nn.Tanh()
+                self.l2 = torch.nn.Linear(3, 1)
+
+            def forward(self, x):
+                return self.l2(self.t1(self.l1(self.t1(self.l1(x)))))
+
+        torch.manual_seed(0)
+        self.refused(Order().eval())     # as declared it does not even chain: refused by shape
+        self.assertIn("forward()", self.refused(Twice().eval()))
+
+    def test_a_recurrent_model_is_run_as_a_sequence_from_zero_state(self):
+        # python/examples/depth_ff.py's shape: forward(x, h=None) -> (y, h),
+        # batch first. The probe is a run of steps, the state carried.
+        class Rec(torch.nn.Module):
+            def __init__(self, batch_first):
+                super().__init__()
+                self.norm = export_torch.Affine([0.5, 2.0, 1.0], [0.1, 0.0, -0.1])
+                self.lstm = torch.nn.LSTM(3, 4, batch_first=batch_first)
+                self.head = torch.nn.Linear(4, 1)
+
+            def forward(self, x, h=None):
+                y, h = self.lstm(self.norm(x), h)
+                return self.head(y), h
+
+        rng = random.Random(5)
+        seq = [[rng.uniform(-1, 1) for _ in range(3)] for _ in range(40)]
+        for batch_first in (True, False):
+            torch.manual_seed(1)
+            m = Rec(batch_first).eval()
+            f = self.export(m, probes=[seq])
+            self.assertEqual([op.type for op in f.graph.ops], ["affine", "lstm", "dense"])
+            with torch.no_grad():
+                x = torch.tensor(seq)
+                want = m(x[None] if batch_first else x[:, None])[0].reshape(-1).tolist()
+            for s in (0, 1, 39):
+                self.assertAlmostEqual(f.probes[0].outputs[s][0][0], want[s], places=5)
+
+        class Leaky(Rec):   # the state reaches the head too: not the children in order
+            def forward(self, x, h=None):
+                y, h = self.lstm(self.norm(x), h)
+                return self.head(y + self.norm(x).sum(-1, keepdim=True)), h
+
+        torch.manual_seed(1)
+        self.assertIn("forward()", self.refused(Leaky(True).eval(), probes=[seq]))
+
+    def test_exported_as_at_inference_whatever_the_mode(self):
+        # Dropout has no op: the file is the model in eval mode, and export
+        # compares with that, leaving the model's mode as it found it.
+        torch.manual_seed(0)
+        m = torch.nn.Sequential(torch.nn.Linear(3, 8), torch.nn.Dropout(0.5), torch.nn.Tanh(), torch.nn.Linear(8, 1))
+        m.train()
+        f = self.export(m)
+        self.assertTrue(m.training)
+        self.assertEqual([op.type for op in f.graph.ops], ["dense", "tanh", "dense"])
+
+    def test_a_model_that_cannot_be_run_is_refused_unless_told_how(self):
+        class Odd(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.l1 = torch.nn.Linear(3, 1)
+
+            def forward(self, x, gain):
+                return self.l1(x) * gain
+
+        torch.manual_seed(0)
+        m = Odd().eval()
+        self.assertIn("run=", self.refused(m))
+        f = self.export(m, run=lambda steps: m(torch.tensor(steps), 1.0).tolist())
+        self.assertEqual([op.type for op in f.graph.ops], ["dense"])
+        self.assertIn("forward()", self.refused(m, run=lambda steps: m(torch.tensor(steps), 2.0).tolist()))
+
+    def test_the_examples_models_export(self):
+        sys.path.insert(0, os.path.join(REPO, "python", "examples"))
+        import depth_ff
+        import depth_ff2
+        torch.manual_seed(0)
+        with tempfile.TemporaryDirectory() as d:
+            export_torch.export(depth_ff2.make_model().eval(), os.path.join(d, "a.hgw"), depth_ff2.INPUTS, ["heave"],
+                                probe_inputs=[self.X])
+            for bound in (None, 0.15):
+                export_torch.export(depth_ff.make_model(3, [0.0] * 3, [1.0] * 3, bound).eval(), os.path.join(d, "b.hgw"),
+                                    ["a", "b", "c"], ["heave"], probe_inputs=[self.X * 30])
+
+
 def parse_sidecar(text):
     out = {}
     for line in text.splitlines():

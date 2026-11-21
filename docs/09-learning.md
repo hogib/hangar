@@ -44,7 +44,8 @@ substitution, convolutions and the imitation of a pilot are listed under
   vehicle.
 - **Weights are checked before they run**: hashes, architecture, finite values, the
   time a step takes, and probe outputs computed on the topside that the vehicle must
-  reproduce.
+  reproduce. The topside checks the probes against the trained model itself before it
+  writes the file ([Training](#training)).
 - **Outputs are checked every tick.** A non-finite output is never published.
 - **A policy drives nothing until an operator promotes it**, naming the model. Its
   output is published and recorded from its first tick; the mux applies it only in
@@ -552,7 +553,7 @@ batches of single rows and has nothing to carry; the example below is one, and
 | `open_dataset(file, batch, seq_len=None)` | the same over a built dataset file |
 | `with_loss(rows, fields)` | per row of a numpy array of rows: whether a stream reading `fields` gives it loss (`chunk.mask`'s rule, below) |
 | `carry(state, fresh)` | the recurrent state, detached from the graph, zeroed for the slots marked fresh |
-| `export(model, file, stream, outputs)` | the `.hgw` file: graph, tensors, bindings to the stream's input fields and to `outputs`, probes and lineage from the stream's buffer, checked against the vehicle's `runtime_info` |
+| `export(model, file, stream, outputs)` | the `.hgw` file: graph, tensors, bindings to the stream's input fields and to `outputs`, probes and lineage from the stream's buffer, checked against the vehicle's `runtime_info` and against the model (below) |
 | `deploy(model or file, policy, stream, outputs)` | export, `bridge.send`, `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
 | `revert(policy)`, `watch(policy)` | |
 
@@ -584,6 +585,23 @@ buffer, half of the draws from its last 2 minutes. A slot that starts inside a r
 rather than at a `reset`, runs its first chunk without loss, so that the state it
 learns from has seen `seq_len` rows. Rows from earlier dives' recordings, through
 `open_dataset`, may be mixed in; a change of vehicle boot is a `reset`.
+
+**What can be exported.** The exporter does not read a model's `forward()`: the graph
+is the model's child modules, one op each (`Linear`, `LSTM`, `ReLU`, `Tanh`, `Sigmoid`,
+the package's `Affine`, an eval-mode `BatchNorm1d` as an `affine`; `Dropout` is
+nothing), in the order they were declared. A model whose `forward()` is anything else,
+a skip connection, `torch.tanh(...)` in place of a `Tanh` module, a layer used twice,
+not at all or in another order, would be written as another function, and the vehicle's
+probe check, which compares the file's graph with the file's probes, would pass it. So
+`export` runs the model itself, in eval mode, on every probe's inputs from zero state
+(a model without an `LSTM` on the steps as a batch, one with an `LSTM` on the probe as
+one sequence, taking the first of the values it returns), and refuses to write the
+file unless the model's outputs are the probe's expected outputs, which the Python
+reference computed on the graph, within the header's probe tolerance at every step.
+The refusal names the probe, the step and the two values. Skip connections and the
+rest are not supported in version 1; they are refused, not approximated. A model that
+cannot be called with one tensor is refused too, unless the script says how to run it
+(`run=`).
 
 Training itself is the script's own PyTorch code; the package moves rows in and weights
 out, and records the lineage.

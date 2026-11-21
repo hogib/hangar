@@ -23,7 +23,10 @@ array of rows, for an analysis that reads a dataset itself.
 
 export() writes the .hgw with lib/nn's exporter (hangar.nn.export_torch):
 bindings to the stream's fields, probes from the reference, the lineage of
-the rows trained on, checked against the policy's runtime_info.
+the rows trained on, checked against the policy's runtime_info. The model is
+run on the probes and the export refused unless the file's graph gives the
+model's outputs: the exporter reads a model's child modules in order, not
+its forward().
 
 until the bridge: deploy() puts the file in the policy's incoming
 directory itself (`<HANGAR_ROOT>/var/lib/hangar/policy_<name>/incoming/`),
@@ -561,11 +564,14 @@ def _watch(ta, tl, timeout):
 # ---- Export and deploy ----------------------------------------------------------
 
 def export(model, path, stream, outputs, probes=None, runtime=None, name=None, warmup_ticks=None,
-           tick_period_ns=None, parent_hash=0, steps=0, session="live"):
+           tick_period_ns=None, parent_hash=0, steps=0, session="live", run=None):
     """The .hgw of a PyTorch model (hangar.nn.export_torch): bound to the
     stream's input fields and to `outputs` (wrench fields), the probes from
     the reference, the header's lineage from the stream's buffer; refused
-    unless it matches `runtime` (runtime_info's dict) when given. The
+    unless it matches `runtime` (runtime_info's dict) when given, and
+    (export_torch.ExportError) unless the graph written gives the model's
+    own outputs on the probes (`run`: how to run the model on a probe's
+    steps, when calling it with one tensor is not it). The
     lineage's `steps`, `parent_hash` (the first 8 bytes of the BLAKE2s of
     the weights this training started from, 0 for none) and `session` (the
     recorder's session the rows are in, "live" for rows nobody recorded) are
@@ -595,7 +601,7 @@ def export(model, path, stream, outputs, probes=None, runtime=None, name=None, w
     graph = export_torch.export(model, path, stream.input_fields, outputs,
                                 probe_inputs=probes if probes is not None else stream.probes(8),
                                 header=hdr, lineage=hdr.lineage,
-                                runtime_ops=(runtime or {}).get("ops"))
+                                runtime_ops=(runtime or {}).get("ops"), run=run)
     if runtime and runtime.get("arch") and hgw.arch_hash(graph) != runtime["arch"]:
         os.unlink(path)
         raise LearnError("architecture %016x, the policy's Arch is %016x" % (hgw.arch_hash(graph), runtime["arch"]))
@@ -636,7 +642,7 @@ def recording_session(directory=None):
 
 
 def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeout=60.0, directory=None,
-           incoming=None, steps=None, parent_hash=None, session=None):
+           incoming=None, steps=None, parent_hash=None, session=None, run=None):
     """Export (unless given a file), send, load_weights, and wait for the
     load's end: {"version", "state" ("done" | "rejected"), "check", "reason",
     "hash"}. until the bridge: the file is copied into the policy's incoming
@@ -662,7 +668,7 @@ def deploy(model_or_file, policy, stream=None, outputs=None, probes=None, timeou
         if parent_hash is None:
             parent_hash = getattr(model_or_file, "hangar_deployed_hash", 0)
         export(model_or_file, path, stream, outputs, probes, runtime=rt, steps=int(steps or 0),
-               parent_hash=int(parent_hash), session=session or recording_session(directory))
+               parent_hash=int(parent_hash), session=session or recording_session(directory), run=run)
     with open(path, "rb") as f:
         data = f.read()
     digest = hashlib.blake2s(data, digest_size=32).hexdigest()
