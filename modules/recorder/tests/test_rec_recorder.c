@@ -649,6 +649,112 @@ static void test_blackbox_triggers(void)
 	hg_pub_close(mods);
 }
 
+/* session.ini is replaced whole or not at all. At stop the recorder writes
+ * it again with the stop lines; the write is to a temporary file that is
+ * renamed over it. With the file size limited to 100 bytes at that moment (a
+ * full disk, which is when MinFree stops a session) the temporary cannot be
+ * written and the session.ini of the start stays as it was. Before, the file
+ * was opened with O_TRUNC and written in place: the failed write left the
+ * first 100 bytes, and the session's id, boot id and start times were gone. */
+static void test_session_ini_survives_a_failed_rewrite(void)
+{
+	struct recorder_start req;
+	memset(&req, 0, sizeof req);
+	rfmt(req.note, sizeof req.note, "kept");
+	CHECK_EQ_INT(call("recorder.start", &req, &RECORDER_START_TYPE).status, HG_OK);
+	struct recorder_status st;
+	CHECK(wait_status(1, 2000, &st));
+	char s[700], p[1024];
+	rfmt(s, sizeof s, "%s", find_session("20"));
+	rfmt(p, sizeof p, "%s/session.ini", s);
+	CHECK(wait_file_contains(p, "StartedUtc=", 2000));
+	struct rlimit old, lim;
+	CHECK_EQ_INT(prlimit(rec_pid, RLIMIT_FSIZE, NULL, &old), 0);
+	lim = old;
+	lim.rlim_cur = 100;
+	CHECK_EQ_INT(prlimit(rec_pid, RLIMIT_FSIZE, &lim, NULL), 0);
+	CHECK_EQ_INT(call("recorder.stop", NULL, &EMPTY_TYPE).status, HG_OK);
+	CHECK(wait_status(0, 2000, &st));
+	/* (Nothing of it in the log: the limit holds for the log file too.) */
+	sleep_ms(500);
+	CHECK_EQ_INT(prlimit(rec_pid, RLIMIT_FSIZE, &old, NULL), 0);
+	CHECK(file_contains(p, "Note=kept"));
+	CHECK(file_contains(p, "BootId="));
+	CHECK(file_contains(p, "StartedBy=call:tester"));
+	CHECK(file_contains(p, "StartedUtc="));
+	CHECK(!file_contains(p, "StoppedBy="));
+	rfmt(p, sizeof p, "%s/session.ini.tmp", s);
+	CHECK(!exists(p));
+}
+
+/* A session's begin and end are not lost to a full buffer. The writer
+ * thread is held at the start of a session (it copies the manifests, and one
+ * of them here is a FIFO nobody writes to) while the chain's records fill a
+ * 64 KB buffer. `stop` then finds no room for session.ini and the session's
+ * end: they are queued again until they fit, and until then a `start` is
+ * refused, since the writer still has the old session open. Before, both
+ * pushes were unchecked: the end was dropped, the files stayed open and
+ * session.ini never got its stop lines; and a start whose begin was dropped
+ * recorded into the previous session's directory. */
+static void test_session_end_is_not_dropped(void)
+{
+	stop_child(rec_pid);
+	char conf[700], text[1024], fifo[700];
+	rfmt(conf, sizeof conf, "%s/etc/hangar/recorder-small.conf", R_root);
+	rfmt(text, sizeof text, "[Recorder]\nAutoStart=manual\nBlackBox=0\nWriteBuffer=64KB\n[Record *]\nPolicy=full\n");
+	CHECK_EQ_INT(write_file(conf, text), 0);
+	rfmt(fifo, sizeof fifo, "%s/etc/hangar/modules/stall.module", R_root);
+	unlink(fifo);
+	CHECK_EQ_INT(mkfifo(fifo, 0644), 0);
+	rec_pid = start_recorder(conf);
+	struct recorder_status st;
+	CHECK(wait_status(0, 5000, &st));
+	int before = count_sessions("20");
+	struct recorder_start req;
+	memset(&req, 0, sizeof req);
+	rfmt(req.note, sizeof req.note, "a stalled disk");
+	CHECK_EQ_INT(call("recorder.start", &req, &RECORDER_START_TYPE).status, HG_OK);
+	CHECK(wait_status(1, 2000, &st));
+	/* The chain's four rated topics at 100 Hz, about 80 KB a second. */
+	sleep_ms(1500);
+	CHECK_EQ_INT(call("recorder.stop", NULL, &EMPTY_TYPE).status, HG_OK);
+	CHECK(wait_file_contains(log_path("recorder"), "its end waits for room in the writer's buffer", 2000));
+	hg_call_result r = call("recorder.start", &req, &RECORDER_START_TYPE);
+	CHECK_EQ_INT(r.status, HG_E_REFUSED);
+	CHECK(strstr(r.reason, "still closing session") != NULL);
+	CHECK_EQ_INT(count_sessions("20"), before + 1);
+	char s[700], p[1024];
+	rfmt(s, sizeof s, "%s", find_session("20"));
+	/* The disk comes back: the FIFO gets its writer, the copy ends. */
+	int fd = open(fifo, O_WRONLY | O_NONBLOCK);
+	CHECK(fd >= 0);
+	if (fd >= 0)
+		close(fd);
+	unlink(fifo);
+	rfmt(p, sizeof p, "%s/session.ini", s);
+	CHECK(wait_file_contains(p, "StoppedBy=call:tester", 5000));
+	CHECK(file_contains(p, "Note=a stalled disk"));
+	CHECK(wait_file_contains(log_path("recorder"), "its end is written", 2000));
+	/* And the next session is one of its own. */
+	sleep_ms(1100); /* a directory name of its own second */
+	CHECK_EQ_INT(call("recorder.start", &req, &RECORDER_START_TYPE).status, HG_OK);
+	CHECK(wait_status(1, 2000, &st));
+	sleep_ms(300);
+	CHECK_EQ_INT(call("recorder.stop", NULL, &EMPTY_TYPE).status, HG_OK);
+	CHECK(wait_status(0, 2000, &st));
+	CHECK_EQ_INT(count_sessions("20"), before + 2);
+	char s2[700];
+	rfmt(s2, sizeof s2, "%s", find_session("20"));
+	CHECK(strcmp(s, s2) != 0);
+	rfmt(p, sizeof p, "%s/session.ini", s2);
+	CHECK(wait_file_contains(p, "StoppedBy=call:tester", 3000));
+	struct hgr_reader rd;
+	CHECK_EQ_INT(open_rec(s2, "chain.c", &rd), 0);
+	CHECK(rd.count >= 10);
+	CHECK(strcmp(rd.h->session, strrchr(s2, '/') + 1) == 0);
+	hgr_reader_close(&rd);
+}
+
 /* AutoStart=armed: a session while safety.state says armed. */
 static void test_autostart_armed(void)
 {
@@ -737,6 +843,8 @@ int main(void)
 	RUN_TEST(test_type_change);
 	RUN_TEST(test_blackbox_dump);
 	RUN_TEST(test_blackbox_triggers);
+	RUN_TEST(test_session_ini_survives_a_failed_rewrite);
+	RUN_TEST(test_session_end_is_not_dropped);
 	RUN_TEST(test_autostart_armed);
 	RUN_TEST(test_refusals);
 	RUN_TEST(test_teardown);

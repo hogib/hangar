@@ -89,6 +89,14 @@ full:
 	return -1;
 }
 
+size_t writer_room(struct writer *w)
+{
+	pthread_mutex_lock(&w->mu);
+	size_t room = w->cap - w->used;
+	pthread_mutex_unlock(&w->mu);
+	return room;
+}
+
 /* ---- The thread's file work ------------------------------------------------- */
 
 static int write_text(const char *path, const char *text, size_t len)
@@ -110,6 +118,63 @@ static int write_text(const char *path, const char *text, size_t len)
 	}
 	close(fd);
 	return rc;
+}
+
+/* session.ini: written whole beside the file and renamed over it, so that the
+ * rewrite at stop (the stop lines added to what the start wrote) cannot leave
+ * less than the start wrote: a full disk fails the temporary, and the file of
+ * the start stays. The one file the recorder syncs: it is small, written twice
+ * a session by this thread, and what says whose the .hgr files beside it are;
+ * the records themselves are left to the kernel's writeback (docs/06
+ * "Sessions"). */
+static int write_text_atomic(const char *path, const char *text, size_t len)
+{
+	char tmp[REC_PATH + 320];
+	snprintf(tmp, sizeof tmp, "%s.tmp", path);
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
+	if (fd < 0)
+		return -1;
+	int rc = 0;
+	while (len) {
+		ssize_t n = write(fd, text, len);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			rc = -1;
+			break;
+		}
+		text += n;
+		len -= (size_t)n;
+	}
+	if (rc == 0 && fsync(fd) < 0)
+		rc = -1;
+	int e = errno;
+	if (close(fd) < 0 && rc == 0) {
+		rc = -1;
+		e = errno;
+	}
+	if (rc == 0 && rename(tmp, path) < 0) {
+		rc = -1;
+		e = errno;
+	}
+	if (rc < 0) {
+		unlink(tmp);
+		errno = e;
+		return -1;
+	}
+	/* The rename itself, on disk: the directory. */
+	char dir[REC_PATH + 320];
+	snprintf(dir, sizeof dir, "%s", path);
+	char *slash = strrchr(dir, '/');
+	if (slash) {
+		*slash = 0;
+		int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		if (dfd >= 0) {
+			(void)fsync(dfd);
+			close(dfd);
+		}
+	}
+	return 0;
 }
 
 static void copy_tree_files(const char *from, const char *to, const char *suffix)
@@ -273,7 +338,8 @@ static void do_dump(struct writer *w, struct bb_dump *d)
 		}
 		char path[REC_PATH + 80];
 		snprintf(path, sizeof path, "%s/session.ini", d->dir);
-		(void)write_text(path, d->ini, strlen(d->ini));
+		if (write_text_atomic(path, d->ini, strlen(d->ini)) < 0)
+			wlog("cannot write %s: %s", path, strerror(errno));
 	}
 	bb_dump_free(d);
 	atomic_store(&w->busy, 0);
@@ -330,8 +396,12 @@ static void *writer_main(void *arg)
 			if (nl < m.len && w->session_dir[0]) {
 				char path[REC_PATH + 300];
 				snprintf(path, sizeof path, "%s/%.*s", w->session_dir, (int)nl, (const char *)data);
-				if (write_text(path, (const char *)data + nl + 1, m.len - nl - 1) < 0)
-					wlog("cannot write %s: %s", path, strerror(errno));
+				if (write_text_atomic(path, (const char *)data + nl + 1, m.len - nl - 1) < 0) {
+					int e = errno;
+					atomic_fetch_add(&w->errors, 1);
+					atomic_store(&w->last_error, (uint64_t)e);
+					wlog("cannot write %s: %s; what was there is kept", path, strerror(e));
+				}
 			}
 			break;
 		}

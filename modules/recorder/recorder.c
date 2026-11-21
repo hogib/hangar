@@ -91,6 +91,19 @@ static int dumps;
 static char status_reason[128];
 static struct hg_input start_ref;
 static int have_start_ref;
+/* The end of the last session, when the writer's buffer had no room for it:
+ * its session.ini and the close of its files, queued again by closing_push()
+ * until they fit. Until then the writer has that session open, and no other
+ * starts. */
+static struct {
+	int ini, end, waited;
+	size_t ini_len;
+	char msg[4096 + 16];
+	char id[64];
+} closing;
+/* What a session's start queues at once: the directory, session.ini, the
+ * clock's header and first record, and the wrap they may cost. */
+#define START_ROOM (4 * 4096 + 4096)
 
 /* The modules, for the unasked-exit trigger. */
 static struct {
@@ -435,8 +448,45 @@ static void clock_record(void)
 	(void)writer_push(&W, WQ_RECORD, CLOCK_TOPIC, &r, sizeof r, &c, sizeof c);
 }
 
+/* Queues what is left of the last session's end. 0 when nothing is left. */
+static int closing_push(void)
+{
+	if (closing.ini) {
+		if (writer_push(&W, WQ_TEXT_FILE, 0, closing.msg, closing.ini_len, NULL, 0) < 0)
+			goto wait;
+		closing.ini = 0;
+	}
+	if (closing.end) {
+		if (writer_push(&W, WQ_SESSION_END, 0, NULL, 0, NULL, 0) < 0)
+			goto wait;
+		closing.end = 0;
+	}
+	if (closing.waited)
+		logf_("session %s: its end is written", closing.id);
+	closing.waited = 0;
+	return 0;
+wait:
+	if (!closing.waited)
+		logf_("session %s: its end waits for room in the writer's buffer", closing.id);
+	closing.waited = 1;
+	return -1;
+}
+
 static void session_start(const char *by, const char *note)
 {
+	/* Refused rather than half done: a begin the buffer dropped left the
+	 * writer in the previous session's directory, or in none, for every file
+	 * of this one. */
+	if (closing_push() < 0) {
+		bfmt(status_reason, sizeof status_reason, "the writer is behind: still closing session %s", closing.id);
+		logf_("%s", status_reason);
+		return;
+	}
+	if (writer_room(&W) < START_ROOM) {
+		bfmt(status_reason, sizeof status_reason, "the writer is behind: no room in its buffer for a session");
+		logf_("%s", status_reason);
+		return;
+	}
 	uint64_t real = real_ns();
 	char stamp[32];
 	stamp_text(stamp, sizeof stamp, real);
@@ -461,14 +511,22 @@ static void session_start(const char *by, const char *note)
 	atomic_store(&W.bytes_written, 0);
 	atomic_store(&W.records, 0);
 	atomic_store(&W.errors, 0);
-	writer_push(&W, WQ_SESSION_BEGIN, 0, session_dir, strlen(session_dir) + 1, NULL, 0);
+	/* START_ROOM was there, and only this thread pushes: these are queued. */
+	if (writer_push(&W, WQ_SESSION_BEGIN, 0, session_dir, strlen(session_dir) + 1, NULL, 0) < 0) {
+		bfmt(status_reason, sizeof status_reason, "not started: %s", strerror(errno));
+		logf_("session %s: %s", session_id, status_reason);
+		rmdir(session_dir);
+		active = 0;
+		return;
+	}
 	static char ini[4096];
 	int n = session_ini(ini, sizeof ini, 0, "");
 	if (n > 0) {
 		static char msg[4096 + 16];
 		memcpy(msg, "session.ini", 12);
 		memcpy(msg + 12, ini, (size_t)n);
-		writer_push(&W, WQ_TEXT_FILE, 0, msg, 12 + (size_t)n, NULL, 0);
+		if (writer_push(&W, WQ_TEXT_FILE, 0, msg, 12 + (size_t)n, NULL, 0) < 0)
+			logf_("session %s: session.ini not queued (%s); the stop writes it", session_id, strerror(errno));
 	}
 	/* hangar.clock.hgr, and the newest message of every event topic, so
 	 * that the state at the start is known without waiting for a change. */
@@ -483,7 +541,8 @@ static void session_start(const char *by, const char *note)
 	hgr_header_init(&hdrs[CLOCK_TOPIC], &cm, RECORDER_CLOCK_TYPE.schema, RECORDER_CLOCK_TYPE.schema_bytes, HGR_FULL,
 			1, "full", session_id, 0);
 	hdrs[CLOCK_TOPIC].first_seq = 0;
-	writer_push(&W, WQ_OPEN, CLOCK_TOPIC, &hdrs[CLOCK_TOPIC], sizeof hdrs[CLOCK_TOPIC], NULL, 0);
+	if (writer_push(&W, WQ_OPEN, CLOCK_TOPIC, &hdrs[CLOCK_TOPIC], sizeof hdrs[CLOCK_TOPIC], NULL, 0) < 0)
+		logf_("session %s: hangar.clock.hgr not opened (%s)", session_id, strerror(errno));
 	clock_record();
 	for (int i = 0; i < n_topics; i++) {
 		struct rtopic *t = &topics[i];
@@ -511,15 +570,22 @@ static void session_stop(const char *by)
 {
 	if (!active)
 		return;
+	/* session.ini again, with the stop lines, and the close of the files:
+	 * neither may be lost to a full buffer (a stalled disk is when a session
+	 * is stopped), so what does not fit now is queued again from the main
+	 * loop until it does. */
 	static char ini[4096];
 	int n = session_ini(ini, sizeof ini, 1, by);
+	closing.ini = 0;
 	if (n > 0) {
-		static char msg[4096 + 16];
-		memcpy(msg, "session.ini", 12);
-		memcpy(msg + 12, ini, (size_t)n);
-		writer_push(&W, WQ_TEXT_FILE, 0, msg, 12 + (size_t)n, NULL, 0);
+		memcpy(closing.msg, "session.ini", 12);
+		memcpy(closing.msg + 12, ini, (size_t)n);
+		closing.ini_len = 12 + (size_t)n;
+		closing.ini = 1;
 	}
-	writer_push(&W, WQ_SESSION_END, 0, NULL, 0, NULL, 0);
+	closing.end = 1;
+	bfmt(closing.id, sizeof closing.id, "%s", session_id);
+	(void)closing_push();
 	logf_("session %s stopped (%s)", session_id, by);
 	active = 0;
 	for (int i = 0; i < n_topics; i++)
@@ -904,6 +970,7 @@ int main(int argc, char **argv)
 		if (now - last_drain >= DRAIN_NS) {
 			last_drain = now;
 			drain();
+			(void)closing_push();
 		}
 		if (now - last_tick >= 1000000000u) {
 			last_tick = now;
@@ -925,6 +992,13 @@ int main(int argc, char **argv)
 	drain();
 	if (active)
 		session_stop("shutdown");
+	/* The end of the last session, if the buffer still has no room: the
+	 * writer is given two seconds to make some. Its thread closes every file
+	 * when it stops, whatever was queued. */
+	for (int i = 0; i < 40 && closing_push() < 0; i++)
+		(void)sleep_ms(50);
+	if (closing.ini || closing.end)
+		logf_("session %s: session.ini was not written again with its stop (the writer is behind)", closing.id);
 	writer_stop(&W);
 	if (status_pub)
 		hg_pub_close(status_pub);

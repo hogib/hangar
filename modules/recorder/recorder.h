@@ -108,6 +108,11 @@ int writer_start(struct writer *w, size_t cap);
  * EAGAIN when the buffer is full, and the caller counts the loss. */
 int writer_push(struct writer *w, enum wq_kind kind, uint32_t topic, const void *a, size_t alen, const void *b,
 		size_t blen);
+/* The bytes free in the buffer now. Only the module's thread pushes, so
+ * messages that together (headers included, each rounded up to 8) take no
+ * more than this less the largest of them (the unused end of the buffer a
+ * wrap may cost) are sure to be queued. */
+size_t writer_room(struct writer *w);
 void writer_stop(struct writer *w);
 /* Used by the writer and by the module: a directory with mode 2770, group
  * hangar-rec when that group exists. */

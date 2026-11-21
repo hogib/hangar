@@ -62,7 +62,15 @@ directory; write this text file; close every file; write this dump). The drain l
 never blocks on it: a full ring drops the record, and the next one carries the gap.
 The writer does every file operation: `mkdir` of the session's subdirectories, the
 copies of the manifests and the message types, `session.ini`, the `.hgr` files
-(`O_EXCL`, mode 0640, one `writev` per record), the black-box dumps.
+(`O_EXCL`, mode 0640, one `writev` per record), the black-box dumps. `session.ini`
+is written to `session.ini.tmp`, synced and renamed (`write_text_atomic`; in place
+with `O_TRUNC` until 2026-11-21, when a failed rewrite at stop left the session
+without its start information: `test_session_ini_survives_a_failed_rewrite`). Records
+may be dropped on a full ring; a session's begin and end may not: `session_start`
+asks for room first (`writer_room`) and refuses without it, and `session_stop` leaves
+what did not fit in `closing`, which the main loop queues again at every drain
+(`test_session_end_is_not_dropped`, where a FIFO among the manifests holds the writer
+thread while the chain fills a 64 KB buffer).
 
 **Sessions.** `start` (with a note), `stop` and `dump` are served as docs/06 lists
 them; `AutoStart=boot` starts one at start-up, `AutoStart=armed` starts one when

@@ -236,6 +236,22 @@ their files with mode 0640: on the vehicle `encoder`, `mavlink` and the policy m
 | `weights/` | every weights file a policy swapped in during the session, as `<hash>.hgw` ([09-learning](09-learning.md#loading-weights)) |
 | `blackbox-<time>/` | a black-box dump, in the same layout |
 
+`session.ini` is written when the session starts and again, with the stop lines, when
+it stops. Each time the text is written to `session.ini.tmp`, synced, and renamed over
+`session.ini`, so the file is always one of the two whole texts: a write that fails (a
+full disk, which is when `MinFree` stops a session) leaves the file of the start,
+with the session's id, boot id and start times, and is counted in `WriteErrors`.
+`session.ini` is the only file the recorder syncs; the records are left to the
+kernel's writeback, and after a power cut a topic's file ends at its last whole record
+that reached the disk.
+
+A session's begin and end reach the writer thread whatever the state of its buffer. A
+`start` is refused, with the reason in the reply and on the status line, while the
+buffer has no room for the session's first messages or the previous session is still
+being closed. The end of a session (its `session.ini` and the close of its files) that
+finds the buffer full is queued again at every drain until it fits; the recorder logs
+that it waits and when it is written.
+
 ### The black box
 
 Whether or not a session is running, the recorder keeps the recent past of every topic
@@ -711,7 +727,9 @@ is in [08-bridge](08-bridge.md).
 - Globs: a topic created after the recorder started is recorded; `[Record]` sections
   match first to last (`cam.nn` full, `cam.raw` meta); `every:N` and `rate:<Hz>` keep
   the same messages in two recordings started at different times.
-- Sessions: a `Dir` with the wrong group or mode stops the recorder with status 78; the
+- Sessions: a rewrite of `session.ini` that fails leaves the file of the start; with the
+  writer thread held and its buffer full, `stop` is not lost and a `start` is refused
+  until the session is closed; a `Dir` with the wrong group or mode stops the recorder with status 78; the
   encoder, `mavlink` and a policy module write into a session, and a module outside
   `hangar-rec` cannot.
 - Black box: dumped on a module crash and on failsafe, covering the period before it;
