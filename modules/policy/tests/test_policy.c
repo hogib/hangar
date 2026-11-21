@@ -626,7 +626,10 @@ static void test_checks_fail(void)
 	CHECK_EQ_INT(load("good_b", NULL, &v1, NULL), HG_OK);
 	CHECK_EQ_INT(load("good_b", NULL, NULL, NULL), HG_E_REFUSED);
 	CHECK_EQ_INT(wait_load(v1, 5000), 3);
-	pump(60);
+	/* The first output of the new weights follows within a tick or two:
+	 * waited for, up to 5 s, in place of 60 ms and a look. */
+	for (uint64_t t0 = now_ms(); !(near(O.out.heave, -T.a + 0.1f) && near(O.out.surge, 2 * T.t)) && now_ms() - t0 < 5000;)
+		pump(10);
 	CHECK(near(O.out.heave, -T.a + 0.1f) && near(O.out.surge, 2 * T.t));
 	char cur[700], hex[65];
 	tfmt(cur, sizeof cur, "%s/current.hgw", state);

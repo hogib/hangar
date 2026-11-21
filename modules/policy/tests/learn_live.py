@@ -26,6 +26,20 @@ def check(cond, what):
         print("    FAIL", what)
 
 
+def deploy_when_free(path, policy, seconds=10.0):
+    """learn.deploy, asked again while the policy refuses with "a load is in
+    progress": its worker may still be putting the last load's files away
+    (modules/policy/policy.c, on_load_weights), which a caller waits out."""
+    t0 = time.monotonic()
+    while True:
+        try:
+            return learn.deploy(path, policy)
+        except learn.LearnError as e:
+            if "a load is in progress" not in str(e) or time.monotonic() - t0 > seconds:
+                raise
+            time.sleep(0.05)
+
+
 def main():
     models, ds_hash, hash_a = sys.argv[1], int(sys.argv[2], 16), int(sys.argv[3], 16)
 
@@ -36,7 +50,13 @@ def main():
     while time.monotonic() - t0 < 0.5:
         got += t.read()
         time.sleep(0.01)
-    check(15 <= len(got) <= 35, "policy.toy.wrench: %d messages in 0.5 s" % len(got))
+    # The rate from the messages' own publish times: counted against this
+    # process's half second, a reader the machine held up for 300 ms read 40
+    # messages and failed for being slow, not for the topic's rate.
+    check(len(got) >= 10, "policy.toy.wrench: %d messages in 0.5 s" % len(got))
+    if len(got) >= 2:
+        hz = (len(got) - 1) / ((got[-1].publish_ns - got[0].publish_ns) / 1e9)
+        check(30.0 <= hz <= 70.0, "policy.toy.wrench at %.1f Hz over %d messages, want about 50" % (hz, len(got)))
     if got:
         w = t.decode(got[-1])
         check(abs(w["heave"] - 1.1) < 1e-4, "heave %r, want 1.1" % w["heave"])
@@ -69,7 +89,7 @@ def main():
     check(int(rv["hash"]) == hash_a, "revert: %r, want hash %016x" % (rv, hash_a))
 
     # A probe that does not reproduce: rejected by check 6, good_a still running.
-    r = learn.deploy(os.path.join(models, "bad_probe.hgw"), "toy")
+    r = deploy_when_free(os.path.join(models, "bad_probe.hgw"), "toy")
     check(r["state"] == "rejected" and r["check"] == 6, "deploy bad_probe: %r" % r)
     try:
         learn.call("policy_toy.no_such_method")

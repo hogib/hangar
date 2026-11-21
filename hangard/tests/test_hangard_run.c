@@ -265,7 +265,8 @@ static void test_open_refusals(void)
 	manifest_remove("rogue");
 	manifest_remove("liar");
 	CHECK(strncmp(ctl("reload"), "ok", 2) == 0);
-	sleep_ms(200);
+	for (uint64_t t0 = now_ms(); module_status("rogue", &m) && now_ms() - t0 < 5000;)
+		sleep_ms(20); /* the reload's effect, waited for rather than given 200 ms */
 	CHECK(!module_status("rogue", &m));
 }
 

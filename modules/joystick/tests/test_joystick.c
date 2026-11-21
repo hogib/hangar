@@ -285,37 +285,48 @@ static void test_start(void)
 	CHECK(per_s >= 45 && per_s <= 55);
 }
 
+/* Pumps until cond holds, up to ms: for a value that follows an event, in
+ * place of a fixed pump and a look. The CHECK after it is the test. */
+#define PUMP_UNTIL(cond, ms)                                               \
+	do {                                                               \
+		uint64_t t0_ = now_ms();                                   \
+		while (!(cond) && now_ms() - t0_ < (uint64_t)(ms))         \
+			pump(10);                                          \
+	} while (0)
+
 static void test_axes_and_buttons(void)
 {
 	ev(-32767, JS_EV_AXIS, 1); /* surge, inverted: forward full */
 	ev(16384, JS_EV_AXIS, 0);  /* sway: half right */
 	ev(3000, JS_EV_AXIS, 2);   /* heave: inside its 0.1 deadband */
 	ev(16384, JS_EV_AXIS, 3);  /* yaw, expo 1: half travel is 0.125 */
-	pump(200);
+	PUMP_UNTIL(near(last_w.surge, 1) && near(last_w.sway, 0.5f) && near(last_w.yaw, 0.125f), 5000);
 	CHECK(near(last_w.surge, 1) && near(last_w.sway, 0.5f) && near(last_w.heave, 0) && near(last_w.yaw, 0.125f));
 	CHECK(near(last_w.roll, 0) && near(last_w.pitch, 0) && !stale());
 	ev(32767, JS_EV_AXIS, 2); /* heave past its deadband: full */
-	pump(100);
+	PUMP_UNTIL(near(last_w.heave, 1), 5000);
 	CHECK(near(last_w.heave, 1));
 	if (!near(last_w.heave, 1))
 		printf("    heave %.4f\n", last_w.heave);
 	// The held button let go and pressed again: one arm; then disarm.
 	ev(0, JS_EV_BUTTON, 0);
 	ev(1, JS_EV_BUTTON, 0);
-	pump(400);
+	PUMP_UNTIL(arms >= 1, 5000);
+	pump(400); /* and no second one after it */
 	CHECK_EQ_INT(arms, 1);
 	ev(0, JS_EV_BUTTON, 0);
 	ev(1, JS_EV_BUTTON, 1);
 	ev(0, JS_EV_BUTTON, 1);
+	PUMP_UNTIL(disarms >= 1, 5000);
 	pump(400);
 	CHECK_EQ_INT(disarms, 1);
 	CHECK_EQ_INT(arms, 1);
 	// pass: its bit while held, nothing else.
 	ev(1, JS_EV_BUTTON, 2);
-	pump(150);
+	PUMP_UNTIL(last_b.pressed != 0, 5000);
 	CHECK_EQ_INT(last_b.pressed, 1u << 2);
 	ev(0, JS_EV_BUTTON, 2);
-	pump(150);
+	PUMP_UNTIL(last_b.pressed == 0, 5000);
 	CHECK_EQ_INT(last_b.pressed, 0);
 	CHECK(wait_file_contains(mod_log, "arm (button): accepted", 2000));
 }
