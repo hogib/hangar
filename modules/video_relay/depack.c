@@ -78,6 +78,10 @@ int depack_push(struct depack *d, const uint8_t *pkt, size_t len, struct depack_
 		}
 		off += 4 + 4u * (((size_t)pkt[off + 2] << 8) | pkt[off + 3]);
 	}
+	if (off >= len) { /* the header's own lengths run past the packet */
+		d->bad++;
+		return 0;
+	}
 	size_t end = len;
 	if (pkt[0] & 0x20) { /* padding: its count is the last byte */
 		if (pkt[len - 1] > len - off) {
