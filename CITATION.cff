@@ -24,8 +24,11 @@ repository-code: "https://github.com/hogib/hangar"
 license: GPL-3.0-or-later
 version: "0.1.4"
 date-released: "2026-11-22"
-doi: 10.5281/zenodo.24084277
+doi: 10.5281/zenodo.24429105
 identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24429105
+    description: "Version 0.1.4, archived on Zenodo"
   - type: doi
     value: 10.5281/zenodo.24084277
     description: "All versions (resolves to the latest)"

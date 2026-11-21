@@ -97,7 +97,8 @@ If you use hangar in your research, please cite it. The metadata is in
 [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" gives it as APA and
 BibTeX). Each release is archived on Zenodo:
 [10.5281/zenodo.24084277](https://doi.org/10.5281/zenodo.24084277) names all versions
-and resolves to the latest; each version has a DOI of its own on that record.
+and resolves to the latest; version 0.1.4 is
+[10.5281/zenodo.24429105](https://doi.org/10.5281/zenodo.24429105).
 
 > H. Oğuz Bolat (Department of Geomatics Engineering, Yıldız Technical University;
 > ORCID [0009-0000-8522-7746](https://orcid.org/0009-0000-8522-7746)) and Hakan Ersoy
@@ -105,7 +106,7 @@ and resolves to the latest; each version has a DOI of its own on that record.
 > University; ORCID [0009-0006-0495-6589](https://orcid.org/0009-0006-0495-6589)).
 > *hangar: a lightweight module system for small underwater vehicles, with a
 > provenance-recorded learning loop.* Software, version 0.1.4, 2026.
-> https://doi.org/10.5281/zenodo.24084277
+> https://doi.org/10.5281/zenodo.24429105
 
 ```bibtex
 @software{bolat_ersoy_hangar_2026,
@@ -114,7 +115,7 @@ and resolves to the latest; each version has a DOI of its own on that record.
              with a provenance-recorded learning loop},
   version = {0.1.4},
   year    = {2026},
-  doi     = {10.5281/zenodo.24084277},
+  doi     = {10.5281/zenodo.24429105},
   url     = {https://github.com/hogib/hangar},
   license = {GPL-3.0-or-later}
 }
