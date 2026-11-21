@@ -25,8 +25,8 @@ is `HANGAR_ROOT=/dev/shm/hangar-vehicle ~/hangar-root/bin/hangar`.
 |---|---|
 | ☐ | `git pull` on the laptop; `git describe` says `v0.1.3` or later |
 | ☐ | `make -j8 all` (a plain `make` does not build the modules) |
-| ☐ | The vehicle's release is there: `ls out/release/v0.1.3/hangar-v0.1.3-aarch64.tar.zst`. If the checkout is past the tag, build one for it (`tools/release.sh`): with the bridge, **both ends must be the same commit**, or nothing crosses |
-| ☐ | A rehearsal on the laptop passes: `LAB_HOST=local` with `deploy`, `up`, `status`, `down` (QUICKSTART, "Rehearsing without the vehicle") |
+| ☐ | The vehicle's release, **built from this checkout** (`tools/release.sh`; `lab.sh deploy` takes the newest under `out/release/`). The v0.1.3 tarball will not do for steps 3 to 5: `up --bridge` and `up --serial` need this checkout's `rov.sh` on the Pi and say so if it is older, and with the bridge both ends must be the same build, or nothing crosses (`up --bridge` compares them before it starts anything) |
+| ☐ | A rehearsal on the laptop passes: `tools/release.sh --host`, then `tools/rov/rehearse.sh out/release/hangar-<…>-x86_64.tar.zst` ends with `rehearse: all passed` (QUICKSTART, "Rehearsing without the vehicle"; `make check` first, for the fake ArduSub) |
 | ☐ | The controller, and QGroundControl starting |
 | ☐ | The battery or a 12 to 16 V supply for the vehicle. The Pixhawk reads no battery voltage, so `up` needs `--no-battery-check` (QUICKSTART, "The battery check") |
 
@@ -63,26 +63,30 @@ tools/rov/lab.sh bench 60
 
 ## 3. The bridge on the tether (30 min). First time
 
-The topside role moves to the laptop. `lab.sh` does not drive this yet: it is `rov.sh` on
-both machines (README, "The topside on the laptop").
+The topside role moves to the laptop. Step 1's session stays open (its parameter backup
+is the one `down` restores); `up` again lays the vehicle out with the bridge:
 
 ```sh
-tools/rov/lab.sh down                      # the shim's session, closed
-# on the Pi:
-rov.sh reset && BRIDGE=1 rov.sh up
-# on the laptop, the key once (never into the repository):
-mkdir -p ~/hangar-rov && scp bluerov2@192.168.2.10:hangar-rov/bridge.key ~/hangar-rov/ && chmod 600 ~/hangar-rov/bridge.key
-BRIDGE=1 tools/rov/rov.sh topside up
-HANGAR_ROOT=/dev/shm/hangar-topside builddir/hangar status
+tools/rov/lab.sh up --bridge --no-battery-check
+tools/rov/lab.sh status
+tools/rov/lab.sh bench 60
 ```
 
-`rov.sh` alone does not save ArduSub's parameters as `lab.sh up` does: on the Pi,
-`rov.sh params save` before arming, and `rov.sh params restore <that file>` at the end.
+`up --bridge` compares the two builds, starts the vehicle role on the Pi, copies
+`bridge.key` from the Pi to the laptop's `~/hangar-rov/` (mode 600; never into the
+repository), starts the topside role on the laptop from `builddir/`, and waits for the
+link. Rehearsed on loopback with both roles on the laptop; the copy of the key over
+`scp`, and the link on the tether, have never run. By hand, if `lab.sh` gets in the way:
+README, "The topside on the laptop" (`BRIDGE=1 rov.sh up` on the Pi, `BRIDGE=1
+tools/rov/rov.sh topside up` on the laptop; then the parameters are yours to save and restore).
+
+Below, `hangar` on the laptop is `HANGAR_ROOT=/dev/shm/hangar-topside builddir/hangar`.
 
 | | Pass |
 |---|---|
-| ☐ | The laptop's `status`: `bridge  ready  up 192.168.2.10:5614, rtt … ms`; the Pi's the same toward `192.168.2.1:5614`. Write down the rtt and the clock offset |
-| ☐ | `config_match` is not false. If it is, the line says what differs (usually the two ends are not the same commit) |
+| ☐ | `up`: `lab: both ends are the same build`, then `lab: the link is up: up 192.168.2.10:5614, rtt … ms, offset … ms`, then `lab: READY TO ARM`. `NOT THE SAME BUILD` stops it before anything starts: deploy a release of this checkout |
+| ☐ | `status`: under `== the Pi`, `bridge  ready … up 192.168.2.1:5614`; under `== this laptop`, `bridge  ready … up 192.168.2.10:5614` and `topside_mavlink … link up`. Write down the rtt and the clock offset |
+| ☐ | `bench`: `hangar-bridge` in both tables; the link topics before and after are in the results' README (`loss_rx`, `retransmits`, `rejected`) |
 | ☐ | `hangar call safety.check` on the laptop answers across the tether |
 | ☐ | QGroundControl on the laptop connects, arms and disarms through the bridge |
 | ☐ | The controller drives (thrusters turn, props off) |
@@ -92,17 +96,22 @@ If the link does not come up, three things are new in v0.1.3:
 - A fixed `Peer=` must be the address **and port** the other end sends from. A laptop with
   two addresses on the tether interface is refused; the bridge's log says so once.
 - The laptop's firewall must let UDP 5614 in from the Pi.
+- Before this checkout, `rov.sh topside up` had the laptop's `topside_mavlink` bind the
+  Pi's address, which fails on the tether (it never showed on loopback). Fixed, and the
+  fix has not met the tether either: if QGroundControl does not connect, look at
+  `/dev/shm/hangar-topside/run/hangar/log/topside_mavlink.log` first.
 - `hangar echo bridge.topside.link` has the counters: a rising `rejected` means datagrams
   arrive and are refused.
 
 ## 4. The tether trigger (15 min). First time, props off
 
-With `BRIDGE=1` the trigger is on: arming needs the link up. Stay in step 3's setup.
+With the bridge the trigger is on: arming needs the link up. Stay in step 3's setup
+(`lab.sh up --bridge`).
 
 | | Do | Pass |
 |---|---|---|
-| ☐ | Link down (stop the laptop's bridge: `BRIDGE=1 tools/rov/rov.sh topside down`), then try to arm on the Pi: `hangar call safety.arm` | Refused, and the reason names the link |
-| ☐ | Topside up again, arm, then **unplug the tether** at the laptop | Neutral failsafe and ArduSub disarmed about 3 s after the unplug (`tether_timeout`). Time it |
+| ☐ | Link down (stop the laptop's topside: `BRIDGE=1 tools/rov/rov.sh topside down`), **wait until the Pi's `bridge` line in `lab.sh status` no longer says `up`** (about 3 s), then try to arm on the Pi: `hangar call safety.arm` | Refused: `bridge.vehicle.link connecting`. (In the 3 s before the vehicle's bridge calls the link lost, an arm is still accepted: seen in the rehearsal. Write down whether the tether trigger then ends it) |
+| ☐ | Topside up again (`BRIDGE=1 tools/rov/rov.sh topside up`; `lab.sh status` shows the link), arm, then **unplug the tether** at the laptop | Neutral failsafe and ArduSub disarmed about 3 s after the unplug (`tether_timeout`). Time it |
 | ☐ | Plug in again; when the link is up, `hangar call safety.clear` | Cleared; arming works again. Before the link is back, `clear` is refused |
 | ☐ | Armed, kill the **vehicle's** bridge: on the Pi `pkill -KILL -f "[h]angar-bridge"` | Neutral within about 0.3 s (the `input` trigger: the link topic went stale). The manager restarts the bridge; when the link is up, `clear` |
 | ☐ | Armed, unplug for 1 s and plug in again | Nothing fires |
@@ -115,28 +124,31 @@ timeout alone) is a small change.
 ## 5. Serial MAVLink, without MAVROS (30 min). First time
 
 MAVROS is the largest cost on the vehicle (28 % of a core, 128 MB). The mavlink module can
-hold the Pixhawk's USB serial itself. **Not rehearsed with `rov.sh`;** if the module does
-not come up `ready`, put the two files back and go on with the relay.
+hold the Pixhawk's USB serial itself:
 
 ```sh
-# on the Pi, hangar down first (rov.sh down)
-cd ~/hangar-root/share/hangar/profiles/rov-vehicle
-cp mavlink.conf mavlink.conf.udp && cp mavlink.module mavlink.module.udp
-cp mavlink.conf.serial mavlink.conf && cp mavlink.module.serial mavlink.module
-pgrep -af "[m]avros_node"                  # nothing may hold /dev/ttyACM0
-rov.sh reset && RELAY=0 rov.sh up          # with BRIDGE=1 too, if step 3 passed
+tools/rov/lab.sh up --serial --no-battery-check      # with --bridge too, if step 3 passed
+tools/rov/lab.sh status
+tools/rov/lab.sh bench 60
 ```
+
+`up --serial` lays the vehicle out from the profile's `mavlink.conf.serial` and
+`mavlink.module.serial` (`rov.sh`'s `MAVLINK=serial`); the installed profile is not
+changed, so there are no files to put back. Rehearsed against the tests' fake ArduSub on
+a pseudo-terminal, parameters saved, set and restored; **never on the Pixhawk's
+`/dev/ttyACM0`.** If the module does not come up `ready`, `lab.sh up --no-battery-check`
+(without `--serial`) goes back to the relay in the same session. By hand: `MAVLINK=serial
+rov.sh up` on the Pi after `rov.sh reset`.
 
 | | Pass |
 |---|---|
-| ☐ | `hangar status`: `mavlink  ready`, ArduSub heard, MANUAL |
-| ☐ | `rov.sh params via` says `hangar`; `rov.sh params save` writes a full file (about a thousand lines) |
+| ☐ | `up` does not say `/dev/ttyACM0 on the Pi is held by something else`. If it does, it has changed nothing and names the process and its systemd unit: stop it, or put the unit in `LAB_SERIAL_SERVICES` (`lab.conf`) for `up` to stop and `down` to start again; write down what it was |
+| ☐ | `up`: `lab: saving ArduSub's parameters …` only if this is the session's first `up`; then `lab: READY TO ARM` |
+| ☐ | `status`: `mavlink  ready … serial open; ardusub disarmed`, MANUAL; `MAVROS relay: not running (--serial: …)` |
+| ☐ | On the Pi, `rov.sh params via` says `hangar`; `rov.sh params diff <the session's backup>` lists only what `ardusub-setup` set |
 | ☐ | Arm, disarm, kill safety while armed: as in step 1 |
-| ☐ | The cost again, on the Pi: `sudo python3 -I ~/hangar-rov/procbench.py 60` (step 2's `lab.sh bench` left the script there): no `mavros_node`, and the mavlink module's own CPU written down |
+| ☐ | `bench`: no `mavros_node` in the Pi's table, and the mavlink module's own CPU written down |
 | ☐ | The module's log has few `resync` lines (noise on the line) |
-
-Afterwards, to go back: copy `mavlink.conf.udp` and `mavlink.module.udp` over the two
-files, `rov.sh reset`.
 
 ## 6. The ROS 2 baseline (60 min, mostly waiting)
 
@@ -168,11 +180,11 @@ changed nothing, and the comparison waits for whoever owns the Pi.
 | | |
 |---|---|
 | ☐ | Disarmed |
-| ☐ | ArduSub's parameters as found: `lab.sh down` does it for a `lab.sh` session; after `rov.sh` sessions, `rov.sh params restore <the file saved first>`, and `rov.sh params diff <it>` says nothing differs |
-| ☐ | Step 5's two files put back, if they were changed |
-| ☐ | hangar down on both machines (`rov.sh down` on the Pi, `BRIDGE=1 tools/rov/rov.sh topside down` on the laptop), then `tools/rov/lab.sh down` |
-| ☐ | The lab's services running again on the Pi: `systemctl is-active eeye hellion` says `active` twice |
-| ☐ | `lab: everything as found` |
+| ☐ | `tools/rov/lab.sh down`, whichever of `--bridge`, `--serial` and `--video` the last `up` had: it disarms, restores ArduSub's parameters from the session's first backup and compares them (over the serial line if the session was on it), stops the topside on the laptop and hangar on the Pi, and starts the lab's services it stopped |
+| ☐ | `lab: everything as found`. If it names a step that failed, fix that and run `down` again |
+| ☐ | Only if `rov.sh` was used by hand instead: `rov.sh params restore <the file saved first>` and `rov.sh params diff <it>` says nothing differs; `rov.sh down` on the Pi, `BRIDGE=1 tools/rov/rov.sh topside reset` on the laptop |
+| ☐ | The lab's services running again on the Pi: `systemctl is-active eeye hellion` says `active` twice (and any unit named in `LAB_SERIAL_SERVICES`) |
+| ☐ | `pgrep -a hangard` on the laptop shows nothing. `~/hangar-rov/bridge.key` stays on the laptop (and on the Pi) for the next visit; it is not in the repository |
 | ☐ | The results under `~/hangar-results/`, and for every step: passed, failed with what it said, or not reached |
 
 ## What to bring back

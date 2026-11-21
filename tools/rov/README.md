@@ -11,7 +11,10 @@ laptop instead, joined by the tether bridge ("The topside on the laptop" below).
 every step below over SSH and puts it all back at the end; `tools/rov/QUICKSTART.md` is
 the page to have open at the lab. It runs from a checkout of hangar, not from a release:
 it uses the laptop's own builds (`builddir/hellion`, `builddir/eeye`), `bench/` and
-`profiles/rov-laptop/`. The steps below are what it does, by hand.
+`profiles/rov-laptop/`. The steps below are what it does, by hand. `lab.sh up --bridge`
+is "The topside on the laptop" below, and `lab.sh up --serial` is `MAVLINK=serial`
+("Without MAVROS"), each with the session's save and restore of ArduSub's parameters;
+`tools/rov/rehearse.sh` runs them all on the laptop, without the vehicle.
 
 ## The vehicle
 
@@ -97,8 +100,9 @@ down` restores and compares through hangar too, starting it again for that if it
 stopped. A dump with no parameter in it is not a backup: `params save` removes the file
 and fails, either way.
 
-`lab.sh` writes down what `up` changed (the backup's name, the services it stopped) in
-its session file on the laptop, `~/.cache/hangar-lab/session`, and copies it to the Pi's
+`lab.sh` writes down what `up` changed (the backup's name, the services it stopped,
+whether the vehicle is laid out with the bridge or on the serial line, the topside it
+started on the laptop) in its session file on the laptop, `~/.cache/hangar-lab/session`, and copies it to the Pi's
 `~/hangar-rov/lab-session`. A `down` or a second `up` on a laptop that has lost the file
 takes the Pi's copy and goes on from it. With no session on either side, `down` stops
 hangar if it runs but does not say "everything as found": it says that the parameters
@@ -126,6 +130,30 @@ The backups taken through MAVROS before (`pixhawk-*.yaml`, `lab-*-before.yaml`, 
 YAML of `ros2 param dump`) restore through hangar the same way. The MAVROS fallback
 reads its own YAML only. **Not yet tried on the real Pixhawk**: hangar's way is tested
 against the fake ArduSub over UDP and over a pseudo-terminal.
+
+## Without MAVROS (the serial line, opt-in)
+
+With `MAVLINK=serial` the vehicle's mavlink module holds the Pixhawk's USB serial itself
+(`modules/mavlink/README.md`, "A serial line") and no relay runs; MAVROS was the largest
+cost on the Pi (28 % of a core, 128 MB, 2026-11-20). `rov.sh` lays the vehicle's root out
+from the profile's `mavlink.conf.serial` and `mavlink.module.serial` in the place of the
+two beside them, with `Serial=` and `Baud=` from `FCU`; the installed profile is read,
+never changed.
+
+1. Nothing else may hold `/dev/ttyACM0`: the module opens it exclusively, and a MAVROS
+   left running has it get `EBUSY`. `rov.sh up` refuses while its own relay runs
+   (`rov.sh relay down`); `lab.sh up --serial` looks for any other holder first, names it
+   and changes nothing, and stops the units named in `LAB_SERIAL_SERVICES`
+   (`lab.conf`), which `down` starts again.
+2. `rov.sh reset` if the roots were laid out with the relay, then `MAVLINK=serial rov.sh
+   up` (with `BRIDGE=1` as well, if wanted). `rov.sh status`: `mavlink  ready … serial
+   open; ardusub disarmed`.
+3. The parameters, the arming and the rest are as in "A session, in order"; `rov.sh
+   params` goes through hangar, over the serial line.
+
+Run against the tests' fake ArduSub at the far end of a pseudo-terminal
+(`tools/rov/rehearse.sh`, 2026-11-21): the parameters saved, set and restored, armed and
+disarmed across the bridge. **Not yet on the Pixhawk's own serial device.**
 
 ## The camera's own H.264 (the encoder, opt-in)
 
@@ -172,7 +200,9 @@ encoder has no control channel yet).
 
 With `BRIDGE=1` the shim is gone: the vehicle role runs alone on the Pi, the topside
 role on the laptop, and the tether bridge (`modules/bridge/README.md`; docs/08) joins
-them over UDP 5614. The default stays the shim, both roles on the Pi.
+them over UDP 5614. The default stays the shim, both roles on the Pi. `lab.sh up
+--bridge` does steps 1 to 4 from the laptop, after comparing the two builds, and `lab.sh
+down` step 6; by hand:
 
 ```
  laptop 192.168.2.1                                Pi 192.168.2.10
@@ -211,10 +241,17 @@ the same msg/ tree (the same commit), or `config_match` is false and nothing cro
    on the Pi.
 
 `ROV_IP` and `GCS_IP` set the two addresses in both `bridge.conf` files at lay-out, as
-for the rest of the profile. A firewall on the laptop must let UDP 5614 in from the Pi.
-Run on loopback only (two roots, two ports, the lab profiles' real modules, no relay,
-2026-11-20): the link up, `topside_mavlink` `link up`, `hangar call safety.disarm`,
-`safety.check` and `recorder.stop` answered across. Not yet on the tether.
+for the rest of the profile; on the laptop, `topside_mavlink` binds `GCS_IP` (until
+2026-11-21 it was laid out with the Pi's address there, which only loopback let it bind).
+A firewall on the laptop must let UDP 5614 in from the Pi. `BRIDGE_PORT` and
+`BRIDGE_PEER_PORT` are for both roles on one machine, where the two bridges cannot share
+a port.
+Run on loopback only (two roots, two ports, the lab profiles' real modules;
+`tools/rov/rehearse.sh`, 2026-11-21): the link up, `topside_mavlink` `link up`, `hangar
+call safety.check` answered across, armed and disarmed from the topside with the fake
+ArduSub on the serial line, and with the topside stopped an arm on the vehicle refused
+once its bridge had called the link lost (about 3 s; before that it is still accepted).
+Not yet on the tether.
 
 ## Results, 2026-11-19
 
@@ -293,5 +330,8 @@ The third visit, with main at `e559888` (the busy-loop fix and the encoder); pro
   control, the latency and the CPU against electric-eye's 0.91 of a core.
 - Signing against the real ArduSub (`Signing=no` here).
 - Driving with props on, in the tank.
-- The bridge (`BRIDGE=1`) across the tether: the topside on the laptop, pilot.wrench's
-  latency and the call round trip over the Fathom-X.
+- The bridge (`BRIDGE=1`, `lab.sh up --bridge`) across the tether: the topside on the
+  laptop, pilot.wrench's latency and the call round trip over the Fathom-X.
+- The serial line (`MAVLINK=serial`, `lab.sh up --serial`) on the Pixhawk's
+  `/dev/ttyACM0`: whether anything of the lab's holds it, the parameters over it, the
+  module's CPU against the relay's.

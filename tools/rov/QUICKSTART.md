@@ -28,14 +28,41 @@ at the next visit, in order, is in [LAB-CHECKLIST.md](LAB-CHECKLIST.md).
 | Command | What it does | What good looks like |
 |---|---|---|
 | `tools/rov/lab.sh deploy` | the newest `out/release/*/hangar-*-aarch64.tar.zst` to the Pi, checked, installed in `~/hangar-root`; the Pi's clock set from the laptop's | `lab: installed v0.1.2 (…) at /home/bluerov2/hangar-root` |
-| `tools/rov/lab.sh up [--video] [--no-battery-check]` | hangar up on the Pi; ArduSub's parameters saved (once a session) and set; the pre-arm check; the consoles tunnelled. `--video`: the lab's electric-eye stopped, the camera's own H.264 sent by the encoder, and the laptop's hellion and eeye started (the effects here, QGroundControl's video on 5600) | `lab: READY TO ARM`, then the consoles' and the video's addresses. With `--video`, four `[ OK ] pipeline` lines |
-| `tools/rov/lab.sh status` | both managers, the relay, the lab's services, the Pi's temperature and throttling, the laptop's video, the session | `safety … disarmed` or `armed`; `throttled=0x0` |
-| `tools/rov/lab.sh bench [SECONDS]` | CPU, memory, frame rates and the tether's traffic on both machines, 60 s by default | `lab: saved in ~/hangar-results/<date>-lab`, with a README of the state |
-| `tools/rov/lab.sh down` | everything put back: disarmed, ArduSub's parameters restored and compared with the backup (through hangar, started again for it if it stopped), hangar stopped and its roots removed, the lab's electric-eye started again, the laptop's video and tunnels stopped | `lab: everything as found` |
+| `tools/rov/lab.sh up [--video] [--bridge] [--serial] [--no-battery-check]` | hangar up on the Pi; ArduSub's parameters saved (once a session) and set; the pre-arm check; the consoles tunnelled. `--video`: the lab's electric-eye stopped, the camera's own H.264 sent by the encoder, and the laptop's hellion and eeye started (the effects here, QGroundControl's video on 5600). `--bridge` and `--serial`: below | `lab: READY TO ARM`, then the consoles' and the video's addresses. With `--video`, four `[ OK ] pipeline` lines. With `--bridge`, `lab: the link is up` |
+| `tools/rov/lab.sh status` | both managers (with `--bridge`: the vehicle's on the Pi, the topside's on the laptop), the relay, the lab's services, the Pi's temperature and throttling, the laptop's video, the session | `safety … disarmed` or `armed`; `throttled=0x0`; with `--bridge`, `bridge  ready … up` on both |
+| `tools/rov/lab.sh bench [SECONDS]` | CPU, memory, frame rates and the tether's traffic on both machines, 60 s by default; with `--bridge`, both bridges' link topics before and after | `lab: saved in ~/hangar-results/<date>-lab`, with a README of the state |
+| `tools/rov/lab.sh down` | everything put back: disarmed, ArduSub's parameters restored and compared with the backup (through hangar, started again for it if it stopped), the topside on the laptop stopped, hangar stopped and its roots removed, the lab's services started again, the laptop's video and tunnels stopped | `lab: everything as found` |
 
 Then arm in QGroundControl (**Disarmed → Arm**), drive with the sticks, disarm, and
 `lab.sh down` before leaving. Run `down` even when something went wrong: it does every
 step it can and names the ones that failed.
+
+## The bridge and the serial line
+
+Two flags of `up`, each alone or together, with each other and with the rest. A second
+`up` with other flags continues the session: hangar is laid out afresh, and the
+parameter backup stays the first one.
+
+**`up --bridge`** runs the topside role on the laptop (from `builddir/`) and the vehicle
+role alone on the Pi, joined by the tether bridge over UDP 5614 (README, "The topside on
+the laptop"). It first compares the two builds, because the bridge carries nothing
+between two that differ (`config_match`): `NOT THE SAME BUILD` stops it before anything
+is started, and the cure is a release of this checkout on the Pi (`tools/release.sh`,
+`lab.sh deploy`). It copies `bridge.key` from the Pi to the laptop's `~/hangar-rov/`
+(mode 600; never into the repository), where it stays, as the Pi's does. With the bridge
+the tether trigger is on: arming needs the link up, and losing it for 3 s is a failsafe.
+The topside's console is then the laptop's own, http://127.0.0.1:8081.
+
+**`up --serial`** puts the mavlink module on the Pixhawk's serial line itself (`FCU` in
+`lab.conf`), with no MAVROS relay. The installed profile is not changed. Nothing else may
+hold the device: if something does, `up` changes nothing and names the process and its
+systemd unit. Stop it by hand, or name the unit in `LAB_SERIAL_SERVICES` (`lab.conf`):
+`up` then stops it, as it stops the lab's electric-eye for `--video`, and `down` starts
+it again.
+
+By hand instead, on the Pi: `BRIDGE=1 MAVLINK=serial rov.sh up` (and `BRIDGE=1
+tools/rov/rov.sh topside up` on the laptop); the parameters are then yours to save and
+restore (`rov.sh params`).
 
 ## The battery check
 
@@ -56,6 +83,10 @@ session. Never on a vehicle that reads its battery.
 | `NOT READY TO ARM: <reasons>` | the reasons are `hangar check`'s: `power.battery … below` → `--no-battery-check` (see above); `ArduSub … not MANUAL` → set MANUAL; anything else → `lab.sh status` |
 | no `[ OK ] pipeline` lines with `--video` | wait ten seconds and `lab.sh status`: the encoder starts after hangar. Still nothing: the camera's H.264 node (`H264_NODE` in `lab.conf`; `v4l2-ctl --list-formats-ext` on the Pi) |
 | `port 8092 is taken on this laptop` | another hellion runs: stop it, or set `HELLION_CONTROL_PORT` |
+| `the two ends are NOT THE SAME BUILD` (up --bridge) | the Pi's release and this checkout differ in their `msg/` tree or `bridge.conf`: `tools/release.sh`, `lab.sh deploy` (after `lab.sh down` if hangar runs), `up --bridge` again. Nothing was started |
+| `the link did not come up in 30 s` (up --bridge) | the two `bridge` lines it prints say where each end is. The laptop's firewall must let UDP 5614 in from the Pi; the laptop must have one address on the tether, the one in `lab.conf` (`LAPTOP_IP`). `lab.sh down`, or `up` again |
+| `/dev/ttyACM0 on the Pi is held by something else` (up --serial) | the lines under it name the process and its unit: stop it on the Pi, or put the unit in `LAB_SERIAL_SERVICES`. Without `--serial`, `up` uses the relay as before |
+| `the Pi's rov.sh does not know MAVLINK=serial`, `… a rov.sh older than this lab.sh` | the release on the Pi is older than this checkout: `tools/release.sh`, `lab.sh deploy` |
 | `sudo … needs a password and there is no terminal` | run `lab.sh` from a terminal, not from a script |
 | `NO SESSION FILE … not claimed: everything as found` (down) | the session file is gone from this laptop and the Pi has no copy, yet hangar ran: `down` stopped it and restored nothing. On the Pi, `ls -t ~/hangar-rov/lab-*-before.params`; if there is one from this session, `rov.sh up`, `rov.sh params restore <it>`, `rov.sh reset`; then `systemctl is-active eeye hellion` (README, "The parameter backup") |
 | `not everything could be put back: …` (down) | fix what it names (usually the link) and run `lab.sh down` again: the session file keeps what is left to do |
@@ -64,7 +95,29 @@ session. Never on a vehicle that reads its battery.
 
 `LAB_HOST=local` runs it all on the laptop: an x86-64 release (`tools/release.sh --host`)
 installed in `~/hangar-labtest`, no Pixhawk (no parameters touched), the root steps skipped
-and said. A video source without a camera is an H.264 file of under 64 MB:
+and said. `tools/rov/rehearse.sh` runs four sessions that way and checks each, in a home
+of its own that it removes:
+
+```sh
+make -j8 all && make -k -j8 check          # check builds the fake ArduSub
+tools/release.sh --host                    # at the commit of the checkout, after committing
+tools/rov/rehearse.sh out/release/hangar-<…>-x86_64.tar.zst
+```
+
+- `plain`: `up`, `status`, `down`, both roles on "the Pi".
+- `bridge`: `up --bridge` with the two bridges on loopback (UDP 5614 and 5615): the link
+  up on both ends, `status` and `bench` on both, a release with another `msg/` tree
+  refused, `down` from the Pi's copy of the session.
+- `serial`: `up --serial` with the tests' fake ArduSub at the far end of a
+  pseudo-terminal: refused while another process holds the line; the parameters saved,
+  set, and restored by a `down` that has to start hangar again.
+- `both`: `up --bridge --serial`: armed and disarmed from the topside across the link;
+  the topside stopped, and an arm on the vehicle refused (`bridge.vehicle.link
+  connecting`) once its bridge has called the link lost, about 3 s later.
+
+Each must end with `lab: everything as found`, and the whole with `rehearse: all passed`.
+
+By hand, a video source without a camera is an H.264 file of under 64 MB:
 
 ```sh
 ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -t 90 -c:v libx264 -preset ultrafast \
@@ -75,5 +128,8 @@ tools/rov/lab.sh up --video && tools/rov/lab.sh status && tools/rov/lab.sh bench
 tools/rov/lab.sh down
 ```
 
-What a rehearsal cannot show: SSH and sudo on the Pi, the clock, MAVROS and ArduSub's
-parameters, the lab's services, and the camera.
+What a rehearsal cannot show: SSH and sudo on the Pi, the clock, MAVROS and the real
+ArduSub's parameters, the lab's services (stopping and starting them is skipped and
+said), the camera, the copy of `bridge.key` over `scp`, the bridge on the tether's two
+addresses, and the Pixhawk's own serial device. `--video` is not in `rehearse.sh`: by
+hand, as above.

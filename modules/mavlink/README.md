@@ -179,15 +179,13 @@ of `/dev/ttyACM0` on Raspberry Pi OS). With `tools/rov` (which runs the modules 
 the Pi's user, already in `dialout`):
 
 ```sh
-tools/rov/rov.sh down                       # stops MAVROS: it must not hold the port
-RELAY=0 tools/rov/rov.sh up                 # no relay; lays out /dev/shm/hangar-vehicle
-sed -i 's|^Bind=127\.0\.0\.1:14560$|Serial=/dev/ttyACM0|' /dev/shm/hangar-vehicle/etc/hangar/mavlink.conf
-HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar stop mavlink
-HANGAR_ROOT=/dev/shm/hangar-vehicle builddir/hangar start mavlink
+tools/rov/rov.sh reset                      # stops MAVROS: it must not hold the port
+MAVLINK=serial tools/rov/rov.sh up          # no relay; the two .serial files laid out, Serial= from FCU
 ```
 
-The edited conf stays until `rov.sh reset`; after a reset, the same three lines
-again. `rov.sh params save|diff|restore` go through hangar (`hangar ardusub-params`)
+From the laptop, with ArduSub's parameters saved and restored around it:
+`tools/rov/lab.sh up --serial` (tools/rov/QUICKSTART.md). `rov.sh params
+save|diff|restore` go through hangar (`hangar ardusub-params`)
 whenever the vehicle's manager is up, over the serial line as over MAVROS's UDP, and
 fall back to MAVROS only when it is not. On an installed vehicle: copy
 `mavlink.conf.serial` to `/etc/hangar/mavlink.conf` and `mavlink.module.serial` to

@@ -1,6 +1,7 @@
 # /etc/hangar/mavlink.conf (profiles/rov-vehicle), opt-in: the module on the Pixhawk's
 # USB serial itself, no MAVROS relay (modules/mavlink/README.md, "A serial line").
-# Install it as /etc/hangar/mavlink.conf and run tools/rov with RELAY=0.
+# Install it as /etc/hangar/mavlink.conf; with tools/rov, MAVLINK=serial rov.sh up
+# lays it out (Serial= and Baud= from FCU) and starts no relay.
 [Link]
 # The lab's BlueROV2: ArduSub on a Pixhawk on USB. /dev/serial/by-id/usb-... names
 # the same device and survives a renumbering; ttyACM0 is what the lab's Pi shows.
