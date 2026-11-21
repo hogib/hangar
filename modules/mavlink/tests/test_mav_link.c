@@ -116,6 +116,17 @@ static void block_line(void)
 		printf("    the line never blocked\n");
 		exit(2);
 	}
+	/* A first refused write is not a blocked line yet: the kernel moves the
+	 * pseudo-terminal's bytes on from a worker of its own, a little later
+	 * on a busy machine, and makes room again (the queue emptied under the
+	 * test in 8 runs of 40 with every core busy). Blocked is when frames
+	 * stay queued across 20 sends 2 ms apart. */
+	for (int held = 0, tries = 0; held < 20 && tries < 5000; tries++) {
+		usleep(2000);
+		int before = L.tx_count;
+		send_hb();
+		held = L.tx_count > before || L.tx_count == MAV_TXQ ? held + 1 : 0;
+	}
 }
 
 /* What the far end received, decoded as ArduSub would (the same key,
