@@ -515,16 +515,20 @@ Reply=runtime_info
 
 The manager creates the trainer's request topic, `trainer.req`, and subscribes the
 module to `bridge.rep` and to `policy_depth_ff.rep`, the mirrored reply topic of the
-vehicle's policy ([04-calls](04-calls.md#the-rules)). `hangar.learn` reads the
-module's wiring from `HANGAR_WIRING` as `hg_init` does
+vehicle's policy ([04-calls](04-calls.md#the-rules)). The design is that `hangar.learn`
+reads the module's wiring from `HANGAR_WIRING` as `hg_init` does
 ([03-manager](03-manager.md#starting-a-module)), opens `trainer.req` for writing
-through the manager, and publishes its requests there, through the package's compiled
-helper; the writer of that topic is the caller, so its calls are `trainer`'s and reach
-the vehicle as `topside:trainer`. A script run from a shell has no request topic of its
-own: the package hands its calls to the manager, as `hangar call` does, which publishes
-them as `admin:<user>` if its user is in `hangar-admin`; they reach the vehicle as
-`topside:admin:<user>`, which the policies' `Allow` lists name; any other user is
-refused ([12-tools](12-tools.md#the-python-package)).
+through the manager, and publishes its requests there; the writer of that topic is the
+caller, so its calls are `trainer`'s and reach the vehicle as `topside:trainer`.
+
+**As built, version 1,** the package does not do that yet: it hands every call to the
+manager through `hangar call`, whether it runs as the module or from a shell, so its
+calls are `admin:<user>`'s if the user is in `hangar-admin` and reach the vehicle as
+`topside:admin:<user>`, which the policies' `Allow` lists must name; any other user is
+refused. And `deploy` copies the weights file into the policy's `incoming` directory
+itself instead of sending it with `bridge.send`, which works only where the trainer and
+the policy share a file system: the bench and the simulator
+([12-tools](12-tools.md#the-python-package)).
 
 ```python
 import time
@@ -554,7 +558,7 @@ batches of single rows and has nothing to carry; the example below is one, and
 | `with_loss(rows, fields)` | per row of a numpy array of rows: whether a stream reading `fields` gives it loss (`chunk.mask`'s rule, below) |
 | `carry(state, fresh)` | the recurrent state, detached from the graph, zeroed for the slots marked fresh |
 | `export(model, file, stream, outputs)` | the `.hgw` file: graph, tensors, bindings to the stream's input fields and to `outputs`, probes and lineage from the stream's buffer, checked against the vehicle's `runtime_info` and against the model (below) |
-| `deploy(model or file, policy, stream, outputs)` | export, `bridge.send`, `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
+| `deploy(model or file, policy, stream, outputs)` | export, the file to the policy (`bridge.send` in the design; a copy into its `incoming` directory as built), `load_weights`, and wait on `policy.<name>.load` and `policy.<name>.active` |
 | `revert(policy)`, `watch(policy)` | |
 
 **Stateful chunks.** With `seq_len`, each of the `batch` slots follows one run of rows

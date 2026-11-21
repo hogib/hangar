@@ -328,12 +328,15 @@ while it runs), and the next record of that topic that it can write carries the
 records left out as its gap, like a loss in the ring.
 
 ```python
-rec = hangar.open_recording("session/nav.depth.hgr")   # numpy.memmap underneath
-rec["seq"], rec["stamp_ns"], rec["depth_m"], rec["inputs"]
+from hangar import record
+rec = record.open_recording("session/nav.depth.hgr")
+rec[3].seq, rec[3].stamp_ns, rec[3].gap, rec.payload(3)["depth_m"]
+a = rec.array()                                    # numpy.memmap underneath
+a["seq"], a["stamp_ns"], a["depth_m"]
 ```
 
-Offline converters write MCAP (for Foxglove) and Parquet: `hangar export mcap|parquet
-<session>`. Nothing on the vehicle needs either.
+Converters to MCAP (for Foxglove) and Parquet are planned and not built
+([12-tools](12-tools.md#the-python-package)).
 
 ## Datasets
 
@@ -767,15 +770,20 @@ produced by that run; 6 and 8 have tests of their own on the live side.
 The same dtype, live or recorded:
 
 ```python
-for batch in hangar.stream("dataset.depth_ff", batch=64):   # live topic
+from hangar import dataset, learn
+ds = dataset.open_dataset("depth_ff.hgr")                    # file, memmap
+ds.fields("input"), ds.fields("label"), ds.array()
+for chunk in learn.stream("dataset.depth_ff", batch=64):     # live topic, for training
+    chunk.inputs, chunk.labels, chunk.mask
+for chunk in learn.open_dataset("depth_ff.hgr", batch=64):   # the same over a file
     ...
-ds = hangar.open_dataset("depth_ff.hgr")                     # file, memmap
 ```
 
-with a PyTorch `IterableDataset` over either, which steps a recurrent model through
-the rows in order: its state starts over where `reset` is set, and `masked` rows carry
-no loss, nor do rows in which a field it reads is the zeros of a missing part or of a
-window `_count` does not fill ([09-learning](09-learning.md#training)). The Python package is for the
+`hangar.learn`'s streams give numpy arrays, not a PyTorch dataset. With `seq_len` they
+step a recurrent model through the rows in order: its state starts over where `reset`
+is set (`chunk.fresh`), and `chunk.mask` is 0 on `masked` rows and on rows in which a
+field the stream reads is the zeros of a missing part or of a window `_count` does not
+fill ([09-learning](09-learning.md#training)). The Python package is for the
 topside and for training; nothing on the vehicle needs it.
 
 ## The topside

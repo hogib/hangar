@@ -618,18 +618,20 @@ role, so the caller is `<role>:<module>` with nothing asserted by anyone
 ## Reading from Python
 
 ```python
-import mmap, struct, numpy as np
-m = mmap.mmap(open("/dev/shm/hangar/nav.depth", "rb").fileno(), 0, access=mmap.ACCESS_READ)
-schema = m[512:512 + struct.unpack_from("<I", m, 156)[0]].decode()
-dtype = hangar.dtype_from_schema(schema)    # ~40 lines, in tools/python
+from hangar import topic
+t = topic.open_topic("nav.depth", start="newest")   # $HANGAR_TOPIC_DIR or /dev/shm/hangar
+for m in t.read():                                  # what is new since the last read
+    m.seq, m.stamp_ns, m.gap, t.decode(m)["depth_m"]
 ```
 
-On x86-64 the newest message can be read with the algorithm above in pure Python
-(`struct.unpack_from`), whose stores and loads the processor keeps in order. On ARM it
-cannot: Python neither orders its loads nor reads 8 bytes in one access on ARMv7, so a
-torn copy could pass the check. There the Python package reads through a small C
-helper (`hg_read_latest`, by `ctypes`) that does the seqlock read properly; pure Python
-is for x86-64 and for files no one is writing.
+`hangar.topic` maps the file read-only, parses the schema text in its header
+(`hangar.schema`) and reads slots with the algorithm above in pure Python
+(`struct.unpack_from`). On x86-64 that is sound: the processor keeps the stores and
+loads in order. On ARM it is not guaranteed: Python neither orders its loads nor reads 8
+bytes in one access on ARMv7, so a torn copy could pass the check. A compiled read for
+ARM (a small C helper called through `ctypes`) is designed and not built; until it is,
+pure Python is for x86-64, where the topside runs, and for files no one is writing
+([12-tools](12-tools.md#the-python-package)).
 
 ## Permissions
 

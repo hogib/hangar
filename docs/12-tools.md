@@ -246,35 +246,54 @@ the Python package.
 
 ## The Python package
 
-`hangar`, for the topside and for training; installed as a wheel with one small compiled
-helper: the seqlock read on ARM ([01-topics](01-topics.md#reading-from-python)), and
-the publish on a module's `.req` topic (the seqlock write and the futex wake), which
-`hangar.learn` needs to make calls as a module ([04-calls](04-calls.md#the-two-topics)).
+`hangar`, for the topside and for training. It is plain Python, in `python/hangar/` of
+the source, used from there (`PYTHONPATH=python`); there is no wheel and nothing
+compiled. The readers need the standard library alone; numpy is needed for arrays, and
+PyTorch only by `hangar.learn.carry` and to export a model. Nothing on the vehicle needs
+any of it.
 
 | Module | |
 |---|---|
-| `hangar.topics` | Read topics: newest, in order, wait; `dtype_from_schema` |
-| `hangar.recordings` | Sessions and `.hgr` files as `numpy.memmap` |
-| `hangar.datasets` | Dataset topics and files; rows with their `boot_id`, `emitted_ns` and their `reset`, `masked` and `late` flags ([06-recorder](06-recorder.md#the-row)) |
-| `hangar.learn` | Stateful streaming for recurrent models (`carry`), replay, export, deploy, revert, watch; run as the topside module `trainer` ([09-learning](09-learning.md#training)) |
-| `hangar.export` | MCAP (for Foxglove) and Parquet |
-| `hangar.report` | Loop latency, requests and replies paired by `call_id`, gaps, plots |
+| `hangar.schema` | The `.msg` grammar: layout, canonical form, type hash, parameter attributes, `dtype_from_schema`. It must agree byte for byte with the generator and with lib/hg's run-time parser; `make check-msggen` compares the three over every type. `python3 -m hangar.schema --print-hash <file>` and `--canonical <file>` |
+| `hangar.topic` | A live topic read in place: `Topic(name)` or `open_topic(name, start="newest"` or `"oldest")`, `read()` for what is new, each message with its `seq`, `stamp_ns`, `flags`, `gap`, `refs` and payload, `decode()` through the file's own schema. It follows a file its writer replaced, as `hg_next` does. It does not wait: a caller polls |
+| `hangar.record` | A `.hgr` file: `open_recording(path)`, records by index, `find_seq`, `find_stamp`, and `array()`, the whole file as one structured `numpy.memmap` ([06-recorder](06-recorder.md#recording-files-hgr)) |
+| `hangar.dataset` | A dataset spec (`DatasetSpec.parse`, as lib/hg reads it, except that `Where` is not compiled) and a file of rows: `open_dataset(path)`, `roles()`, `fields("input")`, `fields("label")`, `rows()`, `array()`; rows with their `boot_id`, `emitted_ns` and their `reset`, `masked` and `late` flags ([06-recorder](06-recorder.md#the-row)) |
+| `hangar.learn` | The trainer's side of the loop: `stream` and `open_dataset` (a replay buffer, chunks with their loss mask, stateful chunks for recurrent models), `carry`, `with_loss`, `export`, `deploy`, `revert`, `watch`, `runtime_info`, `call` ([09-learning](09-learning.md#training)) |
+| `hangar.nn` | The weights file: `hgw` (writer, reader, the architecture hash), `reference` (lib/nn's ops in pure Python, the source of the probes and of lib/nn's golden vectors), `export_torch` (a PyTorch model to a graph, checked against the model itself) |
 
-Reading needs no identity: topics and recordings are files, readable by group
-`hangar`. Calls do. The trainer is the topside module `trainer`, started by the
-topside's manager, whose manifest declares `[Call bridge.send]` and the
-`load_weights`, `revert` and `runtime_info` calls of its policy
-([09-learning](09-learning.md#training)). Inside it, `hangar.learn` does what `hg_init`
-does: it makes the process non-dumpable, reads the wiring from `HANGAR_WIRING`, fetches
-its module page from the manager over the control socket, and opens its request topic
-`trainer.req` through the manager, which hands the only writable descriptor to the
-module ([03-manager](03-manager.md#starting-a-module)). Its calls are then messages on
-`trainer.req`, which the bridge mirrors down, so the vehicle's policies see them as
-`topside:trainer` ([01-topics](01-topics.md#mirrored-topics)); their replies come back
-on the mirrored `policy_<name>.rep`. A script run from a shell, outside the manager, is
-not `trainer`: it calls through the manager as `admin:<user>` if its user is in
-`hangar-admin`, and the vehicle sees it as `topside:admin:<user>`, which passes only
-where `Allow` names `topside:admin`; any other user is refused by the control socket.
+Submodules are imported by name (`from hangar import topic`). `python/tests/run.py` runs
+the package's tests and says how many were skipped for a missing numpy or PyTorch;
+`make check` runs it, and with `HANGAR_PYTHON_NO_SKIP=1` a skip is a failure (CI's gcc
+job, which installs both).
+
+**Reading on ARM.** `hangar.topic` reads a slot with the seqlock check of
+[01-topics](01-topics.md#reading-from-python) in pure Python on every machine. On
+x86-64 that is sound. On ARM it is not guaranteed: Python does not order its loads, so
+a copy torn by a concurrent write could pass the check. The package is run on the
+topside, which is x86-64; a compiled read for ARM is not built.
+
+**Calls.** Reading needs no identity: topics and recordings are files, readable by group
+`hangar`. Calls do, and in this version the package makes them through `hangar call`
+(a subprocess), that is through the manager as `admin:<user>` if its user is in
+`hangar-admin`; the vehicle sees them as `topside:admin:<user>`, which passes only where
+`Allow` names `topside:admin`, and any other user is refused by the control socket. This
+holds whether the script runs from a shell or as the topside module `trainer`: the
+package does not open a request topic of its own. `deploy` copies the weights file into
+the policy's `incoming` directory itself, which works only where the trainer and the
+policy share a file system (the bench, the simulator).
+
+**Not built.** What the design has and this version does not:
+
+- The trainer as a caller in its own name: `hangar.learn` doing what `hg_init` does
+  (the wiring from `HANGAR_WIRING`, its module page, `trainer.req` opened through the
+  manager) and publishing its requests there, so that the vehicle sees
+  `topside:trainer` ([09-learning](09-learning.md#training)). It needs a compiled
+  helper for the seqlock write and the futex wake.
+- `deploy` sending the file with `bridge.send` ([08-bridge](08-bridge.md)).
+- Converters to MCAP (for Foxglove) and Parquet, and a report module (requests and
+  replies paired by `call_id`, gaps, plots). Loop latency is `hangar dataset
+  loop-latency`, above.
+- A blocking wait on a topic from Python.
 
 ## The benchmark
 
