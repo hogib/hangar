@@ -1047,9 +1047,14 @@ static enum hg_result src_sub_find_stamp(void *ctx, uint64_t t, void *buf, size_
 	return hg_find_stamp(ctx, t, buf, len, info);
 }
 
+/* The part's subscription is pinned to the type of the file attached, the
+ * one the row type was bound from (the caller binds, then makes its sources):
+ * a writer that restarts with another type reads as an error and the part is
+ * missing, where its bytes would have been copied by the old type's offsets. */
 struct hg_ds_source hg_ds_source_sub(hg_sub *s)
 {
 	struct hg_ds_source src = { s, src_sub_read_seq, src_sub_find_stamp };
+	(void)hg_sub_pin_type(s);
 	return src;
 }
 

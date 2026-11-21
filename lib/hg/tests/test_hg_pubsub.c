@@ -270,6 +270,49 @@ static void test_random_access_follows_replacement(void)
 	hg_pub_close(p);
 }
 
+// A subscription opened without a type and bound to what it found (a dataset
+// part: its row type was made from the schema in the file) is pinned to that
+// type: a writer that restarts with another reads EPROTOTYPE, in order and by
+// seq and stamp, instead of bytes laid out another way under the old
+// offsets; a writer of the pinned type again is read again.
+static void test_pinned_type(void)
+{
+	static struct hg_schema other;
+	const char text[] = "f64 x\nu8 pad[248]\n"; // WORDS_BYTES too, another layout
+	CHECK_EQ_INT(hg_schema_parse(text, sizeof text - 1, &other, NULL, 0), 0);
+	CHECK_EQ_INT(other.type.payload_bytes, WORDS_BYTES);
+	hg_pub *p = open_words("ps.pinned", 16);
+	hg_sub *s = hg_sub_open("ps.pinned", NULL), *absent = hg_sub_open("ps.pinned.absent", NULL);
+	CHECK_EQ_INT(hg_sub_pin_type(absent), -1); // nothing attached: nothing to pin to
+	hg_sub_close(absent);
+	pub_n(p, 2);
+	CHECK_EQ_INT(hg_find_stamp(s, UINT64_MAX, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(hg_sub_pin_type(s), 0);
+	hg_pub_close(p);
+	struct hg_pub_opts o = { .slots = 16 };
+	p = hg_pub_open("ps.pinned", &other.type, &o);
+	CHECK(p != NULL);
+	memset(buf, 0, sizeof buf);
+	CHECK_EQ_INT(hg_publish(p, buf, sizeof buf, 30), 0);
+	errno = 0;
+	CHECK_EQ_INT(hg_find_stamp(s, UINT64_MAX, buf, sizeof buf, &info), HG_ERROR);
+	CHECK_EQ_INT(errno, EPROTOTYPE);
+	CHECK_EQ_INT(hg_read_seq(s, 3, buf, sizeof buf, &info), HG_ERROR);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_ERROR);
+	CHECK_EQ_INT(errno, EPROTOTYPE);
+	// Pinned again, to what is there now (a dataset bound again): read.
+	CHECK_EQ_INT(hg_sub_pin_type(s), 0);
+	CHECK_EQ_INT(hg_read_seq(s, 3, buf, sizeof buf, &info), HG_MSG);
+	// The first type back: not the pinned one.
+	hg_pub_close(p);
+	p = open_words("ps.pinned", 16);
+	pub_n(p, 1);
+	CHECK_EQ_INT(hg_find_stamp(s, UINT64_MAX, buf, sizeof buf, &info), HG_ERROR);
+	CHECK_EQ_INT(errno, EPROTOTYPE);
+	hg_sub_close(s);
+	hg_pub_close(p);
+}
+
 static void test_odd_seq_from_dead_writer(void)
 {
 	// A writer that died mid-publish left slot 10 (message 11) odd and, in
@@ -475,6 +518,7 @@ int main(void)
 	RUN_TEST(test_read_seq_and_find_stamp);
 	RUN_TEST(test_find_stamp_without_stamp);
 	RUN_TEST(test_random_access_follows_replacement);
+	RUN_TEST(test_pinned_type);
 	RUN_TEST(test_odd_seq_from_dead_writer);
 	RUN_TEST(test_closed);
 	RUN_TEST(test_types_and_introspection);

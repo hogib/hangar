@@ -313,7 +313,11 @@ pairer ([06-recorder](06-recorder.md#live-the-pairer)): a message no longer in t
 ring, or never in it (a seq a mirrored topic does not have), returns `HG_GONE`. Both
 follow the topic to the file a restarted writer made, as `hg_next` does at the end of
 the old one: a subscription read only this way would otherwise read the dead writer's
-file for good.
+file for good. A reader that opened a topic without a type and worked out offsets
+from the schema it found pins the subscription to that type (`hg_sub_pin_type`): a
+writer that restarts with another then reads as an error (`EPROTOTYPE`), as for a
+subscription opened with a type, and not as bytes laid out another way. The dataset
+join pins every part it reads.
 `hg_find_stamp` searches the ring from the newest seq back, checking each slot's `seq`
 as `hg_next` does and passing over seqs not in the ring, assuming stamps rise with
 sequence numbers, which a writer must keep. A message published with stamp 0 is

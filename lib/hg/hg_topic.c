@@ -1933,6 +1933,18 @@ uint64_t hg_sub_reopens(const hg_sub *s)
 	return s->reopens;
 }
 
+int hg_sub_pin_type(hg_sub *s)
+{
+	struct hg_topic_meta m;
+	if (hg_sub_meta(s, &m) < 0)
+		return -1;
+	s->has_expect = 1;
+	s->expect_hash = m.type_hash;
+	s->type_bad = 0;
+	s->type_bad_reported = 0;
+	return 0;
+}
+
 const char *hg_sub_name(const hg_sub *s)
 {
 	return s->name;

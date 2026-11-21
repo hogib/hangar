@@ -641,7 +641,9 @@ with another makes the row type untrue of what the pairer reads: it logs the top
 drops the rows that were still waiting for their `emitted_ns`, closes `dataset.<name>`
 and binds again as at start, with a row type of another hash; the first row after
 that carries `reset`. The recorder continues `dataset.<name>` in a new file
-([Draining](#draining)).
+([Draining](#draining)). A policy, which builds its inputs with the same join, does not
+bind again while it runs: a part of another type is missing in its rows, and with an
+anchor of another type it does not tick ([09-learning](09-learning.md#features-at-run-time)).
 
 For each spec, the pairer reads the anchor topic in order and, for each anchor
 message, fetches the parts from their rings: `hg_read_seq(sub, seq)` for provenance,

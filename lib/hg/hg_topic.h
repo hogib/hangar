@@ -251,6 +251,13 @@ const char *hg_sub_name(const hg_sub *s);
 uint32_t hg_sub_topic_id(const hg_sub *s);
 /* Times the reader switched to a replacing file. */
 uint64_t hg_sub_reopens(const hg_sub *s);
+/* For a subscription opened without a type: from now on the type of the file
+ * attached is the type expected, as if it had been given to hg_sub_open, so a
+ * writer that restarts with another reads HG_ERROR with EPROTOTYPE. Whoever
+ * works out offsets from the schema it found (a dataset's row type) pins the
+ * subscription to that schema. Called again, it pins to the file attached
+ * then. 0, or -1 with ENOENT when nothing is attached. */
+int hg_sub_pin_type(hg_sub *s);
 /* until the bridge: 1 if the subscription reads the other root's file through
  * the same-host shim ($HANGAR_PEER_TOPIC_DIR, modules/PHASE1.md): the call
  * library counts such a request topic as mirrored from the other side. */

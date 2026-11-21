@@ -224,6 +224,12 @@ static void try_bind(void)
 	for (int i = 0; i < DS.n_parts; i++)
 		if (sub_part[i])
 			src[i] = hg_ds_source_sub(sub_part[i]);
+	/* The anchor and the input parts are read by the offsets of the types
+	 * found here, for as long as the policy runs: each is pinned to its type
+	 * (the parts by hg_ds_source_sub). A writer that restarts with another
+	 * type is then not read: an input part is missing, and with the anchor
+	 * gone there is no tick and no output, which the mux takes as stale. */
+	(void)hg_sub_pin_type(sub_anchor);
 	struct hg_topic_meta am;
 	hg_sub_meta(sub_anchor, &am);
 	int zero = 1;
@@ -1213,6 +1219,12 @@ int main(int argc, char **argv)
 			struct hg_info info;
 			for (int k = 0; k < 4096; k++) {
 				enum hg_result rr = hg_next(sub_anchor, apayload, RT->anchor_payload_bytes + 8, &info);
+				if (rr == HG_ERROR && errno == EPROTOTYPE) {
+					static int said;
+					if (!said++)
+						mod_log(WHO, "%s: the writer of %s restarted with another type than the dataset was "
+							"bound to: no ticks until the policy is restarted", S.name, DS.anchor);
+				}
 				if (rr != HG_MSG)
 					break;
 				if (info.gap)
