@@ -363,7 +363,8 @@ static uint64_t mirrored_bytes(const char *except)
  * module of this machine publishes. */
 static void open_mirrored(int fd, const struct peer *p, const struct module *m, const char *topic,
 			  const char *boot_hex, unsigned long long first, const char *writer, unsigned slots,
-			  unsigned long long hash, unsigned payload, const char *schema, size_t schema_len)
+			  unsigned renumbered, unsigned long long hash, unsigned payload, const char *schema,
+			  size_t schema_len)
 {
 	if (!m->mf->bridge) {
 		err_reply(fd, "%s is not the bridge: a mirrored topic (boot=) is refused", m->name);
@@ -510,7 +511,8 @@ static void open_mirrored(int fd, const struct peer *p, const struct module *m, 
 				   .rate_mhz = mm->rate_mhz,
 				   .stale_after_ns = mm->rate_mhz ? mm->stale_after_ns : 0,
 				   .origin_boot = boot,
-				   .first_seq = first };
+				   .first_seq = first,
+				   .renumbered = renumbered != 0 };
 	char err[256];
 	int tfd = topic_create(&tp, err, sizeof err);
 	if (tfd < 0) {
@@ -543,7 +545,7 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 	size_t schema_len = len - (size_t)(schema - req);
 	char topic[MF_TOPIC] = "", boot_hex[40] = "", writer[40] = "";
 	unsigned long long hash = 0, first = 0;
-	unsigned payload = 0, slen = 0, slots = 0;
+	unsigned payload = 0, slen = 0, slots = 0, renumbered = 0;
 	int have_boot = 0;
 	char *save, *tok = strtok_r(req + 5, " ", &save);
 	if (!tok || strlen(tok) >= sizeof topic) {
@@ -559,7 +561,8 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 			have_boot = 1;
 			continue;
 		}
-		if (sscanf(tok, "writer=%31s", writer) == 1 || (have_boot && sscanf(tok, "slots=%u", &slots) == 1))
+		if (sscanf(tok, "writer=%31s", writer) == 1 || (have_boot && sscanf(tok, "slots=%u", &slots) == 1) ||
+		    (have_boot && sscanf(tok, "renumbered=%u", &renumbered) == 1))
 			continue;
 		err_reply(fd, "open: unknown key %s", tok);
 		return;
@@ -573,7 +576,7 @@ static void req_open(int fd, const struct peer *p, char *req, size_t len)
 		return;
 	}
 	if (have_boot) {
-		open_mirrored(fd, p, m, topic, boot_hex, first, writer, slots, hash, payload, schema, schema_len);
+		open_mirrored(fd, p, m, topic, boot_hex, first, writer, slots, renumbered, hash, payload, schema, schema_len);
 		return;
 	}
 	const struct mf_pub *pub = NULL;

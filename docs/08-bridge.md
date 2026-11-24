@@ -459,6 +459,23 @@ first seq, and sets bit 2 on the old file. Readers reopen it and start a new epo
 (`info.epoch` changes), which is not counted as a gap. A link that drops and comes
 back with the same boot ids continues the same files.
 
+**Numbers that start over within a boot.** A sender's topics can be removed and made
+again without a reboot: a root laid out afresh (`rov.sh topside reset` and `up`), a
+`/dev/shm` cleared by hand. Its numbers then start at 1 on the same boot id. The
+receiving bridge tells that from a message that came twice or late by the sender's own
+clock: a seq not above the last one published here, **published by the sender after
+that one**, is a numbering that started over, and a seq not above it published before
+is dropped and counted (`dropped_old`). For a numbering that started over the mirror
+gets a new file from that seq, as for a new boot, and its readers a new epoch: a reader
+takes a file of the same `origin_boot` whose `first_seq` is below the `write_seq` of
+the file it replaces as one. Through v0.1.4 every message was dropped until the new
+numbers had passed the old ones: at the lab on 2026-11-24, after three minutes of
+running, a topside started again left the vehicle deaf to the pilot's sticks for three
+minutes, with arm and disarm (calls) working. What stays true: the triple `(boot id,
+topic id, seq)` names two messages after such a restart, one of each numbering; a
+recording keeps them apart by the epoch in its file name (`<topic>+<k>.hgr`), a
+reference by seq alone does not.
+
 **Age of commands.** A message can wait in a tether modem's buffer for seconds and
 still arrive. For a `command` mirror with `MaxAge`, the receiver computes the
 message's age from its translated `stamp_ns` (the sender's translated `publish_ns` if

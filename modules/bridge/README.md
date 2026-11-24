@@ -252,6 +252,10 @@ as one run printed them (2026-11-20, loopback, this laptop):
 - the topside rebooted (its manager stopped, its topics gone, a new boot id):
   `pilot.depth` on the vehicle comes back on the new boot id, its readers' epoch 0 → 1,
   the seqs from 1 again;
+- the topside started again within its boot, its topics gone (the same boot id, the
+  seqs from 1): `pilot.depth` on the vehicle comes back at once, its readers' epoch
+  changed; without the rule of docs/08 "Numbers that start over within a boot" 395
+  messages were dropped as old and none had come after 8 s;
 - `mismatch`: a topside whose msg/ tree differs (one comment line): `config_match`
   false, `msg/ trees differ`, nothing mirrored.
 

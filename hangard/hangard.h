@@ -269,6 +269,7 @@ struct topic_params {
 	uint64_t stale_after_ns;
 	const unsigned char *origin_boot; /* NULL for a local topic */
 	uint64_t first_seq;               /* the bridge's: used when the boot differs */
+	int renumbered;                   /* and when the sender's numbering started over in its boot */
 };
 /* Creates the topic file by docs/01 "Opening" and returns a writable
  * descriptor; -1 with errno and err. */

@@ -220,14 +220,15 @@ int topic_create(const struct topic_params *tp, char *err, size_t errlen)
 	size_t len = HEADER_BYTES + (size_t)tp->slots * stride;
 
 	/* An existing file continues write_seq, unless it is a mirror of
-	 * another boot of the sender. */
+	 * another boot of the sender, or of the same boot renumbered
+	 * (hg_pub_opts.renumbered). */
 	unsigned char *old = map_old(path);
 	uint64_t w = 0;
 	if (tp->origin_boot)
 		w = tp->first_seq ? tp->first_seq - 1 : 0;
 	if (old) {
 		int same = tp->origin_boot ? memcmp(old + OFF_ORIGIN_BOOT, tp->origin_boot, 16) == 0 : 1;
-		if (same)
+		if (same && !(tp->origin_boot && tp->renumbered))
 			w = hdr_u64(old, OFF_WRITE_SEQ);
 	}
 

@@ -727,6 +727,56 @@ static void main_run(void)
 	read_link(&T, &lt);
 	EXPECT(lt.state == 3, "the link stayed up through the loss");
 
+	/* The topside started again within its boot, its topics made again (a
+	 * root laid out afresh: rov.sh topside reset and up). pilot.depth here
+	 * comes back with the sender's seqs from 1 on the same boot id, a new
+	 * epoch for its readers, and at once: before, every message was dropped
+	 * as old until the new numbers had passed the old ones (the lab,
+	 * 2026-11-24: a pilot's sticks dead for three minutes). */
+	use(&V);
+	hg_sub *pn = hg_sub_open("pilot.depth", &DEPTH_TYPE);
+	struct hg_topic_meta ma, mb;
+	uint64_t seqa = 0;
+	uint32_t epocha = 0;
+	if (pn && hg_latest(pn, &d, sizeof d, &in) == HG_MSG) {
+		seqa = in.seq;
+		epocha = in.epoch;
+	}
+	int havea = pn && hg_sub_meta(pn, &ma) == 0;
+	read_link(&V, &lv);
+	uint64_t old0 = lv.dropped_old;
+	use(&T);
+	manager_stop(T.mgr);
+	rm_tree(T.topics);
+	t0 = now_ms();
+	start(&T);
+	int again = 0, more = 0;
+	uint64_t seqb = 0;
+	uint32_t epochb = 0;
+	double took = 0;
+	use(&V);
+	while (pn && more < 20 && now_ms() - t0 < 8000) {
+		hg_wait(&pn, 1, 100);
+		while (hg_next(pn, &d, sizeof d, &in) == HG_MSG) {
+			if (again) {
+				more++;
+			} else if (in.seq < seqa && hg_sub_meta(pn, &mb) == 0 &&
+				   memcmp(mb.origin_boot, ma.origin_boot, 16) == 0) {
+				again = 1;
+				seqb = in.seq;
+				epochb = in.epoch;
+				took = (now_ms() - t0) / 1e3;
+			}
+		}
+	}
+	read_link(&V, &lv);
+	EXPECT(havea && seqa > 100 && again && more >= 20 && epochb != epocha,
+	       "the topside started again in its boot, its topics new: pilot.depth back at once on the same boot id, epoch %u -> %u, seq %llu -> %llu, %.2f s from the manager's start, %d more after it (%llu dropped as old meanwhile)",
+	       epocha, epochb, (unsigned long long)seqa, (unsigned long long)seqb, took, more,
+	       (unsigned long long)(lv.dropped_old - old0));
+	if (pn)
+		hg_sub_close(pn);
+
 	/* The topside reboots: its manager stopped, its topics gone, its boot id
 	 * new. pilot.depth here comes back on the new boot id, a new epoch for
 	 * its readers, with the sender's seqs from 1. */

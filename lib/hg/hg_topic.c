@@ -798,7 +798,7 @@ static int zero16(const unsigned char *b)
  * Fills p->h, slots, wake and seq; -1 with errno. */
 static int pub_open_managed(hg_pub *p, const char *name, const struct hg_type *type, int mirror,
 			    const unsigned char origin_boot[16], uint64_t first_seq, const char *writer,
-			    uint32_t slots, const char *wake_path)
+			    uint32_t slots, int renumbered, const char *wake_path)
 {
 	char req[HG_CONTROL_MAX];
 	int n = snprintf(req, sizeof req, "open %s hash=%016llx payload=%u schema=%u", name,
@@ -813,6 +813,8 @@ static int pub_open_managed(hg_pub *p, const char *name, const struct hg_type *t
 			n += snprintf(req + n, sizeof req - (size_t)n, " writer=%s", writer);
 		if (slots)
 			n += snprintf(req + n, sizeof req - (size_t)n, " slots=%u", slots);
+		if (renumbered)
+			n += snprintf(req + n, sizeof req - (size_t)n, " renumbered=1");
 	}
 	if (n < 0 || (size_t)n + 1 + type->schema_bytes > sizeof req) {
 		errno = EMSGSIZE;
@@ -995,7 +997,8 @@ static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror
 	 * topics"): the library asks over the control socket and maps what it
 	 * is handed. */
 	if (under_manager()) {
-		if (pub_open_managed(p, name, type, mirror, origin_boot, first_seq, writer, opts ? opts->slots : 0, wake_path) < 0) {
+		if (pub_open_managed(p, name, type, mirror, origin_boot, first_seq, writer, opts ? opts->slots : 0,
+				     mirror && opts && opts->renumbered, wake_path) < 0) {
 			int e = errno;
 			free(p);
 			errno = e;
@@ -1006,8 +1009,9 @@ static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror
 	}
 
 	/* An existing file continues write_seq, unless it is a mirror of
-	 * another boot of the sender: then the numbers start again at the
-	 * bridge's first seq, and the readers start a new epoch. */
+	 * another boot of the sender, or of the same boot with its numbering
+	 * started over (opts->renumbered): then the numbers start again at
+	 * the bridge's first seq, and the readers start a new epoch. */
 	struct layout ol;
 	struct hg_header *old = map_old_rw(path, &ol);
 	uint64_t w = 0;
@@ -1015,7 +1019,7 @@ static hg_pub *pub_open(const char *name, const struct hg_type *type, int mirror
 		w = first_seq ? first_seq - 1 : 0;
 	if (old) {
 		int same_boot = mirror ? memcmp(ol.origin_boot, origin_boot, 16) == 0 : 1;
-		if (same_boot)
+		if (same_boot && !(mirror && opts && opts->renumbered))
 			w = atomic_load_explicit(&old->write_seq, memory_order_acquire);
 	}
 
@@ -1553,6 +1557,13 @@ static void use_mapping(hg_sub *s, const struct mapping *m)
 	struct hg_header *old = s->h;
 	size_t old_len = s->map_len;
 	int new_epoch = s->h && memcmp(s->origin, m->l.origin_boot, 16) != 0;
+	/* A mirror whose numbers go back within the sender's boot: the sender's
+	 * topics were made again (hg_pub_opts.renumbered). A file that continues
+	 * starts at the old one's write_seq, never below it. Without this a
+	 * reader waited for the new numbers to pass the old ones. */
+	if (s->h && !new_epoch && !zero16(m->l.origin_boot) &&
+	    m->l.first_seq < atomic_load_explicit(&s->h->write_seq, memory_order_acquire))
+		new_epoch = 1;
 	fd_lock(s);
 	s->h = m->h;
 	s->map_len = m->len;

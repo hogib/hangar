@@ -310,6 +310,87 @@ static void test_mirror_new_boot_is_new_epoch(void)
 	hg_pub_close(c);
 }
 
+/* The sender's topics were made again within its boot (a root laid out
+ * afresh): the bridge says so, the mirror starts at the sender's first seq,
+ * and a reader, whose numbers go back, starts a new epoch. Without the word
+ * the same boot continues, as for a bridge restarted here. */
+static void test_mirror_renumbered_is_new_epoch(void)
+{
+	static const unsigned char boot[16] = { 7 };
+	struct hg_pub_opts o = { .slots = 16 };
+	hg_pub *a = hg_pub_open_mirror("rp.renum", WORDS_TYPE, boot, 9000, &o);
+	CHECK(a != NULL);
+	if (!a)
+		return;
+	hg_sub *s = hg_sub_open_from("rp.renum", WORDS_TYPE, HG_OLDEST);
+	hg_sub *late = hg_sub_open_from("rp.renum", WORDS_TYPE, HG_OLDEST); /* reads nothing until the end */
+	for (uint64_t n = 9000; n < 9010; n++) {
+		fill(buf, n);
+		CHECK_EQ_INT(hg_publish_seq(a, n, 0, buf, sizeof buf, n, NULL, 0), 0);
+	}
+	uint64_t got = 0;
+	while (hg_next(s, buf, sizeof buf, &info) == HG_MSG)
+		got = info.seq;
+	CHECK_EQ_INT(got, 9009);
+	CHECK_EQ_INT(info.epoch, 0);
+	// Not said: the file's numbers go on, and a seq from before is refused.
+	hg_pub *b = hg_pub_open_mirror("rp.renum", WORDS_TYPE, boot, 1, &o);
+	CHECK(b != NULL);
+	CHECK_EQ_INT(hg_pub_next_seq(b), 9010);
+	fill(buf, 1);
+	errno = 0;
+	CHECK(hg_publish_seq(b, 1, 0, buf, sizeof buf, 1, NULL, 0) < 0 && errno == ERANGE);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_NONE);
+	CHECK_EQ_INT(info.epoch, 0);
+	// Said: from the sender's first seq, a new epoch, nothing waited for.
+	struct hg_pub_opts r = { .slots = 16, .renumbered = 1 };
+	hg_pub *c = hg_pub_open_mirror("rp.renum", WORDS_TYPE, boot, 1, &r);
+	CHECK(c != NULL);
+	CHECK_EQ_INT(hg_pub_next_seq(c), 1);
+	fill(buf, 1);
+	CHECK_EQ_INT(hg_publish_seq(c, 1, 0, buf, sizeof buf, 1, NULL, 0), 0);
+	fill(buf, 2);
+	CHECK_EQ_INT(hg_publish_seq(c, 2, 0, buf, sizeof buf, 2, NULL, 0), 0);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 1);
+	CHECK_EQ_INT(info.gap, 0);
+	CHECK_EQ_INT(info.epoch, 1);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 2);
+	struct hg_topic_meta m;
+	CHECK_EQ_INT(hg_sub_meta(s, &m), 0);
+	CHECK(memcmp(m.origin_boot, boot, 16) == 0);
+	// A reader far behind takes what is left of the old numbers, then the new.
+	uint64_t n_old = 0, first_new = 0;
+	uint32_t epoch_new = 0;
+	while (hg_next(late, buf, sizeof buf, &info) == HG_MSG) {
+		if (info.epoch == 0) {
+			n_old++;
+		} else if (!first_new) {
+			first_new = info.seq;
+			epoch_new = info.epoch;
+		}
+	}
+	CHECK_EQ_INT(n_old, 10);
+	CHECK_EQ_INT(first_new, 1);
+	CHECK_EQ_INT(epoch_new, 1);
+	// The numbers going on after it are no epoch of their own.
+	hg_pub *d = hg_pub_open_mirror("rp.renum", WORDS_TYPE, boot, 3, &o);
+	CHECK(d != NULL);
+	CHECK_EQ_INT(hg_pub_next_seq(d), 3);
+	fill(buf, 3);
+	CHECK_EQ_INT(hg_publish_seq(d, 3, 0, buf, sizeof buf, 3, NULL, 0), 0);
+	CHECK_EQ_INT(hg_next(s, buf, sizeof buf, &info), HG_MSG);
+	CHECK_EQ_INT(info.seq, 3);
+	CHECK_EQ_INT(info.epoch, 1);
+	hg_sub_close(s);
+	hg_sub_close(late);
+	hg_pub_close(a);
+	hg_pub_close(b);
+	hg_pub_close(c);
+	hg_pub_close(d);
+}
+
 static void test_dead_writer_then_replacement(void)
 {
 	// The manager flags a dead writer's file; a reader reports HG_CLOSED
@@ -347,6 +428,7 @@ int main(void)
 	RUN_TEST(test_restart_continues_seq_without_gap);
 	RUN_TEST(test_lost_messages_across_restart_are_a_gap);
 	RUN_TEST(test_mirror_new_boot_is_new_epoch);
+	RUN_TEST(test_mirror_renumbered_is_new_epoch);
 	RUN_TEST(test_dead_writer_then_replacement);
 	hg_test_teardown();
 	TEST_MAIN_END();

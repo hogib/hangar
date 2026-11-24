@@ -106,6 +106,9 @@ struct rx_topic {
 	int refused;             /* the manager would not create it: said once */
 	uint64_t ring_bytes;     /* of the file it has here, counted in B.rings */
 	uint64_t last_stamp;     /* translated, for clamping */
+	uint64_t last_seq;       /* the newest published here, of this boot of the sender */
+	uint64_t last_pubt;      /* and when the sender published it, on the sender's clock */
+	int renumbered;          /* the next open says the sender's numbers started over */
 	const struct bc_mirror *mc;
 };
 
@@ -554,6 +557,9 @@ static void promote(void)
 				hg_pub_close(B.rx[i].pub);
 			B.rx[i].pub = NULL;
 			B.rx[i].last_stamp = 0;
+			B.rx[i].last_seq = 0;
+			B.rx[i].last_pubt = 0;
+			B.rx[i].renumbered = 0;
 		}
 	}
 	reset_generation();
@@ -1240,6 +1246,24 @@ static void on_message(const unsigned char *b, size_t n)
 		return; /* no schema yet: the first messages of a latest topic can come before it */
 	if (full != r->sch->type.payload_bytes)
 		return;
+	/* A seq not above the last one is a message that came twice or late,
+	 * and is dropped below; unless the sender published it after the last
+	 * one, by its own clock, which runs on through its boot. Then its
+	 * numbering started over: its topics were removed and made again (a root
+	 * laid out afresh, a topside started again), and the mirror is opened
+	 * again from this seq, a new epoch for its readers. Without this every
+	 * message was dropped until the new numbers had passed the old ones:
+	 * minutes of a pilot's sticks after minutes of running (the lab,
+	 * 2026-11-24). */
+	if (r->last_seq && seq <= r->last_seq && pubt && r->last_pubt && pubt > r->last_pubt) {
+		mod_log(WHO, "%s: its numbers started over within the sender's boot (seq %llu after %llu): opened again", name,
+			(unsigned long long)seq, (unsigned long long)r->last_seq);
+		if (r->pub)
+			hg_pub_close(r->pub);
+		r->pub = NULL;
+		r->last_stamp = 0;
+		r->renumbered = 1;
+	}
 	if (!r->pub) {
 		uint64_t slot = (uint64_t)full + SLOT_EXTRA;
 		uint32_t slots = r->slots;
@@ -1254,9 +1278,10 @@ static void on_message(const unsigned char *b, size_t n)
 			r->refused = 1;
 			return;
 		}
-		struct hg_pub_opts o = { .slots = slots };
+		struct hg_pub_opts o = { .slots = slots, .renumbered = (uint32_t)r->renumbered };
 		r->pub = hg_pub_open_mirror_as(name, &r->sch->type, B.peer_boot, seq, r->writer[0] ? r->writer : NULL,
 					       &o);
+		r->renumbered = 0;
 		if (!r->pub) {
 			mod_log(WHO, "%s: not opened (%s): not mirrored here", name, strerror(errno));
 			r->refused = 1;
@@ -1301,6 +1326,9 @@ static void on_message(const unsigned char *b, size_t n)
 	}
 	if (ls)
 		r->last_stamp = ls;
+	r->last_seq = seq;
+	if (pubt)
+		r->last_pubt = pubt;
 	B.st.msgs_rx++;
 }
 

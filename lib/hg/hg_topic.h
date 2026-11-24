@@ -117,6 +117,8 @@ struct hg_pub_opts {
 	uint32_t slots;            /* 0: 16 (4 for a frame type) */
 	uint32_t rate_mhz;         /* 0: event topic */
 	uint64_t stale_after_ns;   /* 0 with a rate: three periods */
+	uint32_t renumbered;       /* a mirror only: the sender's numbering started over
+	                            * within its boot (below) */
 };
 
 /* Creates the topic (standalone mode: by the manager's steps, in
@@ -128,7 +130,11 @@ struct hg_pub_opts {
 hg_pub *hg_pub_open(const char *name, const struct hg_type *type, const struct hg_pub_opts *opts);
 /* The bridge's open of a mirrored topic: the sender's boot id and the first
  * seq it will publish. An existing file with the same origin_boot has its
- * write_seq continued; any other is replaced with first_seq = first - 1. */
+ * write_seq continued; any other is replaced with first_seq = first - 1.
+ * opts->renumbered says the sender's numbers started over within that boot
+ * (its topics were removed and made again, as a root laid out afresh): the
+ * file then starts at first - 1 as for another boot, and its readers, who
+ * see numbers that go back, start a new epoch (hg_info.epoch). */
 hg_pub *hg_pub_open_mirror(const char *name, const struct hg_type *type,
 			   const unsigned char origin_boot[16], uint64_t first_seq,
 			   const struct hg_pub_opts *opts);
