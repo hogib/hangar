@@ -69,6 +69,9 @@ case $MAVLINK in udp|serial) ;; *) echo "rov: MAVLINK=$MAVLINK: udp or serial" >
 # The address the topside's MAVLink module binds: the machine the topside role runs on.
 # The Pi's by default; rov.sh topside (the role on the laptop) makes it the laptop's.
 TOPSIDE_BIND_IP=$ROV_IP
+# And where it finds QGroundControl: the laptop, from the Pi. With the role on the laptop
+# both are the loopback address, see cmd_topside.
+TOPSIDE_GCS_IP=$GCS_IP
 
 usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
@@ -84,7 +87,7 @@ conf_sed() { # root: a profile's .conf on stdin, as laid out, on stdout
         -e "s|/var/lib/hangar/recorder/sessions|$SESSIONS|g" \
         -e "s|/var/lib/hangar/|$1/var/lib/hangar/|g" \
         -e "s|^Bind=192\.168\.2\.10:|Bind=$TOPSIDE_BIND_IP:|" \
-        -e "s|^GCS=192\.168\.2\.1:|GCS=$GCS_IP:|" \
+        -e "s|^GCS=192\.168\.2\.1:|GCS=$TOPSIDE_GCS_IP:|" \
         -e "s|^Peer=192\.168\.2\.1:|Peer=$GCS_IP:|"
 }
 
@@ -439,7 +442,7 @@ MSG
     cat <<MSG
 rov: hangar is up on this Pi (both roles; the shim stands in for the bridge)
   vehicle  $RV  safety, mux, mavlink, recorder, console on http://127.0.0.1:8080
-  topside  $RT  topside_mavlink -> QGroundControl at $GCS_IP:14550, console on :8081
+  topside  $RT  topside_mavlink -> QGroundControl at $TOPSIDE_GCS_IP:14550, console on :8081
   logs     <root>/hangard.log, <root>/run/hangar/log/<module>.log, $STATE/relay.log
   sessions $SESSIONS (recorded while armed)
 Before the first arm (writes ArduSub's parameters; save them first):
@@ -476,13 +479,18 @@ cmd_topside() {
             done
             need_key copy
             same_layout "$RT"
-            TOPSIDE_BIND_IP=$GCS_IP
+            # QGroundControl on this same machine answers a datagram from any of the
+            # machine's own addresses at 127.0.0.1, not at the address it came from
+            # (seen at the lab, 2026-11-24: bound to the tether's address the module
+            # heard nothing). So the module binds and addresses the loopback.
+            TOPSIDE_BIND_IP=127.0.0.1
+            TOPSIDE_GCS_IP=127.0.0.1
             [ -d "$RT/etc/hangar" ] || lay_out "$RT" "$profiles/rov-topside"
             start_manager "$RT"
             sleep 1
             cat <<MSG
 rov: the topside role is up on this laptop, with the bridge (Peer=$ROV_IP)
-  topside  $RT  topside_mavlink -> QGroundControl at $GCS_IP:14550, console on :8081
+  topside  $RT  topside_mavlink -> QGroundControl at $TOPSIDE_GCS_IP:14550, console on :8081
   link     HANGAR_ROOT=$RT $bin/hangar status   (bridge: up <Pi>, rtt ...)
 MSG
             ;;
