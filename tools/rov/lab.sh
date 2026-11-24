@@ -290,7 +290,12 @@ set_clock() {
     skew=$(( theirs > ours ? theirs - ours : ours - theirs ))
     if [ "$skew" -le 2 ]; then say "the Pi's clock is right (${skew} s off)"; return 0; fi
     say "the Pi's clock is ${skew} s off: setting it from this laptop's"
-    remote_sudo date -u -s "@$(date -u +%s)" > /dev/null
+    # date's output is dropped on the Pi, not here: with a terminal, sudo's password
+    # prompt comes back on ssh's standard output, and a redirection here would hide it.
+    # The time the password takes is added: the Pi's own clock has counted it since
+    # $theirs was read.
+    # shellcheck disable=SC2016
+    remote_sudo sh -c 'date -u -s "@$(( $1 + $(date -u +%s) - $2 ))" > /dev/null' sh "$ours" "$theirs"
 }
 
 # ---- the laptop's video --------------------------------------------------------------
