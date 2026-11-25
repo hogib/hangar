@@ -478,6 +478,84 @@ staleness is the manager's job ([03-manager](03-manager.md)). The bridge is the
 exception: the topics it receives are left out of its health, which is judged by its
 own watchdog and `bridge.<role>.link` ([08-bridge](08-bridge.md#the-bridge-module)).
 
+## In place
+
+`hg_publish` copies the payload into the ring and `hg_next` copies it out. For a depth
+reading that is nothing; for a camera frame the two copies are what the topic costs.
+Two pairs of operations do without them, for the payloads where that matters. They are
+the exception to [The copy](#the-copy), and the price is in the rules below.
+
+```c
+struct frame *f = hg_loan(p);          // the payload of the slot the next message takes
+fill(f);                               // produced where it goes
+hg_commit(p, sizeof *f, stamp_ns);     // published: seq, references, wake-up as hg_publish
+                                       // (hg_loan_abort(p): given back, nothing published)
+
+const void *v;
+if (hg_next_view(s, &v, &info) == HG_MSG) {   // or hg_latest_view
+    digest(out, v);                    // into memory of your own
+    if (hg_view_done(s) == 1)          // was it message info.seq, whole, all that time?
+        use(out);                      // only now
+}
+```
+
+**A loan is step 1 of a publish, done early.** `hg_loan` stores the odd `seq` in the
+slot message *n* will take and hands out its payload; `hg_commit` does steps 2 to 4
+with the payload already there (and zeroes the rounding's padding). The file's layout
+and everything a reader does are unchanged: an odd slot holds no message. That slot
+held the oldest message of the ring, the one `hg_next` already leaves out as "the slot
+the writer fills next", so reading in order loses nothing to a loan. What changes:
+`hg_read_seq` and `hg_find_stamp` stop returning that oldest message when the loan is
+taken, where they would otherwise until the next publish began.
+
+- One loan at a time for a publisher. `hg_loan` with one out returns `NULL` (`EBUSY`);
+  `hg_publish` and `hg_publish_with` return −1 (`EBUSY`) until it is committed or given
+  back. A mirror cannot loan (`EPERM`): it publishes the sender's numbers.
+- A commit that is refused (a wrong length, a reference to a topic not declared)
+  publishes nothing and leaves the loan; `hg_commit_with` takes flags and references as
+  `hg_publish_with` does. References are settled at the commit, not at the loan.
+- `hg_loan_abort` gives the slot back. It stays odd, as after a writer that died in
+  the middle of a publish, and the next publish or loan takes the same slot and seq.
+  `hg_pub_close` with a loan out is an abort, then the close.
+- `publish_ns` is the commit's time. However long the slot is being filled, readers
+  see the topic as it was at the last commit, and the topic's rate and staleness are
+  judged by commits.
+
+**A view is a read without the second half of the seqlock.** `hg_latest_view` and
+`hg_next_view` do what `hg_latest` and `hg_next` do, results, `info`, gap and all, up
+to the copy: they check the slot's `seq`, copy the slot header into `info` and check
+`seq` again, then return a pointer to the payload in the ring's read-only mapping.
+The check that makes a copy trustworthy has not happened yet for the payload: the
+writer never waits for readers and may come round to that slot at any time.
+`hg_view_done` is that check, after the caller's reads: 1 if the slot still holds the
+`seq` it held, 0 if not, −1 if no view is open.
+
+- **Nothing read through the pointer is a message until `hg_view_done` has said 1.**
+  On 0 everything computed from it is thrown away. A view from `hg_next_view` lost this
+  way is a message lost, and the next read in order counts it in `info.gap`; one from
+  `hg_latest_view` is simply not the latest any more.
+- Until then: act on nothing read; let no value read through the pointer index or size
+  anything without being copied to a local and checked against the payload size (it
+  may be half of one message and half of the next, and read differently twice); hand
+  the pointer only to code that is safe on arbitrary bytes that change under it (a
+  checksum, a copy, a filter over pixels are; a parser that follows offsets it reads is
+  not).
+- The pointer is good until `hg_view_done` or the next call given that subscription (a
+  read, `hg_wait`, a close), whichever comes first: such a call may map another file.
+  A view still open then is dropped, and was never a message.
+- How often a view is lost is the ring's depth against the reader's time: the writer
+  is back at a slot after `slots − 1` publishes. A 4-slot frame topic at 30 Hz gives a
+  reader 100 ms; a reader slower than that should ask for more slots or copy.
+- This is reading memory another process writes, outside what C11 defines, which
+  [The copy](#the-copy) exists to avoid. It is sound on x86-64 and AArch64 under the
+  rules above, and a thread sanitizer must be told about it. `hg_latest` and `hg_next`
+  remain the default, and for small payloads the faster one too: a view of 16 bytes
+  saves nothing.
+
+Who would use them: the modules with frame topics, a megabyte and more a message:
+`video_relay`, `vision` and `topside_encoder`. None does yet.
+`hg_bench inplace` and `hg_bench wake --in-place` measure them (bench/README.md).
+
 ## Provenance
 
 Each published message can list up to four input messages, as `(topic_id, seq)`.
@@ -674,6 +752,16 @@ electric-eye is ported ([11-electric-eye](11-electric-eye.md)).
 
 - Torn reads: a writer overtaking a reader mid-copy, at every slot count, under
   concurrent processes.
+- In place (`test_hg_inplace`): a committed loan is a publish at 16 B, a padded 12 B,
+  256 B, 4 KB and 1 MB; one loan at a time, the refusals, the abort and what stays
+  readable meanwhile; a view against the copy of the same message, with the same gap;
+  a view overtaken by publishes and by a loan, and the message counted as lost; four
+  reader processes mixing views and copies against a writer loaning flat out into
+  rings of 2 to 64 slots and giving back one loan in seven after writing to it: no
+  view that `hg_view_done` called whole, and no copy, is ever a mix. Not covered: a
+  writer killed with a loan out (the slot is in the state the kill-mid-publish case
+  already leaves), and readers in the same process as the writer under a thread
+  sanitizer, which would report the view by design.
 - Restarts: a writer killed and restarted continues `seq`; an `hg_next` reader sees no
   gap; a reader of the old file reopens.
 - Wake-ups: no lost wake-up between check and sleep, over many iterations, with the

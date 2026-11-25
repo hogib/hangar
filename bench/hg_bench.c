@@ -6,15 +6,17 @@
  *   hg_bench <subcommand>... [options] [--json <file>] [--bin <path>]...
  *
  * Subcommands: publish, latest, wake, wake_nopin, idle, rss, sizes, torn,
- * lost_wake, all. Every subcommand prints a human line as it finishes; --json writes
+ * lost_wake, all; and inplace (not part of all): what a publish and a read
+ * cost in place, beside the copying ones, run in the same process. Every subcommand prints a human line as it finishes; --json writes
  * one report with the machine, the date and lib/hg's commit (HG_COMMIT,
  * given with -D at build). Options: --runs N (5), --count N (1000000
  * publishes per run), --seconds N (20, the wake runs), --idle-seconds N
  * (30), --torn-seconds N (3), --lost-msgs N (20000), --no-pin (leave the
  * wake pair's placement to the scheduler), --wake-bytes N (256: the wake
  * pair's payload, one of publish's sizes), --wake-rate HZ (one rate for
- * wake in place of its three), --quick (short runs of everything, for a
- * smoke test of the harness itself).
+ * wake in place of its three), --in-place (the wake pair publishes with
+ * hg_loan/hg_commit and reads with hg_next_view/hg_view_done), --quick (short
+ * runs of everything, for a smoke test of the harness itself).
  *
  * The topic directory is $HANGAR_TOPIC_DIR if set, else a fresh
  * /dev/shm/hg-bench-<uid>-<pid>, removed at exit. The library runs in its
@@ -61,6 +63,7 @@ static unsigned long long count = 1000000;
 static int wake_seconds = 20, idle_seconds = 30, torn_seconds = 3;
 static unsigned long long lost_msgs = 20000;
 static int no_pin;
+static int in_place;              /* the wake pair by hg_loan/hg_commit and hg_next_view */
 static uint32_t wake_bytes = 256; /* the wake pair's payload: one of sizes[] */
 static unsigned wake_rate;        /* 0: 100 Hz, 1 kHz and 10 kHz */
 static const char *json_path;
@@ -468,6 +471,158 @@ static void bench_latest(void)
 	fflush(stdout);
 }
 
+/* ---- inplace ------------------------------------------------------------ */
+
+/* inplace: the same sizes, each measured four ways in one process, so that
+ * the copying and the in-place figures of a row come from the same machine
+ * state. All are ns per message, the median of `runs` runs of `count`
+ * (count/256 at 1 MB), with a ring of 16 slots (4 at 1 MB):
+ *
+ *   publish        hg_publish of a constant buffer, no subscriber: `publish`'s
+ *                  figure again, for the comparison beside it.
+ *   loan           hg_loan + hg_commit with nothing written to the slot: the
+ *                  protocol alone. What a producer saves against `publish`
+ *                  is the difference, if it can produce into the slot what it
+ *                  would have produced into a buffer of its own.
+ *   latest         publish one, hg_latest it; only the read is timed.
+ *   view           the same with hg_latest_view + hg_view_done and the
+ *                  payload not read: the protocol alone.
+ *   view, summed   the view with every word of the payload read once (a sum)
+ *                  before hg_view_done: a consumer that looks at all of it,
+ *                  in place. Beside it, `latest, summed`: the copy, then the
+ *                  same sum over the copy. The pair is the honest comparison
+ *                  for a reader: a view of a megabyte that is then read costs
+ *                  the reading.
+ *
+ * The four reads are timed one by one, a clock read on each side and the cost
+ * of that pair of clock reads (measured at the start, the median of a
+ * million) taken off: `latest`'s way, a loop with the publishes minus a loop
+ * of publishes alone, leaves at 1 MB the small difference of two large
+ * numbers. So `latest` here is not `latest`'s figure to the nanosecond, and
+ * the figures of a row are to be compared with each other.
+ *
+ * Nothing overwrites a slot while it is viewed here (one process, in turn):
+ * every hg_view_done must say 1, and the run counts those that do not. */
+static double clock_pair_ns;
+
+static void calibrate_clock(void)
+{
+	static uint32_t d[1000000];
+	for (size_t i = 0; i < sizeof d / sizeof d[0]; i++) {
+		uint64_t a = hg_now_ns(), b = hg_now_ns();
+		d[i] = (uint32_t)(b - a);
+	}
+	qsort(d, sizeof d / sizeof d[0], sizeof d[0], cmp_u32);
+	clock_pair_ns = d[sizeof d / sizeof d[0] / 2];
+}
+
+static uint64_t sum_words(const uint64_t *w, uint32_t words)
+{
+	uint64_t x = 0;
+	for (uint32_t i = 0; i < words; i++)
+		x += w[i];
+	return x;
+}
+
+static volatile uint64_t sink; /* the sums go somewhere the compiler cannot drop */
+
+enum { IP_PUBLISH, IP_LOAN, IP_LATEST, IP_VIEW, IP_LATEST_SUM, IP_VIEW_SUM, IP_N };
+static const char *const ip_names[IP_N] = { "publish", "loan", "latest", "view", "latest_summed", "view_summed" };
+
+static double run_inplace(const struct size_type *t, unsigned long long n, int what, unsigned long long *bad_out)
+{
+	uint32_t words = t->bytes / 8;
+	uint64_t *buf = calloc(1, t->bytes), *in = calloc(1, t->bytes);
+	if (!buf || !in)
+		die("calloc");
+	hg_pub *p = open_pub("bench.inplace", t->type, t->bytes > 65536 ? 4 : 16, 0);
+	hg_sub *s = what >= IP_LATEST ? hg_sub_open("bench.inplace", t->type) : NULL;
+	if (what >= IP_LATEST && !s)
+		die("hg_sub_open");
+	struct hg_info info;
+	unsigned long long bad = 0;
+	uint64_t acc = 0;
+	uint64_t t0 = hg_now_ns();
+	if (what == IP_PUBLISH) {
+		for (unsigned long long i = 0; i < n; i++)
+			hg_publish(p, buf, t->bytes, i);
+	} else if (what == IP_LOAN) {
+		for (unsigned long long i = 0; i < n; i++) {
+			bad += hg_loan(p) == NULL;
+			bad += hg_commit(p, t->bytes, i) != 0;
+		}
+	} else {
+		uint64_t in_reads = 0;
+		for (unsigned long long i = 0; i < n; i++) {
+			hg_publish(p, buf, t->bytes, i);
+			uint64_t r0 = hg_now_ns();
+			if (what == IP_LATEST || what == IP_LATEST_SUM) {
+				bad += hg_latest(s, in, t->bytes, &info) != HG_MSG;
+				if (what == IP_LATEST_SUM)
+					acc += sum_words(in, words);
+			} else {
+				const void *v;
+				if (hg_latest_view(s, &v, &info) != HG_MSG) {
+					bad++;
+					continue;
+				}
+				if (what == IP_VIEW_SUM)
+					acc += sum_words(v, words);
+				bad += hg_view_done(s) != 1;
+			}
+			in_reads += hg_now_ns() - r0;
+		}
+		sink = acc;
+		hg_sub_close(s);
+		hg_pub_close(p);
+		free(buf);
+		free(in);
+		*bad_out += bad;
+		return (double)in_reads / (double)n - clock_pair_ns;
+	}
+	uint64_t t1 = hg_now_ns(), t2 = t1;
+	sink = acc;
+	if (s)
+		hg_sub_close(s);
+	hg_pub_close(p);
+	free(buf);
+	free(in);
+	*bad_out += bad;
+	return ((double)(t1 - t0) - (double)(t2 - t1)) / (double)n;
+}
+
+static void bench_inplace(void)
+{
+	calibrate_clock();
+	j_section("inplace");
+	fprintf(J, "{\"runs\": %d, \"clock_pair_ns\": %.1f, \"sizes\": [", runs, clock_pair_ns);
+	for (int i = 0; i < N_SIZES; i++) {
+		unsigned long long n = sizes[i].bytes > 65536 ? (count + 255) / 256 : count;
+		unsigned long long bad = 0;
+		double m[IP_N], v[IP_N][MAX_RUNS];
+		/* The six in turn within each run, not six blocks of runs: what drifts
+		 * over the minute (frequency, another process) falls on all alike. */
+		for (int r = 0; r < runs; r++)
+			for (int w = 0; w < IP_N; w++)
+				v[w][r] = run_inplace(&sizes[i], n, w, &bad);
+		fprintf(J, "%s\n  {\"bytes\": %u, \"count\": %llu, \"bad\": %llu", i ? "," : "", sizes[i].bytes, n, bad);
+		for (int w = 0; w < IP_N; w++) {
+			double raw[MAX_RUNS];
+			memcpy(raw, v[w], sizeof raw);
+			m[w] = median(v[w], runs);
+			fprintf(J, ", \"%s_ns\": %.2f, \"%s_raw\": ", ip_names[w], m[w], ip_names[w]);
+			j_raw(raw, runs, "%.2f");
+		}
+		fputs("}", J);
+		printf("inplace   %8u B  publish %10.1f  loan %7.1f | latest %10.1f  view %7.1f | "
+		       "latest+sum %10.1f  view+sum %10.1f  ns/msg  (medians of %d x %llu%s)\n",
+		       sizes[i].bytes, m[IP_PUBLISH], m[IP_LOAN], m[IP_LATEST], m[IP_VIEW], m[IP_LATEST_SUM],
+		       m[IP_VIEW_SUM], runs, n, bad ? ", SOME CALLS FAILED" : "");
+	}
+	fputs("]}", J);
+	fflush(stdout);
+}
+
 /* ---- wake, rss: a writer and a reader at a rate ------------------------ */
 
 /* wake: publish-to-wake-up latency through hg_wait. The writer and the
@@ -491,7 +646,21 @@ static void bench_latest(void)
  * the "copied" percentiles beside them: publish to the message in the
  * reader's hands, which is what a callback of another middleware is handed
  * and what bench/ros2 compares against. At 256 bytes the two differ by the
- * cost of `latest`; at 1 MB (--wake-bytes) by the copy of a megabyte. The reader's wake count (hg_wait returns with
+ * cost of `latest`; at 1 MB (--wake-bytes) by the copy of a megabyte. A third
+ * read, once the reader has looked at every word of the message (the check
+ * that each is the seq), gives the "read through" percentiles: what a
+ * consumer that uses the whole payload has paid by then.
+ *
+ * With --in-place the pair uses the library's other way (docs/01 "In
+ * place"): the writer fills the slot it was loaned and commits it, where it
+ * otherwise fills a buffer of its own and publishes that; the reader takes a
+ * view, checks every word where it lies in the ring, and asks hg_view_done.
+ * "Copied" is then the view in hand, with nothing copied, and "read through"
+ * includes hg_view_done having said the view was whole; a view the writer
+ * overwrote first is discarded and counted (and the run did not keep up).
+ * publish_ns is taken when the message is committed or published, so the
+ * fill is in neither figure, in either mode: the copying writer's copy into
+ * the ring is, and the reader's copy out. The reader's wake count (hg_wait returns with
  * news) and both processes' CPU time (rusage) and context switches go
  * beside them; the kernel-side count of futex wake calls is not exposed by
  * the library and is left out. "kept_up" is false when the reader lost
@@ -518,7 +687,10 @@ struct pair_shared {
 	struct mem_sample mem[2];
 	unsigned long long msgs, gaps, torn, wakes, timeouts, late, published;
 	uint32_t cap, n;          /* samples: latency in ns, capped at UINT32_MAX */
-	uint32_t lat[];           /* [0, cap): at the wake-up; [cap, 2 cap): the message copied out */
+	unsigned long long discarded; /* --in-place: views the writer overwrote before they were checked */
+	uint32_t lat[];           /* [0, cap): at the wake-up; [cap, 2 cap): the message in the reader's
+	                           * hands (copied out, or a view of it); [2 cap, 3 cap): every word of
+	                           * it read and checked (and, a view, found whole) */
 };
 
 /* The child's side of a memory sample: once per run, when asked. */
@@ -554,7 +726,8 @@ static void pair_reader(struct pair_shared *sh, int cpu)
 		sh->wakes++;
 		sample_if_asked(sh, 1);
 		for (;;) {
-			enum hg_result res = hg_next(s, buf, wake_bytes, &info);
+			const void *v = buf;
+			enum hg_result res = in_place ? hg_next_view(s, &v, &info) : hg_next(s, buf, wake_bytes, &info);
 			if (res == HG_CLOSED) {
 				done = 1;
 				break;
@@ -562,12 +735,22 @@ static void pair_reader(struct pair_shared *sh, int cpu)
 			if (res != HG_MSG)
 				break;
 			uint64_t copied = hg_now_ns();
-			sh->msgs++;
 			sh->gaps += info.gap;
-			sh->torn += !intact(buf, words, info.seq);
+			/* Every word read where it is (the copy, or the ring), then, for a
+			 * view, whether it was the message all that time. */
+			int ok = intact(v, words, info.seq);
+			if (in_place && hg_view_done(s) != 1) {
+				sh->discarded++; /* not a message: the next hg_next_view counts it in gap */
+				continue;
+			}
+			uint64_t checked = hg_now_ns();
+			sh->msgs++;
+			sh->torn += !ok;
 			if (sh->n < sh->cap) {
 				uint64_t d = now > info.publish_ns ? now - info.publish_ns : 0;
 				uint64_t c = copied > info.publish_ns ? copied - info.publish_ns : 0;
+				uint64_t k = checked > info.publish_ns ? checked - info.publish_ns : 0;
+				sh->lat[2 * sh->cap + sh->n] = k > UINT32_MAX ? UINT32_MAX : (uint32_t)k;
 				sh->lat[sh->cap + sh->n] = c > UINT32_MAX ? UINT32_MAX : (uint32_t)c;
 				sh->lat[sh->n++] = d > UINT32_MAX ? UINT32_MAX : (uint32_t)d;
 			}
@@ -606,8 +789,18 @@ static void pair_writer(struct pair_shared *sh, int cpu, unsigned rate_hz, int s
 		if (now > due + period)
 			sh->late++;
 		uint64_t seq = hg_pub_next_seq(p);
-		fill(buf, words, seq);
-		hg_publish(p, buf, wake_bytes, now);
+		if (in_place) {
+			/* The message made where it goes: the same fill, into the slot. */
+			uint64_t *slot = hg_loan(p);
+			if (!slot)
+				_exit(3);
+			fill(slot, words, seq);
+			if (hg_commit(p, wake_bytes, now) < 0)
+				_exit(3);
+		} else {
+			fill(buf, words, seq);
+			hg_publish(p, buf, wake_bytes, now);
+		}
 		sh->published = seq;
 		sample_if_asked(sh, 0);
 	}
@@ -680,7 +873,7 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	int wcpu, rcpu;
 	pick_cpus(&wcpu, &rcpu);
 	uint32_t cap = (uint32_t)((unsigned long long)rate_hz * (unsigned long long)seconds + 1024);
-	struct pair_shared *sh = shared_zeroed(sizeof *sh + 2 * (size_t)cap * sizeof(uint32_t));
+	struct pair_shared *sh = shared_zeroed(sizeof *sh + 3 * (size_t)cap * sizeof(uint32_t));
 	sh->cap = cap;
 	/* The writer opens the topic first, so the reader finds it (no "appeared"
 	 * wake-up), and publishes only once the reader is asleep in hg_wait. */
@@ -718,9 +911,11 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 		die("pair at %u Hz: writer exit %d, reader exit %d", rate_hz, wst, rst);
 	}
 	uint32_t n = sh->n;
-	uint32_t *cl = sh->lat + cap; /* the message copied out */
+	uint32_t *cl = sh->lat + cap;     /* the message in the reader's hands */
+	uint32_t *kl = sh->lat + 2 * cap; /* and every word of it read */
 	qsort(sh->lat, n, sizeof sh->lat[0], cmp_u32);
 	qsort(cl, n, sizeof cl[0], cmp_u32);
+	qsort(kl, n, sizeof kl[0], cmp_u32);
 	size_t i99 = (size_t)(n * 0.99) < n ? (size_t)(n * 0.99) : n - 1;
 	size_t i999 = (size_t)(n * 0.999) < n ? (size_t)(n * 0.999) : n - 1;
 	double p50 = n ? sh->lat[n / 2] / 1000.0 : 0;
@@ -729,18 +924,23 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	double max = n ? sh->lat[n - 1] / 1000.0 : 0;
 	double c50 = n ? cl[n / 2] / 1000.0 : 0, c99 = n ? cl[i99] / 1000.0 : 0;
 	double c999 = n ? cl[i999] / 1000.0 : 0, cmax = n ? cl[n - 1] / 1000.0 : 0;
+	double k50 = n ? kl[n / 2] / 1000.0 : 0, k99 = n ? kl[i99] / 1000.0 : 0;
+	double k999 = n ? kl[i999] / 1000.0 : 0, kmax = n ? kl[n - 1] / 1000.0 : 0;
 	double sum = 0;
 	for (uint32_t i = 0; i < n; i++)
 		sum += sh->lat[i];
 	double mean = n ? sum / n / 1000.0 : 0;
 	unsigned long long expected = (unsigned long long)rate_hz * (unsigned long long)seconds;
-	int kept_up = sh->gaps == 0 && sh->late * 100 <= expected;
+	int kept_up = sh->gaps == 0 && sh->discarded == 0 && sh->late * 100 <= expected;
 	double wcpu_s = ru_seconds(&wru), rcpu_s = ru_seconds(&rru);
-	printf("wake  %6u Hz  p50 %7.1f  p99 %7.1f  p99.9 %7.1f  max %8.1f us  (copied out %.1f, %.1f, "
-	       "%.1f, %.1f)   msgs %llu wakes %llu gaps %llu "
+	printf("wake  %6u Hz  p50 %7.1f  p99 %7.1f  p99.9 %7.1f  max %8.1f us  (%s %.1f, %.1f, "
+	       "%.1f, %.1f; read through %.1f, %.1f, %.1f, %.1f)   msgs %llu wakes %llu gaps %llu "
 	       "late %llu  cpu w %.1f%% r %.1f%%%s\n",
-	       rate_hz, p50, p99, p999, max, c50, c99, c999, cmax, sh->msgs, sh->wakes, sh->gaps, sh->late,
+	       rate_hz, p50, p99, p999, max, in_place ? "in place: view" : "copied out", c50, c99, c999, cmax, k50,
+	       k99, k999, kmax, sh->msgs, sh->wakes, sh->gaps, sh->late,
 	       100 * wcpu_s / seconds, 100 * rcpu_s / seconds, kept_up ? "" : "  (did not keep up)");
+	if (sh->discarded)
+		printf("      %llu views were overwritten before they were checked, and discarded\n", sh->discarded);
 	fprintf(J, "{\"rate_hz\": %u, \"seconds\": %d, \"payload\": %u, \"slots\": 16, "
 		   "\"writer_cpu\": %d, \"reader_cpu\": %d, \"expected\": %llu, \"published\": %llu, "
 		   "\"msgs\": %llu, \"wakes\": %llu, \"timeouts\": %llu, \"gaps\": %llu, \"torn\": %llu, "
@@ -748,12 +948,15 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 		   "\"p99_us\": %.1f, \"p999_us\": %.1f, \"max_us\": %.1f, \"mean_us\": %.1f, "
 		   "\"copied_p50_us\": %.1f, \"copied_p99_us\": %.1f, \"copied_p999_us\": %.1f, "
 		   "\"copied_max_us\": %.1f, "
+		   "\"in_place\": %s, \"discarded\": %llu, \"read_p50_us\": %.1f, \"read_p99_us\": %.1f, "
+		   "\"read_p999_us\": %.1f, \"read_max_us\": %.1f, "
 		   "\"writer_cpu_s\": %.3f, \"reader_cpu_s\": %.3f, "
 		   "\"writer_cpu_pct\": %.2f, \"reader_cpu_pct\": %.2f, "
 		   "\"writer_ctxsw\": [%ld, %ld], \"reader_ctxsw\": [%ld, %ld]",
 		rate_hz, seconds, wake_bytes, wcpu, rcpu, expected, sh->published, sh->msgs, sh->wakes,
 		sh->timeouts, sh->gaps, sh->torn, sh->late, kept_up ? "true" : "false", n, p50, p99,
-		p999, max, mean, c50, c99, c999, cmax, wcpu_s, rcpu_s, 100 * wcpu_s / seconds, 100 * rcpu_s / seconds,
+		p999, max, mean, c50, c99, c999, cmax, in_place ? "true" : "false", sh->discarded, k50, k99, k999, kmax,
+		wcpu_s, rcpu_s, 100 * wcpu_s / seconds, 100 * rcpu_s / seconds,
 		wru.ru_nvcsw, wru.ru_nivcsw, rru.ru_nvcsw, rru.ru_nivcsw);
 	if (mem) {
 		fputs(", ", J);
@@ -763,7 +966,7 @@ static int run_pair(unsigned rate_hz, int seconds, struct mem_sample *mem /* [2]
 	}
 	fputs("}", J);
 	fflush(stdout);
-	munmap(sh, sizeof *sh + 2 * (size_t)cap * sizeof(uint32_t));
+	munmap(sh, sizeof *sh + 3 * (size_t)cap * sizeof(uint32_t));
 	return kept_up;
 }
 
@@ -1216,19 +1419,19 @@ static void write_machine(int argc, char **argv)
 static int usage(void)
 {
 	fprintf(stderr,
-		"usage: hg_bench {publish|latest|wake|wake_nopin|idle|rss|sizes|torn|lost_wake|all}...\n"
+		"usage: hg_bench {publish|latest|wake|wake_nopin|idle|rss|sizes|torn|lost_wake|all|inplace}...\n"
 		"       [--json <file>] [--bin <path>]... [--runs N] [--count N] [--seconds N]\n"
 		"       [--idle-seconds N] [--torn-seconds N] [--lost-msgs N] [--no-pin] [--quick]\n"
-		"       [--wake-bytes 16|256|4096|1048576] [--wake-rate HZ]\n");
+		"       [--wake-bytes 16|256|4096|1048576] [--wake-rate HZ] [--in-place]\n");
 	return 2;
 }
 
 int main(int argc, char **argv)
 {
 	enum { T_PUB = 1, T_LATEST = 2, T_WAKE = 4, T_IDLE = 8, T_RSS = 16, T_SIZES = 32, T_TORN = 64,
-	       T_LOST = 128, T_NOPIN = 256, T_ALL = 511 };
+	       T_LOST = 128, T_NOPIN = 256, T_ALL = 511, T_INPLACE = 512 /* not in all */ };
 	static const char *const names[] = { "publish", "latest", "wake", "idle", "rss", "sizes",
-					     "torn", "lost_wake", "wake_nopin" };
+					     "torn", "lost_wake", "wake_nopin", "inplace" };
 	int tests = 0, sizes_mode = 0;
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];
@@ -1276,6 +1479,10 @@ int main(int argc, char **argv)
 			no_pin = 1;
 			continue;
 		}
+		if (!strcmp(a, "--in-place")) {
+			in_place = 1;
+			continue;
+		}
 		if (!strcmp(a, "--quick")) {
 			runs = 3;
 			count = 200000;
@@ -1290,7 +1497,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 		int t = 0;
-		for (int k = 0; k < 9; k++)
+		for (int k = 0; k < 10; k++)
 			if (!strcmp(a, names[k]))
 				t = 1 << k;
 		if (t) {
@@ -1328,6 +1535,8 @@ int main(int argc, char **argv)
 		bench_publish();
 	if (tests & T_LATEST)
 		bench_latest();
+	if (tests & T_INPLACE)
+		bench_inplace();
 	if (tests & T_WAKE)
 		bench_wake();
 	if (tests & T_NOPIN)

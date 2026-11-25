@@ -40,6 +40,8 @@ hg_bench publish latest                    # one or more subcommands
 hg_bench wake --seconds 60                 # longer wake runs
 hg_bench sizes bin/*                       # sizes alone take their files as arguments
 hg_bench all --quick                       # short runs of everything: a smoke test, not numbers
+hg_bench inplace                           # copying against in place, the four sizes, one process
+hg_bench wake --wake-bytes 1048576 --wake-rate 30 --in-place   # the frame pair, in place
 ```
 
 | Subcommand | Measures | Default length |
@@ -54,12 +56,17 @@ hg_bench all --quick                       # short runs of everything: a smoke t
 | `torn` | the spike's torn-read test: 4 readers against a 4-slot ring, torn copies must be 0 | 3 s |
 | `lost_wake` | the spike's lost-wake test: 20 000 messages at random 20–200 µs gaps, timeouts must be 0 | ~2 s |
 | `all` | everything above (`sizes` only with `--bin`) | ~3 min |
+| `inplace` | not part of `all`. Per size, in one process and in turn within each run: `hg_publish` against `hg_loan` + `hg_commit` (nothing written to the slot: the protocol alone), `hg_latest` against `hg_latest_view` + `hg_view_done` (payload not read), and both reads again with every word of the payload summed. Reads are timed one by one, the clock's own cost taken off, so `latest` here is not `latest`'s figure to the nanosecond: compare within a row | median of 5 runs of 1 M (1 MB: 1 M/256) |
 
 Options: `--runs N`, `--count N`, `--seconds N`, `--idle-seconds N`, `--torn-seconds N`,
 `--lost-msgs N`, `--no-pin`, `--quick`, `--json <file>`, `--bin <path>`, and for the
 wake pair `--wake-bytes N` (its payload, 256 unless given: one of publish's sizes) and
 `--wake-rate HZ` (that rate alone: `--wake-bytes 1048576 --wake-rate 30` is a camera's
-frames). The topic
+frames), and `--in-place`: the writer fills a loaned slot and commits it, the reader
+takes a view, checks every word in the ring and asks `hg_view_done`
+(docs/01 "In place"). Every wake run also prints, and reports as `read_*`, the time to
+the message read through, every word checked: with a copy that is the copy and a pass
+over it, in place the pass over the ring and the answer that the view was whole. The topic
 directory is `$HANGAR_TOPIC_DIR` if set, else a fresh `/dev/shm/hg-bench-<uid>-<pid>`,
 removed at exit. Run it on a quiet machine: with other load, the `wake` tails say more
 about the scheduler than about hangar (compare `wake` and `wake_nopin`).
