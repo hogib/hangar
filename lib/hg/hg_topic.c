@@ -631,6 +631,7 @@ struct hg_pub {
 	int mirror;             /* opened with hg_pub_open_mirror */
 	uint32_t rate_mhz;      /* a rated output counts toward readiness */
 	int published;          /* at least once by this process */
+	int loaned;             /* hg_loan gave out the next slot: its seq is odd until hg_commit */
 	char name[48];
 	int n_inputs;
 	struct link inputs[HG_MAX_REFS];
@@ -682,6 +683,12 @@ struct hg_sub {
 	int use_set;
 	uint64_t use_seq;
 	uint32_t use_flags;
+	/* A view (hg_latest_view, hg_next_view): the slot handed out and the seq it
+	 * had; hg_view_done says whether it still has it. */
+	struct hg_slot *view_slot;
+	uint64_t view_s1;
+	int view_next;              /* from hg_next_view: a view lost is a message lost */
+	uint64_t view_lost;         /* such messages, for the next hg_next's gap */
 	int in_fd_set;              /* in the hg_wait_fd helper's set */
 	int peer;                   /* until the bridge: attached to the other root's file (peer_dir) */
 	int no_peer;                /* never look in the peer directory (a module's own output) */
@@ -1154,9 +1161,12 @@ static void publish_slot(hg_pub *p, uint64_t n, uint64_t stamp_ns, uint64_t now,
 	struct hg_header *h = p->h;
 	struct hg_slot *s = (struct hg_slot *)(p->slots + ((n - 1) & p->mask) * p->stride);
 
-	/* 1. The slot is being written: an odd seq. */
-	atomic_store_explicit(&s->seq, 2 * n - 1, memory_order_relaxed);
-	atomic_thread_fence(memory_order_release);
+	/* 1. The slot is being written: an odd seq. A loaned slot (payload NULL)
+	 * has had it since hg_loan, and its payload is already there. */
+	if (payload) {
+		atomic_store_explicit(&s->seq, 2 * n - 1, memory_order_relaxed);
+		atomic_thread_fence(memory_order_release);
+	}
 
 	/* 2. The slot header and the payload, as relaxed atomic words. */
 	atomic_store_explicit(&s->stamp_ns, stamp_ns, memory_order_relaxed);
@@ -1170,7 +1180,10 @@ static void publish_slot(hg_pub *p, uint64_t n, uint64_t stamp_ns, uint64_t now,
 		atomic_store_explicit(&s->inputs[i].flags, r->flags, memory_order_relaxed);
 		atomic_store_explicit(&s->inputs[i].seq, r->seq, memory_order_relaxed);
 	}
-	store_words(s->payload, payload, len);
+	if (payload)
+		store_words(s->payload, payload, len);
+	else if (len < p->payload_bytes) /* the rounding's padding, as store_words leaves it */
+		memset((unsigned char *)s->payload + len, 0, p->payload_bytes - len);
 
 	/* 3. The message is complete; then the topic has one more. write_seq is
 	 * seq_cst, not release: this store and the flag exchange below, against
@@ -1333,6 +1346,7 @@ static struct link *link_for(hg_pub *p, uint32_t topic_id, hg_sub **sub_out)
 	return NULL;
 }
 
+/* payload NULL: the commit of a loan, the payload in its slot already. */
 static int publish_common(hg_pub *p, const void *payload, size_t len, uint64_t stamp_ns,
 			  unsigned flags, const struct hg_input *refs, int n_refs)
 {
@@ -1452,13 +1466,71 @@ static void note_published(hg_pub *p)
 
 int hg_publish(hg_pub *p, const void *payload, size_t len, uint64_t stamp_ns)
 {
+	if (p->loaned || !payload) {
+		errno = p->loaned ? EBUSY : EINVAL;
+		return -1;
+	}
 	return publish_common(p, payload, len, stamp_ns, 0, NULL, 0);
 }
 
 int hg_publish_with(hg_pub *p, const void *payload, size_t len, uint64_t stamp_ns, unsigned flags,
 		    const struct hg_input *refs, int n_refs)
 {
+	if (p->loaned || !payload) {
+		errno = p->loaned ? EBUSY : EINVAL;
+		return -1;
+	}
 	return publish_common(p, payload, len, stamp_ns, flags, refs, n_refs);
+}
+
+/* ---- Publishing in place (docs/01 "In place") ---------------------------- */
+
+void *hg_loan(hg_pub *p)
+{
+	if (p->mirror || p->loaned) {
+		errno = p->mirror ? EPERM : EBUSY;
+		return NULL;
+	}
+	/* Step 1 of a publish, now: the slot of message seq + 1 holds the oldest
+	 * message of the ring, which no read returns any more (hg_next leaves it
+	 * out as "the slot the writer fills next"); odd, it is no message at all,
+	 * and the caller may write its payload. A reader that was copying that
+	 * oldest message when this happened discards its copy, as it does when a
+	 * publish overtakes it. */
+	struct hg_slot *s = (struct hg_slot *)(p->slots + (p->seq & p->mask) * p->stride);
+	atomic_store_explicit(&s->seq, 2 * (p->seq + 1) - 1, memory_order_relaxed);
+	atomic_thread_fence(memory_order_release);
+	p->loaned = 1;
+	return s->payload;
+}
+
+int hg_commit_with(hg_pub *p, size_t len, uint64_t stamp_ns, unsigned flags, const struct hg_input *refs,
+		   int n_refs)
+{
+	if (!p->loaned) {
+		errno = EINVAL;
+		return -1;
+	}
+	/* Refused (a length, a reference): nothing is published and the loan
+	 * stands, to be committed again or given back. */
+	if (publish_common(p, NULL, len, stamp_ns, flags, refs, n_refs) < 0)
+		return -1;
+	p->loaned = 0;
+	return 0;
+}
+
+int hg_commit(hg_pub *p, size_t len, uint64_t stamp_ns)
+{
+	return hg_commit_with(p, len, stamp_ns, 0, NULL, 0);
+}
+
+void hg_loan_abort(hg_pub *p)
+{
+	/* The slot stays odd: no message, as after a writer that died in the
+	 * middle of a publish. The next publish or loan takes the same slot and
+	 * the same seq. */
+	if (p)
+		p->loaned = 0;
 }
 
 int hg_publish_seq(hg_pub *p, uint64_t seq, uint32_t slot_flags, const void *payload, size_t len,
@@ -1476,6 +1548,10 @@ int hg_publish_seq(hg_pub *p, uint64_t seq, uint32_t slot_flags, const void *pay
 		errno = ERANGE;
 		return -1;
 	}
+	if (!payload) {
+		errno = EINVAL;
+		return -1;
+	}
 	publish_slot(p, seq, stamp_ns, hg_now_ns(), slot_flags, refs, (uint32_t)n_refs, payload, len);
 	return 0;
 }
@@ -1484,6 +1560,7 @@ void hg_pub_close(hg_pub *p)
 {
 	if (!p)
 		return;
+	hg_loan_abort(p);
 	atomic_fetch_or_explicit(&p->h->flags, HG_FLAG_CLOSED, memory_order_release);
 	announce(p->h);
 	munmap(p->wake, WAKE_BYTES);
@@ -1565,6 +1642,7 @@ static void use_mapping(hg_sub *s, const struct mapping *m)
 	    m->l.first_seq < atomic_load_explicit(&s->h->write_seq, memory_order_acquire))
 		new_epoch = 1;
 	fd_lock(s);
+	s->view_slot = NULL; /* a view is of the mapping it was taken in */
 	s->h = m->h;
 	s->map_len = m->len;
 	s->dev = m->dev;
@@ -1697,7 +1775,7 @@ static struct hg_slot *slot_at(const hg_sub *s, uint64_t n)
 	return (struct hg_slot *)(s->slots + ((n - 1) & s->mask) * s->stride);
 }
 
-static void copy_slot(struct hg_slot *sl, void *buf, size_t len, struct hg_info *info)
+static void copy_slot_info(struct hg_slot *sl, struct hg_info *info)
 {
 	info->stamp_ns = atomic_load_explicit(&sl->stamp_ns, memory_order_relaxed);
 	info->publish_ns = atomic_load_explicit(&sl->publish_ns, memory_order_relaxed);
@@ -1709,6 +1787,11 @@ static void copy_slot(struct hg_slot *sl, void *buf, size_t len, struct hg_info 
 		info->inputs[i].flags = atomic_load_explicit(&sl->inputs[i].flags, memory_order_relaxed);
 		info->inputs[i].seq = atomic_load_explicit(&sl->inputs[i].seq, memory_order_relaxed);
 	}
+}
+
+static void copy_slot(struct hg_slot *sl, void *buf, size_t len, struct hg_info *info)
+{
+	copy_slot_info(sl, info);
 	/* A writer overtaking this reader makes a mix of two messages; the
 	 * caller's second load of seq, after an acquire fence, discards it. */
 	load_words(buf, sl->payload, len);
@@ -1725,10 +1808,23 @@ static int read_slot(hg_sub *s, uint64_t n, void *buf, size_t buf_len, struct hg
 		return 0;
 	/* A buffer sized to the C struct, below the payload rounded up to 8,
 	 * gets the bytes it has room for; the rest is the rounding's padding. */
-	copy_slot(sl, buf, buf_len < s->payload_bytes ? buf_len : s->payload_bytes, info);
+	if (buf) {
+		copy_slot(sl, buf, buf_len < s->payload_bytes ? buf_len : s->payload_bytes, info);
+	} else {
+		/* A view: the slot's header copied and checked now, as a whole; the
+		 * payload stays where it is, and hg_view_done checks seq again once
+		 * the caller has used it. */
+		copy_slot_info(sl, info);
+	}
 	atomic_thread_fence(memory_order_acquire);
 	uint64_t s2 = atomic_load_explicit(&sl->seq, memory_order_relaxed);
-	return s2 == s1 ? 1 : -1;
+	if (s2 != s1)
+		return -1;
+	if (!buf) {
+		s->view_slot = sl;
+		s->view_s1 = s1;
+	}
+	return 1;
 }
 
 static void fill_common(hg_sub *s, struct hg_info *info, uint64_t now)
@@ -2046,9 +2142,11 @@ static enum hg_result ensure_attached(hg_sub *s, size_t buf_len)
 	return HG_MSG;
 }
 
-enum hg_result hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
+/* buf NULL: a view of the message, left in its slot (hg_latest_view). */
+static enum hg_result latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
 {
 	memset(info, 0, sizeof *info);
+	s->view_slot = NULL; /* a view not checked by now was never a message */
 	if (s->glob) {
 		errno = EINVAL;
 		return finish(s, info, HG_ERROR);
@@ -2071,6 +2169,7 @@ enum hg_result hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *i
 		if (r > 0) {
 			returned(s, n, info);
 			info->seq = n;
+			s->view_next = 0;
 			return finish(s, info, HG_MSG);
 		}
 		if (++tries >= 8)
@@ -2078,15 +2177,29 @@ enum hg_result hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *i
 	}
 }
 
-enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
+enum hg_result hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
+{
+	if (!buf) {
+		memset(info, 0, sizeof *info);
+		errno = EINVAL;
+		return finish(s, info, HG_ERROR);
+	}
+	return latest(s, buf, buf_len, info);
+}
+
+/* buf NULL: a view of the message, left in its slot (hg_next_view). */
+static enum hg_result next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
 {
 	memset(info, 0, sizeof *info);
+	s->view_slot = NULL; /* a view not checked by now was never a message */
 	if (s->glob) {
 		errno = EINVAL;
 		return finish(s, info, HG_ERROR);
 	}
 	/* Seqs stepped over on the way to a message: lost, unless that message
-	 * says a rate-limited mirror skipped them on purpose (flag bit 1). */
+	 * says a rate-limited mirror skipped them on purpose (flag bit 1). The
+	 * messages whose view was overwritten before it was checked (view_lost)
+	 * are lost whatever the next one says. */
 	uint64_t pending = 0;
 	for (;;) {
 		enum hg_result a = ensure_attached(s, buf_len);
@@ -2110,7 +2223,8 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
 			enum hg_result r = at_end(s, flags, &switched);
 			if (switched)
 				continue;
-			info->gap += pending;
+			info->gap += pending + s->view_lost;
+			s->view_lost = 0;
 			return finish(s, info, r);
 		}
 		uint64_t w = s->last + 1;
@@ -2127,8 +2241,11 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
 				info->skipped += pending;
 			else
 				info->gap += pending;
+			info->gap += s->view_lost;
+			s->view_lost = 0;
 			returned(s, w, info);
 			info->seq = w;
+			s->view_next = 1;
 			return finish(s, info, HG_MSG);
 		}
 		if (r < 0)
@@ -2140,10 +2257,62 @@ enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *inf
 	}
 }
 
+enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info)
+{
+	if (!buf) {
+		memset(info, 0, sizeof *info);
+		errno = EINVAL;
+		return finish(s, info, HG_ERROR);
+	}
+	return next(s, buf, buf_len, info);
+}
+
+/* ---- Reading in place (docs/01 "In place") ------------------------------- */
+
+static enum hg_result view(hg_sub *s, const void **payload, struct hg_info *info, int in_order)
+{
+	*payload = NULL;
+	/* Any length passes the buffer check: nothing is copied. */
+	enum hg_result r = in_order ? next(s, NULL, SIZE_MAX / 2, info) : latest(s, NULL, SIZE_MAX / 2, info);
+	if (r == HG_MSG)
+		*payload = s->view_slot->payload;
+	return r;
+}
+
+enum hg_result hg_latest_view(hg_sub *s, const void **payload, struct hg_info *info)
+{
+	return view(s, payload, info, 0);
+}
+
+enum hg_result hg_next_view(hg_sub *s, const void **payload, struct hg_info *info)
+{
+	return view(s, payload, info, 1);
+}
+
+int hg_view_done(hg_sub *s)
+{
+	struct hg_slot *sl = s->view_slot;
+	if (!sl) {
+		errno = EINVAL;
+		return -1;
+	}
+	s->view_slot = NULL;
+	/* The seqlock's second load, after the caller's reads instead of after a
+	 * copy: the slot still holds the message the view was of, whole, or the
+	 * writer has started on it since and what was read may be a mix. */
+	atomic_thread_fence(memory_order_acquire);
+	if (atomic_load_explicit(&sl->seq, memory_order_relaxed) == s->view_s1)
+		return 1;
+	if (s->view_next)
+		s->view_lost++;
+	return 0;
+}
+
 enum hg_result hg_skip(hg_sub *s)
 {
 	struct hg_info info;
 	memset(&info, 0, sizeof info);
+	s->view_slot = NULL;
 	if (s->glob) {
 		errno = EINVAL;
 		return finish(s, &info, HG_ERROR);
@@ -2201,7 +2370,8 @@ static enum hg_result follow_replaced(hg_sub *s, size_t buf_len)
 enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len, struct hg_info *info)
 {
 	memset(info, 0, sizeof *info);
-	if (s->glob) {
+	s->view_slot = NULL;
+	if (s->glob || !buf) {
 		errno = EINVAL;
 		return finish(s, info, HG_ERROR);
 	}
@@ -2228,7 +2398,8 @@ enum hg_result hg_read_seq(hg_sub *s, uint64_t seq, void *buf, size_t buf_len, s
 enum hg_result hg_find_stamp(hg_sub *s, uint64_t t_ns, void *buf, size_t buf_len, struct hg_info *info)
 {
 	memset(info, 0, sizeof *info);
-	if (s->glob) {
+	s->view_slot = NULL;
+	if (s->glob || !buf) {
 		errno = EINVAL;
 		return finish(s, info, HG_ERROR);
 	}

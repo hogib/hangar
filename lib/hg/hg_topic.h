@@ -158,6 +158,35 @@ int hg_publish_with(hg_pub *p, const void *payload, size_t len, uint64_t stamp_n
  * or below write_seq is refused (-1, ERANGE). */
 int hg_publish_seq(hg_pub *p, uint64_t seq, uint32_t slot_flags, const void *payload, size_t len,
 		   uint64_t stamp_ns, const struct hg_input *refs, int n_refs);
+/* Publishing in place (docs/01 "In place"): for a payload large enough that
+ * its copy into the ring is what a publish costs (a frame). hg_loan hands out
+ * the payload of the slot the next message goes into, payload-size bytes,
+ * writable, holding whatever an older message left there; the caller fills it
+ * and hg_commit publishes it, as hg_publish would with that payload: the same
+ * seq, references, stamps and wake-up, without the copy. len as for
+ * hg_publish; bytes of the last word past it are zeroed.
+ *
+ * One loan at a time for a publisher: hg_loan with one out returns NULL
+ * (EBUSY), as hg_publish and hg_publish_with return -1 (EBUSY) until it is
+ * committed or given back. A commit that is refused (EINVAL: the length, a
+ * reference) publishes nothing and leaves the loan standing. hg_loan_abort
+ * gives it back: nothing is published, and the next publish or loan uses the
+ * same slot and seq. Not for a mirror (NULL, EPERM).
+ *
+ * The loaned slot held the oldest message of the ring, which no read in
+ * order returns any more; from the loan on, hg_read_seq and hg_find_stamp do
+ * not return it either (HG_GONE), where otherwise they would until the next
+ * publish began. Nothing else about the topic changes while a loan is out:
+ * readers see the messages up to the last one committed.
+ *
+ * The pointer is the caller's until the commit or the abort, and not after.
+ * A process that dies with a loan out leaves what a process that dies in the
+ * middle of hg_publish leaves: a slot that holds no message. */
+void *hg_loan(hg_pub *p);
+int hg_commit(hg_pub *p, size_t len, uint64_t stamp_ns);
+int hg_commit_with(hg_pub *p, size_t len, uint64_t stamp_ns, unsigned flags, const struct hg_input *refs,
+		   int n_refs);
+void hg_loan_abort(hg_pub *p);
 /* Sequence number the next hg_publish() will use. */
 uint64_t hg_pub_next_seq(const hg_pub *p);
 uint32_t hg_pub_topic_id(const hg_pub *p);
@@ -188,6 +217,51 @@ void hg_sub_close(hg_sub *s);
 /* The buffer must hold the payload: HG_ERROR with EMSGSIZE if shorter. */
 enum hg_result hg_latest(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info);
 enum hg_result hg_next(hg_sub *s, void *buf, size_t buf_len, struct hg_info *info);
+/* Reading in place (docs/01 "In place"): hg_latest and hg_next without the
+ * copy, for a payload large enough that the copy is what a read costs. On
+ * HG_MSG *payload points at the message's payload in the ring (read-only
+ * memory, payload-size bytes) and info is filled as by hg_latest or hg_next;
+ * any other result is theirs, with *payload NULL.
+ *
+ * WHAT IS BEHIND THE POINTER IS NOT YET A MESSAGE. The writer does not wait
+ * for readers: it may start the next message in that slot at any moment, and
+ * the bytes then change while they are read. hg_view_done, called after the
+ * last read through the pointer, says which happened:
+ *
+ *    1   the slot held message info.seq, whole, for as long as the view was
+ *        open: everything read through the pointer was that message;
+ *    0   the writer has overwritten it since: what was read may be a mix of
+ *        two messages. Everything computed from it is to be thrown away. A
+ *        view from hg_next_view lost this way is a message lost, and the next
+ *        read in order counts it in info.gap;
+ *   -1   no view is open (EINVAL): none was taken, it was checked already, or
+ *        another call on the subscription ended it. Not a message either.
+ *
+ * So: take the view, compute from it into memory of your own, call
+ * hg_view_done, and use the result only on 1. Until then:
+ *   - act on nothing read through the pointer (no command sent, no file
+ *     written, no state kept);
+ *   - trust no value read through it to index or size anything: a length or
+ *     an offset inside the payload may be half of one message and half of
+ *     another, and may read differently the second time. Copy such a field
+ *     to a local, check it against the payload size, and use the local;
+ *   - hand the pointer only to code that is safe on arbitrary bytes that
+ *     change under it (a checksum, a copy, a filter over pixels are; a
+ *     parser that follows offsets it reads is not).
+ * The pointer is good until hg_view_done or the next call that is given this
+ * subscription (a read, hg_wait, hg_sub_close), whichever comes first; a
+ * view still open at such a call is dropped unchecked.
+ *
+ * A ring of few slots and a slow reader lose views often: the writer comes
+ * round to the slot within slots - 1 publishes. hg_next_view reports each as
+ * a gap; a reader that cannot afford to lose them copies (hg_next) or asks
+ * for more slots. Reading memory that another process is writing is outside
+ * what C11 defines (docs/01 "The copy" is how hg_next stays inside it): the
+ * view is the deliberate exception, sound on the machines hangar runs on
+ * under the rules above, and something a thread sanitizer has to be told. */
+enum hg_result hg_latest_view(hg_sub *s, const void **payload, struct hg_info *info);
+enum hg_result hg_next_view(hg_sub *s, const void **payload, struct hg_info *info);
+int hg_view_done(hg_sub *s);
 /* Moves hg_next past every message published so far without reading one:
  * the subscription is no news for hg_wait until the next publish. For a
  * subscription in a wait set whose messages the module reads elsewhere or
