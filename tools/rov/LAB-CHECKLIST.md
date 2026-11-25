@@ -1,8 +1,26 @@
-# Lab checklist: the first session with v0.1.4
+# Lab checklist: the sessions with v0.1.4 and v0.1.5
 
 What to run at the next lab visit, in order, with what a pass looks like. Written
-2026-11-21 for v0.1.4. Nothing new since v0.1.2 has run on the vehicle: steps 1 and 2 repeat
-what v0.1.2 passed, and every step after them is a first.
+2026-11-21 for v0.1.4. Nothing new since v0.1.2 had run on the vehicle then: steps 1 and 2
+repeat what v0.1.2 passed, and every step after them was a first.
+
+**Where it stands after the session of 2026-11-24 (v0.1.4).** Steps 1 to 4 passed. Step 5
+came up on the Pixhawk's serial line; its arm tests and its bench were not made. Steps 6
+and 7 were not reached, and step 6 needs cooling on the Pi: without it the Pi throttles.
+What that session showed differently from what is written below:
+
+- **Step 1:** safety killed while armed came back plainly disarmed, with no failsafe to
+  clear.
+- **Step 4:** the vehicle's bridge *killed* fires nothing (the manager has it back before
+  its topic is stale); *suspended* (`kill -STOP`) it fires `input` within 0.3 s. A pull of
+  the laptop's USB adapter costs about 7 s of packets, so a short silence is made by
+  suspending the laptop's bridge process for 1 s and 2.5 s.
+- **sudo on the Pi asks for a password:** `lab.sh deploy`, and any `up` after the Pi was
+  power-cycled (its clock), are run from your own terminal.
+- **New in v0.1.5, to confirm first:** with the bridge up and the sticks working, start the
+  topside alone again (`BRIDGE=1 tools/rov/rov.sh topside reset`, then `topside up`): the
+  thrusters follow the sticks at once. With v0.1.4 they were dead for as long as the
+  topside had run before.
 
 The commands are `tools/rov/lab.sh` and `tools/rov/rov.sh`; [QUICKSTART.md](QUICKSTART.md)
 has the five commands and what to do when one fails, [README.md](README.md) the detail.
@@ -23,9 +41,9 @@ is `HANGAR_ROOT=/dev/shm/hangar-vehicle ~/hangar-root/bin/hangar`.
 
 | | Check |
 |---|---|
-| ☐ | `git pull` on the laptop; `git describe` says `v0.1.4` or later |
+| ☐ | `git pull` on the laptop; `git describe` says `v0.1.5` or later |
 | ☐ | `make -j8 all` (a plain `make` does not build the modules) |
-| ☐ | The vehicle's release: v0.1.4's `hangar-v0.1.4-aarch64.tar.zst` under `out/release/v0.1.4/` with the checkout at the tag, or one **built from this checkout** if it is past the tag (`tools/release.sh`; `lab.sh deploy` takes the newest under `out/release/`). The v0.1.3 tarball will not do for steps 3 to 5: `up --bridge` and `up --serial` need this checkout's `rov.sh` on the Pi and say so if it is older, and with the bridge both ends must be the same build, or nothing crosses (`up --bridge` compares them before it starts anything) |
+| ☐ | The vehicle's release: v0.1.5's `hangar-v0.1.5-aarch64.tar.zst` under `out/release/v0.1.5/` with the checkout at the tag, or one **built from this checkout** if it is past the tag (`tools/release.sh`; `lab.sh deploy` takes the newest under `out/release/`). The v0.1.3 tarball will not do for steps 3 to 5: `up --bridge` and `up --serial` need this checkout's `rov.sh` on the Pi and say so if it is older, and with the bridge both ends must be the same build, or nothing crosses (`up --bridge` compares them before it starts anything) |
 | ☐ | A rehearsal on the laptop passes: `tools/release.sh --host`, then `tools/rov/rehearse.sh out/release/hangar-<…>-x86_64.tar.zst` ends with `rehearse: all passed` (QUICKSTART, "Rehearsing without the vehicle"; `make check` first, for the fake ArduSub) |
 | ☐ | The controller, and QGroundControl starting |
 | ☐ | The battery or a 12 to 16 V supply for the vehicle. The Pixhawk reads no battery voltage, so `up` needs `--no-battery-check` (QUICKSTART, "The battery check") |
@@ -42,7 +60,7 @@ tools/rov/lab.sh status
 
 | | Pass |
 |---|---|
-| ☐ | `lab: installed v0.1.4 (…)`, then `lab: READY TO ARM` |
+| ☐ | `lab: installed v0.1.5 (…)`, then `lab: READY TO ARM` |
 | ☐ | `status`: every module `ready`, `throttled=0x0` |
 | ☐ | Arm in QGroundControl, disarm: ArduSub follows within about 0.5 s each way |
 | ☐ | Armed, kill safety on the Pi (`pkill -KILL -f "[h]angar-safety"`): ArduSub disarmed and the thrusters neutral within about 0.3 s (267 ms on 2026-11-19). Then `hangar call safety.clear` |
