@@ -709,8 +709,12 @@ static void test_fly_stale_state(void)
 	CHECK_EQ_INT(od, 1);
 	s = strstr(body, "\"safety.state\":{");
 	CHECK(s && strstr(s, "\"present\":true") != NULL && strstr(s, "\"v\":{\"state\":2,") != NULL);
+	// overdue is age > the bound (300 ms) in nanoseconds, and age_ms is that age
+	// rounded to a millisecond: a poll that lands in the first half millisecond
+	// past the bound reads overdue with "age_ms":300. (Failed that way twice in
+	// loaded runs of the whole suite, never alone.)
 	double age = 0;
-	CHECK(json_num(body, "\"safety.state\":{", "\"age_ms\":", &age) == 0 && age > 300);
+	CHECK(json_num(body, "\"safety.state\":{", "\"age_ms\":", &age) == 0 && age >= 300);
 	// The talker beside it was never overdue; a topic published on change has no bound.
 	CHECK_EQ_INT(fly_overdue(body, "nav.depth"), 0);
 	// Continued (or restarted by the manager, had the stop been long): fresh again.
