@@ -136,6 +136,15 @@ opt-in; [tools/rov/README.md](../../tools/rov/README.md) has the session, with
   is then "unplugged" (`ENODEV` from every request, a hang-up at every poll): the
   encoder ends by itself with 75 and says the camera is gone. Skipped, and said so,
   where the toolchain makes no shared objects or the encoder is static.
+- The camera's controls (`tests/test_encoder_controls.c`, the module under a manager on
+  the same fake camera, which has a webcam's controls and writes every set to the log):
+  with the defaults one control is touched (`keep_framerate`); `brightness=150 gain=50
+  contrast=100` arrive as 32, 50 and 32 in the camera's ranges; `auto_exposure=0
+  exposure_us=8000` as the mode first and then 80 (100 µs units); a white balance
+  without its automatic mode off is refused with the reason and nothing reaches the
+  camera; a control the camera lacks (sharpness) is said once and the rest of the set
+  still applied; after a restart the saved values are put to the camera again. Skipped
+  where the fake camera cannot be loaded.
 - ffmpeg, where it is installed with libx264: a real stream (three slices a frame)
   whose parameter sets are kept only at the first IDR, ffmpeg joining after that IDR
   has gone by, from the SDP `hellion` writes: it decodes from the IDR at frame 30, 23 or
@@ -146,11 +155,10 @@ opt-in; [tools/rov/README.md](../../tools/rov/README.md) has the session, with
 
 ## Unverified
 
-- **The camera controls on a camera.** The path from a parameter to
-  `camera_ctrl_apply` has run against `Source=file:` (accepted, nothing to take them)
-  and across the bridge in a rehearsal; `camera_ctrl_apply` itself is eeye's, with its own
-  suite (`lib/camera/tests`). Not yet tried on any camera through this module, and in
-  particular: whether the lab's camera takes the controls on its H.264 node
+- **The camera controls on a camera.** They have run on the suite's fake camera and,
+  with `Source=file:`, across the bridge in a rehearsal; `camera_ctrl_apply` itself is
+  eeye's, with its own suite (`lib/camera/tests`). Not yet tried on a real camera
+  through this module, and in particular: whether the lab's camera takes the controls on its H.264 node
   (`/dev/video2`), the one this module has open, or only on `/dev/video0`. `v4l2-ctl -d /dev/video2 --list-ctrls` on the Pi answers it.
 
 - **A real unplug.** What the kernel does to a UVC node whose device is pulled

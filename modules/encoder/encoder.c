@@ -399,7 +399,7 @@ static struct encoder_params P = { .auto_exposure = -1, .exposure_us = -1, .gain
 				   .white_balance_k = -1, .brightness = -1, .contrast = -1, .saturation = -1,
 				   .sharpness = -1, .keep_framerate = 1 };
 static int have_params;      /* hg_params_open succeeded: the controls can be set */
-static int controls_applied; /* how many the camera took at the last apply; -1 none tried */
+static int controls_applied; /* 1: the parameters in force were put to the camera; 0: there is none; -1: none are set */
 
 /* A manual value while its automatic mode is on, or left as the camera has it
  * (on, for every camera met so far), is refused by the camera with EPERM and
@@ -451,12 +451,16 @@ static void apply_controls(void)
 		controls_applied = 0;
 		return;
 	}
-	controls_applied = camera_ctrl_apply(vfd, &cc);
-	fflush(stdout); /* lib/camera says what it skipped or clamped on stdout */
+	/* The count is of the controls gone through without an error, the ones this
+	 * camera does not have among them: lib/camera names those, and what it
+	 * clamped or the camera refused, on stdout. */
+	int done = camera_ctrl_apply(vfd, &cc);
+	fflush(stdout);
+	controls_applied = 1;
 	char json[512];
 	if (camera_ctrl_to_json(&cc, json, sizeof json) < 0)
 		json[0] = 0;
-	mod_log(WHO, "camera controls: %d applied of %s", controls_applied, json);
+	mod_log(WHO, "camera controls put to %s: %s (%d without an error)", C.source + 4, json, done);
 }
 
 /* ---- The module ------------------------------------------------------------- */
@@ -476,7 +480,8 @@ static void status_line(uint64_t now)
 	if (send_errors && u < sizeof line)
 		u += (size_t)mod_fmt(line + u, sizeof line - u, "; %llu send errors", (unsigned long long)send_errors);
 	if (controls_applied >= 0 && u < sizeof line)
-		u += (size_t)mod_fmt(line + u, sizeof line - u, "; %d camera controls set", controls_applied);
+		u += (size_t)mod_fmt(line + u, sizeof line - u, "; camera controls v%llu%s",
+				     (unsigned long long)hg_params_version(), controls_applied ? "" : " (no camera)");
 	if (file_done && u < sizeof line)
 		mod_fmt(line + u, sizeof line - u, "; file ended");
 	hg_status(line);

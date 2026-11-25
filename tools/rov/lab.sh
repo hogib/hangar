@@ -682,7 +682,7 @@ cmd_camera() {
     if [ $# -gt 0 ]; then
         rsh SET="$*" '"$B/hangar" param set encoder $SET' || exit 1
     fi
-    rsh '"$B/hangar" param get encoder; "$B/hangar" status | awk "\$1 == \"encoder\"" | grep -o "[0-9]* camera controls set" || true'
+    rsh '"$B/hangar" param get encoder; "$B/hangar" status | awk "\$1 == \"encoder\"" | grep -o "camera controls[^;]*" || true'
 }
 
 cmd_bench() {

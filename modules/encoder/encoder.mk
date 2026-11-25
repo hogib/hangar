@@ -41,11 +41,26 @@ $(ENCODER_FAKE_UVC): modules/encoder/tests/fake_uvc.c
 	@mkdir -p $(dir $@)
 	-$(CC) -std=gnu11 -Wall -Wextra -O2 -fPIC -shared -o $@ $< -ldl -lpthread 2>/dev/null || rm -f $@
 
+# The camera's controls, under a manager on the fake camera (tests/test_encoder_controls.c).
+ENCODER_CONTROLS_TEST := $(TESTDIR)/test_encoder_controls
+$(OBJDIR)/modules/encoder/tests/test_encoder_controls.o: EE_CPPFLAGS := $(ENCODER_CPPFLAGS) -Ihangard/tests
+$(ENCODER_CONTROLS_TEST): $(OBJDIR)/modules/encoder/tests/test_encoder_controls.o $(call obj,$(HG_SRC))
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
+
 .PHONY: check-encoder
-check-encoder: $(ENCODER_TEST) $(ENCODER_BIN) $(ENCODER_FAKE_UVC)
+check-encoder: $(ENCODER_TEST) $(ENCODER_CONTROLS_TEST) $(ENCODER_BIN) $(ENCODER_FAKE_UVC) $(BUILDDIR)/hangard $(BUILDDIR)/hangar
 	@if ENCODER_BIN=$(abspath $(ENCODER_BIN)) ENCODER_FAKE_UVC=$(abspath $(ENCODER_FAKE_UVC)) \
 	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $<) > $(TESTDIR)/encoder.log 2>&1; then \
 	  echo "ok    encoder"; \
 	else \
 	  echo "FAIL  encoder"; cat $(TESTDIR)/encoder.log; exit 1; \
+	fi
+	@if ENCODER_BIN=$(abspath $(ENCODER_BIN)) ENCODER_FAKE_UVC=$(abspath $(ENCODER_FAKE_UVC)) \
+	    HANGARD_BIN=$(abspath $(BUILDDIR)/hangard) HANGAR_BIN=$(abspath $(BUILDDIR)/hangar) \
+	    HANGARD_TOYS=$(abspath $(HANGARD_TOYDIR)) HANGAR_MSG_SRC=$(abspath msg) \
+	    $(if $(TIMEOUT),$(TIMEOUT) 120) $(abspath $(ENCODER_CONTROLS_TEST)) > $(TESTDIR)/encoder_controls.log 2>&1; then \
+	  echo "ok    encoder_controls$$(grep -m1 -o ' *(*skipped[^)]*)*' $(TESTDIR)/encoder_controls.log | sed 's/^ */  /')"; \
+	else \
+	  echo "FAIL  encoder_controls"; cat $(TESTDIR)/encoder_controls.log; exit 1; \
 	fi

@@ -30,6 +30,71 @@ static int fake_fd = -1, cam_fd = -1;
 static volatile int unplugged;
 static unsigned seq;
 
+/* The camera's controls (the encoder's parameters reach them through
+ * lib/camera's camera_ctrl_apply): ranges of a UVC webcam's kind, the value
+ * kept, each set written to stderr. As a camera does, a manual exposure or
+ * white balance is refused with EPERM while its automatic mode is on, and
+ * there is no sharpness control at all. */
+static struct fake_ctl {
+	unsigned id;
+	const char *name;
+	int min, max, value;
+} ctls[] = {
+	{ V4L2_CID_BRIGHTNESS, "brightness", -64, 64, 0 },
+	{ V4L2_CID_CONTRAST, "contrast", 0, 64, 32 },
+	{ V4L2_CID_SATURATION, "saturation", 0, 128, 64 },
+	{ V4L2_CID_GAIN, "gain", 0, 100, 0 },
+	{ V4L2_CID_EXPOSURE_AUTO, "exposure_auto", 0, 3, V4L2_EXPOSURE_APERTURE_PRIORITY },
+	{ V4L2_CID_EXPOSURE_ABSOLUTE, "exposure_absolute", 1, 5000, 157 },
+	{ V4L2_CID_EXPOSURE_AUTO_PRIORITY, "exposure_auto_priority", 0, 1, 1 },
+	{ V4L2_CID_AUTO_WHITE_BALANCE, "white_balance_auto", 0, 1, 1 },
+	{ V4L2_CID_WHITE_BALANCE_TEMPERATURE, "white_balance_temperature", 2800, 6500, 4600 },
+};
+
+static struct fake_ctl *ctl_find(unsigned id)
+{
+	for (size_t i = 0; i < sizeof ctls / sizeof ctls[0]; i++)
+		if (ctls[i].id == id)
+			return &ctls[i];
+	return NULL;
+}
+
+static int ctl_query(struct v4l2_queryctrl *q)
+{
+	struct fake_ctl *c = ctl_find(q->id);
+	if (!c) {
+		errno = EINVAL;
+		return -1;
+	}
+	q->type = c->id == V4L2_CID_EXPOSURE_AUTO ? V4L2_CTRL_TYPE_MENU : V4L2_CTRL_TYPE_INTEGER;
+	snprintf((char *)q->name, sizeof q->name, "%s", c->name);
+	q->minimum = c->min;
+	q->maximum = c->max;
+	q->step = 1;
+	q->default_value = c->value;
+	q->flags = 0;
+	return 0;
+}
+
+static int ctl_set(const struct v4l2_control *v)
+{
+	if (v->id == V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME)
+		return 0;
+	struct fake_ctl *c = ctl_find(v->id);
+	if (!c || v->value < c->min || v->value > c->max) {
+		errno = c ? ERANGE : EINVAL;
+		return -1;
+	}
+	if ((v->id == V4L2_CID_EXPOSURE_ABSOLUTE && ctl_find(V4L2_CID_EXPOSURE_AUTO)->value != V4L2_EXPOSURE_MANUAL) ||
+	    (v->id == V4L2_CID_WHITE_BALANCE_TEMPERATURE && ctl_find(V4L2_CID_AUTO_WHITE_BALANCE)->value != 0)) {
+		errno = EPERM;
+		return -1;
+	}
+	c->value = v->value;
+	fprintf(stderr, "fake_uvc: control %s = %d\n", c->name, v->value);
+	return 0;
+}
+
 static void *camera(void *arg)
 {
 	(void)arg;
@@ -111,8 +176,21 @@ int ioctl(int fd, unsigned long req, ...)
 	case VIDIOC_QBUF:
 	case VIDIOC_STREAMON:
 	case VIDIOC_STREAMOFF:
-	case VIDIOC_S_CTRL:
 		return 0;
+	case VIDIOC_S_CTRL:
+		return ctl_set(arg);
+	case VIDIOC_QUERYCTRL:
+		return ctl_query(arg);
+	case VIDIOC_G_CTRL: {
+		struct v4l2_control *v = arg;
+		struct fake_ctl *c = ctl_find(v->id);
+		if (!c) {
+			errno = EINVAL;
+			return -1;
+		}
+		v->value = c->value;
+		return 0;
+	}
 	case VIDIOC_QUERYBUF: {
 		struct v4l2_buffer *b = arg;
 		b->length = 65536;
