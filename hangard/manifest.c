@@ -648,12 +648,23 @@ static int key_serve(struct parser *p, const char *k, const char *v)
 	return fail(p, "unknown key %s in [Serve]", k);
 }
 
+/* A [Call]'s Request=: a type name, or "set_params:<type>" for the set_params
+ * of a module of the other side, whose [Params] this machine does not have:
+ * the request type the manager generates there from that parameter type
+ * (docs/05 "Setting parameters") is generated here from the same .msg. */
+static int valid_call_request(const char *s)
+{
+	if (strncmp(s, "set_params:", 11) == 0)
+		return strcmp(s + 11, "frame") != 0 && strncmp(s + 11, "dataset:", 8) != 0 && valid_type_name(s + 11);
+	return valid_type_name(s);
+}
+
 static int key_call(struct parser *p, const char *k, const char *v)
 {
 	struct mf_call *c = &p->m->calls[p->idx];
 	if (strcmp(k, "Request") == 0)
 		return dup_key(p, k, 0) ? -1 :
-		       set_name(p, c->req, sizeof c->req, k, v, valid_type_name, "a type name");
+		       set_name(p, c->req, sizeof c->req, k, v, valid_call_request, "a type name, or set_params:<type>");
 	if (strcmp(k, "Reply") == 0)
 		return dup_key(p, k, 1) ? -1 :
 		       set_name(p, c->rep, sizeof c->rep, k, v, valid_type_name, "a type name");
@@ -1791,7 +1802,19 @@ static void check_module(struct mf_set *s, struct mf_module *m)
 	}
 	for (int i = 0; i < m->n_calls && !m->refused; i++) {
 		struct mf_call *c = &m->calls[i];
-		if (c->req[0]) {
+		if (c->req[0] && strncmp(c->req, "set_params:", 11) == 0) {
+			/* The other side's set_params: both types generated here as the
+			 * server's manager generates them, so the hashes agree. */
+			int pt = resolve_type(s, c->req + 11, why, sizeof why);
+			if (strcmp(c->method, "set_params") != 0)
+				refuse(m, c->line, "Request=%s: only for a method named set_params", c->req);
+			else if (strcmp(c->rep, "set_params_rep") != 0)
+				refuse(m, c->line, "Request=%s: its Reply= is set_params_rep", c->req);
+			else if (pt < 0 || (c->req_idx = gen_set_params_type(s, &s->types[pt], why, sizeof why)) < 0)
+				refuse(m, c->line, "%s", why);
+			else if ((c->rep_idx = gen_set_params_rep(s)) < 0)
+				refuse(m, c->line, "cannot generate set_params_rep");
+		} else if (c->req[0]) {
 			if ((c->req_idx = resolve_type(s, c->req, why, sizeof why)) < 0 ||
 			    (c->rep_idx = resolve_type(s, c->rep, why, sizeof why)) < 0)
 				refuse(m, c->line, "%s", why);

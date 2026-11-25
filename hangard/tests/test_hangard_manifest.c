@@ -673,6 +673,78 @@ static void test_bridge(void)
 	mf_set_free(&set);
 }
 
+/* set_params of a module on the other side of the tether (the camera's controls,
+ * set from the topside): this machine has no [Params] to generate the request
+ * type from, so the [Call] names the parameter type, and the type generated
+ * here is the one the server's manager generates: the same hash. Found at the
+ * lab on 2026-11-25: docs/08 lists *.set_params among the remote calls, and no
+ * manifest could declare one ("'set_params:x' is not a type name"). */
+static void test_remote_set_params(void)
+{
+	char conf[400], from[1024], to[1024];
+	const char *src = getenv("HANGAR_MSG_SRC");
+	const char *types[] = { "encoder_params", "set_params_rep", "bridge_link", NULL };
+	for (int i = 0; types[i]; i++) {
+		snprintf(from, sizeof from, "%s/%s.msg", src && *src ? src : "msg", types[i]);
+		snprintf(to, sizeof to, "%s/%s.msg", T_msg, types[i]);
+		copy_file(from, to);
+	}
+	snprintf(conf, sizeof conf, "%s/bridge-sp.conf", T_root);
+	write_file(conf, "[Bridge]\nPair=lab\n[Calls]\nRemote=encoder.set_params\n");
+#define CALLER(req, rep, method) \
+	MOD "[Call encoder." method "]\nRequest=" req "\nReply=" rep "\n"
+	// The caller's side: accepted, remote.
+	mf_set_free(&set);
+	mf_set_init(&set, "topside", "", T_msg);
+	snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+	add("bridge", MOD "[Bridge]\n");
+	add("console", CALLER("set_params:encoder_params", "set_params_rep", "set_params"));
+	int ok = mf_set_check(&set);
+	for (int i = 0; i < set.n_modules; i++)
+		if (set.modules[i]->refused)
+			printf("    %s\n", set.modules[i]->reason);
+	CHECK_EQ_INT(ok, 2);
+	struct mf_module *c = mf_find(&set, "console");
+	CHECK(c && c->n_calls == 1 && c->calls[0].remote && c->calls[0].req_idx >= 0 && c->calls[0].rep_idx >= 0);
+	uint64_t req_hash = c && c->calls[0].req_idx >= 0 ? set.types[c->calls[0].req_idx].hash : 0;
+	uint64_t rep_hash = c && c->calls[0].rep_idx >= 0 ? set.types[c->calls[0].rep_idx].hash : 0;
+	// The server's side generates the same two types from its [Params].
+	mf_set_free(&set);
+	mf_set_init(&set, "vehicle", "", T_msg);
+	add("encoder", MOD "[Params]\nType=encoder_params\nAllow=topside:console\n");
+	CHECK_EQ_INT(mf_set_check(&set), 1);
+	struct mf_module *e = mf_find(&set, "encoder");
+	const struct mf_serve *sv = NULL;
+	for (int i = 0; e && i < e->n_serves; i++)
+		if (strcmp(e->serves[i].method, "set_params") == 0)
+			sv = &e->serves[i];
+	CHECK(sv != NULL);
+	if (sv) {
+		CHECK(req_hash != 0 && set.types[sv->req_idx].hash == req_hash);
+		CHECK(rep_hash != 0 && set.types[sv->rep_idx].hash == rep_hash);
+	}
+	// Refused: the form on another method, another reply, a type that is not there.
+	const struct { const char *text, *why; } bad[] = {
+		{ CALLER("set_params:encoder_params", "set_params_rep", "arm"), "only for a method named set_params" },
+		{ CALLER("set_params:encoder_params", "empty", "set_params"), "its Reply= is set_params_rep" },
+		{ CALLER("set_params:no_such_params", "set_params_rep", "set_params"), "no_such_params" },
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+		mf_set_free(&set);
+		mf_set_init(&set, "topside", "", T_msg);
+		write_file(conf, "[Bridge]\nPair=lab\n[Calls]\nRemote=encoder.*\n");
+		snprintf(set.bridge_conf_path, sizeof set.bridge_conf_path, "%s", conf);
+		add("bridge", MOD "[Bridge]\n");
+		add("console", bad[i].text);
+		mf_set_check(&set);
+		struct mf_module *m = mf_find(&set, "console");
+		CHECK(m && m->refused && strstr(m->reason, bad[i].why) != NULL);
+		if (m && !(m->refused && strstr(m->reason, bad[i].why)))
+			printf("    wanted '%s', got: %s\n", bad[i].why, m->refused ? m->reason : "(accepted)");
+	}
+#undef CALLER
+}
+
 static void test_implicit(void)
 {
 	fresh_set();
@@ -958,6 +1030,7 @@ int main(void)
 	RUN_TEST(test_graph_refusals);
 	RUN_TEST(test_implicit);
 	RUN_TEST(test_bridge);
+	RUN_TEST(test_remote_set_params);
 	RUN_TEST(test_wiring_roundtrip);
 	RUN_TEST(test_long_allow_list);
 	RUN_TEST(test_bridge_subscription_limit);

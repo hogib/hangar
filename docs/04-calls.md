@@ -68,7 +68,24 @@ machine serves and the bridge does not carry: such a call returns `HG_E_NOROUTE`
 Requests and replies are at most 16 KB each; larger data goes on a topic, and the call
 names it. `set_params` is a method like any other, served by the library for a module
 with `[Params]`: request type `set_params:<type>`, reply `set_params_rep`
-([05-parameters](05-parameters.md#setting-parameters)).
+([05-parameters](05-parameters.md#setting-parameters)). For the `set_params` of a module
+of the other side the `[Call]` says exactly that, `Request=set_params:<type>` and
+`Reply=set_params_rep`, with `<type>` the module's parameter type: this machine has no
+`[Params]` section to generate the request type from, so it generates it from the same
+`.msg`, and the hash is the server's.
+
+```ini
+# on the topside: the camera's controls are the parameters of the vehicle's encoder
+[Call encoder.set_params]
+Request=set_params:encoder_params
+Reply=set_params_rep
+```
+
+`hangar param set <module> ...` on that machine then goes through this declaration; it
+reads the values in force from the mirrored `<module>.params` topic, which the bridge
+must carry (`[Mirror <module>.params]`, `Delivery=reliable`). `hangar param get` asks
+this machine's manager about its own modules only: for the other side's, read the topic
+(`hangar echo <module>.params`).
 
 ## The two topics
 
