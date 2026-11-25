@@ -18,6 +18,18 @@ hangar-topside-encoder /etc/hangar/topside_encoder.conf
   `hg_frame_type`) on every wake. Of the frames waiting it encodes the newest: an older
   one behind it is skipped and counted, a jump in the RTP timestamps, as docs/11 has it
   for a frame dropped before encoding.
+- **Does not copy the frame out of the ring.** A 1280×720 I422 frame is 1.8 MB and the
+  only thing done with it is the conversion below, which writes x264's own picture. So
+  the conversion reads the ring's slot in place (`hg_latest_view`, docs/01 "In place")
+  and `hg_view_done` says afterwards whether the slot held that frame throughout; only
+  then is the picture given to x264. A frame the writer overwrote meanwhile is dropped
+  before the encoder has seen any of it (counted as "overwritten while read" in the
+  stopping line), and after three in a row the newest is copied, as before, so a writer
+  faster than the conversion cannot starve the encoder. Until that check the frame's
+  header is not believed: it must describe the picture the encoder is already open
+  for, and its strides and offsets must stay inside the payload. The first frame, a new
+  size and a header that fails either test go by the copying path, which checks the same
+  bounds on a whole message.
 - **Converts** full-range 4:2:2 to limited-range 4:2:0 itself, with `hellion`'s fixed
   point (`legacy/hellion/sinks.c`, `to_i420`): Y' = 16 + Y·219/255, C' = 128 +
   (C−128)·224/255, each pair of chroma rows averaged.
@@ -83,8 +95,16 @@ assembly):
 - **a keyframe at frames 1 and 31 and nowhere else**, SPS and PPS before each;
 - 60 `topside_video.index` messages, each naming its frame, seq, timestamp and kind,
   with the `cam.pilot` frame as its provenance;
-- **publish → the frame's last packet, 1280×720: median 6.5 ms, p90 6.9 ms, max 13.6
-  ms** (conversion, encode, packetizing, loopback);
+- **publish → the frame's last packet, 1280×720: median 6.4 ms, p90 6.9 ms, max about
+  15 ms** (conversion, encode, packetizing, loopback). Reading in place took the median
+  from 6.57 ms (6.50 to 6.61 over six runs) to 6.40 ms (6.28 to 6.49): the copy of one
+  frame, about 0.17 ms of a path that x264 dominates;
+- **a writer that laps the reader**: about 4800 flat frames of two grey levels in turn in
+  1.2 s into the four slots; every picture that comes back shows one level (a span of
+  luma of 0 or 1, where two frames in one picture would show about 110), 140 to 200
+  frames were overwritten while being converted and dropped, and pictures kept coming;
+- **a header that lies**: a last plane starting 16 bytes before the payload's end, and a
+  stride of 2³¹: neither is converted, the module stays up, the next frame is encoded;
 - **the bitrate**: 4036 kbit/s at the default 4000; after `hangar param set
   topside_encoder bitrate_kbps=1000`, 955 kbit/s; 9000 over the cap of 8000 refused;
 - 0.0 % of a core with no frames; a clean stop (`encode 3.2 ms a frame on average`).

@@ -48,6 +48,7 @@ static struct au_seen {
 	int keyframe, sps, pps, idr;
 	size_t bytes;
 	int decoded, w, h;
+	int lmin, lmax; /* the decoded picture's darkest and brightest luma, sampled */
 	uint64_t at_ns;
 } seen[4 * FRAMES];
 static int nseen;
@@ -115,6 +116,16 @@ static void decode_au(const struct depack_au *au, struct au_seen *s)
 		s->decoded++;
 		s->w = frm->width;
 		s->h = frm->height;
+		s->lmin = 255;
+		s->lmax = 0;
+		for (int y = 0; y < frm->height; y += 4)
+			for (int x = 0; x < frm->width; x += 4) {
+				int v = frm->data[0][(size_t)y * (size_t)frm->linesize[0] + (size_t)x];
+				if (v < s->lmin)
+					s->lmin = v;
+				if (v > s->lmax)
+					s->lmax = v;
+			}
 	}
 }
 
@@ -331,6 +342,92 @@ static void test_bitrate_live(void)
 	CHECK(!file_contains(mod_log, "-> 9000 kbit/s"));
 }
 
+/* One grey level over the whole picture: a picture put together from two
+ * frames, the top of one and the bottom of the next, has two. */
+static void publish_flat(uint8_t level, const struct hg_frame_header *lie)
+{
+	struct hg_frame_header hd = { .width = W, .height = H, .fourcc = HG_I422 };
+	memcpy(hd.stride, FT.stride, sizeof hd.stride);
+	memcpy(hd.offset, FT.offset, sizeof hd.offset);
+	memcpy(frame, lie ? lie : &hd, sizeof hd);
+	uint8_t *data = frame + sizeof hd;
+	memset(data + FT.offset[0], level, (size_t)FT.stride[0] * H);
+	memset(data + FT.offset[1], 128, (size_t)FT.stride[1] * H);
+	memset(data + FT.offset[2], 128, (size_t)FT.stride[2] * H);
+	hg_publish(P_frames, frame, FT.type.payload_bytes, hg_now_ns());
+}
+
+/* The module converts a frame where it lies in the ring and gives it to x264
+ * only when the slot held that frame throughout. Here the writer comes round
+ * the four slots several times while one picture is converted, flat frames of
+ * two grey levels in turn: a picture made of two frames would show both
+ * levels. Every picture that comes back shows one, and pictures do come back:
+ * a writer this fast does not starve the encoder (after three frames lost in
+ * a row it copies the newest, as it did before reading in place). */
+static void test_overwritten_while_read(void)
+{
+	collect(200);
+	nseen = 0; /* seen[] holds 4 * FRAMES access units: this test's alone */
+	int at = 0;
+	uint64_t t0 = now_ms();
+	int published = 0;
+	while (now_ms() - t0 < 1200) {
+		publish_flat(published & 1 ? 190 : 60, NULL);
+		published++;
+		if (published % 8 == 0)
+			sleep_ms(1);
+	}
+	collect(700);
+	int pictures = 0, mixed = 0, widest = 0;
+	for (int i = at; i < nseen; i++) {
+		if (!seen[i].decoded)
+			continue;
+		pictures++;
+		int span = seen[i].lmax - seen[i].lmin;
+		if (span > widest)
+			widest = span;
+		mixed += span > 40;
+	}
+	printf("    %d frames published in 1.2 s, %d pictures looked at%s, the widest span of luma in one %d (two frames "
+	       "in one would be about 110)\n",
+	       published, pictures, nseen == (int)(sizeof seen / sizeof seen[0]) ? " (as many as are kept)" : "", widest);
+	CHECK(pictures >= 10);
+	CHECK_EQ_INT(mixed, 0);
+	/* And the module goes on: a frame at the usual pace comes back. */
+	uint64_t s;
+	nseen = 0;
+	CHECK(frame_round_trip(900, &s) > 0);
+}
+
+/* A header is the publisher's word, and through a view it is not even known
+ * to be one frame's. One whose planes reach past the payload is not
+ * converted, in place or copied, and the module goes on. */
+static void test_header_past_the_payload(void)
+{
+	struct mstat m;
+	CHECK(module_status("topside_encoder", &m));
+	int pid = m.pid;
+	struct hg_frame_header lie = { .width = W, .height = H, .fourcc = HG_I422 };
+	memcpy(lie.stride, FT.stride, sizeof lie.stride);
+	memcpy(lie.offset, FT.offset, sizeof lie.offset);
+	lie.offset[2] = FT.data_bytes - 16; /* the last plane starts 16 bytes before the end */
+	collect(100);
+	nseen = 0;
+	int at = 0;
+	publish_flat(100, &lie);
+	collect(300);
+	CHECK_EQ_INT(nseen, at);
+	CHECK(wait_file_contains(mod_log, "planes do not lie inside", 2000));
+	lie.offset[2] = FT.offset[2];
+	lie.stride[0] = 0x7fffffff; /* rows that far apart */
+	publish_flat(100, &lie);
+	collect(300);
+	CHECK_EQ_INT(nseen, at);
+	CHECK(module_status("topside_encoder", &m) && m.pid == pid && strcmp(m.state, "ready") == 0);
+	uint64_t s;
+	CHECK(frame_round_trip(901, &s) > 0);
+}
+
 static void test_idle_cpu(void)
 {
 	struct mstat m;
@@ -377,6 +474,8 @@ int main(void)
 	RUN_TEST(test_start);
 	RUN_TEST(test_frames_keyframes_index);
 	RUN_TEST(test_bitrate_live);
+	RUN_TEST(test_overwritten_while_read);
+	RUN_TEST(test_header_past_the_payload);
 	RUN_TEST(test_idle_cpu);
 	RUN_TEST(test_shutdown);
 	hd_teardown();

@@ -324,20 +324,32 @@ static uint32_t source_id;
 static uint8_t *fbuf;
 static size_t fcap;
 
-static void encode(const uint8_t *payload, const struct hg_info *info)
+static int frame_encodable(const struct hg_frame_header *hd)
 {
-	struct hg_frame_header hd;
-	memcpy(&hd, payload, sizeof hd);
-	if (hd.fourcc != HG_I422 || !hd.width || !hd.height || (hd.width & 1) || (hd.height & 1)) {
-		if (!bad_frames++)
-			mod_log(WHO, "%s: a frame not I422 of even size (fourcc %08x, %ux%u): not encoded", C.source,
-				hd.fourcc, hd.width, hd.height);
-		return;
+	return hd->fourcc == HG_I422 && hd->width && hd->height && !(hd->width & 1) && !(hd->height & 1);
+}
+
+/* 1 if every byte to_i420 reads for this header lies inside `bytes` of plane
+ * data. A header read in place may be half of one frame and half of the
+ * next (hg_topic.h, hg_latest_view): nothing in it sizes or indexes a read
+ * until this has said the reads stay inside the payload. */
+static int planes_inside(const struct hg_frame_header *hd, size_t bytes)
+{
+	uint64_t w = hd->width, h = hd->height;
+	if (w > 16384 || h > 16384)
+		return 0;
+	for (int p = 0; p < 3; p++) {
+		uint64_t pw = p ? (w + 1) / 2 : w;
+		if (hd->stride[p] < pw || (uint64_t)hd->offset[p] + (h - 1) * hd->stride[p] + pw > bytes)
+			return 0;
 	}
-	if ((!enc || hd.width != enc_w || hd.height != enc_h) && encoder_open(hd.width, hd.height) < 0)
-		return;
-	uint64_t t0 = hg_now_ns();
-	to_i420(&hd, payload + sizeof hd, &pic.img);
+	return 1;
+}
+
+/* The picture in pic.img, already converted, to x264 and out as RTP; t0 is
+ * when the conversion started. */
+static void encode_converted(const struct hg_info *info, uint64_t t0)
+{
 	pic.i_pts = (int64_t)info->seq;
 	pic.i_type = X264_TYPE_AUTO;
 	x264_nal_t *nals;
@@ -373,15 +385,59 @@ static void encode(const uint8_t *payload, const struct hg_info *info)
 	}
 }
 
-/* Every new frame is read, the newest encoded: each read overwrites the one
- * buffer, so after the loop it holds the newest, and an older frame waiting
- * behind it is skipped (a jump in the RTP timestamps, as docs/11 has it for a
- * frame dropped before encoding). */
-static void read_frames(void)
+/* A frame that was copied out of the ring: a whole message, so its header is
+ * believed. This is the path that opens the encoder, at the first frame and
+ * when the picture's size changes. */
+static void encode(const uint8_t *payload, size_t len, const struct hg_info *info)
 {
-	struct hg_info info, last;
-	int got = 0, grown = 0;
-	for (;;) {
+	struct hg_frame_header hd;
+	if (len < sizeof hd)
+		return;
+	memcpy(&hd, payload, sizeof hd);
+	if (!frame_encodable(&hd)) {
+		if (!bad_frames++)
+			mod_log(WHO, "%s: a frame not I422 of even size (fourcc %08x, %ux%u): not encoded", C.source,
+				hd.fourcc, hd.width, hd.height);
+		return;
+	}
+	/* The header is the publisher's word. One whose strides and offsets reach
+	 * past the payload would have the conversion read past the buffer. */
+	if (!planes_inside(&hd, len - sizeof hd)) {
+		if (!bad_frames++)
+			mod_log(WHO, "%s: a %ux%u frame whose planes do not lie inside its %zu bytes: not encoded",
+				C.source, hd.width, hd.height, len - sizeof hd);
+		return;
+	}
+	if ((!enc || hd.width != enc_w || hd.height != enc_h) && encoder_open(hd.width, hd.height) < 0)
+		return;
+	uint64_t t0 = hg_now_ns();
+	to_i420(&hd, payload + sizeof hd, &pic.img);
+	encode_converted(info, t0);
+}
+
+static uint64_t last_seq, views_lost;
+static uint32_t last_epoch;
+
+/* The frames between the last one taken and this one were never encoded (a
+ * jump in the RTP timestamps, as docs/11 has it for a frame dropped before
+ * encoding). */
+static void count_skipped(const struct hg_info *info)
+{
+	if (last_seq && info->epoch == last_epoch && info->seq > last_seq + 1)
+		skipped += info->seq - last_seq - 1;
+	last_seq = info->seq;
+	last_epoch = info->epoch;
+}
+
+/* A frame copied out of the ring. By its seq, the frame a view was of: the one
+ * that opens the encoder, or one whose header says something the encoder is
+ * not open for; HG_GONE (the writer has come round to it) is a frame not
+ * encoded, and the next one takes the same way. Or the newest, for a writer
+ * that keeps overwriting the frame while it is converted in place. */
+static void read_copy(uint64_t seq, int newest)
+{
+	struct hg_info info;
+	for (int grown = 0;;) {
 		uint32_t need = hg_sub_payload_bytes(sub_frames);
 		if (need > fcap) {
 			uint8_t *n = realloc(fbuf, need);
@@ -390,20 +446,69 @@ static void read_frames(void)
 			fbuf = n;
 			fcap = need;
 		}
-		enum hg_result r = hg_next(sub_frames, fbuf, fcap, &info);
+		enum hg_result r = newest ? hg_latest(sub_frames, fbuf, fcap, &info)
+					  : hg_read_seq(sub_frames, seq, fbuf, fcap, &info);
 		if (r == HG_MSG) {
-			if (got)
-				skipped++;
-			got = 1;
-			last = info;
-			continue;
-		}
-		if (r == HG_ERROR && errno == EMSGSIZE && !grown++)
+			count_skipped(&info);
+			encode(fbuf, need, &info);
+		} else if (r == HG_ERROR && errno == EMSGSIZE && !grown++) {
 			continue; /* replaced by a larger frame: the buffer grows above, once */
-		break;
+		}
+		return;
 	}
-	if (got)
-		encode(fbuf, &last);
+}
+
+/* The newest frame is encoded and the ones behind it skipped, as before; what
+ * changed is that the frame is not copied out of the ring first. A 1280x720
+ * I422 frame is 1.8 MB, and the only thing done with it is to_i420, which
+ * writes x264's own picture: so the conversion reads the ring's slot in place
+ * (hg_latest_view), and hg_view_done says afterwards whether the slot held
+ * that frame throughout. Only then is the picture given to x264: a frame the
+ * writer overwrote during the conversion is dropped before the encoder, whose
+ * references it would have spoiled, has seen any of it.
+ *
+ * The header is read through the same pointer, so until hg_view_done it is
+ * not believed: it is copied to a local, it must describe the picture the
+ * encoder is already open for, and its offsets must stay inside the payload.
+ * A header that says anything else (the first frame, a new size, a torn one)
+ * sends the frame down the copying path, which reads a whole message and
+ * checks the same things on it. */
+static void read_frames(void)
+{
+	for (int tries = 0; tries < 3; tries++) {
+		const void *view;
+		struct hg_info info;
+		if (hg_latest_view(sub_frames, &view, &info) != HG_MSG)
+			return;
+		uint32_t payload_bytes = hg_sub_payload_bytes(sub_frames); /* a field read: the view stays open */
+		struct hg_frame_header hd;
+		if (payload_bytes < sizeof hd) {
+			hg_view_done(sub_frames);
+			return;
+		}
+		memcpy(&hd, view, sizeof hd);
+		if (!enc || !frame_encodable(&hd) || hd.width != enc_w || hd.height != enc_h ||
+		    !planes_inside(&hd, payload_bytes - sizeof hd)) {
+			hg_view_done(sub_frames);
+			read_copy(info.seq, 0);
+			return;
+		}
+		uint64_t t0 = hg_now_ns();
+		to_i420(&hd, (const uint8_t *)view + sizeof hd, &pic.img);
+		if (hg_view_done(sub_frames) == 1) {
+			count_skipped(&info);
+			encode_converted(&info, t0);
+			return;
+		}
+		/* Overwritten while it was converted: a newer frame is there. */
+		views_lost++;
+	}
+	/* Three in a row: the writer comes round the ring faster than a picture
+	 * is converted (a camera does not; a ring of few slots under a burst
+	 * does). A copy is shorter than a conversion and is what was done before:
+	 * the newest frame that way, so that a fast writer cannot keep the encoder
+	 * from ever sending one. */
+	read_copy(0, 1);
 }
 
 /* ---- Parameters, status ------------------------------------------------------------ */
@@ -494,9 +599,10 @@ int main(int argc, char **argv)
 		}
 		status_line(hg_now_ns());
 	}
-	mod_log(WHO, "stopping: %llu frames sent (%llu keyframes, %llu skipped, %llu not encodable), %llu packets, %llu send errors; encode %.2f ms a frame on average, %.2f ms at most",
+	mod_log(WHO, "stopping: %llu frames sent (%llu keyframes, %llu skipped, %llu overwritten while read, %llu not encodable), %llu packets, %llu send errors; encode %.2f ms a frame on average, %.2f ms at most",
 		(unsigned long long)frames, (unsigned long long)keyframes, (unsigned long long)skipped,
-		(unsigned long long)bad_frames, (unsigned long long)sent_packets, (unsigned long long)send_errors,
+		(unsigned long long)views_lost, (unsigned long long)bad_frames, (unsigned long long)sent_packets,
+		(unsigned long long)send_errors,
 		frames ? (double)encode_ns_sum / (double)frames / 1e6 : 0.0, (double)encode_ns_max / 1e6);
 	encoder_close();
 	return 0;
