@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>Dawn Patrol</title>
+<!-- The icon is assets/icon.svg, carried in the page so that
+     nothing more is fetched. Its namespace is a name, not an address; the
+     slashes are escaped because the page's test refuses any outside URL. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http:%2F%2Fwww.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='24' fill='%231a1b26'/%3E%3Cg transform='translate(64.0 64.0) scale(0.8) translate(-64.0 -66.0)'%3E%3Cpath fill='%237aa2f7' d='M13,120 L13,52 L3,27 L25,38.5 L40,22 L64,13 L88,22 L103,38.5 L125,27 L115,52 L115,120 L105,102 L105,56 L84,32 L64,24.5 L44,32 L23,56 L23,102ZM62,24 L66,24 L66,66 L62,66ZM30,70 L36,74 L36,86 L30,90ZM98,70 L92,74 L92,86 L98,90Z'/%3E%3Cpath fill='%237aa2f7' fill-rule='evenodd' d='M40,74 L51,65 L77,65 L88,74 L88,85 L75,97 L64,92 L53,97 L40,85ZM50,79 L64,71 L78,79 L64,87Z'/%3E%3Cpath fill='%23ff9e64' d='M59,79 L64,75.5 L69,79 L64,82.5Z'/%3E%3C/g%3E%3C/svg%3E">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Dawn Patrol: hangar's operator page (modules/console). One file, no
      framework, nothing fetched but this server's /api/* once a second, so

@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-night.svg">
+    <img src="assets/logo-day.svg" alt="hangar" width="420">
+  </picture>
+</p>
+
 # hangar
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24084277.svg)](https://doi.org/10.5281/zenodo.24084277)
@@ -49,6 +56,7 @@ procedure and the measurements are in [tools/rov/README.md](tools/rov/README.md)
 
 | Directory | |
 |---|---|
+| `assets/` | the logo, as SVG files, and `logo.py`, which draws them |
 | `docs/` | the design, one document per part; start at [`00-overview.md`](docs/00-overview.md) |
 | `lib/hg/` | the module library: topics, provenance, waiting, calls, parameters, recordings (LGPL) |
 | `hangard/`, `hangar/` | the manager and the command-line tool |
