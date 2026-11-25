@@ -342,6 +342,25 @@ static void test_bitrate_live(void)
 	CHECK(!file_contains(mod_log, "-> 9000 kbit/s"));
 }
 
+/* The module goes on: frames at the usual pace come back as pictures. Not the
+ * first one necessarily: where the burst before it overran the receiving
+ * socket, the depacketizer has lost its place in the stream and takes it up
+ * again at the next keyframe, at most 30 frames on (seen on CI's two-CPU
+ * machines; never on the development laptop). */
+static int pictures_come_back(int k0)
+{
+	collect(100);
+	nseen = 0;
+	for (int k = 0; k < 2 * FPS + 5; k++) {
+		publish_frame(k0 + k);
+		collect(1000 / FPS);
+		for (int i = 0; i < nseen; i++)
+			if (seen[i].decoded)
+				return 1;
+	}
+	return 0;
+}
+
 /* One grey level over the whole picture: a picture put together from two
  * frames, the top of one and the bottom of the next, has two. */
 static void publish_flat(uint8_t level, const struct hg_frame_header *lie)
@@ -393,10 +412,7 @@ static void test_overwritten_while_read(void)
 	       published, pictures, nseen == (int)(sizeof seen / sizeof seen[0]) ? " (as many as are kept)" : "", widest);
 	CHECK(pictures >= 10);
 	CHECK_EQ_INT(mixed, 0);
-	/* And the module goes on: a frame at the usual pace comes back. */
-	uint64_t s;
-	nseen = 0;
-	CHECK(frame_round_trip(900, &s) > 0);
+	CHECK(pictures_come_back(900));
 }
 
 /* A header is the publisher's word, and through a view it is not even known
@@ -424,8 +440,7 @@ static void test_header_past_the_payload(void)
 	collect(300);
 	CHECK_EQ_INT(nseen, at);
 	CHECK(module_status("topside_encoder", &m) && m.pid == pid && strcmp(m.state, "ready") == 0);
-	uint64_t s;
-	CHECK(frame_round_trip(901, &s) > 0);
+	CHECK(pictures_come_back(1000));
 }
 
 static void test_idle_cpu(void)

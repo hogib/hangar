@@ -391,7 +391,7 @@ static void encode_converted(const struct hg_info *info, uint64_t t0)
 static void encode(const uint8_t *payload, size_t len, const struct hg_info *info)
 {
 	struct hg_frame_header hd;
-	if (len < sizeof hd)
+	if (!payload || len < sizeof hd)
 		return;
 	memcpy(&hd, payload, sizeof hd);
 	if (!frame_encodable(&hd)) {
