@@ -109,6 +109,22 @@ def suspend_topside(seconds, note):
     return go
 
 
+def reset_topside_bridge():
+    """The topside's manager restarts a bridge it finds hung, counts that as a failure,
+    lengthens its back-off each time and gives up after its Burst (5 in 60 s): the sixth
+    silence would be a bridge left down, and the fourth already longer than asked for.
+    A restart by hand starts the count over, so every silence meets the first failure."""
+    env = dict(os.environ, HANGAR_ROOT=RT)
+    subprocess.run([TOPSIDE_HANGAR, "restart", "bridge"], env=env, capture_output=True)
+    end = time.monotonic() + 20
+    while time.monotonic() < end:
+        out = subprocess.run([TOPSIDE_HANGAR, "status"], env=env, capture_output=True, text=True).stdout
+        if any(l.split()[:2] == ["bridge", "ready"] and " up " in l for l in out.splitlines()):
+            break
+        time.sleep(0.3)
+    time.sleep(1.0)
+
+
 def say_unplug():
     print("\n  >>> ARMED. UNPLUG THE TETHER NOW. Plug it back in when the thrusters are neutral "
           "(about 3 s), or after 10 s.\n", flush=True)
@@ -180,6 +196,8 @@ def run(test, arg, times, load, outdir):
                 elif action:
                     ready = say_unplug
                 r = vehicle_test(vargs, ready, wait=per + 60)
+                if action and action[0] == "suspend":
+                    reset_topside_bridge()
                 r.update(note)
                 r.update({"name": name, "rep": i + 1, "at": datetime.datetime.now().isoformat(timespec="seconds"),
                           "load_cores": load, "thermal_before": before, "thermal_after": thermal()})

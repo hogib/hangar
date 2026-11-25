@@ -125,6 +125,14 @@ def main():
         res["modules_before"] = {k: v["pid"] for k, v in modules().items()}
 
         if test != "arm-in-silence":
+            # A mavlink module that has just been started reads ArduSub's parameters
+            # before safety lets anything arm (seconds on a serial line): waited for
+            # here, and the wait reported, so the next repetition is not a refusal.
+            t_wait = now()
+            if not wait(lambda: A.last().get("params") == 1, 120, 0.1):
+                res["error"] = "ArduSub's parameters were not read within 120 s"
+                return res
+            res["params_wait_ms"] = ms(now(), t_wait)
             rc, text = call("safety.arm")
             if not wait(lambda: st() == 1 and armed() == 1, 6):
                 res["error"] = "did not arm: %s; safety.state reason %r" % (text, S.last().get("reason"))
@@ -197,7 +205,16 @@ def main():
     finally:
         try:
             res["put_back"] = put_back()
-            res["end"] = {"safety_state": st(), "ardusub_armed": armed()}
+            if test == "kill" and res["put_back"]:
+                # The manager counts failures and gives up after its Burst (5 in 60 s by
+                # default): a restart asked for by hand starts that count, and the
+                # back-off, over, so that every repetition meets the manager's first
+                # failure and the sixth is not a module left down.
+                subprocess.run([HANGAR, "restart", args[0]], env=ENV, capture_output=True, timeout=15)
+                time.sleep(0.5)
+                wait(lambda: modules().get(args[0], {}).get("state") == "ready", 15, 0.2)
+                res["put_back"] = wait(lambda: st() == 0 and armed() == 0, 10)
+            res["end"] ={"safety_state": st(), "ardusub_armed": armed()}
             after = modules()
             before = res.get("modules_before", {})
             res["restarted"] = sorted(k for k, v in after.items() if k in before and v["pid"] != before[k])
