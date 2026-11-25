@@ -14,6 +14,12 @@ SupplementaryGroups=video
 [Publish video.index]
 Type=video_index
 Slots=64
+# The camera's controls (msg/encoder_params.msg): exposure, gain, white balance and the
+# image adjustments, set live and applied again at every start. The pilot's console may
+# set them, from either side of the tether.
+[Params]
+Type=encoder_params
+Allow=topside:pilot_console pilot_console admin topside:admin
 
 # video.index has no rate of its own, so the watchdog is what tells the manager
 # of an encoder that stopped: the module reports itself alive only while frames

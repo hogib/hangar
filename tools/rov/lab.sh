@@ -18,6 +18,11 @@
 #                                    serial line itself, no MAVROS relay
 #   lab.sh status                    what runs where, armed or not, temperature
 #   lab.sh bench [SECONDS]           CPU, memory, frame rates on both, to RESULTS_DIR
+#   lab.sh camera [FIELD=VALUE ...]  the camera's controls with --video: hangar's encoder
+#                                    holds the camera, and they are its parameters
+#                                    (brightness=120, auto_exposure=0 exposure_us=8000,
+#                                    gain=30; -1 leaves one to the camera). Alone: the
+#                                    values in force.
 #   lab.sh down                      everything put back as found
 #
 # Configuration: tools/rov/lab.conf (~/.config/hangar/lab.conf first; the environment
@@ -663,6 +668,23 @@ EOF
 
 # ---- bench ---------------------------------------------------------------------------
 
+# The camera's controls: the parameters of the vehicle's encoder (msg/encoder_params.msg).
+# Set on the Pi itself: that needs neither the bridge nor a console, and the refusal of a
+# value comes back as hangar words it.
+cmd_camera() {
+    reachable || exit 1
+    rsh '"$B/hangar" status 2>/dev/null | grep -q "^encoder "' ||
+        die "no encoder runs on the Pi: the camera's controls come with lab.sh up --video"
+    local a
+    for a in "$@"; do
+        [[ $a =~ ^[a-z_]+=-?[0-9]+$ ]] || die "camera: '$a' is not field=number (lab.sh camera alone lists the fields)"
+    done
+    if [ $# -gt 0 ]; then
+        rsh SET="$*" '"$B/hangar" param set encoder $SET' || exit 1
+    fi
+    rsh '"$B/hangar" param get encoder; "$B/hangar" status | awk "\$1 == \"encoder\"" | grep -o "[0-9]* camera controls set" || true'
+}
+
 cmd_bench() {
     local secs=${1:-60}
     [[ $secs =~ ^[0-9]+$ ]] || usage 2
@@ -858,6 +880,7 @@ case "${1:-}" in
     up) shift; cmd_up "$@" ;;
     status) cmd_status ;;
     bench) shift; cmd_bench "$@" ;;
+    camera) shift; cmd_camera "$@" ;;
     down) cmd_down ;;
     -h|--help|help|'') usage 0 ;;
     *) warn "unknown command $1"; usage 2 ;;

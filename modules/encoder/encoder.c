@@ -5,7 +5,10 @@
  * the access units the camera makes are packetized (h264.c, RFC 6184) and
  * sent to the topside's video port; and an Annex B file (Source=file:), paced
  * at the frame rate, for the tests and the bench. Each frame sent is one
- * video.index message. modules/encoder/README.md has the rest.
+ * video.index message. The camera's controls (exposure, gain, white balance,
+ * the image adjustments) are the module's parameters: it holds the camera, so
+ * nothing else on the vehicle can set them. modules/encoder/README.md has the
+ * rest.
  *
  *   hangar-encoder /etc/hangar/encoder.conf
  */
@@ -21,9 +24,12 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 
+#include "camera_ctrl.h"
+#include "encoder_params.h"
 #include "h264.h"
 #include "hg_call.h"
 #include "hg_ini.h"
+#include "hg_params.h"
 #include "video_index.h"
 
 #define WHO "hangar-encoder"
@@ -387,6 +393,72 @@ static int uvc_read(void)
 	}
 }
 
+/* ---- Parameters: the camera's controls ----------------------------------------- */
+
+static struct encoder_params P = { .auto_exposure = -1, .exposure_us = -1, .gain = -1, .auto_white_balance = -1,
+				   .white_balance_k = -1, .brightness = -1, .contrast = -1, .saturation = -1,
+				   .sharpness = -1, .keep_framerate = 1 };
+static int have_params;      /* hg_params_open succeeded: the controls can be set */
+static int controls_applied; /* how many the camera took at the last apply; -1 none tried */
+
+/* A manual value while its automatic mode is on, or left as the camera has it
+ * (on, for every camera met so far), is refused by the camera with EPERM and
+ * changes nothing: refused here, with the field to set beside it. */
+static int validate(const void *candidate, const void *current, char reason[64])
+{
+	(void)current;
+	const struct encoder_params *c = candidate;
+	if (c->exposure_us >= 0 && c->auto_exposure != 0) {
+		snprintf(reason, 64, "exposure_us needs auto_exposure=0");
+		return -1;
+	}
+	if (c->white_balance_k >= 0 && c->auto_white_balance != 0) {
+		snprintf(reason, 64, "white_balance_k needs auto_white_balance=0");
+		return -1;
+	}
+	return 0;
+}
+
+static int32_t or_unset(int32_t v, int32_t offset)
+{
+	return v < 0 ? (int32_t)camera_ctrl_unset : v + offset;
+}
+
+/* The parameters in force onto the camera. lib/camera does the work: the
+ * automatic modes first, each value into the device's own range, a control the
+ * camera does not have skipped and said once. With Source=file: there is no
+ * camera, and that is said instead. */
+static void apply_controls(void)
+{
+	CameraControls cc;
+	camera_ctrl_init(&cc);
+	cc.auto_exposure = or_unset(P.auto_exposure, 0);
+	cc.exposure = or_unset(P.exposure_us, 0);
+	cc.gain = or_unset(P.gain, 0);
+	cc.auto_white_balance = or_unset(P.auto_white_balance, 0);
+	cc.white_balance = or_unset(P.white_balance_k, 0);
+	cc.brightness = or_unset(P.brightness, -100); /* 100 neutral here, 0 neutral there */
+	cc.contrast = or_unset(P.contrast, 0);
+	cc.saturation = or_unset(P.saturation, 0);
+	cc.sharpness = or_unset(P.sharpness, 0);
+	cc.keep_framerate = or_unset(P.keep_framerate, 0);
+	if (!camera_ctrl_any_set(&cc)) {
+		controls_applied = -1;
+		return;
+	}
+	if (vfd < 0) {
+		mod_log(WHO, "camera controls are set, and %s is no camera: nothing takes them", C.source);
+		controls_applied = 0;
+		return;
+	}
+	controls_applied = camera_ctrl_apply(vfd, &cc);
+	fflush(stdout); /* lib/camera says what it skipped or clamped on stdout */
+	char json[512];
+	if (camera_ctrl_to_json(&cc, json, sizeof json) < 0)
+		json[0] = 0;
+	mod_log(WHO, "camera controls: %d applied of %s", controls_applied, json);
+}
+
 /* ---- The module ------------------------------------------------------------- */
 
 static void status_line(uint64_t now)
@@ -403,6 +475,8 @@ static void status_line(uint64_t now)
 				   (unsigned long long)R.packets, kbps);
 	if (send_errors && u < sizeof line)
 		u += (size_t)mod_fmt(line + u, sizeof line - u, "; %llu send errors", (unsigned long long)send_errors);
+	if (controls_applied >= 0 && u < sizeof line)
+		u += (size_t)mod_fmt(line + u, sizeof line - u, "; %d camera controls set", controls_applied);
 	if (file_done && u < sizeof line)
 		mod_fmt(line + u, sizeof line - u, "; file ended");
 	hg_status(line);
@@ -448,8 +522,18 @@ int main(int argc, char **argv)
 		ev.data.fd = vfd;
 		epoll_ctl(ep, EPOLL_CTL_ADD, vfd, &ev);
 	}
-	/* Calls, when the wiring has any (none in this stage): only what is read
-	 * goes into the wait set (hangar#1). */
+	/* The camera's controls, where the manifest has [Params]: the values in
+	 * force (the saved ones, after a restart) go to the camera now. Without
+	 * [Params] the camera keeps what it has, as before. */
+	controls_applied = -1;
+	if (hg_params_open(&ENCODER_PARAMS_TYPE, &P, validate, NULL) == 0) {
+		have_params = 1;
+		apply_controls();
+	} else {
+		mod_log(WHO, "no parameters (%s): the camera's controls are left as they are", strerror(errno));
+	}
+	/* Calls (set_params, with [Params]): only what is read goes into the wait
+	 * set (hangar#1). */
 	hg_sub *subs[HG_MAX_WAIT_FD];
 	int n = hg_call_subs(subs, HG_MAX_WAIT_FD);
 	int efd = n > 0 ? hg_wait_fd(subs, n) : -1;
@@ -499,6 +583,10 @@ int main(int argc, char **argv)
 		}
 		if (n > 0)
 			hg_serve();
+		if (have_params && hg_params_changed()) {
+			mod_log(WHO, "parameters v%llu by %s", (unsigned long long)hg_params_version(), hg_params_changed_by());
+			apply_controls();
+		}
 		uint64_t now = hg_now_ns();
 		if (uvc && C.keyframe_ns && now - last_key_ns > C.keyframe_ns) {
 			force_keyframe();

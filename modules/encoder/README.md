@@ -69,6 +69,27 @@ C11, libc and lib/hg only: no ffmpeg, no libx264.
   calls `hg_alive()` only while frames are being sent, and the manifests set
   `[Health] Watchdog=5s`, since `video.index` is an event topic with no rate for the
   manager to judge.
+- **Camera controls** (`msg/encoder_params.msg`): exposure, gain, white balance,
+  brightness, contrast, saturation and sharpness are the module's parameters, because
+  the module holds the camera and nothing else on the vehicle can set them. The units
+  are `lib/camera/camera_ctrl.h`'s, the same on any camera (percent with 100 neutral,
+  microseconds, kelvin); `camera_ctrl_apply` puts each into the device's own range,
+  the automatic modes first, and a control the camera does not have is skipped and said
+  once in the log. `-1` leaves a control as the camera has it, which is every field's
+  default but `keep_framerate`. They apply live, between two frames, and again at every
+  start, since a camera that was unplugged comes back with its own defaults. A manual
+  exposure or white balance is refused unless the same set switches its automatic mode
+  off, because the camera would refuse it. With `Source=file:` they are accepted and
+  the log says that nothing takes them.
+
+  ```sh
+  hangar param set encoder auto_exposure=0 exposure_us=8000 gain=30
+  hangar param set encoder brightness=120          # 100 is neutral
+  hangar param reset encoder                       # back to the camera's own
+  ```
+
+  From the topside the same commands work across the bridge (the rov profiles carry
+  `encoder.params` and `encoder.set_params`; docs/04 "Declaring calls").
 - **Status line:** the source and peer, frames, keyframes, packets, kbit/s, send errors.
   A send to a topside that is not listening is refused by the kernel and only counted.
 
@@ -124,6 +145,13 @@ opt-in; [tools/rov/README.md](../../tools/rov/README.md) has the session, with
   whether the parameter sets are added or not, so it proves nothing about them.
 
 ## Unverified
+
+- **The camera controls on a camera.** The path from a parameter to
+  `camera_ctrl_apply` has run against `Source=file:` (accepted, nothing to take them)
+  and across the bridge in a rehearsal; `camera_ctrl_apply` itself is eeye's, with its own
+  suite (`lib/camera/tests`). Not yet tried on any camera through this module, and in
+  particular: whether the lab's camera takes the controls on its H.264 node
+  (`/dev/video2`), the one this module has open, or only on `/dev/video0`. `v4l2-ctl -d /dev/video2 --list-ctrls` on the Pi answers it.
 
 - **A real unplug.** What the kernel does to a UVC node whose device is pulled
   (`ENODEV` from the ioctls, `EPOLLERR | EPOLLHUP` from poll) is emulated by the

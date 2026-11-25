@@ -10,8 +10,9 @@
 #                         where ffmpeg is installed, ffmpeg decoding its RTP
 
 # The message type it publishes and the INI walker encoder.conf is read with.
-ENCODER_LIB_SRC := msg/video_index.c lib/hg/hg_ini.c
-ENCODER_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Imsg -Imodules/common -Imodules/encoder
+# lib/camera/camera_ctrl.c: the camera's controls in portable units, shared with eeye.
+ENCODER_LIB_SRC := msg/video_index.c msg/encoder_params.c lib/hg/hg_ini.c lib/camera/camera_ctrl.c
+ENCODER_CPPFLAGS := -D_FILE_OFFSET_BITS=64 -Ilib/hg -Ilib/common -Ilib/camera -Imsg -Imodules/common -Imodules/encoder
 ENCODER_BIN := $(BUILDDIR)/hangar-encoder
 ENCODER_TEST := $(TESTDIR)/test_encoder
 

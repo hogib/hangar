@@ -22,6 +22,8 @@ SupplementaryGroups=hangar-admin
 # `hangar echo` does; the glob lets the wiring allow that (docs/02, glob
 # subscriptions). Nothing is waited on through it.
 [Subscribe *]
+# (the glob leaves out .params topics)
+[Subscribe encoder.params]
 
 # The vehicle's methods its buttons call, through this machine's manager as
 # admin; with the bridge (BRIDGE=1) the manager takes their types from these
@@ -48,6 +50,12 @@ Reply=empty
 [Call recorder.stop]
 Request=empty
 Reply=empty
+# The camera's controls: the vehicle's encoder holds the camera and they are its
+# parameters (msg/encoder_params.msg). The Fly view's Camera panel reads the ones in
+# force and sets them; `hangar param set encoder ...` on this machine goes the same way.
+[Call encoder.set_params]
+Request=set_params:encoder_params
+Reply=set_params_rep
 
 # No rated output: ready by hg_ready(), alive by hg_alive() on its 1 s tick.
 [Health]
