@@ -158,6 +158,7 @@ rov_env() {
 # The topside role on this laptop, for --bridge: the checkout's rov.sh and builddir/.
 topside() { # up|down|status|reset
     BRIDGE=1 ROV_IP="$ROV_IP" GCS_IP="$LAPTOP_IP" BRIDGE_PORT="$T_PORT" BRIDGE_PEER_PORT="$V_PORT" \
+        TOPSIDE_HELLION_URL="http://127.0.0.1:$HELLION_CONTROL_PORT/" \
         bash "$here/rov.sh" topside "$1"
 }
 topside_hangar() { HANGAR_ROOT=$RT "$repo/builddir/hangar" "$@"; }
@@ -338,9 +339,29 @@ laptop_video_down() {
     stop_pidfile "$LAB_STATE_DIR/hellion.pid" hellion
 }
 
-laptop_pipelines() { # hellion check's pipeline lines, the frames each got in its window
-    timeout 6 "$HELLION" check 2>/dev/null | grep -E '\] pipeline ' | sed 's/^/  /'
+# The pipelines of THIS session's hellion, from its own page (its port): `hellion check`
+# reads the status file of whatever hellion is named "topside" on this machine, which is
+# the laptop's own hellion.service when that runs. Returns 1 if an endpoint is in error.
+laptop_pipelines() {
+    curl -fsS -m 4 "http://127.0.0.1:$HELLION_CONTROL_PORT/api/status" 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("  hellion does not answer on its port"); sys.exit(1)
+bad = 0
+for p in d.get("pipelines", []):
+    for e in p.get("endpoints", []):
+        err = e.get("state") == "error"
+        bad += err
+        print("  [%s] pipeline %s: %s %s: %s, %d frames, %.0f frames/s%s" % (
+            "FAIL" if err else " OK ", p["name"], e["role"], e["spec"], e["state"], e.get("frames", 0),
+            e.get("fps", 0), ("; " + e["detail"]) if e.get("detail") else ""))
+sys.exit(1 if bad else 0)'
 }
+
+# What holds a UDP port on this laptop, in one line; nothing printed if it is free.
+udp_holder() { ss -Hlnup "( sport = :$1 )" 2>/dev/null | head -1; }
 
 # ---- the consoles --------------------------------------------------------------------
 
@@ -430,6 +451,16 @@ cmd_up() {
         ss -lnt "( sport = :$HELLION_CONTROL_PORT )" 2>/dev/null | grep -q LISTEN &&
             ! alive "$LAB_STATE_DIR/hellion.pid" hellion &&
             die "port $HELLION_CONTROL_PORT is taken on this laptop: set HELLION_CONTROL_PORT"
+        # The camera's H.264 arrives on UDP 5610. Another hellion holding it (this laptop's
+        # own hellion.service does) leaves ours without a picture and eeye without input,
+        # while the pilot still sees video: the other one's, which no control here changes.
+        if ! alive "$LAB_STATE_DIR/hellion.pid" hellion && [ -n "$(udp_holder 5610)" ]; then
+            warn "UDP port 5610 (the camera's video) is taken on this laptop:"
+            warn "  $(udp_holder 5610 | awk '{print $NF}')"
+            systemctl is-active --quiet hellion 2>/dev/null &&
+                warn "  this laptop's hellion.service is running: sudo systemctl stop hellion"
+            die "--video needs port 5610 free"
+        fi
     fi
     # The Pixhawk is reached through the relay, or with --serial by the module itself.
     if [ "$RELAY" = 1 ] || [ "$serial" = 1 ]; then pixhawk=1; fi
@@ -554,7 +585,8 @@ cmd_up() {
     if [ "$video" = 1 ]; then
         laptop_video_up || up_failed
         sleep 6
-        laptop_pipelines
+        laptop_pipelines ||
+            warn "THE VIDEO IS NOT WORKING on this laptop (above; $LAB_STATE_DIR/hellion.log): the vehicle is not affected"
     fi
 
     local check

@@ -83,6 +83,8 @@ session. Never on a vehicle that reads its battery.
 | `NOT READY TO ARM: <reasons>` | the reasons are `hangar check`'s: `power.battery … below` → `--no-battery-check` (see above); `ArduSub … not MANUAL` → set MANUAL; anything else → `lab.sh status` |
 | no `[ OK ] pipeline` lines with `--video` | wait ten seconds and `lab.sh status`: the encoder starts after hangar. Still nothing: the camera's H.264 node (`H264_NODE` in `lab.conf`; `v4l2-ctl --list-formats-ext` on the Pi) |
 | `port 8092 is taken on this laptop` | another hellion runs: stop it, or set `HELLION_CONTROL_PORT` |
+| `--video needs port 5610 free` | something on this laptop already receives the camera's video, usually its own `hellion.service`: `sudo systemctl stop hellion` |
+| `THE VIDEO IS NOT WORKING on this laptop` | a pipeline of the session's hellion is in error (the line above says which); `lab.sh status` shows it again; the vehicle is not affected |
 | `the two ends are NOT THE SAME BUILD` (up --bridge) | the Pi's release and this checkout differ in their `msg/` tree or `bridge.conf`: `tools/release.sh`, `lab.sh deploy` (after `lab.sh down` if hangar runs), `up --bridge` again. Nothing was started |
 | `the link did not come up in 30 s` (up --bridge) | the two `bridge` lines it prints say where each end is. The laptop's firewall must let UDP 5614 in from the Pi; the laptop must have one address on the tether, the one in `lab.conf` (`LAPTOP_IP`). `lab.sh down`, or `up` again |
 | `/dev/ttyACM0 on the Pi is held by something else` (up --serial) | the lines under it name the process and its unit: stop it on the Pi, or put the unit in `LAB_SERIAL_SERVICES`. Without `--serial`, `up` uses the relay as before |

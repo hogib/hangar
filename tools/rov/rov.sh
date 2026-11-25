@@ -72,6 +72,9 @@ TOPSIDE_BIND_IP=$ROV_IP
 # And where it finds QGroundControl: the laptop, from the Pi. With the role on the laptop
 # both are the loopback address, see cmd_topside.
 TOPSIDE_GCS_IP=$GCS_IP
+# The page the topside console's Hellion tab frames. The profile's is the lab's own
+# hellion (port 8080); tools/rov/lab.sh runs its hellion on another port and says which.
+TOPSIDE_HELLION_URL=${TOPSIDE_HELLION_URL:-}
 
 usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
@@ -100,6 +103,11 @@ lay_out() { # root profile
         sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$f" \
             > "$root/etc/hangar/modules/$(basename "$f")"
     done
+    if [ -n "$TOPSIDE_HELLION_URL" ] && [ "$(basename "$prof")" = rov-topside ]; then
+        sed -i -e "s|--hellion http://[^ ]*|--hellion $TOPSIDE_HELLION_URL|" "$root/etc/hangar/modules/console.module"
+        grep -q -- "--hellion $TOPSIDE_HELLION_URL" "$root/etc/hangar/modules/console.module" ||
+            die "the topside's console.module has no --hellion to set (TOPSIDE_HELLION_URL)"
+    fi
     # The encoder is opt-in: its manifest is encoder.module.off in the profile.
     if [ "$ENCODER" = 1 ] && [ -e "$prof/encoder.module.off" ]; then
         sed -e "s|/usr/lib/hangar/|$bin/|g" -e "s|/etc/hangar/|$root/etc/hangar/|g" "$prof/encoder.module.off" \
