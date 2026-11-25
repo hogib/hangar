@@ -20,3 +20,5 @@ literature/
 *.json.health
 build/
 dist/
+
+.claude/
