@@ -14,6 +14,12 @@ typedef struct depth_control_params {
     float i_max;       // the integrator's largest share of the heave command
     float i_band;      // m: the integrator learns only this close to the target, unsaturated
     float max_thrust;  // the largest heave command
+    float level_kp;    // roll and pitch command per rad off level; 0 with level_kd 0: no levelling
+    float level_kd;    // roll and pitch command per rad/s of roll or pitch rate
+    float level_max;   // the largest roll, pitch or yaw command
+    float heading_kp;  // yaw command per rad off the heading held; 0 with heading_kd 0: no heading hold
+    float heading_kd;  // yaw command per rad/s of yaw rate
+    uint8_t _pad0[4];  // padding
 } depth_control_params;
 extern const struct hg_type DEPTH_CONTROL_PARAMS_TYPE;   // defined in msg/depth_control_params.c, also generated
 // Parameter attributes, one entry per field in field order, as written in the .msg.
@@ -26,8 +32,8 @@ struct hg_param_meta {
     uint8_t restart;      // 1: changing it restarts the module
 };
 #endif
-extern const struct hg_param_meta DEPTH_CONTROL_PARAMS_META[8];
-_Static_assert(sizeof(struct depth_control_params) == 32, "layout");
+extern const struct hg_param_meta DEPTH_CONTROL_PARAMS_META[13];
+_Static_assert(sizeof(struct depth_control_params) == 56, "layout");
 _Static_assert(offsetof(struct depth_control_params, kp) == 0, "layout");
 _Static_assert(offsetof(struct depth_control_params, kd) == 4, "layout");
 _Static_assert(offsetof(struct depth_control_params, accel_max) == 8, "layout");
@@ -36,4 +42,9 @@ _Static_assert(offsetof(struct depth_control_params, ki) == 16, "layout");
 _Static_assert(offsetof(struct depth_control_params, i_max) == 20, "layout");
 _Static_assert(offsetof(struct depth_control_params, i_band) == 24, "layout");
 _Static_assert(offsetof(struct depth_control_params, max_thrust) == 28, "layout");
+_Static_assert(offsetof(struct depth_control_params, level_kp) == 32, "layout");
+_Static_assert(offsetof(struct depth_control_params, level_kd) == 36, "layout");
+_Static_assert(offsetof(struct depth_control_params, level_max) == 40, "layout");
+_Static_assert(offsetof(struct depth_control_params, heading_kp) == 44, "layout");
+_Static_assert(offsetof(struct depth_control_params, heading_kd) == 48, "layout");
 #endif

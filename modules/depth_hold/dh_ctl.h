@@ -47,4 +47,24 @@ void dh_hold_current(struct dh_ctl *c);
 struct dh_out dh_step(struct dh_ctl *c, const struct dh_gains *g, double depth, double vel_z, int driving,
 		      int outputs_enabled, double dt);
 
+/* Levelling, for a vehicle with no autopilot behind it to keep it upright
+ * (README "Levelling"): the roll or pitch command, -max to max, that turns an
+ * angle (rad) and its rate (rad/s) back to level,
+ *
+ *   command = clamp(-kp angle - kd rate, +-max)
+ *
+ * No state: there is nothing to trim, level is where the centre of buoyancy
+ * already pulls. A non-finite angle or rate gives 0. */
+float dh_level(float kp, float kd, float max, double angle, double rate);
+
+/* Heading hold, likewise: the yaw command (clockwise from above positive)
+ * that turns the heading `yaw` to `target` the short way round, both in rad
+ * from north, any number of turns apart,
+ *
+ *   command = clamp(kp wrap(target - yaw) - kd rate, +-max)
+ *
+ * The module keeps the target: the heading the vehicle had when the mux last
+ * handed the yaw axis over. */
+float dh_heading(float kp, float kd, float max, double target, double yaw, double rate);
+
 #endif

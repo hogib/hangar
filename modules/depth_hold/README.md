@@ -1,7 +1,8 @@
 # depth_hold: the classical depth controller
 
-Reads `nav.state` (`modules/nav`) and publishes, at 50 Hz, `ctl.depth_hold` (a wrench,
-heave only) and `ctl.depth_hold.target` (`msg/depth_target.msg`: the depth held, the
+Reads `nav.state` (`modules/nav`) and publishes, at 50 Hz, `ctl.depth_hold` (a wrench:
+heave; roll, pitch and yaw too when [levelling and heading hold](#levelling-and-heading-hold)
+are on) and `ctl.depth_hold.target` (`msg/depth_target.msg`: the depth held, the
 state, **`accel_z`**, the vertical acceleration it wants, which docs/09's dataset joins
 and its policy reads, the integrator, whether it drives). The controller of docs/07's
 `assisted` mode and failsafe `hold`, and of docs/09's adaptive depth hold.
@@ -24,6 +25,9 @@ All positive down except the heave command, which is up positive:
 | `i_max` | 0.3 | the integrator's largest share of the command |
 | `i_band` | 0.3 m | the integrator learns only this close to the target, unsaturated |
 | `max_thrust` | 0.6 | the largest heave command |
+| `level_kp`, `level_kd` | 0, 0 | levelling: roll and pitch command per rad off level and per rad/s; both 0, none |
+| `heading_kp`, `heading_kd` | 0, 0 | heading hold: yaw command per rad off the heading held and per rad/s; both 0, none |
+| `level_max` | 0.5 | the largest roll, pitch or yaw command |
 
 The integrator learns only within `i_band` of the target and while `accel_z` is not
 clamped: integrating on the approach wound it up (27 % overshoot on a 1 m step at
@@ -36,6 +40,27 @@ rises (10–90 %) in **2.22 s**, overshoots **4.3 %**, settles within 5 cm after
 **3.18 s**; a 7 N buoyancy step moves it **0.086 m** at worst, back within 5 cm after
 **4.70 s**. The defaults are tuned against that model, not the lab's vehicle: on the
 water, start with them, and `hangar param set depth_hold kp=… kd=…`.
+
+## Levelling and heading hold
+
+Off by default: with ArduSub behind hangar the vehicle's attitude is ArduSub's to keep,
+and every result so far was taken that way. For a vehicle without ArduSub
+(`profiles/sim-direct`) nothing else keeps it upright or pointing where it was left,
+and lib/sim's model is stable in neither at speed (lib/sim/README.md "Pitch under
+surge"). With the gains set, beside the heave:
+
+    roll  = clamp(-level_kp roll  - level_kd roll rate,  ±level_max)
+    pitch = clamp(-level_kp pitch - level_kd pitch rate, ±level_max)
+    yaw   = clamp(heading_kp wrap(heading held - yaw) - heading_kd yaw rate, ±level_max)
+
+No integrator: level is where the centre of buoyancy already pulls. The heading is held
+as the depth is: while the mux does not give the yaw axis to a controller (the pilot
+turning, or `manual`), the heading held follows the vehicle's, and handed the axis
+(`mux.state`'s `source_yaw` 2) it holds the heading the vehicle has then, the short way
+round. Nothing is output from a stale `nav.state`. Whether any of it drives is the
+mux's `controller_axes`: 60 for heave, roll, pitch and yaw. This is ArduSub's
+stabilized depth hold in three lines, not a tuned attitude controller: the profile's
+gains (0.5 and 0.1 for both) were chosen on the simulator.
 
 ## Who drives
 
@@ -74,6 +99,10 @@ zeros flagged stale.
    dataset anchors on `nav.state`, and the controller and the estimate are separate
    modules.
 5. **The integrator's band** (`i_band`) is the module's own anti-windup.
+6. **Levelling and heading hold live here** and not in modules of their own: the mux
+   takes one controller topic (`ctl.depth_hold`) and gives it the axes
+   `controller_axes` names, so a second controller would need a second topic and a
+   rule between them. docs/07 names "depth, heading" as what `assisted` holds.
 
 ## Tests (`make check-depth_hold`, about 40 s)
 
@@ -81,7 +110,10 @@ The controller alone against the simulated vehicle: the step and the buoyancy st
 above; not driving, the target follows a 0.3 m/s descent and the integrator learns
 nothing; handed the axis while sinking, it brakes and holds where it was handed it; a
 set target kept until the controller, having driven with it, stops; `hold`; no
-integration with the outputs disabled. Then the chain under a manager: `nav`,
+integration with the outputs disabled; the levelling and heading commands' arithmetic
+(their signs, the clamp, the short way round across north). The flights that need
+them are `modules/thrusters`' (`make check-thrusters`, `make check-sim_direct`). Then
+the chain under a manager: `nav`,
 `depth_hold` and the mux, the suite as the vehicle (it turns `ctl.wrench` into motion,
 and the motion into `nav.depth`, `nav.attitude` and `nav.imu`), the pilot and safety:
 

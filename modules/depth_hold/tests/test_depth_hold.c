@@ -515,6 +515,32 @@ static void test_shutdown(void)
 	CHECK_EQ_INT(manager_stop(mgr), 0);
 }
 
+/* Levelling and heading hold: the two commands' arithmetic (dh_ctl.h). The
+ * flight that needs them is modules/thrusters' (test_thrusters, test_sim_direct). */
+static void test_level_and_heading(void)
+{
+	/* Rolled to the right, or pitched up: a command the other way; turning
+	 * that way already, a larger one. */
+	CHECK(dh_level(1, 0, 0.5f, 0.1, 0) < 0);
+	CHECK(fabs(dh_level(1, 0, 0.5f, 0.1, 0) + 0.1) < 1e-6);
+	CHECK(dh_level(1, 0.2f, 0.5f, 0.1, 0.5) < dh_level(1, 0.2f, 0.5f, 0.1, 0));
+	CHECK(dh_level(1, 0, 0.5f, 0, 0) == 0);
+	CHECK(dh_level(5, 0, 0.5f, 1, 0) == -0.5f && dh_level(5, 0, 0.5f, -1, 0) == 0.5f);
+	CHECK(dh_level(1, 1, 0.5f, NAN, 0) == 0 && dh_level(1, 1, 0.5f, 0, INFINITY) == 0);
+	CHECK(dh_level(0, 0, 0.5f, 1, 1) == 0);
+	/* The heading: clockwise positive, the short way round, across north
+	 * and across any number of whole turns. */
+	const double pi = 3.14159265358979323846;
+	CHECK(fabs(dh_heading(1, 0, 0.5f, 0.2, 0.1, 0) - 0.1) < 1e-6);
+	CHECK(fabs(dh_heading(1, 0, 0.5f, 0.1, 0.2, 0) + 0.1) < 1e-6);
+	CHECK(fabs(dh_heading(1, 0, 0.5f, -pi + 0.05, pi - 0.05, 0) - 0.1) < 1e-6);
+	CHECK(fabs(dh_heading(1, 0, 0.5f, pi - 0.05, -pi + 0.05, 0) + 0.1) < 1e-6);
+	CHECK(fabs(dh_heading(1, 0, 0.5f, 0.1 + 6 * pi, 0.2, 0) + 0.1) < 1e-6);
+	CHECK(dh_heading(1, 0.5f, 0.5f, 0, 0, 0.2) < 0);
+	CHECK(dh_heading(5, 0, 0.5f, 1, 0, 0) == 0.5f);
+	CHECK(dh_heading(1, 1, 0.5f, NAN, 0, 0) == 0);
+}
+
 int main(void)
 {
 	T_dh = getenv("DEPTH_HOLD_BIN");
@@ -525,6 +551,7 @@ int main(void)
 		return 2;
 	}
 	RUN_TEST(test_step_response);
+	RUN_TEST(test_level_and_heading);
 	RUN_TEST(test_follow_and_handover);
 	hd_setup("depth_hold", NULL);
 	copy_types();

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "depth_control_params.h"
 
-static const struct hg_field depth_control_params_fields[8] = {
+static const struct hg_field depth_control_params_fields[13] = {
     {"kp", HG_F32, 1, 0, "1/s^2: m/s^2 wanted per m of depth error"},
     {"kd", HG_F32, 1, 4, "1/s: m/s^2 wanted per m/s of vertical velocity"},
     {"accel_max", HG_F32, 1, 8, "m/s^2: the largest vertical acceleration wanted"},
@@ -11,6 +11,11 @@ static const struct hg_field depth_control_params_fields[8] = {
     {"i_max", HG_F32, 1, 20, "the integrator's largest share of the heave command"},
     {"i_band", HG_F32, 1, 24, "m: the integrator learns only this close to the target, unsaturated"},
     {"max_thrust", HG_F32, 1, 28, "the largest heave command"},
+    {"level_kp", HG_F32, 1, 32, "roll and pitch command per rad off level; 0 with level_kd 0: no levelling"},
+    {"level_kd", HG_F32, 1, 36, "roll and pitch command per rad/s of roll or pitch rate"},
+    {"level_max", HG_F32, 1, 40, "the largest roll, pitch or yaw command"},
+    {"heading_kp", HG_F32, 1, 44, "yaw command per rad off the heading held; 0 with heading_kd 0: no heading hold"},
+    {"heading_kd", HG_F32, 1, 48, "yaw command per rad/s of yaw rate"},
 };
 
 const struct hg_type DEPTH_CONTROL_PARAMS_TYPE = {
@@ -25,15 +30,20 @@ const struct hg_type DEPTH_CONTROL_PARAMS_TYPE = {
         "f32  i_max = 0.3      [0, 1]      # the integrator's largest share of the heave command\n"
         "f32  i_band = 0.3     [0, 100]    # m: the integrator learns only this close to the target, unsaturated\n"
         "f32  max_thrust = 0.6 [0, 1]      # the largest heave command\n"
+        "f32  level_kp = 0     [0, 20]     # roll and pitch command per rad off level; 0 with level_kd 0: no levelling\n"
+        "f32  level_kd = 0     [0, 5]      # roll and pitch command per rad/s of roll or pitch rate\n"
+        "f32  level_max = 0.5  [0, 1]      # the largest roll, pitch or yaw command\n"
+        "f32  heading_kp = 0   [0, 20]     # yaw command per rad off the heading held; 0 with heading_kd 0: no heading hold\n"
+        "f32  heading_kd = 0   [0, 5]      # yaw command per rad/s of yaw rate\n"
         ,
-    .schema_bytes = 800,
-    .hash = 0x07db56cd925cf478ull,   // FNV-1a 64 of the canonical form
-    .payload_bytes = 32,
-    .n_fields = 8,
+    .schema_bytes = 1261,
+    .hash = 0x923816a58fff4fdeull,   // FNV-1a 64 of the canonical form
+    .payload_bytes = 56,
+    .n_fields = 13,
     .fields = depth_control_params_fields,
 };
 
-const struct hg_param_meta DEPTH_CONTROL_PARAMS_META[8] = {
+const struct hg_param_meta DEPTH_CONTROL_PARAMS_META[13] = {
     {"4", "0", "20", 0},     // kp
     {"4", "0", "20", 0},     // kd
     {"1", "0.01", "10", 0},  // accel_max
@@ -42,4 +52,9 @@ const struct hg_param_meta DEPTH_CONTROL_PARAMS_META[8] = {
     {"0.3", "0", "1", 0},    // i_max
     {"0.3", "0", "100", 0},  // i_band
     {"0.6", "0", "1", 0},    // max_thrust
+    {"0", "0", "20", 0},     // level_kp
+    {"0", "0", "5", 0},      // level_kd
+    {"0.5", "0", "1", 0},    // level_max
+    {"0", "0", "20", 0},     // heading_kp
+    {"0", "0", "5", 0},      // heading_kd
 };

@@ -2,6 +2,7 @@
 /* dh_ctl: see dh_ctl.h. */
 #include "dh_ctl.h"
 
+#include <math.h>
 #include <string.h>
 
 static double clampd(double v, double lim)
@@ -56,4 +57,26 @@ struct dh_out dh_step(struct dh_ctl *c, const struct dh_gains *g, double depth, 
 		c->integral = clampd(c->integral - g->ki * err * dt, g->i_max);
 	double heave = clampd(-g->ff * accel + c->integral, g->max_thrust);
 	return (struct dh_out){ .heave = (float)heave, .accel_z = (float)accel };
+}
+
+float dh_level(float kp, float kd, float max, double angle, double rate)
+{
+	double c = -(double)kp * angle - (double)kd * rate;
+	if (!isfinite(c))
+		return 0;
+	return (float)(c > max ? max : c < -max ? -max : c);
+}
+
+float dh_heading(float kp, float kd, float max, double target, double yaw, double rate)
+{
+	const double pi = 3.14159265358979323846;
+	double err = fmod(target - yaw, 2 * pi);
+	if (err > pi)
+		err -= 2 * pi;
+	if (err < -pi)
+		err += 2 * pi;
+	double c = (double)kp * err - (double)kd * rate;
+	if (!isfinite(c))
+		return 0;
+	return (float)(c > max ? max : c < -max ? -max : c);
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* depth_hold: the classical depth controller (modules/depth_hold/README.md;
  * docs/07 "The mux", docs/09 "Example: adaptive depth hold"). Reads nav.state
- * and publishes, at 50 Hz, ctl.depth_hold (a wrench, heave only) and
+ * and publishes, at 50 Hz, ctl.depth_hold (a wrench: heave; with the
+ * levelling gains set, roll and pitch; with the heading gains set, yaw) and
  * ctl.depth_hold.target (the depth held and the vertical acceleration wanted,
  * accel_z, which docs/09's dataset joins and its policy reads).
  *
@@ -46,6 +47,8 @@ static struct {
 	struct safety_state safety;
 	struct hg_info nav_info, mux_info, safety_info;
 	int have_nav, have_mux, have_safety;
+	double heading;   /* rad, the heading held */
+	int have_heading;
 	uint64_t last_ns;
 	char status[160];
 } D;
@@ -112,6 +115,26 @@ static void tick(uint64_t now)
 	 * the reference, docs/01), but the integrator learns nothing from it. */
 	struct dh_out o = dh_step(&C, &g, D.nav.depth_m, D.nav.vel_z, driving, enabled && nav_ok, dt);
 	w.heave = o.heave;
+	/* Levelling (README): off unless a gain is set; nothing from a state
+	 * that is stale. Whether it drives is the mux's controller_axes. */
+	if ((P.level_kp > 0 || P.level_kd > 0) && nav_ok) {
+		w.roll = dh_level(P.level_kp, P.level_kd, P.level_max, D.nav.roll, D.nav.rates[0]);
+		w.pitch = dh_level(P.level_kp, P.level_kd, P.level_max, D.nav.pitch, D.nav.rates[1]);
+	}
+	/* Heading hold, as the depth is held: while the mux does not give the
+	 * yaw axis to a controller (the pilot turning, or manual), the heading
+	 * held follows the vehicle's; handed the axis, it holds the heading the
+	 * vehicle has then. */
+	if ((P.heading_kp > 0 || P.heading_kd > 0) && nav_ok && isfinite(D.nav.yaw)) {
+		int yaw_driving = mux_ok && D.mux.source_yaw == 2;
+		if (!yaw_driving || !D.have_heading) {
+			D.heading = D.nav.yaw;
+			D.have_heading = 1;
+		}
+		w.yaw = dh_heading(P.heading_kp, P.heading_kd, P.level_max, D.heading, D.nav.yaw, D.nav.rates[2]);
+	} else {
+		D.have_heading = 0;
+	}
 	t.target_m = (float)C.target;
 	t.depth_m = D.nav.depth_m;
 	t.vel_z = D.nav.vel_z;
@@ -168,8 +191,10 @@ int main(int argc, char **argv)
 		mod_log(WHO, "hg_call_subs: %s", strerror(errno));
 		return 4;
 	}
-	mod_log(WHO, "ctl.depth_hold at 50 Hz; kp %g kd %g ff %g ki %g", (double)P.kp, (double)P.kd, (double)P.ff,
-		(double)P.ki);
+	mod_log(WHO, "ctl.depth_hold at 50 Hz; kp %g kd %g ff %g ki %g; levelling %s (kp %g kd %g), heading hold %s (kp %g kd %g)",
+		(double)P.kp, (double)P.kd, (double)P.ff, (double)P.ki, P.level_kp > 0 || P.level_kd > 0 ? "on" : "off",
+		(double)P.level_kp, (double)P.level_kd, P.heading_kp > 0 || P.heading_kd > 0 ? "on" : "off",
+		(double)P.heading_kp, (double)P.heading_kd);
 	uint64_t now = hg_now_ns(), next = now;
 	while (!mod_stop) {
 		now = hg_now_ns();
