@@ -303,10 +303,13 @@ class DeployAcrossTheTether(unittest.TestCase):
 
     @staticmethod
     def runtime():
+        # The policy answers before its dataset is bound, with a hash of 0:
+        # that is no answer yet (a model written from it is refused).
         try:
-            return learn.runtime_info("toy", timeout=2.0)
+            rt = learn.runtime_info("toy", timeout=2.0)
         except learn.LearnError:
             return None
+        return rt if rt["dataset_hash"] else None
 
     @classmethod
     def tearDownClass(cls):
