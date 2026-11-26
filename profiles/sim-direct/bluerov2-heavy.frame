@@ -1,0 +1,46 @@
+# bluerov2-heavy.frame: the BlueROV2 heavy configuration's eight thrusters
+# (lib/sim/sim_frame.h for the format, lib/sim/README.md "Parameters and their
+# sources" for where each number comes from). The thrusters module and the
+# simulator are both given this file, so they hold one geometry.
+#
+# Positions: Wu 2018, Table 4.2, in metres; the same figures as von Benzon et
+# al. 2022, Table A1. Body frame: x forward, y right, z down, from the centre
+# of gravity. Directions: which way a pulse width above 1500 us pushes, from
+# ArduPilot's motor factors for SUB_FRAME_VECTORED_6DOF. lib/sim's compiled-in
+# geometry is the same; `make check-sim` compares the two.
+[Frame]
+Name=bluerov2-heavy
+
+# The four horizontal thrusters, on the diagonals, 85 mm below the origin.
+[Thruster 1]
+Position=0.156 0.111 0.085
+Direction=-1 1 0
+
+[Thruster 2]
+Position=0.156 -0.111 0.085
+Direction=-1 -1 0
+
+[Thruster 3]
+Position=-0.156 0.111 0.085
+Direction=1 1 0
+
+[Thruster 4]
+Position=-0.156 -0.111 0.085
+Direction=1 -1 0
+
+# The four vertical thrusters: a pulse width above 1500 us pushes down.
+[Thruster 5]
+Position=0.120 0.218 0
+Direction=0 0 1
+
+[Thruster 6]
+Position=0.120 -0.218 0
+Direction=0 0 1
+
+[Thruster 7]
+Position=-0.120 0.218 0
+Direction=0 0 1
+
+[Thruster 8]
+Position=-0.120 -0.218 0
+Direction=0 0 1

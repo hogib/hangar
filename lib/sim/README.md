@@ -12,6 +12,7 @@ the command-line tool (`hangar sim fit`) are built on it and live elsewhere.
 |---|---|
 | `sim_model.h/.c` | Fossen's equation, RK4, surface and floor, parameters with sources |
 | `sim_thrust.h/.c` | T200 table, voltage interpolation, geometry, 6×8 allocation, lag, `sim_applied_wrench` |
+| `sim_frame.h/.c` | a vehicle's thrusters as data: the frame file's parser (from a buffer) |
 | `sim_noise.h/.c` | xorshift64, Gaussian noise, bias, latency; IMU, depth and attitude models |
 | `sim_fit.h/.c` | fit of buoyancy, damping and lag to a recording |
 | `data/t200_thrust.csv` | Blue Robotics' published T200 data, as fetched |
@@ -122,6 +123,70 @@ stored positive; his moment arms in mm are in metres here; his body origin at
 the CB is moved to the CG (which makes `M_RB` diagonal exactly and puts the
 whole restoring moment into `cb`); his thruster directions are replaced by
 ArduSub's, which decide what a pulse width does on the real vehicle.
+
+## Frames
+
+A frame file says where each thruster sits and which way a pulse width above 1500 µs
+pushes (`sim_frame.h` has the format). `sim_frame_parse` reads one from a buffer into
+the `sim_thruster_geometry` that `sim_alloc_matrix` takes; `sim_frame_bluerov2_heavy`
+gives the compiled-in heavy configuration as a frame. The simulator (`sim_vehicle
+--frame`) and the `thrusters` module (`hangar-thrusters --frame`) are given the same
+file, so the matrix one applies is the matrix the other inverts.
+`profiles/sim-direct/bluerov2-heavy.frame` is the heavy configuration as a file, and
+the suite checks it against the compiled-in geometry to 1e-15: the default and the
+file cannot drift. A frame with fewer than eight thrusters leaves the others' columns
+zero.
+
+## Pitch under surge
+
+Found on 2026-11-20 (`modules/sim_vehicle/README.md`): the vehicle tumbles under surge
+thrust. Two things in the model do it, and the suite pins both.
+
+1. **The horizontal thrusters' couple.** They sit 85 mm below the origin, so surge
+   made by them alone, as ArduSub's motor factors make it, comes with a nose-up moment
+   of 0.085 N m per newton. The restoring moment is at most `B |cb_z|` = 114.8 × 0.02 =
+   2.30 N m, passed at 27 N of surge; the four horizontals give over 110 N.
+2. **The Munk moment.** With the added mass unequal in surge and heave (5.5 and
+   14.57 kg) the model has a moment `(A_heave − A_surge) u w` that turns the nose
+   further from the direction of travel. The restoring moment holds it only below
+   `u_c = sqrt(B |cb_z| / (A_heave − A_surge))` = 0.50 m/s. A pure surge force, no
+   thruster geometry involved: a 1° pitch dies out at 0.35 m/s and has grown to 44° at
+   0.70 m/s. The same term between surge and sway leaves the heading unstable at any
+   speed, with nothing to restore it.
+
+Neither is a mistake in the arithmetic. Both come from published numbers that nobody
+measured on a heavy: the 85 mm is Wu's and von Benzon's alike, the 2 cm between the
+centres of gravity and buoyancy is Wu's "representative value" (von Benzon's CAD says
+1 cm), and Wu's surge damping, taken from another vehicle, lets 100 N of surge reach
+2.24 m/s where von Benzon's measured damping gives 0.79 m/s. With every published set
+in `literature/` the model goes over in open-loop surge.
+
+What is done about it, and what is not:
+
+- **The allocation** (`modules/thrusters`, `thr_alloc`) asks the vertical thrusters to
+  cancel the horizontals' couple: allocated, 56 N of surge comes with 0.01 N m of
+  pitch, by the factors 45 N comes with 3.84 N m. This removes cause 1 and changes no
+  parameter.
+- **`sim_params_damping_vonbenzon()`** replaces the six translational damping values
+  with the ones von Benzon et al. identified on a heavy ("Experimental" in their
+  Table A1): 13.7, 0, 33.0 N s/m and 141.0, 217.0, 190.0 N s²/m². It is not the
+  default: `sim_params_bluerov2_heavy()` is unchanged, so every earlier result
+  reproduces. `profiles/sim-direct` sets the same six numbers in its
+  `sim_vehicle.params`. With them and the allocation, open-loop surge stays upright up
+  to the full command (0.9° at 0.1, 2.3° at 0.25, 10.5° at 0.5, 31.8° at 1.0, level
+  again 20 s after), where either change alone still tumbles (`make check-thrusters`).
+- **Levelling and heading hold** in `depth_hold` (`level_kp`, `heading_kp`, off by
+  default) are what make the vehicle fly: holding depth without them, surge at half
+  command still takes it over, because the depth controller pushes along a tilted
+  axis; with them pitch stays within half a degree at full surge. This is the part of
+  ArduSub's stabilized modes that a vehicle without ArduSub has to bring itself.
+- **Not settled: the vehicle's own numbers.** Whether a real heavy pitches like this is
+  not known here; it has not been in the water under hangar. Three measurements would
+  settle the model: an inclining test (a known weight hung off one side, the tilt read
+  from the IMU: `B |cb_z|` directly), the horizontal thrusters' height from the centre
+  of gravity (the vehicle hung from two points, or its CAD), and a recorded surge run
+  for `hangar sim fit` (damping, and the pitch it takes). Until then `cb_z` and the
+  85 mm stay as published.
 
 ## The thrust table
 

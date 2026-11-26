@@ -504,7 +504,7 @@ check-msggen: $(TESTDIR)/test_msggen $(MSGGEN) $(TESTDIR)/hg_schema_hash
 # its suite from the repository root (the suite reads lib/sim/data/*.csv to
 # check the generated thrust table against it). data/t200_thrust.inc is
 # checked in; `make sim-data` regenerates it from the CSV.
-SIM_SRC := lib/sim/sim_model.c lib/sim/sim_thrust.c lib/sim/sim_noise.c lib/sim/sim_fit.c
+SIM_SRC := lib/sim/sim_model.c lib/sim/sim_thrust.c lib/sim/sim_noise.c lib/sim/sim_fit.c lib/sim/sim_frame.c
 SIM_CFLAGS := -std=c11 -Wall -Wextra -pedantic
 SIM_CPPFLAGS := -Ilib/sim -Ilib/common
 SIM_OBJDIR := $(OBJDIR)/sim

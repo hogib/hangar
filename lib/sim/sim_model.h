@@ -66,6 +66,15 @@ struct sim_state {
 /* The BlueROV2 heavy configuration's published defaults. */
 struct sim_params sim_params_bluerov2_heavy(void);
 
+/* Replaces the translational damping (surge, sway, heave; linear and
+ * quadratic) with the values von Benzon et al. 2022 identified on a BlueROV2
+ * heavy in a test facility (their Table A1, "Experimental"; sim_model.c names
+ * them). Everything else is left as it is. sim_params_bluerov2_heavy()'s own
+ * damping is Wu's, taken from another vehicle: its surge damping gives a top
+ * speed at which the model's pitch is unstable (lib/sim/README.md "Pitch
+ * under surge"). */
+void sim_params_damping_vonbenzon(struct sim_params *p);
+
 /* Adds a rigid payload of `mass` kg at `pos` (body frame relative to the
  * current CG, m): mass, weight, inertia (parallel-axis, diagonal part only)
  * and the CB offset follow the shifted CG. The payload is assumed to have no

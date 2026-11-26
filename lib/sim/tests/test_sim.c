@@ -4,12 +4,15 @@
 // trajectory, so a retuned coefficient does not break the suite but a wrong
 // sign or a lost conservation law does.
 #include "sim_fit.h"
+#include "sim_frame.h"
 #include "sim_model.h"
 #include "sim_noise.h"
 #include "sim_thrust.h"
 #include "test_harness.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define DT SIM_DEFAULT_DT
 #define SIM_PI 3.14159265358979323846 /* M_PI is POSIX, not C11 */
@@ -817,6 +820,176 @@ static void test_add_payload(void) {
   CHECK(s.pos[2] > 5.5);
 }
 
+/* ---- frames ---------------------------------------------------------------- */
+
+static const char SIX[] =
+    "# a made-up six-thruster frame for the parser: not a vehicle\n"
+    "[Frame]\nName=six\n"
+    "[Thruster 1]\nPosition=0.2 0.1 0\nDirection=1 1 0\n"
+    "[Thruster 2]\nPosition=0.2 -0.1 0\nDirection=1 -1 0\n"
+    "[Thruster 3]\nPosition=-0.2 0.1 0\nDirection=1 -1 0\nReversed=yes\n"
+    "[Thruster 4]\nPosition=-0.2 -0.1 0\nDirection=1 1 0\n"
+    "[Thruster 5]\nPosition=0 0.15 0\nDirection=0 0 2\n"
+    "[Thruster 6]\nPosition=0 -0.15 0\nDirection=0 0 2  # any length\n";
+
+static void test_frame_parse(void) {
+  struct sim_frame f;
+  char err[120] = "";
+  CHECK_EQ_INT(sim_frame_parse(SIX, sizeof SIX - 1, &f, err, sizeof err), 0);
+  CHECK_EQ_INT(f.n, 6);
+  CHECK(strcmp(f.name, "six") == 0);
+  CHECK(fabs(f.geometry.dir[0][0] - sqrt(0.5)) < 1e-15 && fabs(f.geometry.dir[4][2] - 1.0) < 1e-15);
+  CHECK(f.geometry.polarity[2] == -1.0 && f.geometry.polarity[3] == 1.0);
+  // Thrusters 7 and 8 are not described: their columns of T are zero.
+  double T[6][SIM_NTHRUSTERS];
+  sim_alloc_matrix(&f.geometry, T);
+  for (int a = 0; a < 6; a++)
+    CHECK(T[a][6] == 0.0 && T[a][7] == 0.0);
+  // A reversed thruster's column is the mirror of what its direction says.
+  CHECK(T[0][2] < 0.0 && T[1][2] > 0.0);
+
+  static const struct {
+    const char *text, *why;
+  } bad[] = {
+      {"[Thruster 1]\nPosition=0 0 0\n", "lacks"},
+      {"[Thruster 2]\nPosition=0 0 0\nDirection=1 0 0\n", "numbered"},
+      {"[Thruster 1]\nPosition=0 0 0\nDirection=0 0 0\n", "no length"},
+      {"[Thruster 1]\nPosition=0 0\nDirection=1 0 0\n", "three numbers"},
+      {"[Thruster 1]\nPosition=0 0 0 1\nDirection=1 0 0\n", "three numbers"},
+      {"[Thruster 1]\nPosition=0 0 nan\nDirection=1 0 0\n", "three numbers"},
+      {"[Thruster 1]\nPosition=0 0 0\nDirection=1 0 0\nReversed=maybe\n", "yes or no"},
+      {"[Thruster 1]\nPosition=0 0 0\nDirection=1 0 0\nThrust=5\n", "unknown key"},
+      {"[Thruster 9]\n", "out of range"},
+      {"[Motor 1]\n", "section"},
+      {"Position=0 0 0\n", "before any section"},
+      {"[Frame]\nName=\n", "Name"},
+      {"[Frame]\nName=x\n", "no thruster"},
+      {"", "no thruster"},
+  };
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    err[0] = '\0';
+    int r = sim_frame_parse(bad[i].text, strlen(bad[i].text), &f, err, sizeof err);
+    if (r != -1 || !strstr(err, bad[i].why))
+      printf("    case %zu: returned %d, '%s' (wanted '%s')\n", i, r, err, bad[i].why);
+    CHECK(r == -1 && strstr(err, bad[i].why));
+  }
+}
+
+// The shipped frame file and the compiled-in geometry are one geometry: the
+// simulator's default and what the thrusters module is given cannot drift.
+static void test_shipped_frame_is_the_compiled_geometry(void) {
+  const char *path = "profiles/sim-direct/bluerov2-heavy.frame";
+  FILE *fp = fopen(path, "r");
+  CHECK(fp != NULL);
+  if (!fp) {
+    printf("    cannot read %s (the suite runs from the repository root)\n", path);
+    return;
+  }
+  static char text[8192];
+  size_t n = fread(text, 1, sizeof text, fp);
+  fclose(fp);
+  struct sim_frame f, h;
+  char err[120] = "";
+  int r = sim_frame_parse(text, n, &f, err, sizeof err);
+  if (r < 0)
+    printf("    %s: %s\n", path, err);
+  CHECK_EQ_INT(r, 0);
+  sim_frame_bluerov2_heavy(&h);
+  CHECK_EQ_INT(f.n, h.n);
+  CHECK(strcmp(f.name, h.name) == 0);
+  double worst = 0.0;
+  for (int i = 0; i < SIM_NTHRUSTERS; i++) {
+    for (int j = 0; j < 3; j++) {
+      worst = fmax(worst, fabs(f.geometry.pos[i][j] - h.geometry.pos[i][j]));
+      worst = fmax(worst, fabs(f.geometry.dir[i][j] - h.geometry.dir[i][j]));
+    }
+    CHECK(f.geometry.polarity[i] == h.geometry.polarity[i]);
+  }
+  CHECK(worst < 1e-15);
+}
+
+/* ---- pitch under surge ----------------------------------------------------- */
+
+static double pitch_of(const struct sim_state *s) {
+  double pitch;
+  sim_quat_to_euler(s->q, NULL, &pitch, NULL);
+  return pitch;
+}
+
+// Cause 1 of the tumbling (README "Pitch under surge"): the horizontal
+// thrusters sit 85 mm below the origin, so surge made by them alone comes
+// with a nose-up moment of 0.085 N m per newton, and the restoring moment
+// cannot exceed B |cb_z|.
+static void test_surge_thrust_carries_a_pitch_moment(void) {
+  const struct sim_thruster_geometry *g = sim_geometry_bluerov2_heavy();
+  double T[6][SIM_NTHRUSTERS], tau[6];
+  sim_alloc_matrix(g, T);
+  // 10 N of surge from the four horizontals: 1 and 2 pull, 3 and 4 push.
+  double each = 10.0 / (4.0 * sqrt(0.5));
+  double thrust[SIM_NTHRUSTERS] = {-each, -each, each, each, 0, 0, 0, 0};
+  sim_alloc_wrench(&T[0][0], thrust, tau);
+  CHECK(fabs(tau[0] - 10.0) < 1e-12);
+  CHECK(fabs(tau[4] - 0.85) < 1e-12);
+  CHECK(fabs(tau[1]) < 1e-12 && fabs(tau[2]) < 1e-12 && fabs(tau[3]) < 1e-12 && fabs(tau[5]) < 1e-12);
+  struct sim_params p = sim_params_bluerov2_heavy();
+  double most = p.buoyancy * fabs(p.cb[2]);
+  printf("    the restoring moment is at most %.2f N m: the horizontals' couple passes it at %.1f N of surge\n",
+         most, most / 0.085);
+  CHECK(most / 0.085 < 30.0);
+}
+
+// Cause 2: with unequal added mass in surge and heave the model has a Munk
+// moment, (A_heave - A_surge) u w, which turns the nose further from the
+// direction of travel; the restoring moment B |cb_z| theta holds it only below
+// u_c = sqrt(B |cb_z| / (A_heave - A_surge)). A pure surge force, no thruster
+// geometry involved: a 1 degree pitch dies out below u_c and grows above it.
+static void test_pitch_is_stable_only_below_the_munk_speed(void) {
+  struct sim_params p = sim_params_bluerov2_heavy();
+  p.buoyancy = p.weight; // level flight, so that only pitch is in question
+  double uc = sqrt(p.buoyancy * fabs(p.cb[2]) / (p.added_mass[2] - p.added_mass[0]));
+  printf("    u_c = %.3f m/s with the published defaults\n", uc);
+  CHECK(uc > 0.45 && uc < 0.55);
+  for (int above = 0; above < 2; above++) {
+    double u = (above ? 1.4 : 0.7) * uc;
+    double force = (p.d_lin[0] + p.d_quad[0] * u) * u; // holds u in level flight
+    struct sim_state s;
+    sim_state_init(&s);
+    s.pos[2] = 50.0;
+    s.nu[0] = u;
+    sim_quat_from_euler(0.0, 1.0 * SIM_PI / 180.0, 0.0, s.q);
+    const double tau[6] = {force, 0, 0, 0, 0, 0};
+    double late = 0.0;
+    for (int i = 0; i < 60 * 200; i++) {
+      sim_step(&p, &s, tau, DT);
+      if (i >= 50 * 200)
+        late = fmax(late, fabs(pitch_of(&s)));
+    }
+    printf("    %.2f m/s (%.1f u_c): |pitch| up to %.2f deg in the last 10 s of 60\n", u,
+           above ? 1.4 : 0.7, late * 180.0 / SIM_PI);
+    if (above)
+      CHECK(late > 5.0 * SIM_PI / 180.0);
+    else
+      CHECK(late < 0.2 * SIM_PI / 180.0);
+  }
+}
+
+// What the measured translational damping changes: the same surge force
+// gives a lower speed, and the Munk moment goes with the speed squared.
+static void test_vonbenzon_damping(void) {
+  struct sim_params wu = sim_params_bluerov2_heavy(), vb = wu;
+  sim_params_damping_vonbenzon(&vb);
+  CHECK(vb.d_quad[0] == 141.0 && vb.d_quad[1] == 217.0 && vb.d_quad[2] == 190.0);
+  CHECK(vb.d_lin[0] == 13.7 && vb.d_lin[1] == 0.0 && vb.d_lin[2] == 33.0);
+  for (int i = 3; i < 6; i++)
+    CHECK(vb.d_lin[i] == wu.d_lin[i] && vb.d_quad[i] == wu.d_quad[i]);
+  CHECK(vb.mass == wu.mass && vb.cb[2] == wu.cb[2] && vb.added_mass[2] == wu.added_mass[2]);
+  // Terminal surge speed under 100 N: d_lin u + d_quad u^2 = 100.
+  double u_wu = (-wu.d_lin[0] + sqrt(wu.d_lin[0] * wu.d_lin[0] + 400.0 * wu.d_quad[0])) / (2.0 * wu.d_quad[0]);
+  double u_vb = (-vb.d_lin[0] + sqrt(vb.d_lin[0] * vb.d_lin[0] + 400.0 * vb.d_quad[0])) / (2.0 * vb.d_quad[0]);
+  printf("    100 N of surge: %.2f m/s with Wu's damping, %.2f m/s with von Benzon's\n", u_wu, u_vb);
+  CHECK(u_wu > 2.0 && u_vb < 1.0);
+}
+
 int main(void) {
   RUN_TEST(test_quaternion_round_trip);
   RUN_TEST(test_neutral_buoyancy_holds_depth);
@@ -839,5 +1012,10 @@ int main(void) {
   RUN_TEST(test_fit_recovers_parameters);
   RUN_TEST(test_fit_unexcited_axis_keeps_baseline);
   RUN_TEST(test_add_payload);
+  RUN_TEST(test_frame_parse);
+  RUN_TEST(test_shipped_frame_is_the_compiled_geometry);
+  RUN_TEST(test_surge_thrust_carries_a_pitch_moment);
+  RUN_TEST(test_pitch_is_stable_only_below_the_munk_speed);
+  RUN_TEST(test_vonbenzon_damping);
   TEST_MAIN_END();
 }

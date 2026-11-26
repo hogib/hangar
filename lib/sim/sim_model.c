@@ -138,6 +138,26 @@ struct sim_params sim_params_bluerov2_heavy(void) {
   return p;
 }
 
+/*
+ *  [vB22] M. von Benzon, F. F. Sørensen, E. Uth, J. Jouffroy, J. Liniger,
+ *         S. Pedersen, "An Open-Source Benchmark Simulator: Control of a
+ *         BlueROV2 Underwater Robot", J. Mar. Sci. Eng. 10(12):1898, 2022,
+ *         Table A1. A BlueROV2 heavy (13.5 kg as they weighed it) driven
+ *         through stock ArduSub in a test facility; the translational
+ *         damping is marked "Experimental", and the model's surge and sway
+ *         error is about 10 %, heave 15 % at small inputs (their section 4).
+ *         Only the six translational damping values are taken: the vehicle
+ *         here keeps Wu's mass, added mass and rotational values.
+ */
+void sim_params_damping_vonbenzon(struct sim_params *p) {
+  p->d_lin[0] = 13.7;   // vB22 Table A1 "Xu 13.7 (Ns/m)"
+  p->d_lin[1] = 0.0;    // "Yv 0 (Ns/m)"
+  p->d_lin[2] = 33.0;   // "Zw 33.0 (Ns/m)"
+  p->d_quad[0] = 141.0; // "Xu|u| 141.0 (Ns2/m2)"
+  p->d_quad[1] = 217.0; // "Yv|v| 217.0 (Ns2/m2)"
+  p->d_quad[2] = 190.0; // "Zw|w| 190.0 (Ns2/m2)"
+}
+
 void sim_params_add_payload(struct sim_params *p, double mass, const double pos[3]) {
   if (mass <= 0.0)
     return;
