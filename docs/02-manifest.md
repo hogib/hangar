@@ -366,6 +366,12 @@ module with an actuator output, which name each caller they accept.
 | `CPUs` | all | A list or ranges: `3`, `2-3`, `0,2` |
 | `LockMemory` | `no` | Lock the module's memory (`mlockall`, by the library at `hg_init`), so a page fault cannot stall it. For a `Legacy` module the manager only leaves `RLIMIT_MEMLOCK` raised; the program locks its own memory |
 
+Whether the manager can give a module what this section asks depends on what the
+kernel allows the manager; when it cannot, the module starts without, and `hangar
+status` and `hangar check` say so ([03-manager](03-manager.md#what-is-in-force)). A
+module under `fifo` or `rr` that runs for a second without sleeping is killed
+(`RLIMIT_RTTIME`).
+
 ## How the manager uses manifests
 
 **Everything starts at once.** There is no start ordering. A module whose inputs do

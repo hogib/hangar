@@ -139,6 +139,62 @@ profile. Pi OS and Debian hosts use the package; the tarball is for everything e
 for the tether path, which installs a tarball, never a `.deb`, so that one artefact
 format crosses the tether.
 
+## Real-time scheduling without root
+
+Under `hangard.service` the manager is root with `CAP_SYS_NICE` and `CAP_IPC_LOCK` and
+an unlimited `RLIMIT_MEMLOCK`, and a manifest's `[Schedule]` is applied as written. A
+manager run by an ordinary user under `$HANGAR_ROOT` (the lab's install,
+`tools/rov`) has neither, and until it is given them every module runs at the ordinary
+priority with unlocked memory, whatever its manifest asks
+([03-manager](03-manager.md#what-is-in-force)). Two ways to give them, each needing
+root once:
+
+**File capabilities on the manager.**
+
+```sh
+chmod 750 ~/hangar-root/bin/hangard
+sudo setcap cap_sys_nice,cap_ipc_lock+ep ~/hangar-root/bin/hangard
+```
+
+`tools/rov/lab.sh deploy --realtime` does both. The manager then holds the two
+capabilities and nothing else; a module gets the policy and priority of its
+`[Schedule]` before the exec and holds no capability after it, except `CAP_IPC_LOCK`
+if it has `LockMemory=yes`. Three things to know:
+
+- Whoever can run the file can have a process at a real-time priority: it is closed
+  to other users first (`chmod 750`).
+- The kernel removes a file's capabilities when the file is written: every install
+  over it needs the `setcap` again.
+- A filesystem mounted `nosuid` ignores file capabilities. `lab.sh deploy --realtime`
+  and `lab.sh preflight` both look and say.
+
+**Limits for the user.** In `/etc/security/limits.d/hangar.conf` (a new login takes
+them):
+
+```
+bluerov2  -  rtprio   70
+bluerov2  -  memlock  unlimited
+```
+
+`rtprio` must be at least the highest `Priority` in the manifests. This gives every
+process of that user the same, which the capabilities on one file do not.
+
+**The risk.** A process under `fifo` is run before everything under `other`: the
+shell, SSH, the manager's own loop. On the Pi's four cores one spinning real-time
+module takes one core from all of them, and with `CPUs=` pinning several to the same
+core, that core. Two bounds hold it: the kernel's real-time throttling
+(`/proc/sys/kernel/sched_rt_runtime_us`, 950000 of each second by default, which
+leaves the rest 5 % of a core the real-time tasks fill), and the manager's
+`RLIMIT_RTTIME` of one second on every module it starts under `fifo` or `rr`
+([03-manager](03-manager.md#starting-a-module)), which ends a module that never
+sleeps. The second is the one relied on; the first is the kernel's default and is
+not checked. A module that spun for a second and was killed is restarted with
+back-off and given up after its `Burst`, as any module that dies.
+
+**Seeing it.** `hangar check` and `hangar status` say for each module whether what its
+manifest asks is in force, read from the kernel, and `lab.sh preflight` says whether
+the installed manager could give it at all.
+
 ## Checks
 
 `hangar check` includes: both sides at the same version and `msg/` hash; the signature

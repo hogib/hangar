@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Starting a module (docs/03 "Starting a module"): clone3 with CLONE_PIDFD,
  * the registry entry and the Neutral record written before the child is
- * released, then in the child the ten steps in the documented order. Each
- * privileged step is attempted only when the manager runs as root; otherwise
- * it is skipped with a log line naming the step, so that the suites run as
- * an ordinary user under $HANGAR_ROOT. Also the module page, Neutral
+ * released, then in the child the ten steps in the documented order. The
+ * cgroup, the user switch and the capabilities are attempted only when the
+ * manager runs as root; scheduling and memory locking whenever the kernel
+ * will allow them (root, a capability or a limit: hd_sched.h). A step that is
+ * left out is skipped with a log line naming it and the reason, so that the
+ * suites run as an ordinary user under $HANGAR_ROOT. Also the module page, Neutral
  * commands and the signals to a module's group or cgroup. */
 #include "hangard.h"
+
+#include "hd_sched.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -36,6 +40,8 @@ struct child_ctx {
 	int release_wfd;         /* the manager's end, which the child's copy must not keep open */
 	int err_fd;              /* errno on exec failure */
 	int do_cgroup, do_sched, do_user, do_caps, do_rlimit;
+	int do_lock_cap;         /* CAP_IPC_LOCK handed on as ambient: LockMemory under a manager that is not root */
+	int lock_env;            /* HANGAR_LOCK_MEMORY=1: the library locks at hg_init */
 	char cgroup[HD_PATH];
 	uid_t uid;
 	gid_t gid;
@@ -572,10 +578,29 @@ static _Noreturn void child_main(struct child_ctx *c)
 			setrlimit(RLIMIT_MEMLOCK, &rl);
 		}
 	}
-	/* 4. Scheduling, priority, nice, affinity. */
+	/* The manager is not root and holds CAP_IPC_LOCK: the module keeps it
+	 * across the exec as an ambient capability, and nothing else. */
+	if (c->do_lock_cap) {
+		struct hd_cap_header h = { HD_CAP_VERSION_3, 0 };
+		struct hd_cap_data d[2];
+		if (syscall(SYS_capget, &h, d) < 0)
+			fail_exec(c->err_fd, 3, errno);
+		d[0].inheritable |= 1u << 14;
+		if (syscall(SYS_capset, &h, d) < 0 || prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, 14, 0, 0) < 0)
+			fail_exec(c->err_fd, 3, errno);
+	}
+	/* 4. Scheduling, priority, nice, affinity. A real-time module that
+	 * runs HD_RTTIME_US without sleeping is killed by the kernel
+	 * (RLIMIT_RTTIME): a spinning module must not hold a core above
+	 * everything else on the machine. */
 	if (c->do_sched && mf->sched != MF_SCHED_OTHER) {
+		struct rlimit rt = { HD_RTTIME_US, HD_RTTIME_US };
+		if (setrlimit(RLIMIT_RTTIME, &rt) < 0)
+			fail_exec(c->err_fd, 4, errno);
 		struct sched_param sp = { .sched_priority = mf->priority };
-		if (sched_setscheduler(0, mf->sched == MF_SCHED_FIFO ? SCHED_FIFO : SCHED_RR, &sp) < 0)
+		/* The system call itself: musl's sched_setscheduler answers ENOSYS
+		 * always, and the release is built with musl. */
+		if (syscall(SYS_sched_setscheduler, 0, mf->sched == MF_SCHED_FIFO ? SCHED_FIFO : SCHED_RR, &sp) < 0)
 			fail_exec(c->err_fd, 4, errno);
 	}
 	if (mf->sched == MF_SCHED_OTHER && mf->nice && (c->do_sched || mf->nice > 0))
@@ -694,6 +719,8 @@ static int build_env(struct child_ctx *c, const struct module *m)
 	}
 	if (G.paths.root[0])
 		bad |= env_add(c, &n, &used, "HANGAR_ROOT=%s", G.paths.root);
+	if (c->lock_env)
+		bad |= env_add(c, &n, &used, "HANGAR_LOCK_MEMORY=1");
 	/* until the bridge: the same-host shim (modules/PHASE1.md). A manager
 	 * started with HANGAR_PEER_TOPIC_DIR passes it on, with the flag that
 	 * tells the library the manager meant it. */
@@ -749,13 +776,24 @@ int module_spawn(struct module *m)
 		hd_log("%s: skipping step 2 (cgroup): %s", m->name,
 		       G.is_root ? "no delegated cgroup" : "not running as root");
 	}
+	/* Steps 3 and 4 go by what the kernel allows this process, not by its
+	 * user: root, CAP_SYS_NICE and CAP_IPC_LOCK, or the limits. */
+	struct hd_privs pv;
+	char why[96];
+	hd_privs_read(&pv);
 	c.do_rlimit = !mf->lock_memory;
-	if (G.is_root) {
+	if (mf->lock_memory) {
+		enum hd_lock_by by = hd_lock_reach(&pv, why, sizeof why);
+		if (by == HD_LOCK_NO)
+			hd_log("%s: skipping LockMemory (step 3): %s", m->name, why);
+		c.lock_env = by != HD_LOCK_NO && !mf->legacy;
+		c.do_lock_cap = by == HD_LOCK_CAP;
+	}
+	if (hd_sched_reach(&pv, mf->sched, mf->priority, mf->nice, why, sizeof why)) {
 		c.do_sched = 1;
-	} else if (mf->sched != MF_SCHED_OTHER || mf->nice < 0) {
-		hd_log("%s: skipping step 4 (scheduling policy %s, priority %d, nice %d): not running as root",
-		       m->name, mf->sched == MF_SCHED_FIFO ? "fifo" : mf->sched == MF_SCHED_RR ? "rr" : "other",
-		       mf->priority, mf->nice);
+	} else {
+		hd_log("%s: skipping step 4 (scheduling policy %s, priority %d, nice %d): %s", m->name,
+		       hd_sched_name(mf->sched), mf->priority, mf->nice, why);
 	}
 	if (G.is_root && !mf->privileged) {
 		c.do_user = 1;

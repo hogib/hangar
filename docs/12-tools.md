@@ -133,7 +133,15 @@ machines ([Both machines](#both-machines)); its vehicle checks that need a call
 | Actuators | an actuator has no `Neutral` command, or a `Neutral` command (an actuator's, or a `Legacy` module's `[Module] Neutral`) is not executable | the hardware watchdog is not armed |
 | Recorder | the black box is off; its `Dir` is not group `hangar-rec` with mode 2770 | free space under twice `MinFree`; the black box covers a rated topic of class `high` or `normal` for less than `BlackBox` (from `recorder.status`) |
 | Policies | | a policy is in `residual:<name>` mode; a policy has no running model |
+| Schedule | | a running module does not have the scheduling policy, the priority or the locked memory its `[Schedule]` asks, read from the kernel ([03-manager](03-manager.md#what-is-in-force)); the line names the module, what it asks, what it runs with, and what the manager may give |
 | Configuration | a module named by a `[Calls] Remote=` entry is enabled on both machines (found at the handshake); a policy module's name is not `policy_<Name>` of its spec | a manifest, dataset spec, policy spec, `bridge.conf`, `recorder.conf`, `pairer.conf` or `ardusub.params` changed on disk since the last reload, start or setup |
+
+The Schedule line is `OK schedule: …` or one `WARN schedule: <module>: …` a module.
+While `hangar check` is the phase 1 subset (the arming checklist alone decides its
+exit status), a Schedule warning changes the exit status only with `hangar check
+--strict`, which a measurement session uses: a number taken at the ordinary priority
+is not a number of the installation the manifests describe. With no `[Schedule]` in
+any manifest the line says so, and `--strict` has nothing to object to.
 
 The Autopilot line reads ArduSub's state and parameters as the vehicle's `mavlink`
 module reports them (`ardusub.state`, `ardusub.param`, which carries every parameter

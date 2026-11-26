@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/random.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <time.h>
@@ -487,6 +488,32 @@ static int fetch_page(void)
 	return 0;
 }
 
+/* [Schedule] LockMemory=yes (docs/02): the manager says so in
+ * HANGAR_LOCK_MEMORY, and every page the module has and will map stays in
+ * memory, the rings included. Only when nothing bounds it, by CAP_IPC_LOCK
+ * or an unlimited RLIMIT_MEMLOCK: under a finite limit a later map would
+ * fail instead, long after the start. A module that cannot lock runs
+ * unlocked and says so once; what is locked is in /proc/<pid>/status
+ * (VmLck), which `hangar check` reads. */
+static void lock_memory(void)
+{
+	const char *e = getenv("HANGAR_LOCK_MEMORY");
+	if (!e || strcmp(e, "1") != 0)
+		return;
+	struct { uint32_t version; int pid; } h = { 0x20080522u, 0 };
+	struct { uint32_t effective, permitted, inheritable; } d[2];
+	memset(d, 0, sizeof d);
+	int cap = syscall(SYS_capget, &h, d) == 0 && ((d[0].effective >> 14) & 1); /* CAP_IPC_LOCK */
+	struct rlimit rl;
+	int unlimited = getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur == RLIM_INFINITY;
+	if (!cap && !unlimited) {
+		fprintf(stderr, "hangar: LockMemory: not locked: no CAP_IPC_LOCK and RLIMIT_MEMLOCK is not unlimited\n");
+		return;
+	}
+	if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0)
+		fprintf(stderr, "hangar: LockMemory: mlockall: %s\n", strerror(errno));
+}
+
 int hg_init(void)
 {
 	if (inited)
@@ -527,6 +554,7 @@ int hg_init(void)
 	control_path = ctl && *ctl ? ctl : NULL;
 	if (control_path && fetch_page() < 0)
 		return -1;
+	lock_memory();
 	inited = 1;
 	return 0;
 }

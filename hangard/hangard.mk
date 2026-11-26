@@ -11,7 +11,7 @@
 #   make msg                also regenerates msg/hangar_{system,modules}.{h,c}
 #                           from hangard/msg/*.msg
 
-HANGARD_CORE_SRC := hangard/manifest.c hangard/wiring.c hangard/policy_check.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c lib/hg/hg_ini.c
+HANGARD_CORE_SRC := hangard/manifest.c hangard/hd_sched.c hangard/wiring.c hangard/policy_check.c modules/bridge/bridge_conf.c modules/bridge/blake2s.c lib/hg/hg_ini.c
 HANGARD_SRC := hangard/hangard.c hangard/conf.c hangard/registry.c hangard/topics.c \
 	hangard/spawn.c hangard/health.c hangard/control.c $(HANGARD_CORE_SRC) \
 	msg/hangar_system.c msg/hangar_modules.c

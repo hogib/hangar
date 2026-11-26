@@ -2,6 +2,7 @@
 // Starting a module (docs/03 "Starting a module", "Neutral commands"): what
 // must hold before the child is released, and what it is handed.
 #include "hd_test.h"
+#include "hd_sched.h"
 
 static pid_t mgr;
 
@@ -290,6 +291,86 @@ static void test_reexec_leaks_no_wiring(void)
 	unlink(T_log);
 }
 
+/* docs/03 "What is in force": a module whose manifest asks for a real-time
+ * policy and locked memory under a manager the kernel allows neither is
+ * started all the same, and the log, the schedule request, status, show and
+ * check each say what it runs with, read from the kernel. Where the kernel
+ * does allow one (root, a capability, a limit), that one must be in force. */
+static void test_schedule_asked_and_in_force(void)
+{
+	struct hd_privs pv;
+	char why[96], out[8192];
+	hd_privs_read(&pv);
+	int can_rt = hd_sched_reach(&pv, MF_SCHED_FIFO, 20, 0, why, sizeof why);
+	int can_lock = hd_lock_reach(&pv, why, sizeof why) != HD_LOCK_NO;
+	manifest("rt", "[Module]\nExec=%s/talker --topic test.rt --rate 50\n[Publish test.rt]\nType=depth\nRate=50\n"
+		       "[Schedule]\nPolicy=fifo\nPriority=20\nLockMemory=yes\n", T_toys);
+	manifest("plain", "[Module]\nExec=%s/talker --topic test.plain --rate 50\n[Publish test.plain]\nType=depth\nRate=50\n",
+		 T_toys);
+	mgr = manager_start();
+	CHECK(wait_state("rt", "ready", 5000));
+	CHECK(wait_state("plain", "ready", 5000));
+	struct mstat m;
+	CHECK(module_status("rt", &m) && m.pid > 0 && m.failures == 0);
+	struct hd_sched_now now;
+	CHECK_EQ_INT(hd_sched_now(m.pid, &now), 0);
+	const char *r = ctl("schedule");
+	CHECK(r && strstr(r, "\nmanager root ") && strstr(r, "\nmodule rt ") && strstr(r, " ask fifo 20 0 - 1 now "));
+	CHECK(r && strstr(r, "\nmodule plain ") && strstr(r, " ask other 0 0 - 0 now other 0 "));
+	int rc = run_cli(out, sizeof out, 5000, "status", (char *)NULL);
+	CHECK_EQ_INT(rc, 0);
+	CHECK(!strstr(out, "not in force: plain"));
+	if (can_rt) {
+		CHECK(now.sched == MF_SCHED_FIFO && now.priority == 20);
+		CHECK(!strstr(out, "asks fifo 20, runs"));
+		/* The real-time budget: a module that never sleeps is ended by the kernel. */
+		char path[64];
+		tfmt(path, sizeof path, "/proc/%d/limits", m.pid);
+		CHECK(file_contains(path, "Max realtime timeout      1000000"));
+		printf("    (real-time scheduling allowed here: in force, checked)\n");
+	} else {
+		CHECK(now.sched == MF_SCHED_OTHER);
+		CHECK(file_contains(T_log, "rt: skipping step 4 (scheduling policy fifo, priority 20, nice 0): no CAP_SYS_NICE"));
+		CHECK(strstr(out, "not in force: rt: asks fifo 20, runs other, nice 0") != NULL);
+		printf("    (skip: no CAP_SYS_NICE or RLIMIT_RTPRIO here: fifo in force is not tested)\n");
+	}
+	if (can_lock) {
+		CHECK(now.locked_kb > 0);
+		CHECK(!strstr(out, "asks locked memory"));
+		printf("    (memory locking allowed here: in force, checked)\n");
+	} else {
+		CHECK_EQ_INT(now.locked_kb, 0);
+		CHECK(file_contains(T_log, "rt: skipping LockMemory (step 3): no CAP_IPC_LOCK"));
+		CHECK(strstr(out, "asks locked memory, has none locked") != NULL);
+		printf("    (skip: no CAP_IPC_LOCK or unlimited RLIMIT_MEMLOCK here: locked memory in force is not tested)\n");
+	}
+	rc = run_cli(out, sizeof out, 5000, "show", "rt", (char *)NULL);
+	CHECK(strstr(out, "schedule   asks fifo 20, CPUs all, LockMemory yes") != NULL);
+	CHECK(strstr(out, can_rt ? "in force   fifo 20, " : "in force   other, nice 0, ") != NULL);
+	run_cli(out, sizeof out, 5000, "show", "plain", (char *)NULL);
+	CHECK(strstr(out, "schedule   asks other, nice 0, CPUs all, LockMemory no") != NULL);
+	CHECK(!strstr(out, "not in force"));
+	/* check: a warning line, and the exit status of a warning only with --strict.
+	 * No safety module here, so the checklist itself cannot be asked. */
+	run_cli(out, sizeof out, 5000, "check", (char *)NULL);
+	if (can_rt && can_lock)
+		CHECK(strstr(out, "OK schedule: what 1 manifest asks is in force") != NULL);
+	else
+		CHECK(strstr(out, "WARN schedule: rt: ") != NULL);
+	manager_stop(mgr);
+	manifest_remove("rt");
+	/* Nothing asks: check says so, and that every module runs at the ordinary priority. */
+	mgr = manager_start();
+	CHECK(wait_state("plain", "ready", 5000));
+	run_cli(out, sizeof out, 5000, "check", "--strict", (char *)NULL);
+	CHECK(strstr(out, "OK schedule: no manifest asks for real-time scheduling or locked memory") != NULL);
+	rc = run_cli(out, sizeof out, 5000, "status", (char *)NULL);
+	CHECK(!strstr(out, "not in force"));
+	manager_stop(mgr);
+	manifest_remove("plain");
+	unlink(T_log);
+}
+
 int main(void)
 {
 	hd_setup("spawn", NULL);
@@ -298,6 +379,7 @@ int main(void)
 	HD_RUN(test_no_module_without_its_registry_entry);
 	HD_RUN(test_no_record_outlives_its_instance);
 	HD_RUN(test_environment);
+	HD_RUN(test_schedule_asked_and_in_force);
 	HD_RUN(test_exit_78_with_an_unterminated_status);
 	HD_RUN(test_reexec_leaks_no_wiring);
 	hd_teardown();

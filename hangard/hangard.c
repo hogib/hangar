@@ -5,6 +5,8 @@
  * lists. */
 #include "hangard.h"
 
+#include "hd_sched.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -1018,8 +1020,13 @@ int main(int argc, char **argv)
 	find_cgroup();
 	hd_log("starting: role %s, modules %s, topics %s%s%s", G.conf.role, G.conf.module_dir, G.conf.topic_dir,
 	       G.paths.root[0] ? ", root " : "", G.paths.root);
-	if (!G.is_root)
-		hd_log("not running as root: user switching, scheduling, capabilities and cgroups are skipped");
+	if (!G.is_root) {
+		struct hd_privs pv;
+		hd_privs_read(&pv);
+		hd_log("not running as root: user switching, capabilities and cgroups are skipped; scheduling %s, memory locking %s",
+		       pv.sys_nice ? "by CAP_SYS_NICE" : pv.rtprio > 0 ? "up to RLIMIT_RTPRIO" : "is not allowed here",
+		       pv.memlock_unlimited ? "by RLIMIT_MEMLOCK" : pv.ipc_lock ? "by CAP_IPC_LOCK" : "is not allowed here");
+	}
 
 	/* An inherited SIG_IGN or SA_NOCLDWAIT would have the kernel reap every
 	 * module at exit: no status, and its group id free for reuse. */

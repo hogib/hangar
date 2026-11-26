@@ -176,11 +176,17 @@ earlier steps need:
    has a `Neutral` command, its Neutral record, and exit if the pipe closes first (the
    manager died): no module ever runs without an entry;
 2. move into its cgroup;
-3. resource limits: `RLIMIT_MEMLOCK` left unlimited if `LockMemory=yes`, lowered to the
-   default otherwise. The library calls `mlockall` at `hg_init`; a `Legacy` module,
-   which has no library, gets only the raised limit and must lock its own memory
-   (ArduPilot's Linux HAL does);
-4. scheduling policy, priority, nice and CPU affinity;
+3. resource limits: `RLIMIT_MEMLOCK` left as the manager has it if `LockMemory=yes`,
+   lowered to the default otherwise. With `LockMemory=yes` the module is told so
+   (`HANGAR_LOCK_MEMORY=1`) and the library calls `mlockall` at `hg_init`, for what is
+   mapped and what will be, the rings included; a `Legacy` module, which has no
+   library, gets only the limit and must lock its own memory (ArduPilot's Linux HAL
+   does);
+4. scheduling policy, priority, nice and CPU affinity. A module under `fifo` or `rr`
+   also gets `RLIMIT_RTTIME` of one second: a real-time module that runs that long
+   without once sleeping is killed by the kernel, and is then a module that died
+   ([States](#states)). Without it, a module spinning at a real-time priority would
+   hold its core above everything else on the machine;
 5. `/var/lib/hangar/<name>`, created if missing and given to the module's user, as
    working directory;
 6. stdout and stderr connected to journald ([Logs](#logs)), so that journald sees the
@@ -232,6 +238,34 @@ and reply topics of its calls among them, come later still, from `hg_pub_open`
 User and group names are resolved from `/etc/passwd` and `/etc/group`, which the
 manager reads itself: the release binaries are static (musl), with no name service
 modules.
+
+### What is in force
+
+Steps 3 and 4 are decided by what the kernel allows the manager, not by its user:
+
+| | Applied when | Otherwise |
+|---|---|---|
+| `Policy=fifo` or `rr`, `Priority` | the manager is root, or holds `CAP_SYS_NICE`, or its `RLIMIT_RTPRIO` is at least the priority | step 4 is skipped; the module runs under `other` |
+| `Nice` below 0 | root, `CAP_SYS_NICE`, or `RLIMIT_NICE` allows it | skipped |
+| `LockMemory=yes` | the manager's `RLIMIT_MEMLOCK` is unlimited (the unit's `LimitMEMLOCK=infinity`), or, not root, it holds `CAP_IPC_LOCK`, which the module then keeps across the exec as its one ambient capability | the module is not told to lock, and runs unlocked |
+
+The library locks only when nothing bounds it (`CAP_IPC_LOCK`, or an unlimited
+`RLIMIT_MEMLOCK`): under a finite limit a map made long after the start would fail
+instead. The cgroup, the user switch and `Capabilities=` (steps 2 and 7 to 9) remain
+root's alone. A step that is skipped is logged with its reason, and the module starts
+all the same: a module at the ordinary priority is a slower module, not a missing one.
+
+Skipped is never silent. The manager reads each module's policy, priority and nice
+(`sched_getscheduler`, `sched_getparam`, `getpriority`) and its locked memory (`VmLck`
+in `/proc/<pid>/status`) from the kernel and answers the `schedule` request with them
+beside what the manifest asks. `hangar status` prints a line under its table for each
+module that does not have what it asks, `hangar show <module>` prints both, and
+`hangar check` warns ([12-tools](12-tools.md#hangar-check)). The manifests of phase 1
+have no `[Schedule]` ([00-overview](00-overview.md)): there, `hangar check` says that
+nothing is asked and every module runs at the ordinary priority.
+
+How a manager that is not root comes by the two capabilities is in
+[13-deployment](13-deployment.md#real-time-scheduling-without-root).
 
 ## Wiring
 
@@ -588,6 +622,7 @@ packet, one reply per request, text.
 | `param-write <module> …` | `hangar-admin` | parameters of a module that is not running, written and `fsync`ed as its user, by the rules of [05-parameters](05-parameters.md#saved-values) |
 | `clear-failsafe` | the `safety` module, `hangar-admin` (`hangar clear-failsafe`) | leave system failsafe ([System state](#system-state-and-the-managers-topics)) |
 | `status` | anyone in `hangar` | |
+| `schedule` | anyone in `hangar` | what each manifest's `[Schedule]` asks and what its process has, read from the kernel ([What is in force](#what-is-in-force)) |
 | `start`, `stop`, `restart <name>` | `hangar-admin` | |
 | `reload` | `hangar-admin` | as `SIGHUP` |
 | `reexec` | `hangar-admin` | re-execute the manager in place ([Restarting the manager](#restarting-the-manager)) |

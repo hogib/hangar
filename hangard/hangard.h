@@ -74,6 +74,9 @@ struct hd_clone_args {
 #ifndef SO_PEERGROUPS
 #define SO_PEERGROUPS 59
 #endif
+/* RLIMIT_RTTIME of a module under fifo or rr: the processor time it may take
+ * without once sleeping, in microseconds, before the kernel kills it. */
+#define HD_RTTIME_US 1000000u
 #define HD_CAP_VERSION_3 0x20080522u
 struct hd_cap_header {
 	uint32_t version;

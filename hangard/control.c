@@ -5,6 +5,8 @@
  * packet, one reply per request, the connection closed after the reply. */
 #include "hangard.h"
 
+#include "hd_sched.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -695,6 +697,35 @@ static void req_status(int fd)
 	reply(fd, buf, (size_t)n, -1);
 }
 
+/* What each manifest's [Schedule] asks against what its process has now,
+ * read from the kernel (docs/03 "What is in force"). One line of the
+ * manager's own means, then one per module:
+ *   module <name> <pid> ask <policy> <priority> <nice> <cpus|-> <lock>
+ *                       now <policy> <priority> <nice> <locked kB>
+ * with "now - 0 0 -1" for a module that is not running. */
+static void req_schedule(int fd)
+{
+	static char buf[HG_CONTROL_MAX];
+	struct hd_privs pv;
+	hd_privs_read(&pv);
+	int n = mf_fmt(buf, sizeof buf, "ok\nmanager root %d sys_nice %d ipc_lock %d rtprio %ld memlock %s\n", pv.root,
+			 pv.sys_nice, pv.ipc_lock, pv.rtprio, pv.memlock_unlimited ? "unlimited" : "limited");
+	for (int i = 0; i < G.n_modules && n < (int)sizeof buf - 1; i++) {
+		const struct module *m = &G.modules[i];
+		if (!m->mf)
+			continue;
+		struct hd_sched_now now;
+		int have = m->pid > 0 && hd_sched_now(m->pid, &now) == 0;
+		n += mf_fmt(buf + n, sizeof buf - (size_t)n, "module %s %d ask %s %d %d %s %d now %s %d %d %ld\n", m->name,
+			      (int)m->pid, hd_sched_name(m->mf->sched), m->mf->priority, m->mf->nice,
+			      m->mf->cpus_set ? m->mf->cpus : "-", m->mf->lock_memory, have ? hd_sched_name(now.sched) : "-",
+			      have ? now.priority : 0, have ? now.nice : 0, have ? now.locked_kb : -1L);
+	}
+	if (n > (int)sizeof buf - 1)
+		n = (int)sizeof buf - 1;
+	reply(fd, buf, (size_t)n, -1);
+}
+
 static void req_wiring(int fd, const char *name)
 {
 	struct module *m = module_find(name);
@@ -1217,6 +1248,11 @@ void control_handle(int fd)
 			err_reply(fd, "permission denied: group hangar required");
 		else
 			req_status(fd);
+	} else if (strcmp(word, "schedule") == 0) {
+		if (!is_reader(&p))
+			err_reply(fd, "permission denied: group hangar required");
+		else
+			req_schedule(fd);
 	} else if (strcmp(word, "paths") == 0) {
 		/* Where this manager keeps things, for a tool that was not spawned by
 		 * it and so has no HANGAR_TOPIC_DIR in its environment: the

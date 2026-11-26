@@ -4,6 +4,7 @@
 // manifests", the implicit topics and subscriptions, and the wiring text
 // round-tripped through lib/hg's parser.
 #include "hd_test.h"
+#include "hd_sched.h"
 #include "manifest.h"
 #include "wiring.h"
 
@@ -1020,10 +1021,68 @@ static void test_more_manifests_than_a_set_holds(void)
 	CHECK(said);
 }
 
+/* docs/03 "What is in force": which of step 3 and step 4 the kernel will
+ * allow a manager, by root, capability or limit, and how what a module has
+ * is held against what its manifest asks. */
+static void test_schedule_reach(void)
+{
+	char why[96];
+	struct hd_privs none = { 0 }, cap = { .sys_nice = 1, .ipc_lock = 1 }, root = { .root = 1 };
+	struct hd_privs lim = { .rtprio = 50, .nice_floor = -10, .memlock_unlimited = 1 };
+	CHECK(!hd_sched_reach(&none, MF_SCHED_FIFO, 60, 0, why, sizeof why));
+	CHECK(strstr(why, "CAP_SYS_NICE") && strstr(why, "RLIMIT_RTPRIO is 0"));
+	CHECK(!hd_sched_reach(&none, MF_SCHED_RR, 1, 0, why, sizeof why));
+	CHECK(hd_sched_reach(&none, MF_SCHED_OTHER, 0, 0, why, sizeof why) && !why[0]);
+	CHECK(hd_sched_reach(&none, MF_SCHED_OTHER, 0, 5, why, sizeof why));
+	CHECK(!hd_sched_reach(&none, MF_SCHED_OTHER, 0, -5, why, sizeof why));
+	CHECK(strstr(why, "RLIMIT_NICE"));
+	CHECK(hd_sched_reach(&lim, MF_SCHED_FIFO, 50, 0, why, sizeof why));
+	CHECK(!hd_sched_reach(&lim, MF_SCHED_FIFO, 51, 0, why, sizeof why));
+	CHECK(hd_sched_reach(&lim, MF_SCHED_OTHER, 0, -10, why, sizeof why));
+	CHECK(!hd_sched_reach(&lim, MF_SCHED_OTHER, 0, -11, why, sizeof why));
+	CHECK(hd_sched_reach(&cap, MF_SCHED_FIFO, 99, 0, why, sizeof why));
+	CHECK(hd_sched_reach(&cap, MF_SCHED_OTHER, 0, -20, why, sizeof why));
+	CHECK(hd_sched_reach(&root, MF_SCHED_RR, 99, 0, why, sizeof why));
+	CHECK_EQ_INT(hd_lock_reach(&none, why, sizeof why), HD_LOCK_NO);
+	CHECK(strstr(why, "CAP_IPC_LOCK"));
+	CHECK_EQ_INT(hd_lock_reach(&cap, why, sizeof why), HD_LOCK_CAP);
+	CHECK_EQ_INT(hd_lock_reach(&lim, why, sizeof why), HD_LOCK_LIMIT);
+	CHECK_EQ_INT(hd_lock_reach(&root, why, sizeof why), HD_LOCK_LIMIT);
+
+	char out[200];
+	struct hd_sched_now plain = { .sched = MF_SCHED_OTHER, .locked_kb = 0 };
+	struct hd_sched_now rt = { .sched = MF_SCHED_FIFO, .priority = 60, .locked_kb = 4096 };
+	CHECK(!hd_sched_short(MF_SCHED_OTHER, 0, 0, 0, &plain, out, sizeof out) && !out[0]);
+	CHECK(!hd_sched_short(MF_SCHED_OTHER, 0, 5, 0, &plain, out, sizeof out));
+	CHECK(hd_sched_short(MF_SCHED_FIFO, 60, 0, 0, &plain, out, sizeof out));
+	CHECK(strcmp(out, "asks fifo 60, runs other, nice 0") == 0);
+	CHECK(hd_sched_short(MF_SCHED_FIFO, 60, 0, 1, &plain, out, sizeof out));
+	CHECK(strcmp(out, "asks fifo 60, runs other, nice 0; asks locked memory, has none locked") == 0);
+	CHECK(hd_sched_short(MF_SCHED_OTHER, 0, 0, 1, &plain, out, sizeof out));
+	CHECK(strcmp(out, "asks locked memory, has none locked") == 0);
+	CHECK(hd_sched_short(MF_SCHED_OTHER, 0, -5, 0, &plain, out, sizeof out));
+	CHECK(strcmp(out, "asks nice -5, runs other, nice 0") == 0);
+	CHECK(!hd_sched_short(MF_SCHED_FIFO, 60, 0, 1, &rt, out, sizeof out));
+	CHECK(hd_sched_short(MF_SCHED_FIFO, 70, 0, 0, &rt, out, sizeof out));
+	CHECK(strcmp(out, "asks fifo 70, runs fifo 60") == 0);
+	CHECK(hd_sched_short(MF_SCHED_RR, 60, 0, 0, &rt, out, sizeof out));
+
+	/* This process, as the kernel has it. */
+	struct hd_sched_now me;
+	CHECK_EQ_INT(hd_sched_now(getpid(), &me), 0);
+	CHECK(me.sched == MF_SCHED_OTHER || me.sched == MF_SCHED_FIFO || me.sched == MF_SCHED_RR);
+	CHECK(me.locked_kb >= 0);
+	struct hd_privs mine;
+	hd_privs_read(&mine);
+	CHECK_EQ_INT(mine.root, geteuid() == 0);
+	CHECK(mine.rtprio >= 0 && mine.rtprio <= 99 && mine.nice_floor <= 0 && mine.nice_floor >= -20);
+}
+
 int main(void)
 {
 	hd_setup("manifest", NULL);
 	RUN_TEST(test_every_key);
+	RUN_TEST(test_schedule_reach);
 	RUN_TEST(test_defaults);
 	RUN_TEST(test_values);
 	RUN_TEST(test_parse_refusals);

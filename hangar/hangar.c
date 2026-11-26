@@ -37,6 +37,7 @@
 #include "hg_params.h"
 #include "hg_topic.h"
 #include "manifest.h"
+#include "hd_sched.h"
 #include "wiring.h"
 
 static const char *root(void)
@@ -157,6 +158,75 @@ static const char *ago(uint64_t since_ns, char *buf, size_t len)
 	return buf;
 }
 
+/* ---- what [Schedule] asks against what is in force ------------------------ */
+
+/* The manager's "schedule" reply (docs/03 "What is in force"), one line a
+ * module that does not have what its manifest asks, each after lead; only
+ * the module named, if any. With detail, a line for that module either way.
+ * Returns the number of modules short, and in *asking the number of running
+ * modules whose manifest asks for anything; -1 when the manager does not
+ * answer (an older manager has no such request, and says nothing here). */
+static int schedule_report(const char *lead, const char *only, int detail, int *asking)
+{
+	static char reply[HG_CONTROL_MAX];
+	unsetenv("HANGAR_CONTROL");
+	ssize_t n = hg_control_call(control_path(), "schedule", 8, reply, sizeof reply, NULL, 0);
+	if (n < 0 || !hg_control_ok(reply))
+		return -1;
+	int shortn = 0, asks = 0;
+	char means[160] = "";
+	char *save;
+	for (char *line = strtok_r(reply, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+		int root, nice_cap, lock_cap;
+		long rtprio;
+		char memlock[16];
+		if (sscanf(line, "manager root %d sys_nice %d ipc_lock %d rtprio %ld memlock %15s", &root, &nice_cap,
+			   &lock_cap, &rtprio, memlock) == 5) {
+			if (root)
+				snprintf(means, sizeof means, "the manager runs as root");
+			else
+				snprintf(means, sizeof means, "the manager is not root: CAP_SYS_NICE %s, RLIMIT_RTPRIO %ld, CAP_IPC_LOCK %s, RLIMIT_MEMLOCK %s",
+					 nice_cap ? "yes" : "no", rtprio, lock_cap ? "yes" : "no", memlock);
+			continue;
+		}
+		char name[32], ap[8], cpus[64], np[8];
+		int pid, aprio, anice, alock, nprio, nnice;
+		long kb;
+		if (sscanf(line, "module %31s %d ask %7s %d %d %63s %d now %7s %d %d %ld", name, &pid, ap, &aprio, &anice,
+			   cpus, &alock, np, &nprio, &nnice, &kb) != 11)
+			continue;
+		if (only && strcmp(only, name) != 0)
+			continue;
+		int as = strcmp(ap, "fifo") == 0 ? MF_SCHED_FIFO : strcmp(ap, "rr") == 0 ? MF_SCHED_RR : MF_SCHED_OTHER;
+		struct hd_sched_now now = { .sched = strcmp(np, "fifo") == 0 ? MF_SCHED_FIFO : strcmp(np, "rr") == 0 ? MF_SCHED_RR : strcmp(np, "other") == 0 ? MF_SCHED_OTHER : -1,
+					    .priority = nprio, .nice = nnice, .locked_kb = kb };
+		char what[200];
+		int running = pid > 0 && strcmp(np, "-") != 0;
+		asks += running && (strcmp(ap, "other") != 0 || anice < 0 || alock);
+		int sh = running && hd_sched_short(as, aprio, anice, alock, &now, what, sizeof what);
+		if (detail) {
+			if (strcmp(ap, "other") != 0)
+				printf("schedule   asks %s %d", ap, aprio);
+			else
+				printf("schedule   asks other, nice %d", anice);
+			printf(", CPUs %s, LockMemory %s\n", strcmp(cpus, "-") ? cpus : "all", alock ? "yes" : "no");
+			if (running && strcmp(np, "other") != 0)
+				printf("in force   %s %d, %ld kB locked\n", np, nprio, kb);
+			else if (running)
+				printf("in force   other, nice %d, %ld kB locked\n", nnice, kb);
+			else
+				printf("in force   not running\n");
+		}
+		if (sh) {
+			shortn++;
+			printf("%s%s: %s (%s)\n", lead, name, what, means);
+		}
+	}
+	if (asking)
+		*asking = asks;
+	return shortn;
+}
+
 /* ---- status --------------------------------------------------------------- */
 
 static int cmd_status(void)
@@ -197,6 +267,9 @@ static int cmd_status(void)
 		printf("%-20s %-10s %6d %5u %-10s %6s  %s\n", name, st, pid, fails, ex, ago(since, a, sizeof a),
 		       line + 7 + off);
 	}
+	/* A module without the scheduling or the locked memory its manifest
+	 * asks is said under the table, never silently. */
+	schedule_report("not in force: ", NULL, 0, NULL);
 	return 0;
 }
 
@@ -233,6 +306,7 @@ static int cmd_show(const char *name)
 	printf("ready      %s\n", ready && ready == instance ? "yes" : ready ? "an earlier instance" : "no");
 	printf("alive      %s\n", alive ? ago(alive, a2, sizeof a2) : "never");
 	printf("status     %.127s\n", (const char *)page + 64);
+	schedule_report("not in force: ", name, 1, NULL);
 	return rc;
 }
 
@@ -1404,7 +1478,8 @@ static void usage(void)
 	      "  ardusub-params save|diff|restore <file>\n"
 	      "                              every ArduSub parameter into a file, compared with one, set back\n"
 	      "                              (mavlink.params_dump, mavlink.params_load)\n"
-	      "  check                       the arming checklist, without arming (safety.check)\n"
+	      "  check [--strict]            the arming checklist, without arming (safety.check), and whether\n"
+	      "                              each [Schedule] is in force; --strict: exit 1 when one is not\n"
 	      "  call <module>.<method> [field=value ...] [--timeout MS] [--json]\n"
 	      "                              a call as admin:<user> through the manager; the reply decoded\n"
 	      "  param get <module> [field ...]           the values in force, from <module>.params\n"
@@ -1467,7 +1542,23 @@ int main(int argc, char **argv)
 		/* docs/12's hangar check, the phase 1 subset: the safety module's
 		 * arming checklist, run without arming (safety.check). */
 		char *args[] = { (char *)"safety.check", (char *)"--timeout", (char *)"3000" };
-		return cmd_call(3, args);
+		int strict = argc > 2 && strcmp(argv[2], "--strict") == 0;
+		if (argc > 2 && !strict)
+			return fail("usage: hangar check [--strict]");
+		int rc = cmd_call(3, args);
+		/* docs/12 "hangar check", the Schedule line: a manifest's scheduling
+		 * or locked memory that is not in force is a warning, and with
+		 * --strict (a measurement session) the exit status 1 of a warning. */
+		int asking = 0;
+		int shortn = schedule_report("WARN schedule: ", NULL, 0, &asking);
+		if (shortn == 0 && asking)
+			printf("OK schedule: what %d manifest%s ask%s is in force\n", asking, asking == 1 ? "" : "s",
+			       asking == 1 ? "s" : "");
+		else if (shortn == 0)
+			printf("OK schedule: no manifest asks for real-time scheduling or locked memory: every module runs at the ordinary priority\n");
+		if (shortn > 0 && strict && rc == 0)
+			rc = 1;
+		return rc;
 	}
 	if (strcmp(cmd, "param") == 0)
 		return cmd_param(argc - 2, argv + 2);

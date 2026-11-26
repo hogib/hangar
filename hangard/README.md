@@ -60,8 +60,12 @@ HANGAR_ROOT=$R builddir/hangar run talker      # the module alone, private topic
 ```
 
 Not running as root, the manager skips the steps that need it and says so in its log,
-once per start, naming the step: the cgroup move (step 2), the scheduling policy and
-priority (step 4), capabilities and the user switch (steps 7 to 9). Everything else,
+once per start, naming the step: the cgroup move (step 2), capabilities and the user
+switch (steps 7 to 9). The scheduling policy and priority (step 4) and `LockMemory`
+(step 3) are skipped only when the kernel allows the manager neither a capability nor
+a limit for them (`hd_sched.c`; docs/03 "What is in force"), and what a module then
+runs with is read back from the kernel: `hangar status`, `hangar show`, `hangar check`
+and the `schedule` request. Everything else,
 the registry, the Neutral records, the module pages, the wiring memfd, journald or the
 fallback log, the topic files, happens as documented. As root under systemd
 (`hangard.service`) every step runs; the suites exercise the privileged ones only
@@ -90,6 +94,7 @@ are identified by `SO_PEERCRED` and `SO_PEERGROUPS`. The same text is in
 | `param-read <module>` | `hangar-admin` | `ok\ntype=<name> hash=<hex> running=<0\|1> schema=<len> file=<len>\n` then the parameter type's text (attributes included) and the saved file, empty when none |
 | `param-write <module>\n<name = value lines>` | `hangar-admin` | for a module that is not running: the saved values (the defaults when there is no file, or when the file is refused: that is what correcting it means, logged) with the lines applied, every field checked against its range, written and `fsync`ed as the module's user from a short-lived child when root, version one above the saved one, set by `admin:<user>`. `ok version=<n>\n`. Refused while the module runs |
 | `status` | group `hangar` | `ok\n`, then `system <nominal\|degraded\|failsafe> <since_ns> <reason>` and one `module <name> <state> <pid> <failures> <last_exit> <since_ns> <status line>` per module; `last_exit` is `exit:<n>`, `signal:<n>`, `unknown` or `-` |
+| `schedule` | group `hangar` | `ok\n`, then `manager root <0\|1> sys_nice <0\|1> ipc_lock <0\|1> rtprio <n> memlock <unlimited\|limited>` and one `module <name> <pid> ask <policy> <priority> <nice> <cpus\|-> <lock> now <policy\|-> <priority> <nice> <locked kB>` per module with a manifest: what `[Schedule]` asks, and what the process has, read from the kernel (`-` and -1 when it does not run) |
 | `paths` | group `hangar` | `ok\n`, then `root`, `topics`, `modules`, `msg`, `log`, one path per line: where this manager keeps things. `hangar` asks it for the topic directory when `HANGAR_TOPIC_DIR` is unset, since the configuration may put the topics on a tmpfs outside `$HANGAR_ROOT` (the release's `hangard.conf` says `/dev/shm/hangar`) |
 | `wiring <module>` | group `hangar` | `ok\n` then the wiring text as handed to the module (for `hangar show`) |
 | `start`, `stop`, `restart <module>` | `hangar-admin` | `ok\n` or `err <reason>\n`. A start or restart by hand clears the module's failure history |
@@ -218,6 +223,11 @@ What remains:
   (`modules/bridge/README.md`); the manager only logs it at the mirrored open.
 - Running the suites as root (user switching, `SCHED_FIFO`, capabilities, cgroups) on
   a machine or VM; they are skipped and reported here.
+- A module under `fifo` with locked memory, by root, by `CAP_SYS_NICE` and
+  `CAP_IPC_LOCK` on the manager's file, and by limits: `hangard_spawn` checks whichever
+  the machine allows and says which it could not (none, on a developer's machine or in
+  CI). The ambient `CAP_IPC_LOCK` handed to a `LockMemory` module by a manager that is
+  not root, and `RLIMIT_RTTIME` ending a spinning module, have not run anywhere yet.
 
 ## Deviations from docs/02 and docs/03, with reasons
 
