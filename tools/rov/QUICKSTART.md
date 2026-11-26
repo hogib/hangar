@@ -31,11 +31,16 @@ at the next visit, in order, is in [LAB-CHECKLIST.md](LAB-CHECKLIST.md).
 | `tools/rov/lab.sh up [--video] [--bridge] [--serial] [--no-battery-check]` | hangar up on the Pi; ArduSub's parameters saved (once a session) and set; the pre-arm check; the consoles tunnelled. `--video`: the lab's electric-eye stopped, the camera's own H.264 sent by the encoder, and the laptop's hellion and eeye started (the effects here, QGroundControl's video on 5600). `--bridge` and `--serial`: below | `lab: READY TO ARM`, then the consoles' and the video's addresses. With `--video`, four `[ OK ] pipeline` lines. With `--bridge`, `lab: the link is up` |
 | `tools/rov/lab.sh status` | both managers (with `--bridge`: the vehicle's on the Pi, the topside's on the laptop), the relay, the lab's services, the Pi's temperature and throttling, the laptop's video, the session | `safety … disarmed` or `armed`; `throttled=0x0`; with `--bridge`, `bridge  ready … up` on both |
 | `tools/rov/lab.sh bench [SECONDS]` | CPU, memory, frame rates and the tether's traffic on both machines, 60 s by default; with `--bridge`, both bridges' link topics before and after | `lab: saved in ~/hangar-results/<date>-lab`, with a README of the state |
-| `tools/rov/lab.sh down` | everything put back: disarmed, ArduSub's parameters restored and compared with the backup (through hangar, started again for it if it stopped), the topside on the laptop stopped, hangar stopped and its roots removed, the lab's services started again, the laptop's video and tunnels stopped | `lab: everything as found` |
+| `tools/rov/lab.sh down [--force]` | everything put back: disarmed first (an armed vehicle is disarmed, and said; if it then does not read disarmed, nothing is stopped), ArduSub's parameters restored and compared with the backup (through hangar, started again for it if it stopped), the topside on the laptop stopped, hangar stopped and its roots removed, the lab's services started again, the laptop's video and tunnels stopped | `lab: everything as found` |
 
 Then arm in QGroundControl (**Disarmed → Arm**), drive with the sticks, disarm, and
 `lab.sh down` before leaving. Run `down` even when something went wrong: it does every
 step it can and names the ones that failed.
+
+Nothing here stops hangar under an armed vehicle (README, "The guard"). `up` on a
+session that is already up lays hangar out again, so it refuses while the vehicle is
+armed, and disarms nothing. `down` disarms first and stops nothing unless the vehicle
+then reads disarmed.
 
 ## The bridge and the serial line
 
@@ -78,6 +83,9 @@ session. Never on a vehicle that reads its battery.
 | `cannot reach bluerov2@192.168.2.10` | the tether's link (`ping 192.168.2.10`), the laptop's address on it, the Pi powered |
 | `hangar runs on the Pi: lab.sh down first` (deploy) | `lab.sh down`, then `deploy` again |
 | `no hangar at hangar-root on the Pi` (up) | `lab.sh deploy` first |
+| `THE VEHICLE IS NOT DISARMED` (up) | a second `up` would stop hangar under an armed vehicle: disarm (QGroundControl, the console), then `up` again. Nothing was changed |
+| `whether the vehicle is disarmed cannot be read` (up) | hangar runs, and its safety or mavlink module is down or hangs (the line says which topic is missing): `lab.sh status`. `lab.sh down --force` brings it down as it is |
+| `THE VEHICLE DOES NOT READ DISARMED` (down) | `down` asked for a disarm and the vehicle is still armed, or cannot say: nothing was stopped. Disarm in QGroundControl and `lab.sh down` again. If hangar cannot say (a module down) and QGroundControl shows it disarmed, or it has to come down as it is: `lab.sh down --force` |
 | `the parameters could not be saved` | hangar's mavlink module cannot read the Pixhawk's parameters: the USB cable, `/dev/ttyACM0`; `~/hangar-rov/up.log` and the module's log on the Pi. Nothing was written to the Pixhawk. `lab.sh status`, then `lab.sh down` |
 | `mavlink, after 60 s: …` | ArduSub is not heard: as above. The relay's log is `~/hangar-rov/relay.log` on the Pi |
 | `NOT READY TO ARM: <reasons>` | the reasons are `hangar check`'s: `power.battery … below` → `--no-battery-check` (see above); `ArduSub … not MANUAL` → set MANUAL; anything else → `lab.sh status` |
@@ -91,7 +99,7 @@ session. Never on a vehicle that reads its battery.
 | `the Pi's rov.sh does not know MAVLINK=serial`, `… a rov.sh older than this lab.sh` | the release on the Pi is older than this checkout: `tools/release.sh`, `lab.sh deploy` |
 | `sudo … needs a password and there is no terminal` | run `lab.sh` from a terminal, not from a script |
 | `NO SESSION FILE … not claimed: everything as found` (down) | the session file is gone from this laptop and the Pi has no copy, yet hangar ran: `down` stopped it and restored nothing. On the Pi, `ls -t ~/hangar-rov/lab-*-before.params`; if there is one from this session, `rov.sh up`, `rov.sh params restore <it>`, `rov.sh reset`; then `systemctl is-active eeye hellion` (README, "The parameter backup") |
-| `not everything could be put back: …` (down) | fix what it names (usually the link) and run `lab.sh down` again: the session file keeps what is left to do |
+| `not everything could be put back: …` (down) | fix what it names (usually the link) and run `lab.sh down` again: the session file keeps what is left to do. `NOT DONE (…): the vehicle is not disarmed` above it is the Pi's `rov.sh` refusing to stop hangar: someone armed during `down`; disarm and run it again |
 
 ## Rehearsing without the vehicle
 
@@ -113,9 +121,12 @@ tools/rov/rehearse.sh out/release/hangar-<…>-x86_64.tar.zst
 - `serial`: `up --serial` with the tests' fake ArduSub at the far end of a
   pseudo-terminal: refused while another process holds the line; the parameters saved,
   set, and restored by a `down` that has to start hangar again.
-- `both`: `up --bridge --serial`: armed and disarmed from the topside across the link;
+- `both`: `up --bridge --serial`: armed from the topside across the link, and while it
+  is armed `rov.sh down` and `reset` on the Pi, `rov.sh topside down` on the laptop and
+  `lab.sh up` each refused with both managers still running (the guard); disarmed;
   the topside stopped, and an arm on the vehicle refused (`bridge.vehicle.link
-  connecting`) once its bridge has called the link lost, about 3 s later.
+  connecting`) once its bridge has called the link lost, about 3 s later; armed again,
+  and `down` disarms before it stops anything.
 
 Each must end with `lab: everything as found`, and the whole with `rehearse: all passed`.
 

@@ -34,6 +34,11 @@ is `HANGAR_ROOT=/dev/shm/hangar-vehicle ~/hangar-root/bin/hangar`.
   leaving". Later steps build on earlier ones.
 - **`lab.sh down` before leaving, whatever happened.** It restores ArduSub's parameters
   and the lab's services, and names anything it could not put back.
+- **Disarm before anything that stops hangar.** `lab.sh up` on a running session and
+  `rov.sh down`, `reset`, `relay down` and `topside down` refuse while the vehicle is
+  armed or its state cannot be read (README, "The guard"); `lab.sh down` disarms first
+  and stops nothing unless the vehicle then reads disarmed. `--force` is for a vehicle
+  QGroundControl shows disarmed while hangar cannot say so.
 - A fan on the Pi, or the tube's lid off: closed on the bench it reached 86 to 91 °C in
   earlier sessions and throttled.
 
@@ -198,9 +203,9 @@ changed nothing, and the comparison waits for whoever owns the Pi.
 | | |
 |---|---|
 | ☐ | Disarmed |
-| ☐ | `tools/rov/lab.sh down`, whichever of `--bridge`, `--serial` and `--video` the last `up` had: it disarms, restores ArduSub's parameters from the session's first backup and compares them (over the serial line if the session was on it), stops the topside on the laptop and hangar on the Pi, and starts the lab's services it stopped |
+| ☐ | `tools/rov/lab.sh down`, whichever of `--bridge`, `--serial` and `--video` the last `up` had: it disarms if the vehicle is not disarmed (and says so), reads the state again, restores ArduSub's parameters from the session's first backup and compares them (over the serial line if the session was on it), stops the topside on the laptop and hangar on the Pi, and starts the lab's services it stopped |
 | ☐ | `lab: everything as found`. If it names a step that failed, fix that and run `down` again |
-| ☐ | Only if `rov.sh` was used by hand instead: `rov.sh params restore <the file saved first>` and `rov.sh params diff <it>` says nothing differs; `rov.sh down` on the Pi, `BRIDGE=1 tools/rov/rov.sh topside reset` on the laptop |
+| ☐ | Only if `rov.sh` was used by hand instead: `rov.sh params restore <the file saved first>` and `rov.sh params diff <it>` says nothing differs; `BRIDGE=1 tools/rov/rov.sh topside reset` on the laptop, `rov.sh down` on the Pi (each refuses unless the vehicle reads disarmed) |
 | ☐ | The lab's services running again on the Pi: `systemctl is-active eeye hellion` says `active` twice (and any unit named in `LAB_SERIAL_SERVICES`) |
 | ☐ | `pgrep -a hangard` on the laptop shows nothing. `~/hangar-rov/bridge.key` stays on the laptop (and on the Pi) for the next visit; it is not in the repository |
 | ☐ | The results under `~/hangar-results/`, and for every step: passed, failed with what it said, or not reached |

@@ -6,10 +6,11 @@
 # managers share the Pi and read each other's topics through the same-host shim.
 #
 #   rov.sh up                 the relay, then both managers (roots laid out once)
-#   rov.sh down               both managers, then the relay
+#   rov.sh down [--force]     both managers, then the relay; refused unless disarmed
 #   rov.sh status             both managers' status, the relay's
-#   rov.sh reset              down, then remove both roots (the next up lays them out)
-#   rov.sh relay up|down|status  MAVROS alone
+#   rov.sh armed              what the guard reads: disarmed, armed or unknown, and why
+#   rov.sh reset [--force]    down, then remove both roots (the next up lays them out)
+#   rov.sh relay up|down|status  MAVROS alone (down: refused unless disarmed)
 #   rov.sh params save [FILE] every Pixhawk parameter to FILE (default under $HANGAR_ROV_STATE)
 #   rov.sh params diff FILE   the parameters that differ from FILE now
 #   rov.sh params restore FILE  set back the ones that differ, then diff again (disarmed only)
@@ -18,7 +19,15 @@
 #     MAVROS's UDP or Serial= alike; through MAVROS alone only when hangar is not up.
 #     hangar's files are NAME VALUE TYPE lines; MAVROS's, the YAML of ros2 param
 #     dump. hangar reads both; the MAVROS fallback, its own YAML only.
-#   rov.sh topside up|down|status  on the laptop, with BRIDGE=1: the topside role there
+#   rov.sh topside up|down|status|reset  on the laptop, with BRIDGE=1: the topside role there
+#
+# Nothing of hangar is stopped under an armed vehicle (README, "The guard"): down,
+# reset and relay down first read safety.state and ardusub.state from the vehicle's
+# root and stop nothing, with exit status 4, unless both are being published and say
+# disarmed. A manager that runs while one of them is not published is not "disarmed".
+# topside down and reset read the bridge's copies: armed is refused; a link already
+# down is said and does not keep the laptop's side up. --force (or ROV_FORCE=1) stops
+# it all the same and says what it overrode.
 #
 # BRIDGE=1 (opt-in) replaces the shim with the tether bridge: `rov.sh up` on the Pi
 # runs the vehicle role alone, with the bridge, and `rov.sh topside up` on the laptop
@@ -37,6 +46,8 @@
 # relay, and nothing else may hold the device (modules/mavlink/README.md, "A serial line");
 # BRIDGE_PORT and BRIDGE_PEER_PORT (5614 both), the bridge's own UDP port and its peer's:
 # two different ones only for both roles on one machine (a rehearsal on loopback).
+# HANGAR_ROV_VEHICLE_ROOT and HANGAR_ROV_TOPSIDE_ROOT move the two roots: for the
+# guard's own test (tools/rov/tests/test_guard.sh), which must not meet a session's.
 set -euo pipefail
 
 here=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
@@ -48,8 +59,11 @@ else                                                    # the repository: tools/
     profiles=$repo/profiles; msgdir=$repo/msg
     bin=${HANGAR_BIN:-$repo/builddir}
 fi
-RV=/dev/shm/hangar-vehicle
-RT=/dev/shm/hangar-topside
+RV=${HANGAR_ROV_VEHICLE_ROOT:-/dev/shm/hangar-vehicle}
+RT=${HANGAR_ROV_TOPSIDE_ROOT:-/dev/shm/hangar-topside}
+FORCE=${ROV_FORCE:-0}
+# How long the guard waits for a state topic's next message (both are sent at 10 Hz).
+GUARD_WAIT=${ROV_GUARD_WAIT:-3}
 ROV_IP=${ROV_IP:-192.168.2.10}
 GCS_IP=${GCS_IP:-192.168.2.1}
 FCU=${FCU:-/dev/ttyACM0:115200}
@@ -76,7 +90,7 @@ TOPSIDE_GCS_IP=$GCS_IP
 # hellion (port 8080); tools/rov/lab.sh runs its hellion on another port and says which.
 TOPSIDE_HELLION_URL=${TOPSIDE_HELLION_URL:-}
 
-usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "rov: $*"; }
 die() { echo "rov: $*" >&2; exit 1; }
 
@@ -236,6 +250,132 @@ stop_manager() { # root
     for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     kill -0 "$pid" 2>/dev/null && { say "manager $pid did not stop in 10 s: SIGKILL"; kill -KILL "$pid"; }
     drop_pid "$root/hangard.pid"
+}
+
+# ---- the guard: hangar is not stopped under an armed vehicle ------------------------
+#
+# On 2026-11-24 `rov.sh down` was run on the Pi while the vehicle was armed. The mavlink
+# module sent neutral and a disarm as it stopped, so nothing came of it; that is the
+# module's last resort and not a way to end a session. Since then every command here
+# that stops a manager, or the relay under one, asks first.
+
+# The newest message of a state topic under a root, as hangar echo's JSON line. Nothing,
+# unless two messages arrive within $GUARD_WAIT s: the second is one its module sent
+# while we looked, so what is read is the state now, not the last word of a module that
+# died or hangs (its topic file, and the last message in it, outlive it).
+state_now() { # root topic fields
+    local out
+    out=$(HANGAR_ROOT=$1 timeout "$GUARD_WAIT" "$bin/hangar" echo "$2" --json --count 2 --fields "$3" 2>/dev/null) || return 1
+    [ "$(grep -c '^{' <<< "$out")" -eq 2 ] || return 1
+    tail -n 1 <<< "$out"
+}
+json_num() { sed -n "s/.*\"$1\":\([0-9][0-9]*\).*/\1/p" <<< "$2"; }
+
+# What the two topics under a root say: STATE_WORD disarmed, armed or unknown; STATE_WHY
+# what was read, or why nothing could be; STATE_NOTE what "disarmed" leaves open.
+#
+# Disarmed is: safety.state disarmed, or in a failsafe whose action is neutral (the
+# outputs off: docs/07, the state after a tether or a module failsafe, in which ArduSub
+# was disarmed and which a restart keeps), AND ardusub.state armed 0. Arming, armed, a
+# failsafe that drives (surface, hold), ArduSub armed or still disarming: not disarmed.
+read_state() { # root
+    local s a st en arm rx sname aname
+    STATE_WORD=unknown STATE_WHY="" STATE_NOTE=""
+    if ! s=$(state_now "$1" safety.state state,outputs_enabled); then
+        STATE_WHY="safety.state is not being published under $1: the safety module is not running, or hangs"
+        return 0
+    fi
+    if ! a=$(state_now "$1" ardusub.state armed,last_rx_ns); then
+        STATE_WHY="ardusub.state is not being published under $1: the mavlink module is not running, or hangs"
+        return 0
+    fi
+    st=$(json_num state "$s"); en=$(json_num outputs_enabled "$s")
+    arm=$(json_num armed "$a"); rx=$(json_num last_rx_ns "$a")
+    if [ -z "$st" ] || [ -z "$en" ] || [ -z "$arm" ] || [ -z "$rx" ]; then
+        STATE_WHY="safety.state and ardusub.state under $1 could not be read (hangar echo said: $s $a)"
+        return 0
+    fi
+    case $st in 0) sname=disarmed ;; 1) sname=armed ;; 3) sname=arming ;;
+        2) if [ "$en" = 0 ]; then sname="failsafe, outputs off"; else sname="failsafe, outputs ON"; fi ;;
+        *) sname="state $st" ;; esac
+    case $arm in 0) aname=disarmed ;; 1) aname=armed ;; 2) aname=disarming ;; *) aname="armed $arm" ;; esac
+    STATE_WHY="safety: $sname; ArduSub: $aname"
+    if { [ "$st" = 0 ] || { [ "$st" = 2 ] && [ "$en" = 0 ]; }; } && [ "$arm" = 0 ]; then
+        STATE_WORD=disarmed
+        [ "$rx" != 0 ] || STATE_NOTE="the mavlink module has not heard ArduSub since it started: \"disarmed\" is hangar's side only"
+    else
+        STATE_WORD=armed
+    fi
+}
+
+refused() { # lines...: to stderr, exit status 4
+    local l
+    for l in "$@"; do echo "rov: $l" >&2; done
+    exit 4
+}
+
+# guard vehicle|topside ROOT WHAT: returns if WHAT may be done to the manager under ROOT.
+#
+# vehicle: ROOT is the vehicle's own. No manager there: nothing of hangar drives
+# anything, nothing to guard. Armed, or not known: refused.
+#
+# topside: ROOT is the topside's on the laptop, the pilot's end of the tether, and the
+# state is the bridge's copy of the vehicle's. Armed: refused, since stopping the
+# pilot's end under an armed vehicle is the tether failsafe fired on purpose (neutral
+# and a disarm some 3 s later, the sticks dead meanwhile). Not known: the copies stopped
+# arriving, so the link is down already and the vehicle has acted on that by itself, or
+# will; this side staying up changes nothing for it, and a laptop that cannot stop its
+# own topside without the vehicle's leave would be stuck whenever the tether is out. It
+# is said, and allowed.
+guard() { # role root what
+    local role=$1 root=$2 what=$3 hg
+    running "$root/hangard.pid" || return 0
+    read_state "$root"
+    hg="HANGAR_ROOT=$root $bin/hangar"
+    if [ "$STATE_WORD" = disarmed ]; then
+        [ -z "$STATE_NOTE" ] || say "$STATE_NOTE"
+        return 0
+    fi
+    if [ "$FORCE" = 1 ]; then
+        say "--force: $what all the same ($STATE_WHY)"
+        return 0
+    fi
+    if [ "$STATE_WORD" = armed ] && [ "$role" = vehicle ]; then
+        refused "NOT DONE ($what): the vehicle is not disarmed ($STATE_WHY)." \
+            "  Disarm first: QGroundControl, the console, or $hg call safety.disarm" \
+            "  It has to come down as it is: the same command with --force (the mavlink module" \
+            "  sends neutral and a disarm as it stops; that is its last resort, not a way to end)."
+    elif [ "$STATE_WORD" = armed ]; then
+        refused "NOT DONE ($what): the vehicle is not disarmed ($STATE_WHY), and this is its pilot's" \
+            "  end of the tether: without it the vehicle goes to its tether failsafe." \
+            "  Disarm first: QGroundControl, the console, or $hg call safety.disarm" \
+            "  It has to come down as it is: the same command with --force."
+    elif [ "$role" = vehicle ]; then
+        refused "NOT DONE ($what): a manager runs under $root and whether the vehicle is disarmed" \
+            "  cannot be read: $STATE_WHY." \
+            "  That is not \"disarmed\". Look: $hg status; QGroundControl says what ArduSub is." \
+            "  Once it is known to be disarmed, or it has to come down anyway: the same command with --force."
+    else
+        say "the vehicle's state does not reach this laptop ($STATE_WHY):"
+        say "  the link is down already; $what changes nothing for the vehicle"
+    fi
+}
+
+# The root down and reset would stop a manager under: the vehicle's if one runs here;
+# on the laptop of a BRIDGE=1 session, the topside's (a root laid out with the bridge).
+guard_down() { # what
+    if running "$RV/hangard.pid"; then guard vehicle "$RV" "$1"
+    elif [ -e "$RT/etc/hangar/modules/bridge.module" ]; then guard topside "$RT" "$1"
+    fi
+}
+
+cmd_armed() {
+    local root=$RV
+    if ! running "$RV/hangard.pid" && [ -e "$RT/etc/hangar/modules/bridge.module" ]; then root=$RT; fi
+    running "$root/hangard.pid" || { echo "no manager"; return 0; }
+    read_state "$root"
+    echo "$STATE_WORD: $STATE_WHY${STATE_NOTE:+ ($STATE_NOTE)}"
+    case $STATE_WORD in disarmed) return 0 ;; armed) return 4 ;; *) return 5 ;; esac
 }
 
 # ---- the relay ------------------------------------------------------------------
@@ -460,7 +600,8 @@ Before the first arm (writes ArduSub's parameters; save them first):
 MSG
 }
 
-cmd_down() {
+cmd_down() { # what, for the guard
+    guard_down "${1:-stopping hangar}"
     stop_manager "$RT"
     stop_manager "$RV"
     relay_down
@@ -502,25 +643,39 @@ rov: the topside role is up on this laptop, with the bridge (Peer=$ROV_IP)
   link     HANGAR_ROOT=$RT $bin/hangar status   (bridge: up <Pi>, rtt ...)
 MSG
             ;;
-        down) stop_manager "$RT"; say "topside down" ;;
+        down) guard topside "$RT" "stopping the topside role"; stop_manager "$RT"; say "topside down" ;;
         status)
             if running "$RT/hangard.pid"; then HANGAR_ROOT=$RT "$bin/hangar" status || true
             else echo "no manager"; fi ;;
-        reset) stop_manager "$RT"; rm -rf "$RT"; say "topside root removed" ;;
+        reset)
+            guard topside "$RT" "stopping the topside role and removing its root"
+            stop_manager "$RT"; rm -rf "$RT"; say "topside root removed" ;;
         *) usage 2 ;;
     esac
 }
+
+# --force, wherever it stands among the words.
+words=()
+for w in "$@"; do
+    if [ "$w" = --force ]; then FORCE=1; else words+=("$w"); fi
+done
+set -- ${words[@]+"${words[@]}"}
 
 case "${1:-}" in
     up) cmd_up ;;
     topside) cmd_topside "${2:-}" ;;
     down) cmd_down ;;
     status) cmd_status ;;
-    reset) cmd_down; rm -rf "$RV" "$RT"; say "roots removed" ;;
+    armed) cmd_armed ;;
+    reset) cmd_down "stopping hangar and removing its roots"; rm -rf "$RV" "$RT"; say "roots removed" ;;
     relay)
         case "${2:-}" in
             up) relay_up ;;
-            down) relay_down ;;
+            down)
+                # The relay is the mavlink module's only way to ArduSub: without it
+                # hangar can neither drive nor disarm.
+                if running "$STATE/relay.pid"; then guard vehicle "$RV" "stopping the relay"; fi
+                relay_down ;;
             status) if running "$STATE/relay.pid"; then echo running; else echo "not running"; fi ;;
             *) usage 2 ;;
         esac ;;

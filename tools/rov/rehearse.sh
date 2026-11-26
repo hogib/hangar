@@ -16,8 +16,11 @@
 #            ArduSub at its far end; refused while something else holds the line;
 #            ArduSub's parameters saved, set, and restored by a down that first has to
 #            start hangar again
-#   both     up --bridge --serial: armed from the topside across the link; with the
-#            topside down, arm refused for the link; down from there
+#   both     up --bridge --serial: armed from the topside across the link, and while
+#            armed nothing stops hangar (rov.sh down and reset on the Pi, rov.sh topside
+#            down on the laptop, lab.sh up: each refused, each manager still running);
+#            with the topside down, arm refused for the link; armed again, and down
+#            disarms before it stops anything
 #   -k       keep the home and its logs (their place is printed)
 #
 # Every run ends with lab.sh down, and must end with "lab: everything as found", no
@@ -64,11 +67,12 @@ except OSError: print("no answer")' "$CTL" "$1"
 }
 
 cleanup() {
-    [ -f "$LAB_STATE_DIR/session" ] && bash "$LAB" down > "$H/log/cleanup-down.txt" 2>&1
+    # --force: whatever state a failed run left the fake vehicle in, nothing stays up.
+    [ -f "$LAB_STATE_DIR/session" ] && bash "$LAB" down --force > "$H/log/cleanup-down.txt" 2>&1
     [ -n "$hold_pid" ] && kill "$hold_pid" 2>/dev/null
     [ -n "$fake_pid" ] && kill "$fake_pid" 2>/dev/null
-    BRIDGE=1 bash "$here/rov.sh" topside reset > /dev/null 2>&1
-    [ -x "$H/hangar-labtest/share/hangar/rov.sh" ] && "$H/hangar-labtest/share/hangar/rov.sh" reset > /dev/null 2>&1
+    BRIDGE=1 bash "$here/rov.sh" topside reset --force > /dev/null 2>&1
+    [ -x "$H/hangar-labtest/share/hangar/rov.sh" ] && "$H/hangar-labtest/share/hangar/rov.sh" reset --force > /dev/null 2>&1
     if [ "$keep" = 1 ] || [ "$fails" -gt 0 ]; then echo "rehearse: the home and the logs are kept: $H"; else rm -rf "$H"; fi
 }
 trap cleanup EXIT
@@ -199,7 +203,26 @@ for run in "$@"; do
 
         if [ "$run" = both ]; then
             is "armed from the topside, across the link" eval 'TH call safety.arm && until_line 5 eval "VH status | grep -E \"^safety .* armed\""'
+            # The guard (README "The guard"), before the real stack, armed: nothing that
+            # stops hangar is done, on either end, and every manager is still the same one.
+            vpid=$(cat "$RV/hangard.pid"); tpid=$(cat "$RT/hangard.pid")
+            "$H/hangar-labtest/share/hangar/rov.sh" armed > "$H/log/$run-armed.txt" 2>&1; grc=$?
+            has armed "armed: rov.sh armed on the Pi says so" '^armed: safety: armed; ArduSub: armed'
+            is "armed: its status is 4" eval '[ "$grc" = 4 ]'
+            "$H/hangar-labtest/share/hangar/rov.sh" down > "$H/log/$run-guard-down.txt" 2>&1; grc=$?
+            has guard-down "armed: rov.sh down on the Pi refused" 'NOT DONE \(stopping hangar\): the vehicle is not disarmed'
+            is "armed: its status is 4" eval '[ "$grc" = 4 ]'
+            "$H/hangar-labtest/share/hangar/rov.sh" reset > "$H/log/$run-guard-reset.txt" 2>&1
+            has guard-reset "armed: rov.sh reset on the Pi refused" 'NOT DONE \(stopping hangar and removing its roots\)'
+            BRIDGE=1 bash "$here/rov.sh" topside down > "$H/log/$run-guard-topside.txt" 2>&1; grc=$?
+            has guard-topside "armed: rov.sh topside down on the laptop refused (the bridge's copies read)" 'NOT DONE \(stopping the topside role\): the vehicle is not disarmed \(safety: armed; ArduSub: armed\)'
+            is "armed: its status is 4" eval '[ "$grc" = 4 ]'
+            lab guard-up up "${flags[@]}"
+            has guard-up "armed: lab.sh up refused, nothing changed" 'THE VEHICLE IS NOT DISARMED'
+            is "armed: lab.sh up failed" eval '[ "$rc" != 0 ]'
+            is "armed: both managers are the ones that ran before, the vehicle still armed" eval '[ "$(cat "$RV/hangard.pid")" = "$vpid" ] && [ "$(cat "$RT/hangard.pid")" = "$tpid" ] && kill -0 "$vpid" "$tpid" && VH status | grep -E "^safety .* armed"'
             is "disarmed from the topside" eval 'TH call safety.disarm && until_line 5 eval "VH status | grep -E \"^safety .*disarmed\""'
+            is "disarmed: rov.sh armed on the Pi says so" until_line 5 eval '"$H/hangar-labtest/share/hangar/rov.sh" armed | grep -E "^disarmed: safety: disarmed; ArduSub: disarmed"'
             # The vehicle's bridge calls the link lost after about 3 s of silence; an arm
             # sent before that is still taken (and the tether trigger then ends it).
             BRIDGE=1 bash "$here/rov.sh" topside down > /dev/null 2>&1
@@ -214,6 +237,9 @@ for run in "$@"; do
             has status-nolink "status: the missing topside said" 'no manager under /dev/shm/hangar-topside \(the topside role'
             BRIDGE=1 bash "$here/rov.sh" topside up > /dev/null 2>&1
             is "the topside up again: the link back" until_line 20 eval 'TH status | grep -E "^bridge +ready .* up 127"'
+            # Armed when down is asked for: down disarms, reads the state again, and
+            # only then stops anything.
+            is "armed again, for down" eval 'until_line 20 TH call safety.arm && until_line 5 eval "VH status | grep -E \"^safety .* armed\""'
         fi
 
         if [ "$run" = serial ]; then
@@ -222,6 +248,8 @@ for run in "$@"; do
             "$H/hangar-labtest/share/hangar/rov.sh" reset > /dev/null 2>&1
         fi
         lab down down
+        [ "$run" = both ] && has down "down on an armed vehicle: said, and disarmed before anything is stopped" 'found NOT DISARMED \(safety: armed; ArduSub: armed\): disarming it'
+        [ "$run" = both ] && has down "down: the vehicle read disarmed" '^lab: ok    disarmed \(safety: disarmed; ArduSub: disarmed'
         [ "$run" = serial ] && has down "down after hangar stopped: up again, on the serial line, for the restore" '^lab: ok    hangar up again for the restore'
         has down "down: the parameters restored and compared" "^lab: ok    ArduSub's parameters as the lab left them"
         [ "$run" = serial ] && has down "down: the stopped unit started again" "^lab: ok    the lab's lab-mavros started again"

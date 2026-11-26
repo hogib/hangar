@@ -23,7 +23,12 @@
 #                                    (brightness=120, auto_exposure=0 exposure_us=8000,
 #                                    gain=30; -1 leaves one to the camera). Alone: the
 #                                    values in force.
-#   lab.sh down                      everything put back as found
+#   lab.sh down [--force]            everything put back as found: disarmed first if
+#                                    it is armed, and nothing stopped unless the
+#                                    vehicle then reads disarmed (--force: all the same)
+#
+# Nothing here stops hangar under an armed vehicle (tools/rov/README.md, "The guard"):
+# up, which lays hangar out afresh, refuses while it is armed and disarms nothing.
 #
 # Configuration: tools/rov/lab.conf (~/.config/hangar/lab.conf first; the environment
 # first of all). LAB_HOST=local rehearses it all on this laptop, without the vehicle.
@@ -61,7 +66,7 @@ chmod 700 "$LAB_STATE_DIR"
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$LAB_STATE_DIR/ssh-%C" -o ControlPersist=30m
           -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 
-usage() { sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "lab: $*"; }
 warn() { echo "lab: $*" >&2; }
 die() { warn "$*"; exit 1; }
@@ -162,7 +167,7 @@ rov_env() {
 
 # The topside role on this laptop, for --bridge: the checkout's rov.sh and builddir/.
 topside() { # up|down|status|reset
-    BRIDGE=1 ROV_IP="$ROV_IP" GCS_IP="$LAPTOP_IP" BRIDGE_PORT="$T_PORT" BRIDGE_PEER_PORT="$V_PORT" \
+    ROV_FORCE="${LAB_FORCE:-0}" BRIDGE=1 ROV_IP="$ROV_IP" GCS_IP="$LAPTOP_IP" BRIDGE_PORT="$T_PORT" BRIDGE_PEER_PORT="$V_PORT" \
         TOPSIDE_HELLION_URL="http://127.0.0.1:$HELLION_CONTROL_PORT/" \
         bash "$here/rov.sh" topside "$1"
 }
@@ -172,6 +177,30 @@ topside_hangar() { HANGAR_ROOT=$RT "$repo/builddir/hangar" "$@"; }
 topside_laid_out() { [ -e "$RT/etc/hangar/modules/bridge.module" ]; }
 bridge_session() { [ "$(sess_get bridge)" = 1 ] || topside_laid_out; }
 topside_line() { topside_hangar status 2>/dev/null | awk -v m="$1" '$1 == m { $1 = $1; print }'; }
+
+# What the vehicle's own topics say, by the Pi's rov.sh (its guard's reading): VSTATE
+# disarmed, armed or unknown, VWHY the reading. A release on the Pi from before rov.sh
+# had the word: the safety and mavlink modules' status lines instead, which say the same
+# of a module that runs and nothing of one that hangs.
+vehicle_state() {
+    local out
+    out=$(rsh 'if grep -q "^cmd_armed()" "$ROV"; then "$ROV" armed 2>&1; exit 0; fi
+st=$("$B/hangar" status 2>/dev/null)
+s=$(awk '\''$1 == "safety" { $1 = $1; print }'\'' <<< "$st"); m=$(awk '\''$1 == "mavlink"'\'' <<< "$st" | grep -oE "ardusub [a-z]+")
+old="by the status lines: the Pi has a rov.sh from before the guard"
+case "$s|$m" in
+    "safety ready "*" disarmed"*"|ardusub disarmed") echo "disarmed: $s; $m ($old)" ;;
+    "safety ready "*"|ardusub "*) echo "armed: $s; $m ($old)" ;;
+    *) echo "unknown: safety: ${s:-no status}; mavlink: ${m:-no status} ($old)" ;;
+esac') || out=""
+    case $out in
+        disarmed:*|"no manager") VSTATE=disarmed ;;
+        armed:*) VSTATE=armed ;;
+        *) VSTATE=unknown ;;
+    esac
+    VWHY=${out#*: }
+    [ -n "$out" ] || VWHY="the Pi did not answer"
+}
 
 # What the two bridges compare before they carry anything (docs/08, config_match): the
 # msg/ tree and the bridge's configuration but for each machine's own lines.
@@ -451,6 +480,23 @@ cmd_up() {
     done
     reachable || exit 1
     rsh '[ -x "$ROV" ] && [ -x "$B/hangard" ]' || die "no hangar at $ROV_ROOT on the Pi: lab.sh deploy first"
+    # up lays hangar out afresh: it stops what runs. Never under an armed vehicle, and
+    # up disarms nothing: asked before anything is changed, here or on the Pi.
+    if hangar_running; then
+        vehicle_state
+        case $VSTATE in
+            disarmed) ;;
+            armed)
+                warn "THE VEHICLE IS NOT DISARMED ($VWHY)."
+                warn "  up would stop hangar to lay it out again. Disarm first (QGroundControl, the console),"
+                die "  then up again. Nothing was changed" ;;
+            *)
+                warn "hangar runs on the Pi and whether the vehicle is disarmed cannot be read:"
+                warn "  $VWHY"
+                warn "  up would stop it. lab.sh status shows what runs; lab.sh down --force brings it down as it is."
+                die "  Nothing was changed" ;;
+        esac
+    fi
     if [ "$video" = 1 ]; then
         [ -x "$HELLION" ] && [ -x "$EEYE" ] || die "no $HELLION or $EEYE: run make -j8 all in $repo"
         ss -lnt "( sport = :$HELLION_CONTROL_PORT )" 2>/dev/null | grep -q LISTEN &&
@@ -802,17 +848,51 @@ down_without_session() { # hangar-was-running failed-steps
 }
 
 cmd_down() {
-    local failed=() was_up=0 lost=0
+    local failed=() was_up=0 lost=0 force=0
+    for a in "$@"; do
+        case $a in --force) force=1 ;; *) usage 2 ;; esac
+    done
     step() { # what command...: never stops at a failure, says which ones failed
         local what=$1; shift
         if "$@"; then say "ok    $what"; else warn "FAILED $what"; failed+=("$what"); fi
     }
-    step "the laptop's hellion and eeye stopped" laptop_video_down
     if ! reachable; then
+        step "the laptop's hellion and eeye stopped" laptop_video_down
         warn "the Pi is out of reach: its side is left as it is; the session file is kept for the next down"
         topside_laid_out && warn "the topside role on this laptop is left running too: it is the vehicle's link when the tether is back"
         exit 1
     fi
+
+    # Before anything is stopped, here or there: the vehicle disarmed. down disarms it
+    # itself if it is not (it is the session's end, and safety.disarm is hangar's own
+    # ordinary way), and then reads the state again. Still armed, or not readable: down
+    # stops nothing, not even the pilot's video, unless told to with --force. The Pi's
+    # rov.sh asks the same again when it comes to stopping (rov.sh reset, below).
+    if hangar_running; then
+        was_up=1
+        vehicle_state
+        if [ "$VSTATE" != disarmed ]; then
+            if [ "$VSTATE" = armed ]; then warn "the vehicle was found NOT DISARMED ($VWHY): disarming it"
+            else warn "the vehicle's state cannot be read ($VWHY): asking for a disarm"; fi
+            # The three seconds are ArduSub's, to report itself disarmed.
+            rsh '"$B/hangar" call safety.disarm > /dev/null; sleep 3'
+            vehicle_state
+        fi
+        if [ "$VSTATE" = disarmed ]; then
+            say "ok    disarmed ($VWHY)"
+        elif [ "$force" = 1 ]; then
+            warn "--force: hangar is stopped although the vehicle does not read disarmed ($VWHY)"
+        else
+            warn "THE VEHICLE DOES NOT READ DISARMED: $VWHY"
+            warn "  Nothing was stopped, on the Pi or on this laptop; the session is as it was."
+            warn "  Disarm it (QGroundControl, the console) and run lab.sh down again. If hangar cannot"
+            warn "  say (a module down: lab.sh status) and QGroundControl shows it disarmed, or it has to"
+            warn "  come down as it is: lab.sh down --force (the mavlink module sends neutral and a disarm"
+            warn "  as it stops)."
+            exit 1
+        fi
+    fi
+    step "the laptop's hellion and eeye stopped" laptop_video_down
     tunnels_down
 
     # No session file here: the Pi's copy of it, if up left one. With neither, what up
@@ -825,12 +905,6 @@ cmd_down() {
         fi
     fi
 
-    if hangar_running; then
-        was_up=1
-        # The call's own status, not the sleep's (the three seconds are ArduSub's, to
-        # report itself disarmed before the restore asks).
-        step "disarmed" rsh '"$B/hangar" call safety.disarm > /dev/null; rc=$?; sleep 3; exit $rc'
-    fi
     local backup; backup=$(sess_get params_backup)
     if [ -n "$backup" ]; then
         # The restore goes the way the save went, through hangar: up again for it if it
@@ -848,9 +922,9 @@ cmd_down() {
     # The topside on this laptop, after the disarm and the restore (neither needs it) and
     # before the vehicle's reset, which, rehearsing on one machine, would stop it first.
     if [ "$(sess_get topside)" = 1 ] || topside_laid_out; then
-        step "the topside role on this laptop stopped, its root removed" eval 'topside reset > /dev/null'
+        step "the topside role on this laptop stopped, its root removed" eval 'LAB_FORCE=$force topside reset > /dev/null'
     fi
-    step "hangar and the relay stopped, the roots removed" rsh '"$ROV" reset > /dev/null'
+    step "hangar and the relay stopped, the roots removed" rsh ROV_FORCE="$force" '"$ROV" reset > /dev/null'
     local services; services=$(sess_get services_stopped)
     if [ -n "$services" ]; then
         # shellcheck disable=SC2086
@@ -871,6 +945,10 @@ cmd_down() {
     else
         warn "not everything could be put back: ${failed[*]}"
         warn "the session file ($SESSION) is kept: fix what failed and run lab.sh down again"
+        # The Pi's rov.sh asks once more as it stops: its refusal (NOT DONE, above) is an
+        # arm, or a module gone, since down's own check.
+        [[ " ${failed[*]} " != *" stopped"* ]] ||
+            warn "if rov.sh refused above (NOT DONE: the vehicle is not disarmed, or cannot say): disarm and down again, or lab.sh down --force"
         exit 1
     fi
 }
@@ -881,7 +959,7 @@ case "${1:-}" in
     status) cmd_status ;;
     bench) shift; cmd_bench "$@" ;;
     camera) shift; cmd_camera "$@" ;;
-    down) cmd_down ;;
+    down) shift; cmd_down "$@" ;;
     -h|--help|help|'') usage 0 ;;
     *) warn "unknown command $1"; usage 2 ;;
 esac

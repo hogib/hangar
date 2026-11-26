@@ -60,7 +60,8 @@ deviation 15).
 
 Props off until step 6 has passed. Stop at the first step that does not do what it says.
 
-0. **The Pi as it was.** If an earlier run may still be up: `rov.sh down` (or, after the
+0. **The Pi as it was.** If an earlier run may still be up: `rov.sh down` (refused
+   unless the vehicle reads disarmed: [The guard](#the-guard); or, after the
    2026-11-09 run, `~/hangar-bench.sh down` and `pkill -INT -f "[m]avros_node"`). Then
    `pgrep -a hangard; pgrep -a mavros` shows nothing.
 1. **Install.** Copy the release tarball, unpack, `sh share/hangar/install-root.sh
@@ -86,6 +87,62 @@ Props off until step 6 has passed. Stop at the first step that does not do what 
 8. **Put it back.** `rov.sh params restore <the file from step 4>` (it sets back only
    what differs, then compares again), `rov.sh down`, and check `systemctl is-active
    eeye hellion`. The sessions in `~/hangar-sessions` come home.
+
+## The guard
+
+Nothing of hangar is stopped under an armed vehicle. On 2026-11-24 `rov.sh down` was run
+on the Pi while the vehicle was armed; the mavlink module sent neutral and a disarm as it
+stopped, which is its last resort and not a way to end a session. Since then the tools
+ask before they stop anything, and the answer is the vehicle's own two topics.
+
+**What is read.** `safety.state` and `ardusub.state` from the vehicle's root, two
+messages of each within 3 s (`hangar echo --count 2`; both are sent at 10 Hz). The second
+is one the module sent while the guard looked: a topic's file and its last message
+outlive a module that died or hangs, and that last word is not the state now.
+`rov.sh armed` prints the reading: `disarmed: …` (status 0), `armed: …` (4),
+`unknown: …` (5), or `no manager`.
+
+| The reading | `down`, `reset`, `relay down` |
+|---|---|
+| no manager under the vehicle's root | proceed: nothing of hangar drives anything |
+| `safety.state` disarmed and `ardusub.state` armed 0 | proceed |
+| the same, and the mavlink module has never heard ArduSub (`last_rx_ns` 0: a rehearsal with `RELAY=0`, or the Pixhawk's cable) | proceed, and say that "disarmed" is hangar's side only |
+| `safety.state` failsafe with the outputs off (action neutral: after a tether or a module failsafe) and ArduSub armed 0 | proceed: ArduSub was disarmed, and a restart keeps the latch |
+| arming, armed, a failsafe that drives (surface, hold), ArduSub armed or still disarming | **refused**, status 4, nothing stopped |
+| a manager runs and one of the two topics is not being published, or cannot be read | **refused**, status 4: a safety or mavlink module that is down or hangs has said nothing, and nothing is not "disarmed" |
+
+`relay down` is guarded because the relay is the mavlink module's only way to ArduSub:
+without it hangar can neither drive nor disarm. `--force` anywhere on the line (or
+`ROV_FORCE=1`) does it all the same and says what it overrode; it is for a vehicle that
+QGroundControl shows disarmed while hangar cannot say so, and for one that has to come
+down as it is.
+
+**The topside on the laptop** (`BRIDGE=1 rov.sh topside down|reset`, and `down` or
+`reset` there) reads the bridge's copies of the same two topics. Armed: refused, since
+stopping the pilot's end of the tether under an armed vehicle is the tether failsafe
+fired on purpose (neutral and a disarm about 3 s later, the sticks dead meanwhile). No
+copies arriving: the link is down already, the vehicle has acted on that by itself, and
+the laptop's side staying up changes nothing for it; that is said, and the topside is
+stopped. A laptop that could not stop its own topside while the tether is out would be
+stuck exactly when the cable is the problem.
+
+**`lab.sh`** holds to the same. `up` lays hangar out afresh, which stops it: while the
+vehicle is not disarmed, or its state cannot be read, `up` refuses before it changes
+anything and disarms nothing. `down` is the session's end and disarms an armed vehicle
+itself (`safety.disarm`, hangar's ordinary way), says that it found it armed, then reads
+the state again: still not disarmed, or not readable, and it stops nothing, on the Pi or
+on the laptop, the pilot's video included. `lab.sh down --force` goes on regardless.
+`deploy` refuses while hangar runs at all. The Pi's `rov.sh` asks again at the moment
+it stops (`rov.sh reset`), so an arm between `down`'s check and the stop is caught too.
+With a release on the Pi from before the guard, `lab.sh` reads the safety and mavlink
+modules' status lines instead, and that `rov.sh` stops without asking.
+
+**What is not guarded.** `hangar stop|restart <module>`, `hangar restart-manager` and a
+signal to `hangard` or to a module: the failure tests (`failtest.py`) do exactly these
+to an armed vehicle on purpose. The guard is in the scripts that end or re-lay a
+session, where stopping under an armed vehicle is never what was meant. It is tested
+without a vehicle by `make check-rov` (`tools/rov/tests/test_guard.sh`, every row above
+against a stub of `hangar echo`) and against a real stack, armed, by `rehearse.sh both`.
 
 ## The parameter backup
 
@@ -237,8 +294,9 @@ the same msg/ tree (the same commit), or `config_match` is false and nothing cro
 5. **QGroundControl** on the laptop as before (UDP 14550, now from the laptop itself);
    the topside console on http://127.0.0.1:8081, its buttons calling the vehicle's
    `safety` and `recorder` across; `hangar call safety.check` on the laptop the same.
-6. **At the end:** `BRIDGE=1 tools/rov/rov.sh topside down` on the laptop, `rov.sh down`
-   on the Pi.
+6. **At the end:** disarmed; then `BRIDGE=1 tools/rov/rov.sh topside down` on the
+   laptop, `rov.sh down` on the Pi. Both refuse while the vehicle is armed
+   ([The guard](#the-guard)).
 
 `ROV_IP` and `GCS_IP` set the two addresses in both `bridge.conf` files at lay-out, as
 for the rest of the profile; on the laptop, `topside_mavlink` binds `GCS_IP` (until
