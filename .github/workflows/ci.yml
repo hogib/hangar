@@ -91,14 +91,17 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            build-essential libturbojpeg0-dev pkg-config
+            build-essential libturbojpeg0-dev pkg-config \
+            libavcodec-dev libavutil-dev libx264-dev
       - name: ThreadSanitizer
         run: make -j"$(nproc)" check-tsan
       - name: AddressSanitizer and UBSan
         run: make -j"$(nproc)" check-asan
+      - name: AddressSanitizer and UBSan, the modules that read frames and packets
+        run: make -j"$(nproc)" check-asan-modules
       - name: Suite logs on failure
         if: failure()
-        run: for f in builddir/tsan/tests-*/*.log builddir/asan/tests-*/*.log; do [ -f "$f" ] && { echo "== $f"; cat "$f"; }; done; true
+        run: for f in builddir/tsan/tests-*/*.log builddir/asan/tests-*/*.log builddir/asan-modules/tests-*/*.log; do [ -f "$f" ] && { echo "== $f"; cat "$f"; }; done; true
 
   # Every harness of fuzz/ for a minute (fuzz/README.md). The corpora are
   # replayed by `make check` and `make check-asan` in the jobs above; this job

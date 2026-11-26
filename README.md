@@ -81,6 +81,7 @@ those are missing.
 make -j"$(nproc)" all        # the manager, the tool and every module
 make -j"$(nproc)" check      # every test suite
 make check-tsan check-asan   # the library's suites under the sanitizers
+make check-asan-modules      # vision, topside_encoder, video_relay and bridge under ASan and UBSan
 make equivalence             # image operators hashed against electric-eye v0.3.1
 tools/release.sh             # the static aarch64 release tarball (zig cc, musl)
 ```

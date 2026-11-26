@@ -822,7 +822,7 @@ static void main_run(void)
 	long long a0 = th_cpu_ticks(bv), b0 = th_cpu_ticks(bt);
 	sleep_ms(2000);
 	double cv = th_cpu_percent(a0, th_cpu_ticks(bv), 2000), ct = th_cpu_percent(b0, th_cpu_ticks(bt), 2000);
-	EXPECT(cv >= 0 && cv < 10 && ct >= 0 && ct < 10, "CPU with traffic: vehicle bridge %.1f%%, topside %.1f%%", cv,
+	EXPECT(th_cpu_within(cv, 10) && th_cpu_within(ct, 10), "CPU with traffic: vehicle bridge %.1f%%, topside %.1f%%", cv,
 	      ct);
 	(void)text;
 }
@@ -857,7 +857,7 @@ static void mismatch_run(void)
 	long long a0 = th_cpu_ticks(bv), b0 = th_cpu_ticks(bt);
 	sleep_ms(2000);
 	double cv = th_cpu_percent(a0, th_cpu_ticks(bv), 2000), ct = th_cpu_percent(b0, th_cpu_ticks(bt), 2000);
-	EXPECT(cv >= 0 && cv < 2 && ct >= 0 && ct < 2, "idle CPU (pings, the status topic): vehicle %.1f%%, topside %.1f%%",
+	EXPECT(th_cpu_within(cv, 2) && th_cpu_within(ct, 2), "idle CPU (pings, the status topic): vehicle %.1f%%, topside %.1f%%",
 	      cv, ct);
 }
 

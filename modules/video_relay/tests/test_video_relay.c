@@ -693,7 +693,7 @@ static void test_module(void)
 	sleep_ms(1000);
 	double pct = th_cpu_percent(c0, th_cpu_ticks(pid), (long)((now_ns() - t0) / 1000000));
 	printf("    at rest: %.1f %% of a core\n", pct);
-	CHECK(pct >= 0 && pct < 5);
+	CHECK(th_cpu_within(pct, 5));
 
 	CHECK_EQ_INT(stop(pid), 0);
 	/* The MP4: both passes but the 21 frames skipped. */

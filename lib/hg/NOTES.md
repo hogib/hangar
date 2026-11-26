@@ -155,7 +155,11 @@ parser's `struct hg_schema` is about 12 KB and lives where the caller puts it.
   them (`bench/PI-TEST.md`, "Results, 2026-11-09"). ARMv7 is still open.
 - Sanitizers: `check-tsan` and `check-asan` rebuild the hg suites with no
   suppression; a compiler without the runtime makes the target say `skip`. gcc,
-  clang and `zig cc` 0.17 all pass both.
+  clang and `zig cc` 0.17 all pass both. `check-asan-modules` does the same for the
+  suites of the modules that index memory by bytes they did not make (vision,
+  topside_encoder, video_relay, bridge; `SAN_MODULE_CHECKS` in the Makefile), the
+  manager and the modules themselves instrumented; the suites' CPU budgets are ten
+  times as wide there (`th_cpu_within`). Run with gcc only so far.
 
 ## Stage 2a additions (the manager's side: hangard/README.md)
 

@@ -13,6 +13,9 @@
 #   make check-hg          only lib/hg's suites (the hangar module library)
 #   make check-tsan        lib/hg's suites again under ThreadSanitizer
 #   make check-asan        lib/hg's suites again under AddressSanitizer + UBSan
+#   make check-asan-modules  the suites of the modules that read frames and
+#                          packets (SAN_MODULE_CHECKS), manager and modules
+#                          included, under AddressSanitizer + UBSan
 #   make equivalence       hash every lib/vision operator's output and
 #                          compare with electric-eye v0.3.1's (tools/equivalence/)
 #   make fuzz              every fuzz harness for FUZZ_SECONDS each (fuzz/README.md)
@@ -331,7 +334,7 @@ $(CHECKS): check-%: $(TESTDIR)/test_%
 
 check: $(CHECKS)
 
-.PHONY: check-hg check-tsan check-asan
+.PHONY: check-hg check-tsan check-asan check-asan-modules
 check-hg: $(addprefix check-,$(HG_TESTS))
 
 # The hg suites again under a sanitizer, in their own build directory so the
@@ -339,22 +342,38 @@ check-hg: $(addprefix check-,$(HG_TESTS))
 # the seqlock copy is atomic words, so there is nothing to suppress. A
 # compiler without the runtime fails the probe and the target is skipped, not
 # failed (gcc, clang and zig cc 0.17 all have it here); the probe binary stays
-# in $(BUILDDIR), which `make clean` removes. $(1): the -fsanitize= list,
-# $(2): the directory.
+# in $(BUILDDIR), which `make clean` removes. The suites find HANGAR_SANITIZED
+# in their environment: a CPU budget is ten times as wide there
+# (lib/common/test_harness.h, th_cpu_within). $(1): the -fsanitize= list,
+# $(2): the directory, $(3): the targets run there.
 comma := ,
 define sanitized_check
 	@mkdir -p $(BUILDDIR); \
 	if echo 'int main(void){return 0;}' | $(CC) -fsanitize=$(1) -x c - -o $(BUILDDIR)/.san-probe-$(2) >/dev/null 2>&1; then \
-	  $(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/$(2) \
-	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=$(1)" LDFLAGS="-fsanitize=$(1)" check-hg; \
+	  HANGAR_SANITIZED=$(2) $(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/$(2) \
+	    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=$(1)" LDFLAGS="-fsanitize=$(1)" $(3); \
 	else \
 	  echo "skip  $(2): $(CC) cannot build with -fsanitize=$(1)"; \
 	fi
 endef
 check-tsan:
-	$(call sanitized_check,thread,tsan)
+	$(call sanitized_check,thread,tsan,check-hg)
 check-asan:
-	$(call sanitized_check,address$(comma)undefined,asan)
+	$(call sanitized_check,address$(comma)undefined,asan,check-hg)
+
+# The modules that take bytes they did not make and index memory by them: the
+# frame readers (vision, topside_encoder), the RTP depacketizer and decoder
+# (video_relay) and the tether's datagrams (bridge). Their suites start the
+# real manager and the real module, so both run instrumented, and a report in
+# either fails the suite: a module that ASan stops exits, and the suite waits
+# for an answer that does not come. libx264 and libavcodec are the system's,
+# not instrumented; what ASan sees of them is what they are handed. In a
+# directory of its own, so that it can run beside check-asan. Not under
+# ThreadSanitizer: the views of hg_latest_view are plain reads of memory
+# another process writes, which is the documented exception of docs/01.
+SAN_MODULE_CHECKS ?= check-vision check-topside_encoder check-video_relay check-bridge
+check-asan-modules:
+	$(call sanitized_check,address$(comma)undefined,asan-modules,$(SAN_MODULE_CHECKS))
 
 # Equivalence with electric-eye v0.3.1 (tools/equivalence/README.md): equiv
 # hashes every lib/vision operator's output over a fixed input set, one

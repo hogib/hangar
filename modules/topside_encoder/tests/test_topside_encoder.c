@@ -452,7 +452,7 @@ static void test_idle_cpu(void)
 	sleep_ms(1000);
 	double pct = th_cpu_percent(t0, th_cpu_ticks(m.pid), (long)(now_ms() - a));
 	printf("    topside_encoder with no frames: %.1f %% of a core\n", pct);
-	CHECK(pct >= 0 && pct < 2);
+	CHECK(th_cpu_within(pct, 2));
 }
 
 static void test_shutdown(void)
