@@ -26,6 +26,11 @@ hangar-sim-vehicle [--seed N] --sitl [host:]port    # ArduSub SITL's physics (si
 hangar-sim-vehicle [--seed N]                       # without ArduSub (sim_vehicle.module.off)
 ```
 
+`--frame FILE` in either mode takes the thrusters' places and directions from a frame
+file (`lib/sim/sim_frame.h`) in place of the compiled-in BlueROV2 heavy configuration:
+the file the `thrusters` module is given, as `profiles/sim-direct` does. A file that
+cannot be read or parsed is a configuration error (exit 78, the reason in the log).
+
 **SITL's physics (phase 1).** ArduSub SITL started with its JSON model sends its servo
 outputs to the module's UDP port (9002 by default); the module steps once per packet
 with `dt = 1 / frame_rate` and answers the sender. Servo outputs 1 to 8 are the
@@ -153,10 +158,12 @@ module on UDP 9002 under its manager, waits up to 60 s for SITL's frames, and ch
 
 - `sim_camera`, `sim_pilot`, `sim_faults`, `hangar sim up` and `hangar sim fit` are other
   parts of docs/14, not this module.
-- **lib/sim's geometry pitches the vehicle hard under surge:** the horizontal thrusters
-  sit 6 cm off the centre of gravity, so 22 N of surge makes about 1.9 N m of pitch
-  moment, about what the 2 cm centre-of-buoyancy offset can hold (2.3 N m), and the
-  vehicle tumbles instead of settling. A pure 20 N surge force also pitches it (the Munk
-  moment of the unequal added masses), so forward speed is not surge damping's alone.
-  Both are the model's physics as identified; whether the real vehicle does the first is
-  for `hangar sim fit` against a recorded dive.
+- **The model tumbles under surge thrust** (2026-11-20). The cause is found and
+  written up in `lib/sim/README.md` "Pitch under surge": the horizontal thrusters'
+  couple against a 2 cm restoring arm, and the Munk moment above 0.50 m/s. The module's
+  defaults are unchanged, so with ArduSub's mixing (SITL's physics, and the `thrusters`
+  module without a frame) it still does. `profiles/sim-direct` is the configuration
+  that flies: the allocation through the frame, von Benzon's measured translational
+  damping in `sim_vehicle.params`, and `depth_hold`'s levelling and heading hold.
+- **`cb_z` is not a parameter of the module**, nor are the added masses and inertias:
+  a measured centre of buoyancy has no way in yet short of the source.

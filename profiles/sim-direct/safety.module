@@ -1,0 +1,54 @@
+# The safety module without ArduSub: no [Call mavlink.arm], so arming is
+# hangar's alone; ardusub.state stays subscribed (the module opens it) and
+# nothing publishes it. The battery is the simulator's power.battery; there is
+# no leak sensor (safety.params). As profiles/sim-depth-ff has it.
+[Module]
+Description=Vehicle state: arm, disarm, failsafe
+Exec=/usr/lib/hangar/hangar-safety
+
+[Subscribe hangar.vehicle.modules]
+[Subscribe hangar.vehicle.system]
+[Subscribe vehicle.leak]
+[Subscribe power.battery]
+[Subscribe nav.depth]
+[Subscribe ardusub.state]
+# No bridge in this profile: safety.params sets tether_enabled = 0, and nothing
+# publishes the topic.
+[Subscribe bridge.vehicle.link]
+[Subscribe mux.params]
+
+[Publish safety.state]
+Type=safety_state
+Rate=10
+
+[Params]
+Type=safety_params
+Allow=topside:pilot_console admin topside:admin
+
+[Serve arm]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+[Serve disarm]
+Request=empty
+Reply=empty
+Allow=* topside:* admin topside:admin
+
+[Serve estop]
+Request=empty
+Reply=empty
+Allow=* topside:* admin topside:admin
+
+[Serve clear]
+Request=empty
+Reply=empty
+Allow=topside:pilot_console admin topside:admin
+
+[Serve check]
+Request=empty
+Reply=check_rep
+Allow=* topside:* admin topside:admin
+
+[Restart]
+Policy=always

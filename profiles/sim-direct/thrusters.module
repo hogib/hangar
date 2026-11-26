@@ -1,0 +1,28 @@
+# The thrusters of profiles/sim-direct (modules/thrusters/README.md): ctl.wrench
+# through the actuator gate, allocated through the frame's geometry to thr.cmd,
+# which the simulator reads. The simulator is given the same frame file.
+# --voltage is the supply the T200's table is read at: the simulator's battery
+# runs from 16.8 V down, so the thrust applied is a few per cent off what was
+# asked, as on a vehicle whose battery nobody tells the allocation about.
+[Module]
+Description=Thrusters: ctl.wrench allocated to pulse widths, through the actuator gate
+Exec=/usr/lib/hangar/hangar-thrusters --frame /etc/hangar/bluerov2-heavy.frame --voltage 16
+User=hg-thrusters
+
+[Subscribe ctl.wrench]
+[Subscribe safety.state]
+
+[Publish thr.cmd]
+Type=thruster_cmd
+Rate=50
+Actuator=yes
+Inputs=ctl.wrench
+
+[Publish thr.out]
+Type=thruster_out
+Rate=50
+Inputs=ctl.wrench
+
+[Actuator]
+Command=ctl.wrench
+Neutral=/usr/lib/hangar/hangar-thrusters --neutral

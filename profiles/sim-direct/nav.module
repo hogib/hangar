@@ -1,0 +1,20 @@
+# nav of profiles/sim-direct: the vehicle's state estimate, nav.state
+# (modules/nav/README.md), from the simulator's nav.depth, nav.attitude and
+# nav.imu. As profiles/sim-depth-ff has it.
+[Module]
+Description=Vehicle state: depth, vertical velocity, attitude
+Exec=/usr/lib/hangar/hangar-nav
+
+[Subscribe nav.depth]
+[Subscribe nav.attitude]
+[Subscribe nav.imu]
+
+[Publish nav.state]
+Type=nav_state
+Rate=50
+Inputs=nav.depth
+Sources=nav.attitude nav.imu
+
+[Params]
+Type=nav_params
+Allow=topside:pilot_console admin topside:admin

@@ -12,6 +12,10 @@
  *       stepped in lockstep with SITL; nav.* and power.battery are then the
  *       mavlink module's, from SITL's telemetry, never this module's
  *
+ * --frame FILE in either mode: the thrusters' places and directions from a
+ * frame file (lib/sim/sim_frame.h), the one the thrusters module is given,
+ * in place of the compiled-in BlueROV2 heavy configuration.
+ *
  * Parameters are live (msg/sim_vehicle_params.msg). The loop is one epoll
  * over a timer, the SITL socket and the call topics' eventfd; thr.cmd is
  * read at each tick and is not in the wait set (hangar#1).
@@ -26,6 +30,7 @@
 #include "hg_params.h"
 #include "hg_topic.h"
 #include "imu.h"
+#include "mod_frame.h"
 #include "sim_pose.h"
 #include "sim_thrust_truth.h"
 #include "sim_velocity.h"
@@ -53,6 +58,7 @@
 
 static struct sim_vehicle_params P;
 static struct sv V;
+static struct sim_frame FRAME;
 static int sitl;
 static hg_pub *pub_pose, *pub_vel, *pub_thrust, *pub_imu, *pub_att, *pub_depth, *pub_bat;
 static hg_sub *sub_cmd;
@@ -205,7 +211,7 @@ static void sitl_packet(uint64_t now)
 		} else {
 			if (have_frame && frame < last_frame) {
 				/* A restarted SITL counts from 0 again: so does the vehicle. */
-				sv_init(&V, &P, V.rng.s, V.dt);
+				sv_init_frame(&V, &P, V.rng.s, V.dt, &FRAME.geometry);
 				next_truth_t = 0;
 				sitl_resets++;
 				mod_log(WHO, "SITL restarted (frame %u after %u): the vehicle starts again at rest",
@@ -273,14 +279,16 @@ static void status_line(void)
 int main(int argc, char **argv)
 {
 	uint64_t seed = 1;
-	const char *sitl_spec = NULL;
+	const char *sitl_spec = NULL, *frame_path = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc)
 			seed = strtoull(argv[++i], NULL, 0);
 		else if (strcmp(argv[i], "--sitl") == 0 && i + 1 < argc)
 			sitl_spec = argv[++i];
+		else if (strcmp(argv[i], "--frame") == 0 && i + 1 < argc)
+			frame_path = argv[++i];
 		else {
-			fprintf(stderr, "usage: %s [--seed N] [--sitl [host:]port]\n", argv[0]);
+			fprintf(stderr, "usage: %s [--seed N] [--frame FILE] [--sitl [host:]port]\n", argv[0]);
 			return 64;
 		}
 	}
@@ -290,7 +298,14 @@ int main(int argc, char **argv)
 		mod_log(WHO, "hg_params_open: %s", strerror(errno));
 		return 4;
 	}
-	sv_init(&V, &P, seed, 1.0 / RATE_HZ);
+	char ferr[160];
+	if (mod_frame_load(frame_path, &FRAME, ferr, sizeof ferr) < 0) {
+		mod_log(WHO, "frame %s: %s", frame_path, ferr);
+		hg_status("the frame file cannot be used (the log says why)");
+		return 78;
+	}
+	mod_log(WHO, "frame %s, %d thrusters%s", FRAME.name, FRAME.n, frame_path ? "" : " (compiled in)");
+	sv_init_frame(&V, &P, seed, 1.0 / RATE_HZ, &FRAME.geometry);
 	struct hg_pub_opts r200 = { .rate_mhz = RATE_HZ * 1000u };
 	pub_pose = hg_pub_open("sim.pose", &SIM_POSE_TYPE, &r200);
 	pub_vel = hg_pub_open("sim.velocity", &SIM_VELOCITY_TYPE, &r200);

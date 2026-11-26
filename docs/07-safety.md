@@ -184,6 +184,14 @@ that drives ESCs in phase 2 has hardware that keeps its last pulse width, and it
 --neutral` in the example above); `hangar-thrusters --neutral` is not a model for
 it.
 
+What it does do, behind the gate, is the mixing. Given a frame file (the thrusters'
+positions and directions, [14-simulation](14-simulation.md#frames)) it allocates
+through the frame's own geometry, so that the wrench asked for is the wrench applied;
+past the thrusters' limits heave, roll and pitch are served before surge, sway and
+yaw, each group keeping its direction: holding depth and attitude comes before moving
+(modules/thrusters/README.md "Saturation"). Without a frame file it mixes as ArduSub's
+MANUAL mode does.
+
 ## The mux
 
 `ctl.wrench` has one writer: the `mux`. Every control source publishes its own topic
@@ -478,6 +486,27 @@ protection and replaces none.
 [The actuator gate](#the-actuator-gate) is the actuator and ArduSub is removed. The
 gate, the mux and the safety module are unchanged; the `autopilot` trigger no longer
 applies, and `arming` leads to `armed` at once ([10-mavlink](10-mavlink.md#phase-2)).
+
+As built, phase 2 exists in simulation only (`profiles/sim-direct`): `safety`, the
+`mux`, `nav`, `depth_hold`, `thrusters` allocating through a frame, and the simulator
+in place of the vehicle and its sensors, with no `mavlink` module. What ArduSub
+provided has to come from somewhere, and this is where each part stands:
+
+| ArduSub provided | Without it |
+|---|---|
+| The mixing | `thrusters`, from the frame's geometry |
+| The armed state | `safety` alone: no second party to agree with, `arming` to `armed` at once |
+| The flight mode held in MANUAL | Nothing to hold: there is no autopilot to change mode |
+| Levelling and heading in its stabilized modes | `depth_hold`'s levelling and heading hold, in the mux's `assisted` mode; in `manual` nothing levels the vehicle |
+| Depth, attitude, IMU | The simulator. On a vehicle: sensor modules on the Navigator's buses, not written |
+| Battery voltage | The simulator. On a vehicle: not written; `safety`'s battery trigger has no source |
+| Leak | No source (`leak_required = 0` in the profile); the `leak` module is not written |
+| Its own GCS and pilot-input failsafes, behind a dead hangar module | Nothing. With ArduSub gone the last line is the `Neutral` command and what the PWM hardware does by itself, and that is unmeasured |
+
+The last row is why phase 1 came first, and it is not closed by anything built here.
+The lab's vehicle keeps its Pixhawk, so on it ArduSub can only be reduced to passing
+per-thruster commands through; whether its firmware allows that, and what its outputs
+do when the commands stop, is to be checked before anything is built for it.
 
 ## The computer itself
 

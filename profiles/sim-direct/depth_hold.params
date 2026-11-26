@@ -1,0 +1,18 @@
+# hangar parameters: depth_control_params
+# version 1, set by profiles/sim-direct, 2026-11-26T00:00:00Z
+# The defaults assume thrust linear in the heave command; the simulator's T200s
+# have a deadband (28 us at 16 V, heave 0.07) and little thrust just above it.
+# With accel_max 1 the feedback's share is at most heave 0.1, 3 N: a vehicle
+# 4 N heavier sinks out of i_band and is never caught. A wider feedback and a
+# wider band (as profiles/sim-depth-ff; bench/e2e-depth-ff/README.md).
+accel_max = 4
+i_band = 0.6
+# Levelling and heading hold: with no autopilot behind it nothing else keeps
+# the vehicle upright or pointing where it was left, and the model is stable in
+# neither pitch nor heading at speed (lib/sim/README.md "Pitch under surge").
+# mux.params gives the controller roll, pitch and yaw beside heave. Chosen on
+# the simulator, not tuned on a vehicle.
+level_kp = 0.5
+level_kd = 0.1
+heading_kp = 0.5
+heading_kd = 0.1

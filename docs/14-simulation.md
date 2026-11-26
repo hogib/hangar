@@ -73,6 +73,25 @@ difference.
 draining with thrust) itself, with the same noise, bias and latency parameters, in
 place of the sensor modules that read the Navigator's buses.
 
+#### Frames
+
+Where the thrusters sit and which way each pushes is a file, not code: a frame file
+(`lib/sim/sim_frame.h`), one `[Thruster N]` section each with its `Position`, its
+`Direction` and whether it is `Reversed`. `sim_vehicle --frame FILE` builds its
+allocation matrix from it, and the `thrusters` module, given the same file, inverts
+that matrix ([07-safety](07-safety.md#the-actuator-gate)); a vehicle of six thrusters
+is another file. Without the option both hold the compiled-in BlueROV2 heavy
+configuration, which `profiles/sim-direct/bluerov2-heavy.frame` repeats as a file
+(a test compares the two).
+
+`profiles/sim-direct` is the whole chain without ArduSub: `safety`, the `mux`, `nav`,
+`depth_hold` with its levelling and heading hold, `thrusters` and the simulator.
+`make check-sim_direct` flies it: armed, down to 2 m and held, surge, sway, a full
+turn, a disarm, the safety module killed. The profile sets the simulator's
+translational damping to von Benzon's measured values, because with the published
+defaults the model does not stay upright under surge
+([Physics](#physics); lib/sim/README.md "Pitch under surge").
+
 Its parameters are live ([05-parameters](05-parameters.md)): mass, buoyancy, drag
 coefficients, payload mass and position, current, and each sensor's noise, bias and
 latency. As built, a payload moves the centre of gravity for the restoring moment and

@@ -54,11 +54,17 @@ static void push_sensors(struct sv *v)
 
 void sv_init(struct sv *v, const struct sim_vehicle_params *P, uint64_t seed, double dt)
 {
+	sv_init_frame(v, P, seed, dt, sim_geometry_bluerov2_heavy());
+}
+
+void sv_init_frame(struct sv *v, const struct sim_vehicle_params *P, uint64_t seed, double dt,
+		   const struct sim_thruster_geometry *g)
+{
 	memset(v, 0, sizeof *v);
 	v->P = *P;
 	v->dt = dt;
 	sim_state_init(&v->s);
-	sim_thrusters_init(&v->th, sim_geometry_bluerov2_heavy(), P->thruster_lag);
+	sim_thrusters_init(&v->th, g, P->thruster_lag);
 	sim_rng_seed(&v->rng, seed);
 	sim_delay_init(&v->d_gyro);
 	sim_delay_init(&v->d_accel);

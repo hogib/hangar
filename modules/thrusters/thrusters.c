@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* thrusters: the actuator of docs/07 for a vehicle without ArduSub (phase 2,
  * and the simulator's standalone mode): ctl.wrench through the actuator gate,
- * mixed as ArduSub mixes (thr_mix.h), published at 50 Hz as thr.cmd and as
- * thr.out (the pulse widths sent, as the mavlink module publishes ArduSub's
- * servo outputs). Neutral, 1500 us, whenever the gate is closed.
+ * mixed, published at 50 Hz as thr.cmd and as thr.out (the pulse widths sent,
+ * as the mavlink module publishes ArduSub's servo outputs). Neutral, 1500 us,
+ * whenever the gate is closed.
  *
- *   hangar-thrusters              the module
- *   hangar-thrusters --neutral    the manager's Neutral command
+ *   hangar-thrusters                               the module, mixing as ArduSub mixes (thr_mix.h)
+ *   hangar-thrusters --frame FILE [--voltage V]    allocating through the frame's geometry (thr_alloc.h)
+ *   hangar-thrusters --neutral                     the manager's Neutral command
  *
  * It waits on nothing but its 50 Hz tick: the gate's two topics are read at
  * each tick, and a subscription waited on but not read would spin (hangar#1). */
 #include "mod.h"
+#include "mod_frame.h"
+#include "thr_alloc.h"
 #include "thr_mix.h"
 
 #include "hg_gate.h"
@@ -45,7 +48,47 @@ int main(int argc, char **argv)
 		fprintf(stderr, "%s --neutral: no hardware here; thr.cmd goes stale and its reader stops the thrusters\n", WHO);
 		return 0;
 	}
+	const char *frame_path = NULL;
+	double voltage = 16.0;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--frame") == 0 && i + 1 < argc) {
+			frame_path = argv[++i];
+			continue;
+		}
+		if (strcmp(argv[i], "--voltage") == 0 && i + 1 < argc) {
+			char *end = NULL;
+			voltage = strtod(argv[++i], &end);
+			/* The table's range (lib/sim/sim_thrust.h). */
+			if (end != argv[i] && !*end && voltage >= 10 && voltage <= 20)
+				continue;
+		}
+		fprintf(stderr, "usage: %s [--frame FILE [--voltage 10..20]] | --neutral\n", argv[0]);
+		return 64;
+	}
 	mod_init(WHO);
+	struct thr_alloc A;
+	if (frame_path) {
+		struct sim_frame F;
+		char ferr[160];
+		if (mod_frame_load(frame_path, &F, ferr, sizeof ferr) < 0) {
+			mod_log(WHO, "frame %s: %s", frame_path, ferr);
+			hg_status("the frame file cannot be used (the log says why)");
+			return 78;
+		}
+		if (thr_alloc_init(&A, &F, voltage) < 0) {
+			mod_log(WHO, "frame %s: its thrusters produce no wrench", frame_path);
+			hg_status("the frame file cannot be used (the log says why)");
+			return 78;
+		}
+		mod_log(WHO, "frame %s: %d thrusters, rank %d, at %.1f V a command of 1 is surge %.1f N, sway %.1f N, "
+			"heave %.1f N, roll %.2f N m, pitch %.2f N m, yaw %.2f N m",
+			F.name, A.n, A.rank, voltage, A.full[0], A.full[1], A.full[2], A.full[3], A.full[4], A.full[5]);
+		static const char *const axis[6] = { "surge", "sway", "heave", "roll", "pitch", "yaw" };
+		for (int m = 0; m < 6; m++)
+			if (A.full[m] <= 0)
+				mod_log(WHO, "frame %s cannot produce %s: that axis of the command is ignored", F.name,
+					axis[m]);
+	}
 	hg_gate *G = hg_gate_open();
 	if (!G) {
 		mod_log(WHO, "hg_gate_open: %s (an [Actuator] section with Command=ctl.wrench is required)",
@@ -58,7 +101,8 @@ int main(int argc, char **argv)
 		mod_log(WHO, "hg_pub_open: %s", strerror(errno));
 		return 4;
 	}
-	mod_log(WHO, "thr.cmd and thr.out at 50 Hz from ctl.wrench through the gate, ArduSub's vectored mixing");
+	mod_log(WHO, "thr.cmd and thr.out at 50 Hz from ctl.wrench through the gate, %s",
+		frame_path ? "allocated through the frame" : "ArduSub's vectored mixing");
 	char shown[160] = "";
 	unsigned long long open_ticks = 0, scaled = 0;
 	uint64_t next = hg_now_ns();
@@ -78,7 +122,14 @@ int main(int argc, char **argv)
 		struct thruster_cmd c;
 		if (w) {
 			const float in[6] = { w->surge, w->sway, w->heave, w->roll, w->pitch, w->yaw };
-			scaled += thr_mix(in, c.pwm) < 1;
+			if (frame_path) {
+				struct thr_alloc_out o;
+				thr_alloc_mix(&A, in, &o);
+				memcpy(c.pwm, o.pwm, sizeof c.pwm);
+				scaled += o.scale_hold < 1 || o.scale_move < 1;
+			} else {
+				scaled += thr_mix(in, c.pwm) < 1;
+			}
 			open_ticks++;
 		} else {
 			neutral(c.pwm);

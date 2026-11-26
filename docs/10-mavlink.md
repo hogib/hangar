@@ -511,6 +511,11 @@ depth hold rest on. Phase 1 exists so that everything else in these docs runs, i
 recorded and is learned from before that is written. `topside_mavlink` is unchanged:
 it never spoke to ArduSub.
 
+As built, the mixing, the levelling and the heading hold exist and fly the simulator
+with no `mavlink` module (`profiles/sim-direct`; [07-safety](07-safety.md#phase-1-ardusub-drives-the-thrusters)
+has the table of what replaces each thing ArduSub provided). The hardware driver, the
+sensor modules and the attitude estimate from a real IMU do not.
+
 ## Tests
 
 ArduSub runs as SITL (software in the loop) on x86-64, so the whole path is tested in

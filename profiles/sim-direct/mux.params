@@ -1,0 +1,6 @@
+# hangar parameters: mux_params
+# version 1, set by profiles/sim-direct, 2026-11-26T00:00:00Z
+# In assisted the controller holds heave (bit 2), roll and pitch (bits 3 and
+# 4, levelling) and yaw (bit 5, the heading) while the pilot leaves each
+# alone: 4 + 8 + 16 + 32.
+controller_axes = 60

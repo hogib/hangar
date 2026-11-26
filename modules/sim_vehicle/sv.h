@@ -33,6 +33,10 @@ struct sv {
 /* The vehicle at rest, upright, at the surface, t = 0, thrusters stopped,
  * the battery full; `seed` seeds the sensor noise. */
 void sv_init(struct sv *v, const struct sim_vehicle_params *P, uint64_t seed, double dt);
+/* The same with a frame's thrusters (lib/sim/sim_frame.h) in place of the
+ * compiled-in heavy configuration's. */
+void sv_init_frame(struct sv *v, const struct sim_vehicle_params *P, uint64_t seed, double dt,
+		   const struct sim_thruster_geometry *g);
 /* New parameters, live: the state, the thrusts and the charge are kept. */
 void sv_set_params(struct sv *v, const struct sim_vehicle_params *P);
 /* One step of v->dt under the pulse widths (0 counts as 1500): the thrusters'

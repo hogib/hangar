@@ -1,0 +1,46 @@
+# sim_vehicle without ArduSub (docs/14-simulation.md "sim_vehicle", phase 2;
+# modules/sim_vehicle/README.md), with the frame the thrusters module is given:
+# the simulator writes nav.imu, nav.attitude, nav.depth and power.battery, and
+# reads thr.cmd. Its damping is set in sim_vehicle.params.
+[Module]
+Description=Vehicle simulator, standalone
+Exec=/usr/lib/hangar/hangar-sim-vehicle --seed 1 --frame /etc/hangar/bluerov2-heavy.frame
+
+[Subscribe thr.cmd]
+
+[Publish sim.pose]
+Type=sim_pose
+Rate=200
+
+[Publish sim.velocity]
+Type=sim_velocity
+Rate=200
+
+[Publish sim.thrust]
+Type=sim_thrust_truth
+Rate=200
+Inputs=thr.cmd
+
+[Publish nav.imu]
+Type=imu
+Rate=200
+StaleAfter=500ms
+
+[Publish nav.attitude]
+Type=attitude
+Rate=50
+StaleAfter=500ms
+
+[Publish nav.depth]
+Type=depth
+Rate=50
+StaleAfter=500ms
+
+[Publish power.battery]
+Type=battery
+Rate=1
+StaleAfter=3s
+
+[Params]
+Type=sim_vehicle_params
+Allow=admin topside:admin topside:pilot_console

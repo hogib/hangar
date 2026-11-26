@@ -1,0 +1,12 @@
+# hangar parameters: sim_vehicle_params
+# version 1, set by profiles/sim-direct, 2026-11-26T00:00:00Z
+# Surge, sway and heave damping as von Benzon et al. identified them on a
+# BlueROV2 heavy in a test facility (J. Mar. Sci. Eng. 10(12):1898, 2022,
+# Table A1, "Experimental"): Xu 13.7, Yv 0, Zw 33.0 N s/m; Xu|u| 141.0,
+# Yv|v| 217.0, Zw|w| 190.0 N s2/m2. The simulator's defaults are Wu's, from
+# another vehicle, and too weak in surge: the speed they give is past the one
+# at which the model's pitch is stable, and the vehicle goes over
+# (lib/sim/README.md "Pitch under surge"). Roll, pitch and yaw keep the defaults.
+# lib/sim's sim_params_damping_vonbenzon() holds the same six numbers.
+d_lin = 13.7, 0, 33.0, 0.07, 0.07, 0.07
+d_quad = 141.0, 217.0, 190.0, 1.55, 1.55, 1.55
