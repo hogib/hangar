@@ -144,6 +144,86 @@ session, where stopping under an armed vehicle is never what was meant. It is te
 without a vehicle by `make check-rov` (`tools/rov/tests/test_guard.sh`, every row above
 against a stub of `hangar echo`) and against a real stack, armed, by `rehearse.sh both`.
 
+## Preflight
+
+`lab.sh preflight` reads what the two machines are doing besides hangar and prints one
+line a check, `ok`, `warn` or `FAIL`, with the command that would put it right. It
+changes nothing. Runs were spoiled or held up on three visits by things no part of
+hangar looks at: Ubuntu's `unattended-upgrade` holding a core on the Pi (it starts by
+itself some 25 minutes after boot, and `systemctl stop` does not end the process), the
+Pi's clock days behind (it has no battery clock), a Pi at its temperature limit, and
+this laptop's own `hellion.service` on the port the camera's video arrives at.
+
+It has two modes. `preflight` alone asks what would keep a session from coming up as
+meant; `lab.sh up` runs it before it changes anything and stops at a `FAIL`
+(`up --no-preflight` goes on). `preflight --measure` asks what would spoil a number;
+`lab.sh bench` runs it before and after and keeps both reports in the run's folder,
+with a file `NOT-CLEAN` and the first lines of its README saying so if either had a
+`FAIL`; `failtest.py` runs it before each block, keeps the report as
+`<block>.preflight.txt` and writes the verdict into every row. A measurement is never
+refused: it is marked.
+
+| Check | Before a session | Before a measurement | Why that line |
+|---|---|---|---|
+| Package system: a process of `apt`, `dpkg` or `unattended-upgrade` (not Ubuntu's idle `unattended-upgrade-shutdown`) | warn | FAIL | it holds a core for minutes and heats the Pi |
+| `apt-daily.timer`, `apt-daily-upgrade.timer` active | warn | warn | it can start in the middle of a block |
+| The Pi's clock against this laptop's, over 2 s | warn (`up` sets it) | FAIL | recordings and logs are stamped by it; 2 s is what `up` tolerates |
+| The Pi's temperature: 70 °C and over | warn | warn | with the heat sink every real state read 50 to 62 °C (2026-11-25) |
+| 80 °C and over | warn | FAIL | the Pi 5's soft limit: its clock is lowered from there |
+| `vcgencmd get_throttled`: a bit of now (under-voltage, capped, throttled, soft limit) | warn | FAIL | |
+| a bit of earlier in this boot | ok | warn | |
+| Governor other than `performance` | ok | warn | latencies read higher and wider; the results must say which |
+| Memory free under 500 MB / 200 MB | warn / FAIL | warn / FAIL | |
+| `/dev/shm` free under 512 MB / 128 MB | warn / FAIL | warn / FAIL | the roots and every topic live there |
+| Home free under 1000 MB / 100 MB | warn / FAIL | warn / FAIL | recorder sessions and results |
+| A process that is not the session's above 20 % of a core, over one second | warn | warn | its load is in every number; the session's own are hangar's, the relay and this laptop's video |
+| A UDP port the session binds, taken by another | FAIL | | MAVLink, the bridge, the camera's video: without it the session is not the one asked for |
+| A console's TCP port taken | warn | | the session flies without a console |
+| The lab's own services (`LAB_SERVICES`) active | ok | warn | their load is in the numbers |
+| A `[Schedule]` not in force (`hangar status`) | warn | FAIL | docs/03, "What is in force" |
+| Real time not reachable by the installed manager | ok | warn | every module then runs at the ordinary priority |
+| The Pi's release against this laptop's | warn | warn | with the bridge the two refuse each other |
+
+The ports are those of the session asked for (`--video`, `--bridge`, `--serial`, or an
+open session's own): on the Pi 8080, 14560, the relay's 14555 unless `--serial`, and
+8081 and 14650 or, with `--bridge`, the bridge's port; on this laptop, with `--bridge`
+the bridge's port, 8081 and 14650, with `--video` 5610 and hellion's page, and the
+consoles' forwards. A port held by this session's own process is ok. hangar's modules
+make themselves non-dumpable, so the kernel names no holder for their sockets: a port
+held by nobody it can name is taken for the session's while a manager of the session
+runs on that machine (`up` on a session that is up), and for another's otherwise.
+
+The temperature limits are the Pi 5's and are applied to the Pi; this laptop's
+temperature is printed and not judged.
+
+The probe is `tools/rov/preflight.py`, sent to the Pi's `python3` on its standard
+input, so the release installed there need not have it. `make check-rov` runs its
+judge over written facts, one case a line of the table, and the probe on the machine
+it runs on.
+
+## Real time (opt-in, an experiment)
+
+Every number of the visits up to 2026-11-25 was taken with every module at the ordinary
+priority and with unlocked memory: the profiles' manifests have no `[Schedule]`
+(docs/00: real time is not required), and a manager that is not root could have given
+none. To measure with one:
+
+1. `lab.sh deploy --realtime`: after the install, `sudo setcap
+   cap_sys_nice,cap_ipc_lock+ep` on the Pi's `hangard`, closed to other users first
+   (docs/13, "Real-time scheduling without root"; the risk is stated there). It asks for
+   the Pi's sudo password, and is needed again after every deploy.
+2. `lab.sh up --realtime` (`REALTIME=1` for `rov.sh`): at lay-out, `safety`, `mux`,
+   `mavlink` and `bridge` get `[Schedule] Policy=fifo`, priorities 60, 50, 50 and 40,
+   and `LockMemory=yes` (`REALTIME_MODULES`, `name:priority` each). These priorities
+   are a first guess for the measurement, not a design.
+3. `up` ends with one line a module, `OK schedule` or `WARN schedule`, and `hangar
+   status` on the Pi prints `not in force:` under its table for each module without
+   what it asks. `lab.sh preflight --measure` makes that a `FAIL`.
+
+A module under `fifo` that runs for a second without sleeping is killed by the kernel
+and restarted by the manager (docs/03, step 4). On this vehicle that has never
+happened and never been provoked: the first `up --realtime` is props off.
+
 ## The parameter backup
 
 `rov.sh params save|diff|restore` go through hangar whenever the vehicle's manager is
@@ -384,6 +464,12 @@ The third visit, with main at `e559888` (the busy-loop fix and the encoder); pro
   Results and caveats: the user's `~/hangar-results/2026-11-20-lab/` on the laptop.
 
 ## Not tried yet
+
+- Real time (`lab.sh deploy --realtime`, `up --realtime`): file capabilities on the
+  Pi's `hangard`, modules under `fifo` with locked memory, and what the tail of the
+  latencies does then. Props off first.
+- `lab.sh preflight` against the Pi itself: `vcgencmd`, the clock comparison over SSH,
+  a running `unattended-upgrade` found by it.
 
 - The encoder (`ENCODER=1`) on this vehicle: its camera's H.264 node, the keyframe
   control, the latency and the CPU against electric-eye's 0.91 of a core.

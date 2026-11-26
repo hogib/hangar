@@ -40,6 +40,8 @@
 # (~/hangar-rov), the relay's log and the parameter files; HANGAR_BIN, the binaries;
 # ROS_SETUP (/opt/ros/jazzy/setup.bash); RELAY=0 starts no relay (a test without a Pixhawk);
 # ENCODER=1 lays out the encoder too (the camera's own H.264 to the laptop; README);
+# REALTIME=1 gives the modules of REALTIME_MODULES (name:priority each) a [Schedule] of
+# fifo with locked memory at lay-out, an experiment (README, "Real time");
 # ENCODER_SOURCE (uvc:/dev/video2 on the lab's camera) its Source=, set at lay-out;
 # MAVLINK=serial lays out the profile's mavlink.conf.serial and mavlink.module.serial:
 # the mavlink module on the Pixhawk's serial line itself ($FCU's device and rate), no
@@ -74,6 +76,8 @@ RELAY=${RELAY:-1}
 ENCODER=${ENCODER:-0}
 ENCODER_SOURCE=${ENCODER_SOURCE:-}
 BRIDGE=${BRIDGE:-0}
+REALTIME=${REALTIME:-0}
+REALTIME_MODULES=${REALTIME_MODULES:-safety:60 mux:50 mavlink:50 topside_mavlink:50 bridge:40}
 BRIDGE_PORT=${BRIDGE_PORT:-5614}
 BRIDGE_PEER_PORT=${BRIDGE_PEER_PORT:-5614}
 MAVLINK=${MAVLINK:-udp}
@@ -166,6 +170,20 @@ lay_out() { # root profile
     fi
     if [ -n "$ENCODER_SOURCE" ] && [ -e "$root/etc/hangar/encoder.conf" ]; then
         sed -i "s|^Source=.*|Source=$ENCODER_SOURCE|" "$root/etc/hangar/encoder.conf"
+    fi
+    # Real time is opt-in, and an experiment: the profiles' manifests ask for none
+    # (docs/00: not required). REALTIME=1 gives each module of REALTIME_MODULES that is
+    # laid out a [Schedule] of fifo at its priority, with locked memory. Whether the
+    # manager can grant it is another matter (docs/13 "Real-time scheduling without
+    # root"); hangar status and hangar check say what is in force.
+    if [ "$REALTIME" = 1 ]; then
+        local spec
+        for spec in $REALTIME_MODULES; do
+            f=$root/etc/hangar/modules/${spec%%:*}.module
+            [ -e "$f" ] || continue
+            grep -q '^\[Schedule\]' "$f" && continue
+            printf '\n[Schedule]\nPolicy=fifo\nPriority=%s\nLockMemory=yes\n' "${spec##*:}" >> "$f"
+        done
     fi
 }
 

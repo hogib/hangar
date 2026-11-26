@@ -66,6 +66,7 @@ tools/rov/lab.sh status
 | | Pass |
 |---|---|
 | ☐ | `lab: installed v0.1.5 (…)`, then `lab: READY TO ARM` |
+| ☐ | The preflight `up` prints first ends `0 FAIL`. Its warnings are the session's notes: an `apt` timer active (stop both for the session, start them when leaving), the lab's own services, real time not reachable |
 | ☐ | `status`: every module `ready`, `throttled=0x0` |
 | ☐ | Arm in QGroundControl, disarm: ArduSub follows within about 0.5 s each way |
 | ☐ | Armed, kill safety on the Pi (`pkill -KILL -f "[h]angar-safety"`): ArduSub disarmed and the thrusters neutral within about 0.3 s (267 ms on 2026-11-19). Then `hangar call safety.clear` |
@@ -76,11 +77,14 @@ New since v0.1.2, to notice here: an `arm` sent while safety is restarting is re
 ## 2. The cost on the Pi (5 min)
 
 ```sh
+tools/rov/lab.sh preflight --measure
 tools/rov/lab.sh bench 60
 ```
 
 | | Pass |
 |---|---|
+| ☐ | `preflight --measure` ends `0 FAIL` before the block: no package upgrade running, the Pi under 80 °C and not throttled, its clock right, nothing of another's above a fifth of a core. Before every block, not once: `unattended-upgrade` starts by itself some 25 minutes after the Pi boots |
+| ☐ | The run's folder has `preflight-before.txt` and `preflight-after.txt` and no `NOT-CLEAN` |
 | ☐ | All of hangar at 5 to 6 % of a core, as on 2026-11-20. The table now has a wake-ups column: write down the two largest |
 | ☐ | Saved under `~/hangar-results/<date>-lab` |
 
@@ -197,12 +201,14 @@ changed nothing, and the comparison waits for whoever owns the Pi.
 | ☐ | **The camera unplugged** while the encoder runs | The encoder exits and is restarted with a back-off; plugged in again, the picture returns without a restart of hangar |
 | ☐ | **The console in a browser** (the address `lab.sh up` prints; by address, not by host name) | The Fly view shows the state; Arm is greyed out while the state is unknown; Disarm and E-STOP never are |
 | ☐ | **The joystick module** instead of QGroundControl's (README; needs the bridge) | The thrusters follow the sticks with QGroundControl closed |
+| ☐ | **Real time**, props off (README, "Real time"): `lab.sh deploy --realtime` (the Pi's sudo password), `lab.sh up --serial --bridge --realtime` | `up` ends with `OK schedule` lines; `hangar status` on the Pi has no `not in force:` line; arm, sticks, disarm as before; then `hg_bench` and the failure tests again beside the numbers taken without |
 
 ## Before leaving
 
 | | |
 |---|---|
 | ☐ | Disarmed |
+| ☐ | Whatever the preflight had stopped or changed by hand is as it was: the two `apt` timers started again, the governor back |
 | ☐ | `tools/rov/lab.sh down`, whichever of `--bridge`, `--serial` and `--video` the last `up` had: it disarms if the vehicle is not disarmed (and says so), reads the state again, restores ArduSub's parameters from the session's first backup and compares them (over the serial line if the session was on it), stops the topside on the laptop and hangar on the Pi, and starts the lab's services it stopped |
 | ☐ | `lab: everything as found`. If it names a step that failed, fix that and run `down` again |
 | ☐ | Only if `rov.sh` was used by hand instead: `rov.sh params restore <the file saved first>` and `rov.sh params diff <it>` says nothing differs; `BRIDGE=1 tools/rov/rov.sh topside reset` on the laptop, `rov.sh down` on the Pi (each refuses unless the vehicle reads disarmed) |

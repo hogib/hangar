@@ -128,6 +128,10 @@ for run in "$@"; do
     plain)
         lab up up
         has up "up: both roles, no Pixhawk" 'RELAY=0: no Pixhawk'
+        has up "up: the preflight first, without a FAIL" '^preflight \(up\): [0-9]+ ok, [0-9]+ warn, 0 FAIL$'
+        lab preflight preflight --measure
+        has preflight "preflight --measure: a report, the session's ports left out" '^preflight \(measure\): '
+        hasnt preflight "preflight --measure: no port lines" ' pi +(UDP|TCP) [0-9]'
         lab status status
         has status "status: the topside's root on the Pi" 'topside_mavlink'
         lab down down
@@ -154,6 +158,7 @@ for run in "$@"; do
         hasnt status "status: no topside root looked for on the Pi" 'no manager under'
         is "a call from the topside crosses (safety.check)" eval 'TH call safety.check | grep -q "^ok "'
         lab bench bench 6
+        is "bench: the preflight before and after, beside the numbers" eval 'grep -q "^preflight (measure):" "$RESULTS_DIR"/*/preflight-before.txt "$RESULTS_DIR"/*/preflight-after.txt && grep -q "^Preflight: no FAIL\|NOT CLEAN" "$RESULTS_DIR"/*/README.md'
         has bench "bench: the link from both ends" 'the link, from this laptop: +bridge ready .* up 127'
         is "bench: the link topics saved, config_match in them" eval 'grep -q "config_match" "$RESULTS_DIR"/*/laptop-link-after.txt "$RESULTS_DIR"/*/rov-link-after.txt'
         is "bench: the bridges measured on both ends" eval 'grep -q hangar-bridge "$RESULTS_DIR"/*/rov-procbench.txt && grep -q hangar-bridge "$RESULTS_DIR"/*/laptop-procbench.txt'

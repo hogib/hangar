@@ -16,7 +16,8 @@
 #   make check-asan-modules  the suites of the modules that read frames and
 #                          packets (SAN_MODULE_CHECKS), manager and modules
 #                          included, under AddressSanitizer + UBSan
-#   make check-rov         tools/rov's guard: nothing stopped under an armed vehicle
+#   make check-rov         tools/rov's guard: nothing stopped under an armed vehicle;
+#                          and its preflight, judged over written facts
 #   make equivalence       hash every lib/vision operator's output and
 #                          compare with electric-eye v0.3.1's (tools/equivalence/)
 #   make fuzz              every fuzz harness for FUZZ_SECONDS each (fuzz/README.md)
@@ -631,13 +632,18 @@ check: check-policy
 
 # tools/rov's guard (tools/rov/README.md, "The guard"): rov.sh stops nothing under an
 # armed vehicle. A shell test of every case against a stub of the hangar command: no
-# vehicle, no hangar, no port (tools/rov/tests/test_guard.sh).
+# vehicle, no hangar, no port (tools/rov/tests/test_guard.sh). And the preflight
+# (README "Preflight"): its judge over written facts, its probe on this machine
+# (tools/rov/tests/test_preflight.sh).
 .PHONY: check-rov
 check-rov:
 	@mkdir -p $(TESTDIR); \
 	if bash tools/rov/tests/test_guard.sh > $(TESTDIR)/rov_guard.log 2>&1; then \
 	  echo "ok    rov guard"; \
 	else echo "FAIL  rov guard"; cat $(TESTDIR)/rov_guard.log; exit 1; fi
+	@if bash tools/rov/tests/test_preflight.sh > $(TESTDIR)/rov_preflight.log 2>&1; then \
+	  echo "ok    rov preflight"; \
+	else echo "FAIL  rov preflight"; cat $(TESTDIR)/rov_preflight.log; exit 1; fi
 check: check-rov
 
 # Fuzzing (fuzz/README.md, fuzz/fuzz.mk carries the rules): a harness for every

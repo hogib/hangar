@@ -137,6 +137,32 @@ def thermal():
     return " ".join(r.stdout.split())
 
 
+def preflight(outdir, name):
+    """lab.sh preflight --measure before a block: what else the two machines are doing.
+    The report is kept beside the block's results and its verdict goes into every row,
+    so a block taken beside a package upgrade or on a throttled Pi is marked as such."""
+    try:
+        r = subprocess.run(["bash", os.path.join(here, "lab.sh"), "preflight", "--measure"],
+                           capture_output=True, text=True, timeout=90)
+        out, rc = r.stdout + r.stderr, r.returncode
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out, rc = "preflight did not run: %s\n" % e, None
+    with open(os.path.join(outdir, name + ".preflight.txt"), "a") as f:
+        f.write("# %s\n%s\n" % (datetime.datetime.now().isoformat(timespec="seconds"), out))
+    fails = [l.strip() for l in out.splitlines() if l.startswith("  FAIL")]
+    warns = sum(1 for l in out.splitlines() if l.startswith("  warn"))
+    if rc is None:
+        print("  preflight: did not run (%s.preflight.txt)" % name)
+        return "not run"
+    if fails:
+        print("  preflight: NOT CLEAN, the block runs all the same and is marked:")
+        for l in fails:
+            print("    " + l)
+        return "NOT CLEAN: " + "; ".join(fails)
+    print("  preflight: no FAIL, %d warn (%s.preflight.txt)" % (warns, name))
+    return "clean, %d warn" % warns
+
+
 def start_load(cores, seconds):
     if not cores:
         return
@@ -184,6 +210,7 @@ def run(test, arg, times, load, outdir):
     vargs, per, action = spec(test, arg)
     path = os.path.join(outdir, name + ".jsonl")
     print("\n== %s, %d repetitions -> %s" % (name, times, path))
+    verdict = preflight(outdir, name)
     start_load(load, times * per + 30)
     rows = []
     try:
@@ -200,7 +227,8 @@ def run(test, arg, times, load, outdir):
                     reset_topside_bridge()
                 r.update(note)
                 r.update({"name": name, "rep": i + 1, "at": datetime.datetime.now().isoformat(timespec="seconds"),
-                          "load_cores": load, "thermal_before": before, "thermal_after": thermal()})
+                          "load_cores": load, "thermal_before": before, "thermal_after": thermal(),
+                          "preflight": verdict})
                 f.write(json.dumps(r) + "\n")
                 f.flush()
                 rows.append(r)

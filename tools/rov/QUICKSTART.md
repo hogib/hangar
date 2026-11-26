@@ -27,11 +27,18 @@ at the next visit, in order, is in [LAB-CHECKLIST.md](LAB-CHECKLIST.md).
 
 | Command | What it does | What good looks like |
 |---|---|---|
-| `tools/rov/lab.sh deploy` | the newest `out/release/*/hangar-*-aarch64.tar.zst` to the Pi, checked, installed in `~/hangar-root`; the Pi's clock set from the laptop's | `lab: installed v0.1.2 (…) at /home/bluerov2/hangar-root` |
+| `tools/rov/lab.sh deploy [--realtime]` | the newest `out/release/*/hangar-*-aarch64.tar.zst` to the Pi, checked, installed in `~/hangar-root`; the Pi's clock set from the laptop's. `--realtime`: an experiment (README, "Real time") | `lab: installed v0.1.2 (…) at /home/bluerov2/hangar-root` |
 | `tools/rov/lab.sh up [--video] [--bridge] [--serial] [--no-battery-check]` | hangar up on the Pi; ArduSub's parameters saved (once a session) and set; the pre-arm check; the consoles tunnelled. `--video`: the lab's electric-eye stopped, the camera's own H.264 sent by the encoder, and the laptop's hellion and eeye started (the effects here, QGroundControl's video on 5600). `--bridge` and `--serial`: below | `lab: READY TO ARM`, then the consoles' and the video's addresses. With `--video`, four `[ OK ] pipeline` lines. With `--bridge`, `lab: the link is up` |
 | `tools/rov/lab.sh status` | both managers (with `--bridge`: the vehicle's on the Pi, the topside's on the laptop), the relay, the lab's services, the Pi's temperature and throttling, the laptop's video, the session | `safety … disarmed` or `armed`; `throttled=0x0`; with `--bridge`, `bridge  ready … up` on both |
-| `tools/rov/lab.sh bench [SECONDS]` | CPU, memory, frame rates and the tether's traffic on both machines, 60 s by default; with `--bridge`, both bridges' link topics before and after | `lab: saved in ~/hangar-results/<date>-lab`, with a README of the state |
+| `tools/rov/lab.sh bench [SECONDS]` | CPU, memory, frame rates and the tether's traffic on both machines, 60 s by default; the preflight before and after; with `--bridge`, both bridges' link topics before and after | `lab: saved in ~/hangar-results/<date>-lab`, with a README of the state |
 | `tools/rov/lab.sh down [--force]` | everything put back: disarmed first (an armed vehicle is disarmed, and said; if it then does not read disarmed, nothing is stopped), ArduSub's parameters restored and compared with the backup (through hangar, started again for it if it stopped), the topside on the laptop stopped, hangar stopped and its roots removed, the lab's services started again, the laptop's video and tunnels stopped | `lab: everything as found` |
+
+`lab.sh preflight` is a sixth, which changes nothing: what the two machines are doing
+besides hangar (a package upgrade on the Pi, its clock, its temperature, ports taken,
+the lab's own services), one line each, `ok`, `warn` or `FAIL`, with the command that
+puts it right. `up` runs it first and stops at a `FAIL` (`up --no-preflight` goes on);
+`bench` runs `preflight --measure` before and after and marks a run that was not clean
+in its own folder (README, "Preflight").
 
 Then arm in QGroundControl (**Disarmed → Arm**), drive with the sticks, disarm, and
 `lab.sh down` before leaving. Run `down` even when something went wrong: it does every

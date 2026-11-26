@@ -3,10 +3,20 @@
 # commands (tools/rov/QUICKSTART.md; issue #4). It drives the vehicle's Pi over SSH and
 # keeps what it changed in a session file, so that down puts everything back.
 #
-#   lab.sh deploy [TARBALL]          copy a release to the Pi, check it, install it,
+#   lab.sh deploy [--realtime] [TARBALL]
+#                                    copy a release to the Pi, check it, install it,
 #                                    set the Pi's clock (default: the newest aarch64
-#                                    tarball under out/release/)
-#   lab.sh up [--video] [--bridge] [--serial] [--no-battery-check]
+#                                    tarball under out/release/); --realtime: sudo setcap
+#                                    on the installed hangard, so that a manager that is
+#                                    not root can give a module what its [Schedule] asks
+#   lab.sh preflight [--measure] [--video] [--bridge] [--serial]
+#                                    what both machines are doing besides hangar: the
+#                                    package system, clock, heat, room, ports, the lab's
+#                                    services, real time. One line each, ok, warn or
+#                                    FAIL, with the command that puts it right; nothing
+#                                    is changed. --measure: what would spoil a number
+#   lab.sh up [--video] [--bridge] [--serial] [--no-battery-check] [--no-preflight]
+#             [--realtime]
 #                                    hangar up on the Pi, ArduSub's parameters saved
 #                                    and set, the pre-arm check; consoles tunnelled;
 #                                    --video: the camera's own H.264, the lab's
@@ -15,9 +25,13 @@
 #                                    to the vehicle by the tether bridge (the tether
 #                                    trigger on: arming needs the link);
 #                                    --serial: the mavlink module on the Pixhawk's
-#                                    serial line itself, no MAVROS relay
+#                                    serial line itself, no MAVROS relay;
+#                                    --realtime: an experiment: safety, mux, mavlink and
+#                                    the bridge under fifo with locked memory, if the
+#                                    manager may give it (deploy --realtime)
 #   lab.sh status                    what runs where, armed or not, temperature
-#   lab.sh bench [SECONDS]           CPU, memory, frame rates on both, to RESULTS_DIR
+#   lab.sh bench [SECONDS]           CPU, memory, frame rates on both, to RESULTS_DIR,
+#                                    with the preflight before and after beside them
 #   lab.sh camera [FIELD=VALUE ...]  the camera's controls with --video: hangar's encoder
 #                                    holds the camera, and they are its parameters
 #                                    (brightness=120, auto_exposure=0 exposure_us=8000,
@@ -29,6 +43,7 @@
 #
 # Nothing here stops hangar under an armed vehicle (tools/rov/README.md, "The guard"):
 # up, which lays hangar out afresh, refuses while it is armed and disarms nothing.
+# up runs the preflight first and stops at a FAIL (--no-preflight: all the same).
 #
 # Configuration: tools/rov/lab.conf (~/.config/hangar/lab.conf first; the environment
 # first of all). LAB_HOST=local rehearses it all on this laptop, without the vehicle.
@@ -66,7 +81,7 @@ chmod 700 "$LAB_STATE_DIR"
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$LAB_STATE_DIR/ssh-%C" -o ControlPersist=30m
           -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 
-usage() { sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "lab: $*"; }
 warn() { echo "lab: $*" >&2; }
 die() { warn "$*"; exit 1; }
@@ -161,7 +176,7 @@ sess_pull() { # 0 if the Pi had one; only name=value lines of plain characters a
 # The settings rov.sh on the Pi runs with, in ROV_ENV: rov_env BRIDGE SERIAL (0 or 1 each).
 rov_env() {
     ROV_ENV=(ROV_IP="$ROV_IP" GCS_IP="$LAPTOP_IP" RELAY="$RELAY" FCU="$FCU"
-             BRIDGE="$1" BRIDGE_PORT="$V_PORT" BRIDGE_PEER_PORT="$T_PORT")
+             BRIDGE="$1" BRIDGE_PORT="$V_PORT" BRIDGE_PEER_PORT="$T_PORT" REALTIME="${LAB_REALTIME:-0}")
     if [ "$2" = 1 ]; then ROV_ENV+=(MAVLINK=serial RELAY=0); fi
 }
 
@@ -397,6 +412,76 @@ sys.exit(1 if bad else 0)'
 # What holds a UDP port on this laptop, in one line; nothing printed if it is free.
 udp_holder() { ss -Hlnup "( sport = :$1 )" 2>/dev/null | head -1; }
 
+# ---- preflight -----------------------------------------------------------------------
+
+# tools/rov/preflight.py's probe on the Pi (the file on python3's standard input: the
+# installed release need not have it) and on this laptop, then its judge over both.
+# Rehearsing, the two are one machine: one probe, with both machines' ports.
+# preflight_run MODE VIDEO BRIDGE SERIAL: the report on standard output, 1 at a FAIL.
+PF=$here/preflight.py
+preflight_run() {
+    local mode=$1 video=$2 bridge=$3 serial=$4 tmp rc pi_at own=""
+    local pp="" lp=""
+    if [ "$mode" = up ]; then
+        # What the session binds. The Pi: the vehicle's console and mavlink module, the
+        # relay unless --serial, and the topside role or the bridge. This laptop: with
+        # --bridge the topside role and its bridge, with --video the camera's stream and
+        # hellion's page, and the consoles' forwards.
+        pp="tcp:8080,udp:14560"
+        [ "$RELAY" = 1 ] && [ "$serial" != 1 ] && pp+=",udp:14555"
+        if [ "$bridge" = 1 ]; then pp+=",udp:$V_PORT"; lp+=",udp:$T_PORT,tcp:8081,udp:14650"
+        else pp+=",tcp:8081,udp:14650"; fi
+        [ "$video" = 1 ] && lp+=",udp:5610,tcp:$HELLION_CONTROL_PORT"
+        if ! is_local; then
+            lp+=",tcp:$CONSOLE_VEHICLE_PORT"
+            [ "$bridge" = 1 ] || lp+=",tcp:$CONSOLE_TOPSIDE_PORT"
+        fi
+        lp=${lp#,}
+    fi
+    local p
+    for p in "$LAB_STATE_DIR/hellion.pid" "$LAB_STATE_DIR/eeye.pid"; do
+        [ -f "$p" ] && own+="$(cat "$p"),"
+    done
+    tmp=$(mktemp -d)
+    local pargs=(probe --services "$LAB_SERVICES $LAB_SERIAL_SERVICES" --root "$ROV_ROOT" --hangar-root "$RV,$RT"
+                 --own-pidfiles hangar-rov/relay.pid)
+    if is_local; then
+        python3 -I - "${pargs[@]}" --ports "$pp${lp:+,$lp}" < "$PF" > "$tmp/pi.json" 2> "$tmp/pi.err"
+        pi_at=$(date +%s.%N)
+        python3 -I "$PF" judge --mode "$mode" --pi "$tmp/pi.json" --own-pids "$own"
+        rc=$?
+    else
+        ssh "${SSH_OPTS[@]}" "$TARGET" "python3 -I - $(printf '%q ' "${pargs[@]}" --ports "$pp")" < "$PF" \
+            > "$tmp/pi.json" 2> "$tmp/pi.err"
+        pi_at=$(date +%s.%N)
+        python3 -I "$PF" probe --ports "$lp" --services hellion --hangar-root "$RT" > "$tmp/laptop.json" 2> "$tmp/laptop.err"
+        python3 -I "$PF" judge --mode "$mode" --pi "$tmp/pi.json" --laptop "$tmp/laptop.json" --pi-read-at "$pi_at" \
+            --own-pids "$own"
+        rc=$?
+    fi
+    rm -rf "$tmp"
+    return "$rc"
+}
+
+cmd_preflight() {
+    local mode=up video=0 bridge=0 serial=0 a
+    # An open session's own choices, unless the command line says.
+    [ "$(sess_get laptop_video)" = 1 ] && video=1
+    [ "$(sess_get bridge)" = 1 ] && bridge=1
+    [ "$(sess_get serial)" = 1 ] && serial=1
+    for a in "$@"; do
+        case $a in
+            --measure) mode=measure ;;
+            --video) video=1 ;;
+            --bridge) bridge=1 ;;
+            --serial) serial=1 ;;
+            *) usage 2 ;;
+        esac
+    done
+    reachable || exit 1
+    preflight_run "$mode" "$video" "$bridge" "$serial"
+}
+
 # ---- the consoles --------------------------------------------------------------------
 
 # Dawn Patrol listens on the Pi's loopback only: two forwards on the SSH connection.
@@ -419,6 +504,8 @@ tunnels_down() { # each by itself: one that is not there does not keep the other
 # ---- deploy --------------------------------------------------------------------------
 
 cmd_deploy() {
+    local realtime=0
+    if [ "${1:-}" = --realtime ]; then realtime=1; shift; fi
     local tb=${1:-}
     if [ -z "$tb" ]; then
         local arch=aarch64; is_local && arch=$(uname -m)
@@ -444,6 +531,29 @@ sh share/hangar/install-root.sh "$R" > /dev/null
 cp MANIFEST "$R/MANIFEST"    # which release this install is: up --bridge compares its commit
 echo "lab: installed $(sed -n 's/^version //p' MANIFEST) ($(sed -n 's/^commit //p' MANIFEST | cut -c1-7)) at $R"
 EOF
+    [ "$realtime" = 1 ] && deploy_realtime
+    return 0
+}
+
+# deploy --realtime (docs/13, "Real-time scheduling without root"): the two capabilities
+# on the installed hangard, by which a manager that is not root gives a module the
+# policy, the priority and the locked memory its [Schedule] asks. Once per install: the
+# kernel drops a file's capabilities when the file is written again, so every deploy
+# that is to have them asks again. The file is closed to other users first: whoever can
+# run it can have a process at a real-time priority.
+deploy_realtime() {
+    local bin opts
+    bin=$(rsh 'echo "$B/hangard"') || die "could not find the installed hangard"
+    opts=$(rsh 'findmnt -no OPTIONS -T "$B/hangard" 2>/dev/null')
+    case ",$opts," in
+        *,nosuid,*) warn "the filesystem of $bin is mounted nosuid: the kernel ignores file capabilities there."
+                    warn "  Install under another filesystem, or grant by limits (docs/13). Nothing was changed"; return 1 ;;
+    esac
+    rsh 'chmod 750 "$B/hangard"' || die "could not close $bin to other users"
+    say "sudo on the Pi, for: setcap cap_sys_nice,cap_ipc_lock+ep $bin"
+    remote_sudo setcap cap_sys_nice,cap_ipc_lock+ep "$bin" || { warn "setcap failed: real time stays out of reach (lab.sh preflight says)"; return 1; }
+    is_local || say "now: $(rsh 'getcap "$B/hangard" 2>/dev/null')"
+    say "a module gets real time only if its manifest has a [Schedule]; hangar check says what is in force"
 }
 
 # ---- up ------------------------------------------------------------------------------
@@ -468,13 +578,15 @@ up_failed() {
 }
 
 cmd_up() {
-    local video=0 battery=1 bridge=0 serial=0 pixhawk=0 out rc
+    local video=0 battery=1 bridge=0 serial=0 pixhawk=0 preflight=1 out rc
     for a in "$@"; do
         case $a in
             --video) video=1 ;;
             --bridge) bridge=1 ;;
             --serial) serial=1 ;;
             --no-battery-check) battery=0 ;;
+            --no-preflight) preflight=0 ;;
+            --realtime) LAB_REALTIME=1 ;;
             *) usage 2 ;;
         esac
     done
@@ -496,6 +608,13 @@ cmd_up() {
                 warn "  up would stop it. lab.sh status shows what runs; lab.sh down --force brings it down as it is."
                 die "  Nothing was changed" ;;
         esac
+    fi
+    # The preflight, before anything is changed: a FAIL is something that would keep the
+    # session from coming up as meant (a port taken, no room), and up stops at it.
+    if [ "$preflight" = 1 ]; then
+        say "preflight (lab.sh preflight shows it again; up --no-preflight goes on past a FAIL)"
+        preflight_run up "$video" "$bridge" "$serial" ||
+            die "the preflight has a FAIL: put it right, or up --no-preflight. Nothing was changed"
     fi
     if [ "$video" = 1 ]; then
         [ -x "$HELLION" ] && [ -x "$EEYE" ] || die "no $HELLION or $EEYE: run make -j8 all in $repo"
@@ -540,6 +659,7 @@ cmd_up() {
     # What this up lays out, for status and for a down that has to start hangar again.
     sess_set bridge "$bridge"
     sess_set serial "$serial"
+    sess_set realtime "${LAB_REALTIME:-0}"
 
     # A topside left on this laptop by an earlier up of the session: stopped, to be laid
     # out afresh or not at all.
@@ -641,8 +761,13 @@ cmd_up() {
     fi
 
     local check
-    check=$(rsh 'timeout 30 "$B/hangar" check 2>&1 | grep -E "^(ok|detail) "')
+    check=$(rsh 'timeout 30 "$B/hangar" check 2>&1 | grep -E "^(ok|detail|OK schedule|WARN schedule)"')
     echo
+    # What each [Schedule] asks against what is in force: said whenever one is not,
+    # and with --realtime either way.
+    if grep -q '^WARN schedule' <<< "$check" || [ "${LAB_REALTIME:-0}" = 1 ]; then
+        grep -E '^(OK|WARN) schedule' <<< "$check" | sed 's/^/  /'
+    fi
     if [[ $check =~ ok\ +1 ]]; then
         say "READY TO ARM: hangar check passes"
     else
@@ -745,6 +870,12 @@ cmd_bench() {
     riface=$(remote IP="$ROV_IP" <<< 'ip -o -4 addr | awk -v ip="$IP" '"'"'index($4, ip "/") == 1 { print $2; exit }'"'"'')
     liface=$(ip route get "$ROV_IP" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
     cmd_status > "$dir/state-before.txt" 2>&1
+    # What else the two machines are doing, before and after: a run with a FAIL in
+    # either is marked in its own folder (NOT-CLEAN and the README's first lines).
+    local clean=1
+    preflight_run measure 0 0 0 > "$dir/preflight-before.txt" 2>&1 || clean=0
+    grep -E '^  (warn|FAIL)' -A1 "$dir/preflight-before.txt" | grep -v '^--$'
+    [ "$clean" = 1 ] || warn "the preflight has a FAIL: this run is marked NOT CLEAN (it runs all the same)"
     # With the bridge: its counters on both ends, before and after (rtt, loss, rejected).
     local bridge=0
     bridge_session && bridge=1
@@ -781,9 +912,19 @@ EOF
     wait "$p1" "$p2"
     copy_from hangar-rov/rov-procbench.txt "$dir" && copy_from hangar-rov/rov-fps.txt "$dir" || warn "could not copy the Pi's results"
     cmd_status > "$dir/state-after.txt" 2>&1
+    preflight_run measure 0 0 0 > "$dir/preflight-after.txt" 2>&1 || clean=0
     [ "$bridge" = 1 ] && link_counters after
+    [ "$clean" = 1 ] || grep -h '^  FAIL' -A1 "$dir/preflight-before.txt" "$dir/preflight-after.txt" > "$dir/NOT-CLEAN"
     {
         echo "# Bench, $(date -Is)"
+        echo
+        if [ "$clean" = 1 ]; then
+            echo "Preflight: no FAIL before or after (preflight-before.txt, preflight-after.txt)."
+        else
+            echo "**NOT CLEAN.** The preflight found, before or after, what spoils a number"
+            echo "(preflight-before.txt, preflight-after.txt):"
+            echo; echo '```'; cat "$dir/NOT-CLEAN"; echo '```'
+        fi
         echo
         echo "$secs s on both machines, by tools/rov/lab.sh bench (hangar $(git -C "$repo" describe --always 2>/dev/null))."
         echo "The state before and after: state-before.txt, state-after.txt (armed or not, temperature,"
@@ -818,6 +959,7 @@ hangar_up_again() {
     local bridge=0 serial=0
     [ "$(sess_get bridge)" = 1 ] && bridge=1
     [ "$(sess_get serial)" = 1 ] && serial=1
+    [ "$(sess_get realtime)" = 1 ] && LAB_REALTIME=1
     rov_env "$bridge" "$serial"
     rsh "${ROV_ENV[@]}" \
         'mkdir -p "$HOME/hangar-rov"; "$ROV" up > "$HOME/hangar-rov/up.log" 2>&1' || return 1
@@ -957,6 +1099,7 @@ case "${1:-}" in
     deploy) shift; cmd_deploy "$@" ;;
     up) shift; cmd_up "$@" ;;
     status) cmd_status ;;
+    preflight) shift; cmd_preflight "$@" ;;
     bench) shift; cmd_bench "$@" ;;
     camera) shift; cmd_camera "$@" ;;
     down) shift; cmd_down "$@" ;;
