@@ -1945,7 +1945,7 @@ static hg_sub *sub_open(const char *name, const struct hg_type *type, enum hg_st
 		} else {
 			const struct hg_wiring_sub *l = hg_wiring_find_sub(wiring, name);
 			if (!l && !hg_wiring_glob_matches(wiring, name) &&
-			    !(own && hg_wiring_find_pub(wiring, name))) {
+			    !(own && (hg_wiring_find_pub(wiring, name) || hg_wiring_match_mirror(wiring, name)))) {
 				errno = EACCES;
 				return NULL;
 			}

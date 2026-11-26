@@ -270,6 +270,18 @@ static void test_wired_module_refuses_undeclared(void)
 	CHECK(m != NULL);
 	CHECK(hg_pub_open_mirror("wr.elsewhere", WORDS_TYPE, boot, 1, NULL) == NULL);
 	CHECK_EQ_INT(errno, EACCES);
+	// A mirror is the bridge's own output: read as one (hg_sub_open_own),
+	// and by no plain subscription.
+	CHECK(hg_sub_open("wr.mirror.cam", NULL) == NULL);
+	CHECK_EQ_INT(errno, EACCES);
+	hg_sub *own = hg_sub_open_own("wr.mirror.cam", NULL, HG_NEWEST);
+	CHECK(own != NULL);
+	struct hg_topic_meta mm;
+	CHECK(own && hg_sub_meta(own, &mm) == 0 && mm.origin_boot[0] == 7);
+	if (own)
+		hg_sub_close(own);
+	CHECK(hg_sub_open_own("wr.elsewhere", NULL, HG_NEWEST) == NULL);
+	CHECK_EQ_INT(errno, EACCES);
 	hg_sub *ms = hg_sub_open("wr.glob.*", NULL);
 	(void)ms;
 	hg_sub *rd = hg_sub_open("wr.in", NULL);
