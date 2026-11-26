@@ -204,7 +204,7 @@ static void reset(unsigned mode)
 		B.keyed = 1;
 		B.peer = from;
 		B.have_peer = 1;
-		reset_generation();
+		peer_reset(1, 1);
 	}
 	if (mode & FZB_CLOCK) {
 		B.have_offset = 1;

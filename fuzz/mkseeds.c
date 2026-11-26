@@ -372,11 +372,17 @@ static void bridge_seeds(void)
 	body.n = 0;
 	message(&body, "nav.depth", 7, &d, DEPTH_TYPE.payload_bytes, 12);
 	record(&stream, 3, &body);
+	/* The same once more as a message the receiver may have (9, R_AGAIN),
+	 * which it has, and then one sent that way which it has not. */
+	record(&stream, 9, &body);
+	body.n = 0;
+	message(&body, "nav.depth", 8, &d, DEPTH_TYPE.payload_bytes, 12);
+	record(&stream, 9, &body);
 	op(&s, FZB_STREAM, &stream);
 	body.n = 0;
 	unsigned char kp[2] = { 7 /* K_MSG */, 3 };
 	add(&body, kp, 2);
-	message(&body, "nav.depth", 8, &d, DEPTH_TYPE.payload_bytes, 12);
+	message(&body, "nav.depth", 9, &d, DEPTH_TYPE.payload_bytes, 12);
 	op(&s, FZB_SEALED, &body);
 	body.n = 0;
 	kp[0] = 3; /* K_PING */

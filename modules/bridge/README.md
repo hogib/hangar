@@ -79,6 +79,23 @@ and calls to the other side).
   acknowledged, so a request made while the link was down goes when it is back, and
   the server drops it if it is past its deadline. The copies are why a writer that
   restarts meanwhile loses nothing: its new file does not hold what the old one did.
+- **A new instance of the peer** (docs/08, the section of that name). `promote()`
+  compares the boot id and the bridge `id` of the hello whose keys come into force
+  with those of the link before, and `peer_reset()` is the one function that puts
+  right what is kept about the peer: the replay window, the clock, both streams,
+  the info exchange, schemas, unacknowledged reliable messages, `Rate=`'s pacing,
+  the mirrors (a new boot), the file under way. On a new instance every event
+  topic (a mirror without `ExpectRate`, not a call's) is owed its newest message
+  again (`tx_topic.cur`, `again`), as an `again` record on the reliable stream;
+  so are a `latest` event topic's messages that could not be sent when read. A
+  message the peer may hold already goes as `again` too (given again, requeued
+  unacknowledged, or older than this bridge), and is passed over there without
+  `dropped_old`. A bridge that starts on the receiving side reads what each mirror
+  holds before its first message (`rx_seed`, through `hg_sub_open_own`, which lib/hg
+  now allows for a topic a mirror line matches): nothing held is opened again or
+  published twice, and a numbering that started over is told on this side's clock.
+  A topic with `ExpectRate` is given nothing again, and nothing published before
+  the bridge started is sent on it.
 - **Clocks.** Pings at 10 Hz on the up link; each pong gives an offset
   `((t2−t1)+(t3−t4))/2` and a round trip `(t4−t1)−(t3−t2)`; the estimate is the
   sample of least uncertainty `rtt/2 + age × 500 ppm` within 10 s. Every time on the
@@ -158,6 +175,8 @@ and calls to the other side).
 5. **A latest message larger than one datagram is not sent** (counted in
    `dropped_old`): there are no `fragment` datagrams. Nothing in `msg/` that is
    mirrored `latest` comes near 1 200 bytes once its trailing zeros are dropped.
+   Of an event topic (no `ExpectRate`) it is not counted and goes on the reliable
+   stream instead, as every message of such a topic that could not be sent does.
 6. **`MsgDir=`** in `[Bridge]` (default `/usr/share/hangar/msg`) and **`DiscoveryPort=`**
    (5613): the module is not handed `HANGAR_ROOT`, and a test needs the port.
 7. **A mirrored topic's ring is the sender's** (`slots=` on the open), not 16: a
@@ -216,15 +235,15 @@ bridge's line: `up <peer>, rtt …, offset …, N topics in, …`. On the lab's 
 `BRIDGE=1 rov.sh up` on the Pi and `BRIDGE=1 tools/rov/rov.sh topside up` on the
 laptop (`tools/rov/README.md`).
 
-## Tests (`make check-bridge`, about 80 s)
+## Tests (`make check-bridge`, about 110 s)
 
 Two managers, a vehicle and a topside, in two roots with two topic directories, each
 with a bridge, and no `HANGAR_PEER_TOPIC_DIR`; between the bridges a UDP forwarder in
 the test process that drops, replays, changes and forges datagrams on demand, holds
 back one kind of datagram, and records what the topside sends so that a run can send
-it again. Thirteen runs, each with managers of its own; `test_bridge --only <run>` runs
-one (`main`, `mismatch`, `clocks`, `hold`, `replay`, `auto`, `writer`, `limits`,
-`beacon`, `peer`, `files`, `filestall`, `filerekey`).
+it again. Fourteen runs, each with managers of its own; `test_bridge --only <run>` runs
+one (`main`, `mismatch`, `clocks`, `hold`, `replay`, `instance`, `auto`, `writer`,
+`limits`, `beacon`, `peer`, `files`, `filestall`, `filerekey`).
 
 `main`: the topside's bridge runs with a fake 5 s clock offset on the wire. Checked,
 as one run printed them (2026-11-20, loopback, this laptop):
@@ -278,6 +297,25 @@ The other runs, each written for a review finding and seen to fail before its fi
   topside, 76 messages in 1.5 s, none lost; before, the link went over to the
   recording), with the topside gone (no link; before, a link up with nobody there),
   and after the vehicle's bridge restarted (no link);
+- `instance`: one side started again with the other still running (2026-11-26,
+  loopback, this laptop). `test.state` (reliable) and `test.note` (latest) on the
+  vehicle and `test.set` (reliable) on the topside are event topics published two or
+  three times at the start and never again; `pilot.depth` goes down at 50 Hz. At the
+  start all three are on the other side (before: `test.note`, read before there was
+  a link, never crossed). The topside started again in its boot, its topics new:
+  `test.state` and `test.note` are there 0.06 s after its manager's start (before:
+  absent for good, the lab's `encoder.params` of 2026-11-25). The topside's bridge
+  restarted alone, then the vehicle's: linked, 20 messages of `pilot.depth` about
+  0.5 s after the bridge was ready, in the same epoch, the three event topics the
+  same messages in the same files (before: the topside's ring of `test.set`, read
+  again from its oldest, 3 counted in `dropped_old` on the vehicle). The vehicle
+  started again with its topics new: `test.set` there 0.04 s after its manager's
+  start, and `test.state` from the new vehicle on a topside whose own bridge had
+  restarted since it last saw one (while this was built, before a bridge read what
+  its mirrors hold: refused there, 3 counted in `dropped_old`, and the mirror's
+  file left empty). `dropped_old` 0 on both sides in every step. Then the 286 datagrams the topside had sent, 10 hellos of its three
+  bridges among them, sent again at the vehicle: 276 rejected, no link made, the
+  peer the same, nothing sent again;
 - `auto`: the vehicle with `Peer=auto`. A recorded hello sent 200 times in a second
   from another socket, the session's own and then an earlier one: nothing is sent to
   that socket and nothing of `test.depth` is lost on its way up (before: 312
@@ -378,8 +416,18 @@ every input that the state directory holds nothing but `outbox/` and
   tether that loses datagrams.
 - **A new link with reliable topics resuming** from the oldest unacknowledged
   message: the `writer` run takes the link down and back on the same keys, and the
-  restarts of the other runs make new links, but no run checks a reliable topic
-  across a new handshake message by message.
+  `instance` run makes new links with nothing unacknowledged; no run restarts a
+  bridge with reliable messages in flight and checks them one by one.
+- **A new instance on the real tether**, and with the modules that matter:
+  `encoder.params` on a topside restarted mid-session, a call made while a bridge
+  restarts. The `instance` run is on loopback, with toy topics and no call.
+- **A `latest` event message sent in the first round trip of a link.** Given again
+  it goes on the stream and waits for the receiver's clock; one published just
+  after, sent as a datagram of its own, is dropped there (`dropped_late`) if the
+  receiver's first pong has not come. It stays owed only if it could not be sent.
+- **A mirror whose file a bridge before this one opened and never published to**
+  (an open, then a message refused for its age): the file holds a seq and no
+  message, and that state is not given again until its topic's next change.
 - **The clock on a real tether.** How long the wait for the first estimate is there
   (one round trip on loopback), and whether a modem that delays pongs behind other
   traffic ever lets the estimate lapse (10 s without a pong), are not measured.

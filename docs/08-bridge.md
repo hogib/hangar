@@ -345,6 +345,13 @@ is up to other keys or to another address, or put a message on a topic. And a li
 would get no clock estimate (its pongs answer no ping of this link), so nothing it
 carried would be published ([Clocks](#clocks)).
 
+What is `reliable` travels as records on one ordered stream, whose bytes `data`
+datagrams carry: the exchange below, a topic's schema, a message, the records of a
+file ([Files](#files)), and `again`, a message the receiver may hold already
+([A new instance of the peer](#a-new-instance-of-the-peer)). A record of a type a
+bridge does not know is passed over, and two bridges of different releases never get
+as far as a message: the exchange comes first.
+
 Once the link is up, the two bridges exchange, reliably, their release version and the
 hash of their installed `msg/` tree, their configuration hash, and their machines'
 module lists and topic tables (name and id of every topic their managers know, mirrored
@@ -431,10 +438,12 @@ schema, the mirror's `ExpectRate` and `StaleAfter`, and the sender's boot id as 
 file's `origin_boot` ([01-topics](01-topics.md#mirrored-topics)). It publishes every
 message with:
 
-- the sender's sequence number (`hg_publish_seq`). Numbers only rise: a `latest`
-  message whose seq is not above the last one published on the topic (a duplicate, or
-  one overtaken on the way) is dropped and counted (`dropped_old`), and
-  `hg_publish_seq` refuses a seq that does not rise;
+- the sender's sequence number (`hg_publish_seq`). Numbers only rise: a message whose
+  seq is not above the last one published on the topic (a duplicate, or one overtaken
+  on the way) is dropped and counted (`dropped_old`), and `hg_publish_seq` refuses a
+  seq that does not rise. One its sender marked as a message this side may have is
+  passed over without being counted
+  ([A new instance of the peer](#a-new-instance-of-the-peer));
 - `stamp_ns` translated into local monotonic time ([Clocks](#clocks)); a stamp of 0
   (unknown) stays 0;
 - `publish_ns` the local publication time;
@@ -476,6 +485,18 @@ topic id, seq)` names two messages after such a restart, one of each numbering; 
 recording keeps them apart by the epoch in its file name (`<topic>+<k>.hgr`), a
 reference by seq alone does not.
 
+**A bridge that starts again on the receiving side** finds the mirrors of the bridge
+before it: their files outlive it. Before it judges a mirror's first message it reads
+what the file holds (`hg_sub_open_own`: a mirror is the bridge's own output, and the
+library lets it read one a mirror line of its wiring matches): the newest message's
+seq, and when it was published here. A seq not above that one is not published, and the mirror is not opened for it:
+opening makes a new file, and the ring of the old one, with the message every reader
+still wants, would be gone. Of a message a bridge before it published, the new bridge
+does not know the sender's publish time, so a numbering that started over is told on
+this side's clock: a seq not above the newest here, published by its sender (translated,
+[Clocks](#clocks)) more than the clock's uncertainty after the newest was published
+here, cannot be that message or one before it, and is a numbering that started over.
+
 **Age of commands.** A message can wait in a tether modem's buffer for seconds and
 still arrive. For a `command` mirror with `MaxAge`, the receiver computes the
 message's age from its translated `stamp_ns` (the sender's translated `publish_ns` if
@@ -485,6 +506,95 @@ the stamp is 0), adds the clock's uncertainty, and drops the message, counted in
 
 So the dataset pairer runs on the vehicle, where the inputs and their rings are, and
 the rows it publishes reach the trainer through a `dataset.*` mirror.
+
+## A new instance of the peer
+
+A machine reboots; its manager is stopped and its root laid out afresh; its manager
+restarts a bridge that hung. Each time the bridge on the other side keeps running, and
+everything it holds about its peer is about a process that is gone. What must then be
+forgotten, and what must be given again, is decided in one place.
+
+**The instance.** A hello carries the boot id of its machine and the `id` its bridge
+drew when it started ([The link](#the-link)): together, the peer's instance. A
+handshake is completed only with a peer that holds no keys of the link in force, and a
+bridge holds its keys for as long as it runs. So a new link means a new bridge: the
+peer's, or this side's own, whose first link it is. When the pending keys come into
+force, the bridge compares the instance in the hello that made them with the one
+before: another boot id is a machine that booted again, the same boot id with another
+`id` is a bridge that started again, and the log's `link up with` line says which.
+
+A recording cannot make one. The instance is read from a hello only when that hello's
+keys come into force, which takes a datagram that checks under keys made from the nonce
+this side offers now ([The link](#the-link), "What a recording is worth"). A recorded
+hello, of the present bridge of the peer or of one before it, echoes no such nonce: it
+is answered with a hello and nothing of it is kept, the instance least of all.
+
+**What is put right**, on every new link, by the one function that makes it:
+
+| Kept about the peer | On a new link |
+|---|---|
+| the replay window | starts over: the keys before it are not in force |
+| the clock's samples and its estimate | start over; nothing is translated until a pong of this link ([Clocks](#clocks)) |
+| the reliable streams, out and in | both from 0; a record half received is dropped |
+| release, `msg/` hash, configuration hash | exchanged again; nothing is mirrored until they check |
+| the schemas sent | sent again, each before its topic's next message |
+| reliable messages not acknowledged | sent again, marked as ones the peer may have |
+| `Rate=`'s pacing and its mark | start over: a topic's first message goes at once, unmarked |
+| the newest message of each event topic | owed again (below) |
+| mirrors the manager refused | asked for again |
+| each mirror's last seq and stamp | a new boot: forgotten, and every mirror opened again, a new epoch. The same boot: kept ([Mirrored topics](#mirrored-topics)) |
+| a file being sent | begun again; the receiver says where it is ([Files](#files)) |
+| a file being received | given up at once: the queue it was in went with the bridge that held it |
+
+A bridge that restarts says nothing about its machine's topics: they may be the same
+files, or made again. So within one boot a mirror's numbers are kept across a new
+instance, and a numbering that started over is told message by message
+([Mirrored topics](#mirrored-topics)).
+
+**State is given again.** An event topic's newest message is its state: a module's
+parameters in force, a policy's active version. Nothing publishes it a second time, so
+a side that started again, with its topics made anew, would not have it until the next
+change. The sending bridge therefore keeps, for every topic it sends whose mirror has
+no `ExpectRate` and which is not a call's request or reply topic, a copy of the newest
+message it has read, and owes it to every new instance of the peer. It goes on the
+reliable stream, whatever the topic's `Delivery`, so that it waits there for the new
+link's clock estimate, where a datagram of its own would be dropped
+([Clocks](#clocks)). For a `latest` event topic the same copy is owed whenever its
+newest message could not be sent: read while there was no link, before the versions
+were exchanged, held back by `Rate=`, or larger than one datagram.
+
+A topic with `ExpectRate` gets nothing again: its next message is a period away, and a
+message sent a second time would be held as fresh on the other side for a `StaleAfter`.
+For the same reason a bridge does not send what a topic with `ExpectRate` held before
+the bridge started: a new subscription's first read is the newest message there is,
+however old.
+
+**Messages the other side may have.** Three kinds of message go to a peer that may
+hold them already: an event topic's newest, given again; a reliable message whose
+acknowledgement may be what was lost; and whatever a reliable topic's ring held when
+the sending bridge started, which the bridge before it may have sent (the rings of
+reliable topics are read from their oldest). Each goes as a record of its own type
+(`again`, [The link](#the-link)): the receiver handles it as a message, and when its
+seq is not above the newest the mirror holds, passes it over without counting it.
+`dropped_old` thereby counts only what nobody expected: a datagram that came twice or
+was overtaken.
+
+**Calls in flight.** A request or a reply is never state, and is never given again by
+a bridge that keeps running: one that was acknowledged has been published on the other
+side, once. One not yet acknowledged is sent again on the new link and published
+there if the mirror does not hold it. A bridge that starts again reads the request and
+reply rings of its machine from their oldest, and the other side passes over what its
+mirrors hold. So across a new instance:
+
+- a request is executed at most once by one run of its server, and never after its
+  deadline: what a mirror holds is not published twice, and a server made anew with its
+  machine's topics drops what is past its deadline, as it drops any expired request
+  ([Calls](#calls-across-the-tether));
+- a caller whose reply cannot come (its request was acknowledged and the server's side
+  was made anew before the server read it) has `HG_E_TIMEOUT` at its deadline;
+- only a request still within its deadline whose server's side was made anew after
+  executing it, while the caller's bridge started again too, would be executed by the
+  new server as well. A deadline of a second or two does not leave room for both.
 
 ## Clocks
 
@@ -761,7 +871,7 @@ with separate users is not tested.
 | `low_rate` | the rate allowed now to `dataset` and `bulk` ([Delivery](#delivery)) |
 | `clock_offset_ns`, `clock_skew_ppm`, `clock_uncertainty_ns` | the estimate ([Clocks](#clocks)) |
 | `clamped` | translated stamps clamped to keep a mirrored topic's stamps monotone ([Clocks](#clocks)) |
-| `dropped_old`, `dropped_late` | mirrored messages dropped: seq not above the last published; older than `MaxAge`, or a `latest` message received with no clock estimate ([Clocks](#clocks)) |
+| `dropped_old`, `dropped_late` | mirrored messages dropped: seq not above the last published, and not sent as one this side may have; older than `MaxAge`, or a `latest` message received with no clock estimate ([Clocks](#clocks)) |
 | `config_match` | whether the two sides run the same release and `msg/` tree, the two configurations agree, and no module or topic name or id collides |
 | `detail` | one line: why, or what; the two release versions when they differ |
 
@@ -800,6 +910,15 @@ them. The topside's recorder is a module of another name than the vehicle's
   within its `StaleAfter`; the bridge neither unready nor restarted through a 60 s
   outage.
 - `MaxAge`: commands delayed 300 ms in a queue (`netem delay`) are dropped and counted.
+- A new instance (the bridge's suite, run `instance`): an event topic on each side,
+  reliable and `latest`, published a few times before any restart and never again.
+  The topside started again in its boot with its topics made anew, then the vehicle:
+  the other side's event topics are there again. Each bridge restarted alone: the
+  link is made again, a 50 Hz command goes on in its epoch, nothing is published a
+  second time, the mirrors' files are the ones of before. `dropped_old` stays 0 on
+  both sides throughout. Every datagram the topside sent in the run, the hellos of
+  its three bridges among them, sent again at the vehicle: no link is made, and the
+  vehicle sends nothing again.
 - Boot epochs: the topside rebooted mid-run, then the vehicle; on the other side each
   mirrored topic gets a new file and a new epoch, no gap is counted, and commands and
   dataset rows resume. A first connection counts no gap.

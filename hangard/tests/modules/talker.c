@@ -2,6 +2,8 @@
 /* talker: publishes a depth topic at a rate. --topic T (test.depth)
  * --rate R (50) --stop-after N (keep running but stop publishing after N
  * messages) --exit-after N --exit-code C (exit after N messages) --status S.
+ * --ready: hg_ready() at start, for a topic the manifest gives no rate (an
+ * event topic's module says it is ready; with a rate, having published is).
  * SIGTERM: closes and exits 0. */
 #include "toy.h"
 
@@ -20,6 +22,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "talker: hg_pub_open(%s): %s\n", topic, strerror(errno));
 		return 4;
 	}
+	if (toy_flag(argc, argv, "--ready"))
+		hg_ready();
 	hg_status(status);
 	long n = 0;
 	while (!toy_stop) {

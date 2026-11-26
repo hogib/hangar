@@ -7,8 +7,8 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay, auto, writer, limits, beacon, peer, files, filestall,
- * filerekey).
+ * clocks, hold, replay, instance, auto, writer, limits, beacon, peer, files,
+ * filestall, filerekey).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
  * from the environment (modules/bridge/bridge.mk sets them). */
@@ -1196,6 +1196,264 @@ static void replay_run(void)
 	EXPECT(again && !up_seen && published == 0,
 	       "the vehicle's bridge restarted, both sessions replayed: %s, %d message(s) published",
 	       up_seen ? "a link came up" : "no link", published);
+}
+
+/* The newest message of a topic on a side: 1, with its seq and when it was
+ * published there; 0 while the topic is absent or empty. */
+static int newest(const struct side *s, const char *topic, uint64_t *seq, uint64_t *pub_ns, uint32_t *epoch)
+{
+	use(s);
+	hg_sub *sub = hg_sub_open(topic, &DEPTH_TYPE);
+	if (!sub)
+		return 0;
+	struct depth d;
+	struct hg_info in;
+	int ok = hg_latest(sub, &d, sizeof d, &in) == HG_MSG;
+	if (ok && seq)
+		*seq = in.seq;
+	if (ok && pub_ns)
+		*pub_ns = in.publish_ns;
+	if (ok && epoch)
+		*epoch = in.epoch;
+	hg_sub_close(sub);
+	return ok;
+}
+
+/* Polls until the topic's newest message on that side has the seq wanted. */
+static int wait_newest(const struct side *s, const char *topic, uint64_t want, long ms, uint64_t *seq)
+{
+	uint64_t t0 = now_ms(), got = 0;
+	int ok = 0;
+	do {
+		ok = newest(s, topic, &got, NULL, NULL) && got == want;
+		if (!ok)
+			sleep_ms(20);
+	} while (!ok && now_ms() - t0 < (uint64_t)ms);
+	if (seq)
+		*seq = got;
+	return ok;
+}
+
+/* Polls until a side's link is up, matched, with a peer bridge of another id
+ * than `old` (0: any). */
+static int wait_peer(const struct side *s, uint32_t old, long ms, struct bridge_link *out)
+{
+	uint64_t t0 = now_ms();
+	do {
+		if (read_link(s, out) == 0 && out->state == 3 && out->config_match && out->peer_id != old &&
+		    out->clock_uncertainty_ns)
+			return 1;
+		sleep_ms(20);
+	} while (now_ms() - t0 < (uint64_t)ms);
+	return 0;
+}
+
+/* Reads pilot.depth on the vehicle until `want` messages have come or ms
+ * have passed: how many, how many lost between them, the epoch of the last. */
+static int pilot_flows(int want, long ms, uint64_t *gaps, uint32_t *epoch)
+{
+	use(&V);
+	hg_sub *pd = hg_sub_open("pilot.depth", &DEPTH_TYPE);
+	struct depth d;
+	struct hg_info in;
+	int came = 0;
+	uint64_t t0 = now_ms();
+	*gaps = 0;
+	*epoch = 0;
+	if (pd && hg_latest(pd, &d, sizeof d, &in) == HG_MSG)
+		*epoch = in.epoch;
+	while (pd && came < want && now_ms() - t0 < (uint64_t)ms) {
+		hg_wait(&pd, 1, 100);
+		while (hg_next(pd, &d, sizeof d, &in) == HG_MSG) {
+			came++;
+			*gaps += in.gap;
+			*epoch = in.epoch;
+		}
+	}
+	if (pd)
+		hg_sub_close(pd);
+	return came;
+}
+
+/* A new instance of the peer (docs/08): one side started again, with the
+ * other still running. Each side has an event topic whose few messages were
+ * published once, before any restart: its state, which nothing publishes
+ * again. Whoever starts again must be given it, and must not be given twice
+ * what it kept; a stream goes on at once; and a recording of the handshakes
+ * of before, sent again, is no new instance.
+ *
+ *   test.state  vehicle, reliable, 3 messages   (the lab's encoder.params)
+ *   test.note   vehicle, latest, 2 messages
+ *   test.set    topside, reliable, 3 messages
+ *   pilot.depth topside, 50 Hz, a command
+ *
+ * Before the bridge had one place for this: a topside started again never
+ * saw test.state or test.note (the lab, 2026-11-25: encoder.params absent
+ * on a topside restarted mid-session, until the next change), a bridge
+ * started again alone had its ring's messages counted as dropped_old on the
+ * other side, and test.note, read before the first link was up, never
+ * crossed at all. */
+static void instance_run(void)
+{
+	const char *extra = "[Mirror test.state]\nDirection=up\nDelivery=reliable\n"
+			    "[Mirror test.note]\nDirection=up\n"
+			    "[Mirror test.set]\nDirection=down\nDelivery=reliable\n";
+	setup_side(&V, "inst", extra);
+	manifest("state", "[Module]\nExec=%s/talker --topic test.state --rate 20 --stop-after 3 --ready\n"
+			  "[Publish test.state]\nType=depth\n", T_toys);
+	manifest("note", "[Module]\nExec=%s/talker --topic test.note --rate 20 --stop-after 2 --ready\n"
+			 "[Publish test.note]\nType=depth\n", T_toys);
+	manifest("pilotread", "[Module]\nExec=%s/listener --topic pilot.depth\n[Subscribe pilot.depth]\n", T_toys);
+	setup_side(&T, "inst", extra);
+	manifest("pilot", "[Module]\nExec=%s/talker --topic pilot.depth --rate 50\n"
+			  "[Publish pilot.depth]\nType=depth\nRate=50\n", T_toys);
+	manifest("set", "[Module]\nExec=%s/talker --topic test.set --rate 20 --stop-after 3 --ready\n"
+			"[Publish test.set]\nType=depth\n", T_toys);
+	atomic_store(&fwd_nrec, 0);
+	atomic_store(&fwd_rec_on, 1);
+	char blog[600];
+	tfmt(blog, sizeof blog, "%s/run/hangar/log/bridge.log", V.root);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_peer(&V, 0, 8000, &lv) && wait_peer(&T, 0, 3000, &lt);
+	uint64_t s1 = 0, s2 = 0, s3 = 0, gaps = 0;
+	uint32_t ep0 = 0, ep1 = 0;
+	int a = up && wait_newest(&T, "test.state", 3, 5000, &s1);
+	int b = up && wait_newest(&T, "test.note", 2, 5000, &s2);
+	int c = up && wait_newest(&V, "test.set", 3, 5000, &s3);
+	EXPECT(a && b && c,
+	       "link up; each side's event topics on the other: test.state seq %llu and test.note seq %llu on the topside, "
+	       "test.set seq %llu on the vehicle (test.note was read before there was a link)",
+	       (unsigned long long)s1, (unsigned long long)s2, (unsigned long long)s3);
+	if (!up)
+		return;
+
+	/* The topside started again in its boot, its topics made again: the
+	 * vehicle's bridge runs on, and nothing publishes test.state again. */
+	read_link(&V, &lv);
+	uint64_t old_v = lv.dropped_old;
+	uint32_t peer0 = lv.peer_id;
+	use(&T);
+	manager_stop(T.mgr);
+	rm_tree(T.topics);
+	uint64_t t0 = now_ms();
+	start(&T);
+	a = wait_newest(&T, "test.state", 3, 8000, &s1);
+	double took = (now_ms() - t0) / 1e3;
+	b = wait_newest(&T, "test.note", 2, 5000, &s2);
+	c = wait_newest(&V, "test.set", 3, 5000, &s3);
+	int came = pilot_flows(20, 5000, &gaps, &ep1);
+	read_link(&V, &lv);
+	read_link(&T, &lt);
+	EXPECT(a && b && c && came >= 20 && lv.peer_id != peer0 && lv.dropped_old == old_v && lt.dropped_old == 0,
+	       "the topside started again, its topics new: test.state (seq %llu, %.2f s from the manager's start) and "
+	       "test.note (seq %llu) are there again, published by nobody since; test.set and pilot.depth (%d messages) "
+	       "on the vehicle from the new topside; dropped as old: %llu on the vehicle, %llu on the topside",
+	       (unsigned long long)s1, took, (unsigned long long)s2, came, (unsigned long long)(lv.dropped_old - old_v),
+	       (unsigned long long)lt.dropped_old);
+
+	/* The topside's bridge alone started again (its manager does that to one
+	 * that hangs): the topics of both sides are where they were. Its
+	 * reliable rings are read again from their oldest, and the vehicle
+	 * gives it test.state again: both are messages the other side has. */
+	(void)pilot_flows(1, 500, &gaps, &ep0);
+	old_v = lv.dropped_old;
+	peer0 = lv.peer_id;
+	uint64_t pub_state = 0, pub_set = 0, pub2 = 0;
+	newest(&T, "test.state", NULL, &pub_state, NULL);
+	newest(&V, "test.set", NULL, &pub_set, NULL);
+	use(&T);
+	pid_t pb = pid_of(&T, "bridge");
+	ctl("restart bridge");
+	int again = wait_new_pid("bridge", pb, "ready", 5000);
+	t0 = now_ms();
+	int linked = wait_peer(&V, peer0, 8000, &lv) && wait_peer(&T, 0, 3000, &lt);
+	came = pilot_flows(20, 5000, &gaps, &ep1);
+	took = (now_ms() - t0) / 1e3;
+	sleep_ms(300);
+	read_link(&V, &lv);
+	read_link(&T, &lt);
+	a = newest(&T, "test.state", &s1, &pub2, NULL) && s1 == 3 && pub2 == pub_state;
+	c = newest(&V, "test.set", &s3, &pub2, NULL) && s3 == 3 && pub2 == pub_set;
+	EXPECT(again && linked && came >= 20 && ep1 == ep0 && a && c && lv.dropped_old == old_v && lt.dropped_old == 0,
+	       "the topside's bridge alone started again: linked, pilot.depth going on in its epoch (%u -> %u, 20 messages "
+	       "%.2f s after the bridge was ready, %llu lost); test.state and test.set as they were, not published a "
+	       "second time; dropped as old: %llu on the vehicle, %llu on the topside",
+	       ep0, ep1, took, (unsigned long long)gaps, (unsigned long long)(lv.dropped_old - old_v),
+	       (unsigned long long)lt.dropped_old);
+
+	/* The vehicle's bridge alone. */
+	uint64_t old_t = lt.dropped_old;
+	peer0 = lt.peer_id;
+	(void)pilot_flows(1, 500, &gaps, &ep0);
+	use(&V);
+	pb = pid_of(&V, "bridge");
+	ctl("restart bridge");
+	again = wait_new_pid("bridge", pb, "ready", 5000);
+	t0 = now_ms();
+	linked = wait_peer(&T, peer0, 8000, &lt) && wait_peer(&V, 0, 3000, &lv);
+	came = pilot_flows(20, 5000, &gaps, &ep1);
+	took = (now_ms() - t0) / 1e3;
+	sleep_ms(300);
+	read_link(&V, &lv);
+	read_link(&T, &lt);
+	a = newest(&T, "test.state", &s1, &pub2, NULL) && s1 == 3 && pub2 == pub_state;
+	c = newest(&V, "test.set", &s3, &pub2, NULL) && s3 == 3 && pub2 == pub_set;
+	EXPECT(again && linked && came >= 20 && ep1 == ep0 && a && c && lv.dropped_old == 0 && lt.dropped_old == old_t,
+	       "the vehicle's bridge alone started again: linked, pilot.depth going on in its epoch (%u -> %u, 20 messages "
+	       "%.2f s after the bridge was ready, %llu lost); test.state and test.set as they were; dropped as old: %llu "
+	       "on the vehicle, %llu on the topside",
+	       ep0, ep1, took, (unsigned long long)gaps, (unsigned long long)lv.dropped_old,
+	       (unsigned long long)(lt.dropped_old - old_t));
+
+	/* The vehicle started again in its boot, its topics made again: test.set
+	 * is the topside's to give it. */
+	old_t = lt.dropped_old;
+	use(&V);
+	manager_stop(V.mgr);
+	rm_tree(V.topics);
+	t0 = now_ms();
+	start(&V);
+	c = wait_newest(&V, "test.set", 3, 8000, &s3);
+	took = (now_ms() - t0) / 1e3;
+	a = wait_newest(&T, "test.state", 3, 5000, &s1);
+	b = wait_newest(&T, "test.note", 2, 5000, &s2);
+	came = pilot_flows(20, 5000, &gaps, &ep1);
+	read_link(&V, &lv);
+	read_link(&T, &lt);
+	EXPECT(a && b && c && came >= 20 && lv.dropped_old == 0 && lt.dropped_old == old_t,
+	       "the vehicle started again, its topics new: test.set (seq %llu, %.2f s from the manager's start) is there "
+	       "again, published by nobody since; pilot.depth comes (%d messages); test.state and test.note on the "
+	       "topside from the new vehicle; dropped as old: %llu on the vehicle, %llu on the topside",
+	       (unsigned long long)s3, took, came, (unsigned long long)lv.dropped_old,
+	       (unsigned long long)(lt.dropped_old - old_t));
+
+	/* Everything the topside sent since the start of the run, sent again at
+	 * the vehicle from its address: the hellos and confirms of three bridges
+	 * of the topside, the present one's among them. None of it is a new
+	 * instance: no link is made, and the vehicle sends nothing again. */
+	sleep_ms(500);
+	int n = atomic_load(&fwd_nrec);
+	int hellos = 0;
+	for (int i = 0; i < n; i++)
+		hellos += recs[i].d[4] == 1;
+	read_link(&V, &lv);
+	int ups0 = count_in_file(blog, "link up with");
+	uint64_t tx0 = lv.msgs_tx, rej0 = lv.rejected;
+	peer0 = lv.peer_id;
+	newest(&V, "test.set", NULL, &pub_set, NULL);
+	replay_to_vehicle(0, n, 100);
+	sleep_ms(500);
+	read_link(&V, &lv);
+	int ups1 = count_in_file(blog, "link up with");
+	c = newest(&V, "test.set", &s3, &pub2, NULL) && s3 == 3 && pub2 == pub_set;
+	EXPECT(hellos >= 3 && ups0 >= 1 && ups1 == ups0 && lv.state == 3 && lv.peer_id == peer0 && lv.msgs_tx == tx0 && c &&
+		       lv.rejected - rej0 >= (uint64_t)n / 2,
+	       "%d recorded datagrams of the topside, %d hellos of its bridges among them, sent again: %d new link(s), the "
+	       "peer the same, %llu message(s) sent again by the vehicle, test.set untouched, %llu rejected",
+	       n, hellos, ups1 - ups0, (unsigned long long)(lv.msgs_tx - tx0), (unsigned long long)(lv.rejected - rej0));
+	atomic_store(&fwd_rec_on, 0);
 }
 
 /* Sends the recorded hello at index h to the vehicle from sock, n times
@@ -2429,6 +2687,7 @@ static const struct run {
 	{ "clocks", clocks_run },
 	{ "hold", hold_run },
 	{ "replay", replay_run },
+	{ "instance", instance_run },
 	{ "auto", auto_run },
 	{ "writer", writer_run },
 	{ "limits", limits_run },

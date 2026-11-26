@@ -68,7 +68,10 @@
 #define WINDOW_NS 10000000000ull  /* the clock's sample window */
 
 enum { K_HELLO = 1, K_CONFIRM, K_PING, K_PONG, K_DATA, K_ACK, K_MSG };
-enum { R_INFO = 1, R_SCHEMA, R_MSG, R_FBEGIN, R_FDATA, R_FEND, R_FABORT, R_FSTATUS };
+/* R_AGAIN: a message as R_MSG carries it, which the other side may have
+ * already (docs/08 "A new instance of the peer"): one that is not above the
+ * last it has is passed over there and not counted. */
+enum { R_INFO = 1, R_SCHEMA, R_MSG, R_FBEGIN, R_FDATA, R_FEND, R_FABORT, R_FSTATUS, R_AGAIN };
 enum { ST_OFF, ST_SEARCHING, ST_CONNECTING, ST_UP, ST_AMBIGUOUS, ST_REFUSED };
 
 struct tx_topic {
@@ -87,12 +90,23 @@ struct tx_topic {
 		uint64_t seq;
 		uint32_t len;
 		int queued;      /* on the stream of this generation */
+		int again;       /* the peer may have it: it was on an earlier stream, or older than this bridge */
 		unsigned char *rec;
 	} *held;
 	int nheld, cap_held;
 	uint32_t max_held;       /* the ring's slots, as last read from the file */
 	uint64_t reopens;        /* the subscription's, when max_held was read */
 	int call_kind;           /* 1 a request topic, 2 a reply topic */
+	/* An event topic, as the receiving side holds it (no ExpectRate=), that
+	 * is not a call's: its newest message is its state, and whoever starts
+	 * again on the other side has to be given it (docs/08 "A new instance of
+	 * the peer"). cur is that message, as the record to send; again says the
+	 * peer of now has not been sent it. */
+	int event;
+	unsigned char *cur;
+	uint32_t cur_len;
+	uint64_t cur_seq;
+	int again;
 };
 
 struct rx_topic {
@@ -108,6 +122,9 @@ struct rx_topic {
 	uint64_t last_stamp;     /* translated, for clamping */
 	uint64_t last_seq;       /* the newest published here, of this boot of the sender */
 	uint64_t last_pubt;      /* and when the sender published it, on the sender's clock */
+	uint64_t last_here;      /* when it was published here, on this clock: all that is known of it
+	                          * when it was a bridge before this one that published it (rx_seed) */
+	int seeded;              /* the file an earlier bridge left was looked at */
 	int renumbered;          /* the next open says the sender's numbers started over */
 	const struct bc_mirror *mc;
 };
@@ -139,6 +156,7 @@ static struct {
 	int keyed;
 	unsigned char k_tx[32], k_rx[32], peer_boot[16];
 	uint32_t peer_id, link_id;
+	int peer_known;          /* a link was made in this process: peer_boot and peer_id are someone's */
 	int pending;
 	unsigned char p_tx[32], p_rx[32], p_nonce[16], p_boot[16];
 	uint32_t p_id, p_link;
@@ -184,6 +202,7 @@ static struct {
 	hg_pub *link_pub;
 	uint64_t rings, ring_max; /* the mirrored rings' bytes; the bound on one (RING_MAX) */
 	uint64_t last_ping_ns, last_status_ns;
+	uint64_t start_ns;       /* when this bridge started: what was published before it, an earlier one may have sent */
 	struct bridge_link st;
 } B;
 
@@ -404,7 +423,7 @@ static void send_confirm(const unsigned char *k_tx, const struct sockaddr_in *to
 	B.link_id = keep;
 }
 
-static void reset_generation(void);
+static void peer_reset(int new_instance, int new_boot);
 
 /* Peer=auto: the candidates, each an id and an address a beacon came from
  * whose tag checked, heard in the last CAND_NS (docs/08 "Discovery"). A
@@ -526,44 +545,31 @@ static void on_hello(const unsigned char *b, size_t n, const struct sockaddr_in 
 	send_confirm(B.p_tx, to);
 }
 
-/* The pending keys become the keys in force: a new link, new streams. */
+/* The pending keys become the keys in force: a new link. A handshake is
+ * completed only with a peer that holds no keys of the link before, so a new
+ * link is, in use, a bridge that was not there when the last one was made:
+ * the peer's, or this one (its first link). Which it is the hello said that
+ * made these keys: the boot id of the peer's machine and the id its bridge
+ * drew when it started are the peer's instance. peer_reset is the one place
+ * where what this side keeps of its peer is put right for it. */
 static void promote(void)
 {
 	memcpy(B.k_tx, B.p_tx, 32);
 	memcpy(B.k_rx, B.p_rx, 32);
-	int new_boot = !B.keyed || memcmp(B.peer_boot, B.p_boot, 16) != 0;
+	int first = !B.peer_known;
+	int new_boot = first || memcmp(B.peer_boot, B.p_boot, 16) != 0;
+	int new_instance = new_boot || B.peer_id != B.p_id;
 	memcpy(B.peer_boot, B.p_boot, 16);
 	B.peer_id = B.p_id;
 	B.link_id = B.p_link;
-	B.keyed = 1;
+	B.keyed = B.peer_known = 1;
 	new_nonce(); /* this one made the keys in force: never offered again */
 	/* tx_seq runs on for the life of the process: never a seq twice */
-	B.rx_hi = B.rx_win = B.rx_count = 0;
-	/* The clock starts over with every link: nothing is translated with
-	 * the estimate of an earlier one (another boot of the peer has another
-	 * clock, and so has another process under the tests' offset). */
-	B.nsamp = 0;
-	B.npings = 0;
-	memset(B.pings, 0, sizeof B.pings);
-	B.have_offset = 0;
-	B.offset = 0;
-	B.unc = 0;
-	if (new_boot) {
-		/* Its topics start their seqs over: each mirror is opened again
-		 * with the new boot id, a new epoch for its readers (docs/08
-		 * "Mirrored topics"). */
-		for (int i = 0; i < B.nrx; i++) {
-			if (B.rx[i].pub)
-				hg_pub_close(B.rx[i].pub);
-			B.rx[i].pub = NULL;
-			B.rx[i].last_stamp = 0;
-			B.rx[i].last_seq = 0;
-			B.rx[i].last_pubt = 0;
-			B.rx[i].renumbered = 0;
-		}
-	}
-	reset_generation();
-	mod_log(WHO, "link up with %s (peer id %08x)", B.peer_txt, B.peer_id);
+	mod_log(WHO, "link up with %s (peer id %08x): %s", B.peer_txt, B.peer_id,
+		first ? "this bridge's first link" :
+		new_boot ? "the peer's machine booted again" :
+		new_instance ? "the peer's bridge started again" : "the same bridge of the peer, new keys");
+	peer_reset(new_instance, new_boot);
 }
 
 /* ---- Clocks (docs/08 "Clocks") ------------------------------------------- */
@@ -812,7 +818,7 @@ static void drain_records(void)
 		}
 		if (B.rlen - at - 4 < rl)
 			break;
-		if (recbuf[at + 4] == R_MSG && !B.have_offset) {
+		if ((recbuf[at + 4] == R_MSG || recbuf[at + 4] == R_AGAIN) && !B.have_offset) {
 			B.r_held = 1;
 			break;
 		}
@@ -849,9 +855,10 @@ static void on_data(const unsigned char *b, size_t n)
 
 /* ---- What is sent ---------------------------------------------------------- */
 
-static void conf_of(const char *name, int up, int *reliable, int *prio, uint32_t *rate)
+static void conf_of(const char *name, int up, int *reliable, int *prio, uint32_t *rate, int *event)
 {
 	const struct bc_mirror *m = bc_find(&B.conf, name, up);
+	*event = m && !m->expect_mhz && !is_call_topic(name);
 	if (m) {
 		*reliable = m->reliable;
 		*prio = m->priority;
@@ -888,7 +895,7 @@ static int add_tx(const char *name, hg_sub *s)
 	memset(t, 0, sizeof *t);
 	snprintf(t->name, sizeof t->name, "%s", name);
 	t->sub = s;
-	conf_of(name, B.vehicle, &t->reliable, &t->priority, &t->rate_mhz);
+	conf_of(name, B.vehicle, &t->reliable, &t->priority, &t->rate_mhz, &t->event);
 	t->call_kind = is_call_topic(name);
 	return B.ntx++;
 }
@@ -987,6 +994,35 @@ static int local_topic(hg_sub *s)
 static unsigned char rd[MSG_MAX];
 static unsigned char obuf[MSG_MAX + 600]; /* a message as sent */
 
+/* An event topic's newest message, kept as the record that carries it. */
+static void keep_current(struct tx_topic *t, uint64_t seq, const unsigned char *rec, size_t len)
+{
+	unsigned char *c = realloc(t->cur, len ? len : 1);
+	if (!c)
+		return; /* the one before stays: older, and still a message of the topic */
+	memcpy(c, rec, len);
+	t->cur = c;
+	t->cur_len = (uint32_t)len;
+	t->cur_seq = seq;
+}
+
+/* The event topic's newest message, to a peer that has not been sent it: on
+ * the reliable stream whatever the topic's delivery, so that it waits there
+ * for the peer's clock estimate, which a new link does not have at once and
+ * without which a datagram of its own would be dropped (docs/08 "Clocks").
+ * Marked as one the peer may have. */
+static void send_again(struct tx_topic *t)
+{
+	if (!t->again || !t->cur || !B.up || !B.mirror_ok)
+		return;
+	if (!t->schema_sent)
+		send_schema(t);
+	if (!t->schema_sent || s_append(R_AGAIN, t->cur, t->cur_len, -1, 0) < 0)
+		return; /* the backlog is full: at the next tick */
+	t->again = 0;
+	B.st.msgs_tx++;
+}
+
 /* The latest topics: every message read, each sent once as one datagram
  * (Rate= skips some, marked). */
 static void pump_latest(struct tx_topic *t)
@@ -996,8 +1032,29 @@ static void pump_latest(struct tx_topic *t)
 		enum hg_result r = hg_next(t->sub, rd, sizeof rd, &in);
 		if (r != HG_MSG)
 			break;
-		if (!B.up || !B.mirror_ok || !local_topic(t->sub))
+		if (!local_topic(t->sub))
+			continue; /* mirrored here from the other side: not sent back */
+		struct hg_topic_meta m;
+		if (hg_sub_meta(t->sub, &m) < 0)
+			continue;
+		size_t n = 0;
+		if (t->event) {
+			/* Its state from here on, sent or not: owed to the peer
+			 * until it has gone out. */
+			n = build_msg(obuf, t, &in, rd, m.payload_bytes, 0);
+			keep_current(t, in.seq, obuf, n);
+			t->again = 1;
+		}
+		if (!B.up || !B.mirror_ok)
 			continue; /* nothing to send it to: read and gone, as a lost one */
+		/* Published before this bridge started: what a new subscription
+		 * reads first is the newest message there is, however old. Of an
+		 * event topic it is the state, and goes as one the peer may have
+		 * (below). Of a topic with a rate it is not sent: its mirror would
+		 * hold it as fresh for a StaleAfter, and the next one is a period
+		 * away. */
+		if (in.publish_ns < B.start_ns)
+			continue;
 		uint64_t now = now_ns();
 		if (t->rate_mhz && t->last_sent_ns &&
 		    now - t->last_sent_ns < 1000000000000ull / t->rate_mhz) {
@@ -1008,18 +1065,26 @@ static void pump_latest(struct tx_topic *t)
 			send_schema(t);
 		if (!t->schema_sent)
 			continue;
-		struct hg_topic_meta m;
-		if (hg_sub_meta(t->sub, &m) < 0)
-			continue;
-		size_t n = build_msg(obuf, t, &in, rd, m.payload_bytes, t->decimated ? HG_SLOT_DECIMATED : 0);
+		n = build_msg(obuf, t, &in, rd, m.payload_bytes, t->decimated ? HG_SLOT_DECIMATED : 0);
 		t->decimated = 0;
 		if (n > BODY_MAX) {
-			B.st.dropped_old++; /* stage 1: a latest message must fit one datagram */
+			/* Stage 1: a latest message must fit one datagram. Of an event
+			 * topic it is owed, and goes on the stream below. */
+			if (!t->event)
+				B.st.dropped_old++;
 			continue;
 		}
 		send_keyed(K_MSG, t->priority, obuf, n);
 		t->last_sent_ns = now;
+		t->again = 0; /* the newest read is the one that went */
 		B.st.msgs_tx++;
+	}
+	/* What is owed of an event topic: now, or when Rate= next lets one go. */
+	uint64_t now = now_ns();
+	if (t->again && (!t->rate_mhz || !t->last_sent_ns || now - t->last_sent_ns >= 1000000000000ull / t->rate_mhz)) {
+		send_again(t);
+		if (!t->again)
+			t->last_sent_ns = now;
 	}
 	s_pump();
 }
@@ -1037,7 +1102,7 @@ static void held_acked(struct tx_topic *t)
 }
 
 /* Keeps a copy of a message's record until it is acknowledged. */
-static void hold(struct tx_topic *t, uint64_t seq, const unsigned char *rec, size_t len)
+static void hold(struct tx_topic *t, uint64_t seq, const unsigned char *rec, size_t len, int again)
 {
 	if (t->max_held == 0 || t->reopens != hg_sub_reopens(t->sub)) {
 		struct hg_topic_meta m;
@@ -1065,7 +1130,7 @@ static void hold(struct tx_topic *t, uint64_t seq, const unsigned char *rec, siz
 		t->held = nh;
 		t->cap_held = cap;
 	}
-	t->held[t->nheld++] = (struct held){ .seq = seq, .len = (uint32_t)len, .rec = copy };
+	t->held[t->nheld++] = (struct held){ .seq = seq, .len = (uint32_t)len, .again = again, .rec = copy };
 }
 
 /* The reliable topics: every message read as it comes (nothing left unread
@@ -1084,10 +1149,22 @@ static void pump_reliable(struct tx_topic *t)
 		if (!local_topic(t->sub))
 			continue; /* mirrored here from the other side: not sent back */
 		size_t n = build_msg(obuf, t, &in, rd, hg_sub_payload_bytes(t->sub), 0);
-		hold(t, in.seq, obuf, n);
+		/* Published before this bridge started (the rings of reliable
+		 * topics are read from their oldest): the bridge before this one
+		 * may have sent it. */
+		hold(t, in.seq, obuf, n, in.publish_ns < B.start_ns);
+		if (t->event)
+			keep_current(t, in.seq, obuf, n);
 	}
-	if (!B.up || !B.mirror_ok || !t->nheld || t->held[t->nheld - 1].queued)
+	if (!B.up || !B.mirror_ok)
 		return;
+	if (t->again && t->nheld && t->held[t->nheld - 1].seq >= t->cur_seq)
+		t->again = 0; /* the newest is among those held, and goes with them */
+	send_again(t);
+	if (t->again || !t->nheld || t->held[t->nheld - 1].queued) {
+		s_pump();
+		return;
+	}
 	if (!t->schema_sent)
 		send_schema(t);
 	if (!t->schema_sent)
@@ -1096,7 +1173,7 @@ static void pump_reliable(struct tx_topic *t)
 		struct held *h = &t->held[i];
 		if (h->queued)
 			continue;
-		if (s_append(R_MSG, h->rec, h->len, (int)(t - B.tx), h->seq) < 0)
+		if (s_append(h->again ? R_AGAIN : R_MSG, h->rec, h->len, (int)(t - B.tx), h->seq) < 0)
 			break;
 		h->queued = 1;
 		B.st.msgs_tx++;
@@ -1214,7 +1291,35 @@ static void on_schema(const unsigned char *b, size_t n)
 	snprintf(r->writer, sizeof r->writer, "%s", writer);
 }
 
-static void on_message(const unsigned char *b, size_t n)
+/* What a bridge that ran here before this one left of a mirrored topic: its
+ * file outlives the bridge, and the newest message in it is where the
+ * sender's numbers stood. Looked at once, before the mirror's first message
+ * in this process is judged: without it this bridge would take every seq as
+ * new, open the mirror again (a new file, the ring of the old one gone) and
+ * have the file refuse what it holds already; and a sender whose numbers
+ * started over meanwhile would be refused, message after message, until its
+ * new numbers had passed the old ones. */
+static void rx_seed(struct rx_topic *r)
+{
+	r->seeded = 1;
+	hg_sub *s = hg_sub_open_own(r->name, NULL, HG_NEWEST);
+	if (!s)
+		return;
+	struct hg_topic_meta m;
+	struct hg_info in;
+	if (hg_sub_meta(s, &m) == 0 && memcmp(m.origin_boot, B.peer_boot, 16) == 0 && m.payload_bytes <= MSG_MAX) {
+		r->last_seq = m.first_seq;
+		if (hg_latest(s, msgbuf, sizeof msgbuf, &in) == HG_MSG) {
+			r->last_seq = in.seq;
+			r->last_here = in.publish_ns;
+			r->last_stamp = in.stamp_ns;
+		}
+	}
+	hg_sub_close(s);
+}
+
+/* again: sent as one this side may have already (R_AGAIN). */
+static void on_message(const unsigned char *b, size_t n, int again)
 {
 	char name[HG_NAME_MAX + 1];
 	if (!B.mirror_ok)
@@ -1246,6 +1351,8 @@ static void on_message(const unsigned char *b, size_t n)
 		return; /* no schema yet: the first messages of a latest topic can come before it */
 	if (full != r->sch->type.payload_bytes)
 		return;
+	if (!r->seeded)
+		rx_seed(r);
 	/* A seq not above the last one is a message that came twice or late,
 	 * and is dropped below; unless the sender published it after the last
 	 * one, by its own clock, which runs on through its boot. Then its
@@ -1255,7 +1362,14 @@ static void on_message(const unsigned char *b, size_t n)
 	 * message was dropped until the new numbers had passed the old ones:
 	 * minutes of a pilot's sticks after minutes of running (the lab,
 	 * 2026-11-24). */
-	if (r->last_seq && seq <= r->last_seq && pubt && r->last_pubt && pubt > r->last_pubt) {
+	/* Of a message a bridge before this one published here, only the time
+	 * it was published here is known (rx_seed): then the same is told on
+	 * this clock, and has to hold by more than the clock's uncertainty. A
+	 * message cannot have been published here before its sender published
+	 * it, so one published there after that time is another message. */
+	int started_over = r->last_seq && seq <= r->last_seq && pubt &&
+			   (r->last_pubt ? pubt > r->last_pubt : r->last_here && to_local(pubt) > r->last_here + B.unc);
+	if (started_over) {
 		mod_log(WHO, "%s: its numbers started over within the sender's boot (seq %llu after %llu): opened again", name,
 			(unsigned long long)seq, (unsigned long long)r->last_seq);
 		if (r->pub)
@@ -1263,6 +1377,13 @@ static void on_message(const unsigned char *b, size_t n)
 		r->pub = NULL;
 		r->last_stamp = 0;
 		r->renumbered = 1;
+	} else if (r->last_seq && seq <= r->last_seq) {
+		/* Here already, or overtaken on the way: not published, and the
+		 * mirror not opened for it. Counted, unless its sender allowed
+		 * for it. */
+		if (!again)
+			B.st.dropped_old++;
+		return;
 	}
 	if (!r->pub) {
 		uint64_t slot = (uint64_t)full + SLOT_EXTRA;
@@ -1290,7 +1411,6 @@ static void on_message(const unsigned char *b, size_t n)
 		/* The file of before, if any, is replaced by this one. */
 		B.rings = B.rings - r->ring_bytes + slots * slot;
 		r->ring_bytes = slots * slot;
-		B.st.topics_rx++;
 	}
 	uint64_t now = now_ns();
 	uint64_t ls = to_local(stamp), lp = to_local(pubt);
@@ -1320,13 +1440,17 @@ static void on_message(const unsigned char *b, size_t n)
 		put64(msgbuf + at, v);
 	}
 	if (hg_publish_seq(r->pub, seq, flags, msgbuf, full, ls, refs, nref) < 0) {
-		if (errno == ERANGE)
+		/* ERANGE: the file has it or a later one. Counted, unless the
+		 * sender said it might be so (the file outlives a bridge of this
+		 * side that restarts, and last_seq does not). */
+		if (errno == ERANGE && !again)
 			B.st.dropped_old++;
 		return;
 	}
 	if (ls)
 		r->last_stamp = ls;
 	r->last_seq = seq;
+	r->last_here = now;
 	if (pubt)
 		r->last_pubt = pubt;
 	B.st.msgs_rx++;
@@ -2052,8 +2176,8 @@ static void handle_record(int type, const unsigned char *b, size_t n)
 		on_info(b, n);
 	else if (type == R_SCHEMA)
 		on_schema(b, n);
-	else if (type == R_MSG)
-		on_message(b, n);
+	else if (type == R_MSG || type == R_AGAIN)
+		on_message(b, n, type == R_AGAIN);
 	else if (!B.mirror_ok)
 		return; /* files, as topics: only between two sides that match */
 	else if (type == R_FBEGIN)
@@ -2068,10 +2192,45 @@ static void handle_record(int type, const unsigned char *b, size_t n)
 		on_fstatus(b, n);
 }
 
-/* A new link: new streams, the info exchange again, and every reliable topic
- * from what the peer last acknowledged. */
-static void reset_generation(void)
+/* A new link (promote), and with it, in use, a new instance of the peer or
+ * of this bridge (docs/08 "A new instance of the peer"). Everything this side
+ * keeps about its peer, or has learned from it, is put right here and nowhere
+ * else, so that no piece of it is left to be found stale on the vehicle:
+ *
+ *   the replay window             of the keys before: starts over
+ *   the clock's samples, estimate another process, perhaps another clock:
+ *                                 start over; nothing is translated meanwhile
+ *   the reliable streams          both start at 0; what is half received goes
+ *   versions and configuration    exchanged again; nothing mirrored until then
+ *   schemas                       sent again before each topic's next message
+ *   reliable messages not         queued again, marked as ones the peer may
+ *   acknowledged                  have (the acknowledgement may be what was lost)
+ *   Rate='s pacing and mark       start over: the first message goes at once
+ *   event topics' newest message  owed again (new instance): the peer's side
+ *                                 may hold nothing of the topic any more
+ *   mirrors refused               asked for again
+ *   mirrors' seqs and stamps      a new boot: every mirror opened again, a new
+ *                                 epoch. The same boot: kept, and a numbering
+ *                                 that started over is told message by message
+ *                                 (on_message), since a bridge that restarts
+ *                                 says nothing of its machine's topics
+ *   a file being sent             begun again; the receiver says where it is
+ *   a file being received         given up (new instance): the queue it was in
+ *                                 went with the bridge that held it
+ *
+ * new_instance is 0 only for a link made again between the same two
+ * processes, which the suite does (HANGAR_BRIDGE_TEST_FORGET_KEYS) and use
+ * does not: the keys of a link outlive its outages. */
+static void peer_reset(int new_instance, int new_boot)
 {
+	B.rx_hi = B.rx_win = B.rx_count = 0;
+	B.nsamp = 0;
+	B.npings = 0;
+	memset(B.pings, 0, sizeof B.pings);
+	B.have_offset = 0;
+	B.offset = 0;
+	B.unc = 0;
+	B.rtt = B.rtt_min = 0;
 	B.s_base = B.s_end = B.s_next = 0;
 	B.s_stall = 0;
 	B.nprec = 0;
@@ -2081,15 +2240,38 @@ static void reset_generation(void)
 	B.r_held = 0;
 	B.info_sent = B.peer_info = B.mirror_ok = 0;
 	B.config_match = 0;
+	B.detail[0] = 0;
 	for (int i = 0; i < B.ntx; i++) {
 		struct tx_topic *t = &B.tx[i];
 		t->schema_sent = 0;
-		for (int k = 0; k < t->nheld; k++)
-			t->held[k].queued = 0; /* not acknowledged on the old stream: sent again */
+		t->last_sent_ns = 0;
+		t->decimated = 0;
+		for (int k = 0; k < t->nheld; k++) {
+			if (t->held[k].queued)
+				t->held[k].again = 1;
+			t->held[k].queued = 0;
+		}
+		if (new_instance && t->event && t->cur)
+			t->again = 1;
 	}
-	for (int i = 0; i < B.nrx; i++)
-		B.rx[i].refused = 0;
+	for (int i = 0; i < B.nrx; i++) {
+		struct rx_topic *r = &B.rx[i];
+		r->refused = 0;
+		if (!new_boot)
+			continue;
+		if (r->pub)
+			hg_pub_close(r->pub);
+		r->pub = NULL;
+		r->last_stamp = 0;
+		r->last_seq = 0;
+		r->last_pubt = 0;
+		r->last_here = 0;
+		r->seeded = 1; /* whatever file is there is of the boot before: nothing to learn from it */
+		r->renumbered = 0;
+	}
 	files_generation();
+	if (new_instance)
+		in_discard("the sending bridge started again", 0);
 	B.up = 1;
 	B.last_rx_ns = now_ns();
 	send_info();
@@ -2234,7 +2416,7 @@ static void on_dgram(const unsigned char *d, size_t len, const struct sockaddr_i
 		if (!B.have_offset)
 			B.st.dropped_late++;
 		else
-			on_message(body, blen);
+			on_message(body, blen, 0);
 		break;
 	default:
 		B.st.rejected++;
@@ -2358,6 +2540,9 @@ static void publish_status(void)
 	s->last_rx_ns = B.last_rx_ns;
 	s->rtt_ns = B.rtt;
 	s->rtt_min_ns = B.rtt_min;
+	s->topics_rx = 0; /* the mirrors open now: one opened again is not one more */
+	for (int i = 0; i < B.nrx; i++)
+		s->topics_rx += B.rx[i].pub != NULL;
 	s->clock_offset_ns = B.offset;
 	s->clock_uncertainty_ns = B.have_offset ? B.unc : 0;
 	snprintf(s->detail, sizeof s->detail, "%s",
@@ -2489,6 +2674,7 @@ int main(int argc, char **argv)
 	B.fake_ns = fo ? strtoll(fo, NULL, 10) : 0;
 	const char *rm = getenv("HANGAR_BRIDGE_TEST_RING_MAX"); /* tests: a bound a test can reach */
 	B.ring_max = rm ? strtoull(rm, NULL, 10) : RING_MAX;
+	B.start_ns = now_ns();
 	random_bytes(&B.id, sizeof B.id);
 	new_nonce();
 	read_boot_id(B.boot);
@@ -2501,11 +2687,11 @@ int main(int argc, char **argv)
 	hg_sub *named[HG_MAX_WAIT_FD];
 	int nnamed = 0;
 	for (int i = 0; w && i < w->n_subs; i++) {
-		int rel, prio;
+		int rel, prio, event;
 		uint32_t rate;
 		if (never_sent(w->subs[i].topic))
 			continue;
-		conf_of(w->subs[i].topic, B.vehicle, &rel, &prio, &rate);
+		conf_of(w->subs[i].topic, B.vehicle, &rel, &prio, &rate, &event);
 		hg_sub *s = hg_sub_open_from(w->subs[i].topic, NULL, rel ? HG_OLDEST : HG_NEWEST);
 		if (!s) {
 			mod_log(WHO, "%s: cannot subscribe: %s", w->subs[i].topic, strerror(errno));
