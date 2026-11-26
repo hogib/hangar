@@ -622,6 +622,17 @@ translated stamp plus one nanosecond, and each clamp is counted in
 rise with sequence numbers, as `hg_find_stamp` does
 ([01-topics](01-topics.md#reading)).
 
+No translated stamp is **after its arrival**. The estimate is right within its
+uncertainty only, and one that is off puts a stamp up to that far after the moment the
+bridge received the message, which no message was stamped at. Such a stamp is held to
+the time of arrival, which is certain, and counted in `bridge.<role>.link` (`capped`).
+A reader may therefore assume that nothing it has read is stamped after it read it, and
+a join by stamp ([06-recorder](06-recorder.md)) does not leave out an input that was
+there. Stamps held this way keep their order and lose their spacing, by at most the
+uncertainty: on a tether with a round trip of a few milliseconds, a millisecond or two,
+and mostly in a link's first second. A count that keeps rising says the estimate is
+poor, as a path far slower one way than the other makes it.
+
 Stamps and deadlines are in `CLOCK_MONOTONIC`. Each side reads its `CLOCK_MONOTONIC`
 and `CLOCK_MONOTONIC_RAW` together at every ping and converts between the two with
 the newest pair; the conversion's error grows by at most 500 ppm of the time since
@@ -871,6 +882,7 @@ with separate users is not tested.
 | `low_rate` | the rate allowed now to `dataset` and `bulk` ([Delivery](#delivery)) |
 | `clock_offset_ns`, `clock_skew_ppm`, `clock_uncertainty_ns` | the estimate ([Clocks](#clocks)) |
 | `clamped` | translated stamps clamped to keep a mirrored topic's stamps monotone ([Clocks](#clocks)) |
+| `capped` | translated stamps held to the time their message arrived ([Clocks](#clocks)) |
 | `dropped_old`, `dropped_late` | mirrored messages dropped: seq not above the last published, and not sent as one this side may have; older than `MaxAge`, or a `latest` message received with no clock estimate ([Clocks](#clocks)) |
 | `config_match` | whether the two sides run the same release and `msg/` tree, the two configurations agree, and no module or topic name or id collides |
 | `detail` | one line: why, or what; the two release versions when they differ |

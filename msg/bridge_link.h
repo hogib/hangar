@@ -26,12 +26,13 @@ typedef struct bridge_link {
     uint64_t msgs_rx;               // mirrored messages published here
     uint64_t retransmits;           // reliable datagrams sent again
     uint64_t clamped;               // translated stamps clamped to keep a topic's stamps rising
+    uint64_t capped;                // translated stamps held to the time their message came: none is after its arrival
     uint64_t dropped_old;           // received messages whose seq was not above the last published
     uint64_t dropped_late;          // command messages older than the mirror's MaxAge on arrival
     char detail[96];                // one line: why, or what; the two versions when they differ
 } bridge_link;
 extern const struct hg_type BRIDGE_LINK_TYPE;   // defined in msg/bridge_link.c, also generated
-_Static_assert(sizeof(struct bridge_link) == 280, "layout");
+_Static_assert(sizeof(struct bridge_link) == 288, "layout");
 _Static_assert(offsetof(struct bridge_link, state) == 0, "layout");
 _Static_assert(offsetof(struct bridge_link, config_match) == 1, "layout");
 _Static_assert(offsetof(struct bridge_link, peer_role) == 2, "layout");
@@ -52,7 +53,8 @@ _Static_assert(offsetof(struct bridge_link, msgs_tx) == 136, "layout");
 _Static_assert(offsetof(struct bridge_link, msgs_rx) == 144, "layout");
 _Static_assert(offsetof(struct bridge_link, retransmits) == 152, "layout");
 _Static_assert(offsetof(struct bridge_link, clamped) == 160, "layout");
-_Static_assert(offsetof(struct bridge_link, dropped_old) == 168, "layout");
-_Static_assert(offsetof(struct bridge_link, dropped_late) == 176, "layout");
-_Static_assert(offsetof(struct bridge_link, detail) == 184, "layout");
+_Static_assert(offsetof(struct bridge_link, capped) == 168, "layout");
+_Static_assert(offsetof(struct bridge_link, dropped_old) == 176, "layout");
+_Static_assert(offsetof(struct bridge_link, dropped_late) == 184, "layout");
+_Static_assert(offsetof(struct bridge_link, detail) == 192, "layout");
 #endif

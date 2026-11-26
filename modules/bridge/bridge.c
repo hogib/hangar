@@ -1414,6 +1414,13 @@ static void on_message(const unsigned char *b, size_t n, int again)
 	}
 	uint64_t now = now_ns();
 	uint64_t ls = to_local(stamp), lp = to_local(pubt);
+	/* No message was stamped after it came here. An estimate that says so is
+	 * off by that much at least (it may be, by its uncertainty): the stamp
+	 * is held to now, which is certain (docs/08 "Clocks"). */
+	if (ls > now) {
+		ls = now;
+		B.st.capped++;
+	}
 	if (r->mc && r->mc->max_age_ns) {
 		uint64_t at = ls ? ls : lp;
 		if (at && now > at && now - at + B.unc > r->mc->max_age_ns) {

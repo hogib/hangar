@@ -100,7 +100,8 @@ and calls to the other side).
   `((t2−t1)+(t3−t4))/2` and a round trip `(t4−t1)−(t3−t2)`; the estimate is the
   sample of least uncertainty `rtt/2 + age × 500 ppm` within 10 s. Every time on the
   wire is the sender's `CLOCK_MONOTONIC`; the receiver puts a message's stamp and
-  publish time into its own clock, clamped to rise (`clamped`), drops a `command`
+  publish time into its own clock, the stamp held to the time of arrival (`capped`)
+  and clamped to rise (`clamped`), drops a `command`
   message older than `MaxAge` with the uncertainty added (`dropped_late`), and
   rewrites a request's `deadline_ns` (shortened by the uncertainty) and a reply's
   `received_ns`, whatever the body after it. The estimate is of one link: it starts
@@ -133,7 +134,7 @@ and calls to the other side).
   moves it, and is answered to the peer while the link is up.
 - **`bridge.<role>.link`** at 10 Hz: state, `config_match`, the peer's role, id, boot
   id and address, last heard, round trip (now and least), the counters (`loss_rx`,
-  `rejected`, `retransmits`, `clamped`, `dropped_old`, `dropped_late`, messages each
+  `rejected`, `retransmits`, `clamped`, `capped`, `dropped_old`, `dropped_late`, messages each
   way, topics in), the clock's offset and uncertainty, `detail`. The status line says
   the same in short.
 - **Files** (docs/08 "Files"). `[Files <dest>]` sections of `bridge.conf` say what may
@@ -291,6 +292,10 @@ The other runs, each written for a review finding and seen to fail before its fi
   through, every stamp is right, none clamped, and the call is answered, 1.3 s after
   it was made. The same after the topside reboots onto another clock (before: 66
   messages stamped 5 s ahead, and 90 of the next 100 clamped);
+- `cap`: no stamp after its arrival. The forwarder passes the pongs to the vehicle on
+  200 ms late, so the vehicle's estimate is 100 ms off: 100 `pilot.depth` messages
+  there, none stamped after now, 95 counted in `capped` (before: 100 of 100 stamped
+  after now);
 - `replay`: someone with no key sends the topside's recorded datagrams again, from
   its address, hello first: into their own session (115 of 117 rejected, the link
   up), after the topside rebooted (the link and `pilot.depth` stay with the real

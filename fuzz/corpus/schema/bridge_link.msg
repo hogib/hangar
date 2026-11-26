@@ -20,6 +20,7 @@ u64  msgs_tx          # mirrored messages sent
 u64  msgs_rx          # mirrored messages published here
 u64  retransmits      # reliable datagrams sent again
 u64  clamped          # translated stamps clamped to keep a topic's stamps rising
+u64  capped           # translated stamps held to the time their message came: none is after its arrival
 u64  dropped_old      # received messages whose seq was not above the last published
 u64  dropped_late     # command messages older than the mirror's MaxAge on arrival
 char detail[96]       # one line: why, or what; the two versions when they differ

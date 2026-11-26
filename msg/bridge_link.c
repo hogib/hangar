@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "bridge_link.h"
 
-static const struct hg_field bridge_link_fields[23] = {
+static const struct hg_field bridge_link_fields[24] = {
     {"state", HG_U8, 1, 0, "0 off, 1 searching, 2 connecting, 3 up, 4 ambiguous, 5 refused"},
     {"config_match", HG_U8, 1, 1, "1 when the two sides run the same release, msg/ tree and bridge.conf"},
     {"peer_role", HG_U8, 1, 2, "0 unknown, 1 vehicle, 2 topside"},
@@ -23,9 +23,10 @@ static const struct hg_field bridge_link_fields[23] = {
     {"msgs_rx", HG_U64, 1, 144, "mirrored messages published here"},
     {"retransmits", HG_U64, 1, 152, "reliable datagrams sent again"},
     {"clamped", HG_U64, 1, 160, "translated stamps clamped to keep a topic's stamps rising"},
-    {"dropped_old", HG_U64, 1, 168, "received messages whose seq was not above the last published"},
-    {"dropped_late", HG_U64, 1, 176, "command messages older than the mirror's MaxAge on arrival"},
-    {"detail", HG_CHAR, 96, 184, "one line: why, or what; the two versions when they differ"},
+    {"capped", HG_U64, 1, 168, "translated stamps held to the time their message came: none is after its arrival"},
+    {"dropped_old", HG_U64, 1, 176, "received messages whose seq was not above the last published"},
+    {"dropped_late", HG_U64, 1, 184, "command messages older than the mirror's MaxAge on arrival"},
+    {"detail", HG_CHAR, 96, 192, "one line: why, or what; the two versions when they differ"},
 };
 
 const struct hg_type BRIDGE_LINK_TYPE = {
@@ -53,13 +54,14 @@ const struct hg_type BRIDGE_LINK_TYPE = {
         "u64  msgs_rx          # mirrored messages published here\n"
         "u64  retransmits      # reliable datagrams sent again\n"
         "u64  clamped          # translated stamps clamped to keep a topic's stamps rising\n"
+        "u64  capped           # translated stamps held to the time their message came: none is after its arrival\n"
         "u64  dropped_old      # received messages whose seq was not above the last published\n"
         "u64  dropped_late     # command messages older than the mirror's MaxAge on arrival\n"
         "char detail[96]       # one line: why, or what; the two versions when they differ\n"
         ,
-    .schema_bytes = 1774,
-    .hash = 0xdce0396bad4e425eull,   // FNV-1a 64 of the canonical form
-    .payload_bytes = 280,
-    .n_fields = 23,
+    .schema_bytes = 1879,
+    .hash = 0x0d713abf014ef908ull,   // FNV-1a 64 of the canonical form
+    .payload_bytes = 288,
+    .n_fields = 24,
     .fields = bridge_link_fields,
 };

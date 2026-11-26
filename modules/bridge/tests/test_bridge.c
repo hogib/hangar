@@ -7,7 +7,7 @@
  * HANGAR_PEER_TOPIC_DIR: only the bridge joins the two.
  *
  * test_bridge [--only <run>]: every run, or the one named (main, mismatch,
- * clocks, hold, replay, instance, auto, writer, limits, beacon, peer, files,
+ * clocks, hold, cap, replay, instance, auto, writer, limits, beacon, peer, files,
  * filestall, filerekey).
  *
  * Takes HANGARD_BIN, HANGAR_BIN, HANGARD_TOYS, HANGAR_MSG_SRC and BRIDGE_BIN
@@ -69,6 +69,32 @@ static atomic_int fwd_drop_pct, fwd_stop, fwd_tamper; /* tamper: 1 replay, 2 mod
 static atomic_long fwd_count;
 static atomic_int fwd_drop_kind_v; /* a datagram kind (4 pong) not passed on to the vehicle; 0 none */
 static atomic_long fwd_hello_v;    /* hellos the vehicle sent */
+static atomic_int fwd_pong_late_ms; /* pongs to the vehicle passed on this much later; 0 at once */
+
+/* Pongs on their way to the vehicle, held for fwd_pong_late_ms. */
+#define HELD_MAX 32
+static struct held {
+	uint64_t due_ms;
+	int len;
+	unsigned char d[256];
+} held[HELD_MAX];
+
+static uint64_t fwd_now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static void held_send(int all)
+{
+	uint64_t now = fwd_now_ms();
+	for (int i = 0; i < HELD_MAX; i++)
+		if (held[i].len && (all || held[i].due_ms <= now)) {
+			sendto(fwd_sock, held[i].d, (size_t)held[i].len, 0, (const struct sockaddr *)&fwd_v, sizeof fwd_v);
+			held[i].len = 0;
+		}
+}
 
 /* What the topside sent, in order, as someone on the tether would record it. */
 #define REC_MAX 16384
@@ -88,6 +114,8 @@ static void *forwarder(void *arg)
 		struct sockaddr_in from;
 		socklen_t fl = sizeof from;
 		ssize_t n = recvfrom(fwd_sock, d, sizeof d, 0, (struct sockaddr *)&from, &fl);
+		int late = atomic_load(&fwd_pong_late_ms);
+		held_send(!late);
 		if (n <= 0)
 			continue;
 		const struct sockaddr_in *to = ntohs(from.sin_port) == V.port ? &fwd_t : &fwd_v;
@@ -104,6 +132,16 @@ static void *forwarder(void *arg)
 		}
 		if (to == &fwd_v && n > 4 && d[4] == atomic_load(&fwd_drop_kind_v))
 			continue;
+		if (late && to == &fwd_v && n > 4 && d[4] == 4 && n <= (ssize_t)sizeof held[0].d) {
+			for (int i = 0; i < HELD_MAX; i++)
+				if (!held[i].len) {
+					held[i].due_ms = fwd_now_ms() + (uint64_t)late;
+					held[i].len = (int)n;
+					memcpy(held[i].d, d, (size_t)n);
+					break;
+				}
+			continue; /* none free: lost, as a datagram may be */
+		}
 		rng = rng * 1103515245u + 12345u;
 		if ((int)((rng >> 16) % 100) < atomic_load(&fwd_drop_pct))
 			continue;
@@ -918,8 +956,8 @@ static void clocks_run(void)
 }
 
 /* Reads pilot.depth on the vehicle for ms, or until max messages: how many
- * came, how many with a stamp within 500 ms before now or 50 ms after it,
- * how many stamped over a second ahead of now. */
+ * came, how many with a stamp within 500 ms before now, how many stamped
+ * over a second ahead of now. */
 struct stamps {
 	int n, good, ahead;
 	int early;       /* stamped after now, by anything */
@@ -937,10 +975,9 @@ static struct stamps read_stamps(hg_sub *pd, long ms, int max)
 		while (st.n < max && hg_next(pd, &d, sizeof d, &in) == HG_MSG) {
 			uint64_t now = hg_now_ns();
 			st.n++;
-			/* The offsets tested are seconds. A loaded machine reads late, and
-			 * its first estimates are off by up to half a slow round trip, to
-			 * either side: a stamp a few milliseconds after now is a right one. */
-			st.good += in.stamp_ns <= now ? now - in.stamp_ns < 500000000ull : in.stamp_ns - now < 50000000ull;
+			/* The offsets tested are seconds; a loaded machine reads late. No
+			 * stamp is after now: the bridge holds each to the time it came. */
+			st.good += in.stamp_ns <= now && now - in.stamp_ns < 500000000ull;
 			st.ahead += in.stamp_ns > now + 1000000000ull;
 			st.early += in.stamp_ns > now;
 			if (in.stamp_ns <= now && now - in.stamp_ns > st.old_ns)
@@ -1004,7 +1041,7 @@ static void hold_run(void)
 	st = read_stamps(pd, 3000, 100);
 	read_link(&V, &lv);
 	EXPECT(st.n == 100 && st.good == st.n && lv.clamped == 0,
-	       "pongs through: %d messages, %d with their stamp within 500 ms before now or 50 ms after (%d after, the oldest "
+	       "pongs through: %d messages, %d with their stamp within 500 ms before now (%d after now, the oldest "
 	       "%.1f ms), %llu clamped",
 	       st.n, st.good, st.early, st.old_ns / 1e6, (unsigned long long)lv.clamped);
 	int rc = wait_pid_ms(c, 8000);
@@ -1043,9 +1080,46 @@ static void hold_run(void)
 	read_link(&V, &lv);
 	EXPECT(st.n == 50 && st.good == st.n && lv.clamped == 0 && lv.clock_offset_ns > 8990000000ll &&
 		       lv.clock_offset_ns < 9010000000ll,
-	       "pongs through: %d messages, %d with their stamp within 500 ms before now or 50 ms after (%d after, the oldest "
+	       "pongs through: %d messages, %d with their stamp within 500 ms before now (%d after now, the oldest "
 	       "%.1f ms), %llu clamped, offset %+.3f ms",
 	       st.n, st.good, st.early, st.old_ns / 1e6, (unsigned long long)lv.clamped, lv.clock_offset_ns / 1e6);
+}
+
+/* A stamp is never after its arrival (docs/08 "Clocks"). The forwarder passes
+ * the pongs to the vehicle on 200 ms late and everything else at once, so the
+ * vehicle takes the topside's clock for 100 ms further back than it is and a
+ * translated stamp would land 100 ms after the message came: each is held to
+ * the time it came and counted. */
+static void cap_run(void)
+{
+	setup_side(&V, "cap", NULL);
+	manifest("pilotread", "[Module]\nExec=%s/listener --topic pilot.depth\n[Subscribe pilot.depth]\n", T_toys);
+	setup_side(&T, "cap", NULL);
+	manifest("pilot", "[Module]\nExec=%s/talker --topic pilot.depth --rate 50\n"
+			  "[Publish pilot.depth]\nType=depth\nRate=50\n", T_toys);
+	atomic_store(&fwd_pong_late_ms, 200);
+	start(&V);
+	start(&T);
+	struct bridge_link lv, lt;
+	int up = wait_link(&V, 1, 8000, &lv) && wait_link(&T, 1, 3000, &lt);
+	EXPECT(up, "link up, config_match on both sides, with the pongs to the vehicle 200 ms late");
+	if (!up) {
+		atomic_store(&fwd_pong_late_ms, 0);
+		return;
+	}
+	use(&V);
+	hg_sub *pd = hg_sub_open_from("pilot.depth", &DEPTH_TYPE, HG_OLDEST);
+	struct stamps st = read_stamps(pd, 5000, 100);
+	read_link(&V, &lv);
+	EXPECT(lv.clock_uncertainty_ns > 80000000ull, "the vehicle's estimate is as poor as meant: uncertainty %.1f ms",
+	       lv.clock_uncertainty_ns / 1e6);
+	EXPECT(st.n == 100 && st.early == 0 && st.old_ns < 500000000ull,
+	       "%d pilot.depth messages on the vehicle: %d stamped after now, the oldest %.1f ms (%llu dropped late)", st.n,
+	       st.early, st.old_ns / 1e6, (unsigned long long)lv.dropped_late);
+	EXPECT(lv.capped >= 50, "held to the time they came and counted: capped %llu, clamped %llu",
+	       (unsigned long long)lv.capped, (unsigned long long)lv.clamped);
+	hg_sub_close(pd);
+	atomic_store(&fwd_pong_late_ms, 0);
 }
 
 static int count_in_file(const char *path, const char *needle)
@@ -2696,6 +2770,7 @@ static const struct run {
 	{ "mismatch", mismatch_run },
 	{ "clocks", clocks_run },
 	{ "hold", hold_run },
+	{ "cap", cap_run },
 	{ "replay", replay_run },
 	{ "instance", instance_run },
 	{ "auto", auto_run },
@@ -2753,6 +2828,7 @@ int main(int argc, char **argv)
 		printf("-- %s\n", runs[run].name);
 		atomic_store(&fwd_drop_pct, 0);
 		atomic_store(&fwd_drop_kind_v, 0);
+		atomic_store(&fwd_pong_late_ms, 0);
 		atomic_store(&fwd_rec_on, 0);
 		atomic_store(&fwd_nrec, 0);
 		V.peer = T.peer = NULL;
