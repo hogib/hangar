@@ -918,15 +918,17 @@ static void clocks_run(void)
 }
 
 /* Reads pilot.depth on the vehicle for ms, or until max messages: how many
- * came, how many with a stamp within 50 ms before now, how many stamped
- * over a second ahead of now. */
+ * came, how many with a stamp within 500 ms before now or 50 ms after it,
+ * how many stamped over a second ahead of now. */
 struct stamps {
 	int n, good, ahead;
+	int early;       /* stamped after now, by anything */
+	uint64_t old_ns; /* the oldest stamp's age */
 };
 
 static struct stamps read_stamps(hg_sub *pd, long ms, int max)
 {
-	struct stamps st = { 0, 0, 0 };
+	struct stamps st = { 0, 0, 0, 0, 0 };
 	struct depth d;
 	struct hg_info in;
 	uint64_t t0 = now_ms();
@@ -935,8 +937,14 @@ static struct stamps read_stamps(hg_sub *pd, long ms, int max)
 		while (st.n < max && hg_next(pd, &d, sizeof d, &in) == HG_MSG) {
 			uint64_t now = hg_now_ns();
 			st.n++;
-			st.good += in.stamp_ns <= now && now - in.stamp_ns < 500000000ull; /* the offsets tested are seconds; a loaded machine reads late */
+			/* The offsets tested are seconds. A loaded machine reads late, and
+			 * its first estimates are off by up to half a slow round trip, to
+			 * either side: a stamp a few milliseconds after now is a right one. */
+			st.good += in.stamp_ns <= now ? now - in.stamp_ns < 500000000ull : in.stamp_ns - now < 50000000ull;
 			st.ahead += in.stamp_ns > now + 1000000000ull;
+			st.early += in.stamp_ns > now;
+			if (in.stamp_ns <= now && now - in.stamp_ns > st.old_ns)
+				st.old_ns = now - in.stamp_ns;
 		}
 	}
 	return st;
@@ -996,8 +1004,9 @@ static void hold_run(void)
 	st = read_stamps(pd, 3000, 100);
 	read_link(&V, &lv);
 	EXPECT(st.n == 100 && st.good == st.n && lv.clamped == 0,
-	       "pongs through: %d messages, %d with their stamp within 500 ms before now, %llu clamped", st.n, st.good,
-	       (unsigned long long)lv.clamped);
+	       "pongs through: %d messages, %d with their stamp within 500 ms before now or 50 ms after (%d after, the oldest "
+	       "%.1f ms), %llu clamped",
+	       st.n, st.good, st.early, st.old_ns / 1e6, (unsigned long long)lv.clamped);
 	int rc = wait_pid_ms(c, 8000);
 	const char *res = rc == 0 ? read_file(out) : NULL;
 	EXPECT(res && strstr(res, "one HG_OK"), "the call made meanwhile: %.*s", res ? (int)strcspn(res, "\n") : 9,
@@ -1034,8 +1043,9 @@ static void hold_run(void)
 	read_link(&V, &lv);
 	EXPECT(st.n == 50 && st.good == st.n && lv.clamped == 0 && lv.clock_offset_ns > 8990000000ll &&
 		       lv.clock_offset_ns < 9010000000ll,
-	       "pongs through: %d messages, %d with their stamp within 500 ms before now, %llu clamped, offset %+.3f ms",
-	       st.n, st.good, (unsigned long long)lv.clamped, lv.clock_offset_ns / 1e6);
+	       "pongs through: %d messages, %d with their stamp within 500 ms before now or 50 ms after (%d after, the oldest "
+	       "%.1f ms), %llu clamped, offset %+.3f ms",
+	       st.n, st.good, st.early, st.old_ns / 1e6, (unsigned long long)lv.clamped, lv.clock_offset_ns / 1e6);
 }
 
 static int count_in_file(const char *path, const char *needle)
