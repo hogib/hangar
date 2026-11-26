@@ -203,7 +203,7 @@ while read -r what verdict; do
     esac
 done <<< "$check"
 judge measure "$T/here.json"
-if [ "$rc" = 1 ] && grep -Eq "FAIL +pi +package system: running now: unattended-upgr \(pid $run_pid\)" <<< "$out"; then
+if [ "$rc" = 1 ] && grep -Eq "FAIL +pi +package system: running now: (.*, )?unattended-upgr \(pid $run_pid\)" <<< "$out"; then
     ok "the judge over this machine's facts names the package system's process"
 else
     bad "the judge over this machine's facts (status $rc)"; echo "$out" | sed 's/^/        /'

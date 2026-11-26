@@ -20,8 +20,10 @@ import glob, json, os, re, resource, socket, subprocess, sys, time
 
 OWN = re.compile(r"^(hangar|hangard|dawn-patrold|hg_bench|failtest)")
 # Processes of the package system. unattended-upgrade-shutdown is Ubuntu's idle
-# waiter, there from boot to shutdown: not a run.
-APT_COMM = {"unattended-upgr", "apt", "apt-get", "apt.systemd.dai", "dpkg", "aptd", "apt-check", "packagekitd"}
+# waiter, there from boot to shutdown: not a run. packagekitd and aptd are
+# daemons that sit idle for hours on a stock Ubuntu (CI's machines have one):
+# not a run either; one that works shows under "other load".
+APT_COMM = {"unattended-upgr", "apt", "apt-get", "apt.systemd.dai", "dpkg", "apt-check"}
 
 
 def read(path, default=None):
