@@ -324,26 +324,19 @@ static uint32_t source_id;
 static uint8_t *fbuf;
 static size_t fcap;
 
+/* What to_i420 converts: I422 of even height (it halves the chroma rows). */
 static int frame_encodable(const struct hg_frame_header *hd)
 {
 	return hd->fourcc == HG_I422 && hd->width && hd->height && !(hd->width & 1) && !(hd->height & 1);
 }
 
 /* 1 if every byte to_i420 reads for this header lies inside `bytes` of plane
- * data. A header read in place may be half of one frame and half of the
- * next (hg_topic.h, hg_latest_view): nothing in it sizes or indexes a read
- * until this has said the reads stay inside the payload. */
+ * data: the library's check (hg_type.h, hg_frame_check), the one every frame
+ * reader makes. A header read in place may be half of one frame and half of
+ * the next: nothing in it sizes or indexes a read until this has passed it. */
 static int planes_inside(const struct hg_frame_header *hd, size_t bytes)
 {
-	uint64_t w = hd->width, h = hd->height;
-	if (w > 16384 || h > 16384)
-		return 0;
-	for (int p = 0; p < 3; p++) {
-		uint64_t pw = p ? (w + 1) / 2 : w;
-		if (hd->stride[p] < pw || (uint64_t)hd->offset[p] + (h - 1) * hd->stride[p] + pw > bytes)
-			return 0;
-	}
-	return 1;
+	return hg_frame_check(hd, bytes) == 0;
 }
 
 /* The picture in pic.img, already converted, to x264 and out as RTP; t0 is

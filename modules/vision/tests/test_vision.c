@@ -372,6 +372,46 @@ static void test_threads_restart(void)
 	printf("    after the restart, 2 threads: %ld bytes differ, %.2f ms median\n", diff, median_ms());
 }
 
+/* A header is the publisher's word. One whose planes reach past the payload
+ * is not processed (hg_frame_check): no picture comes of it, the module is
+ * the same process afterwards, and the next good frame is made as before.
+ * The first is known to have been read and refused by the module's log line
+ * (said once); under check-asan-modules a module that read by either header
+ * would be stopped by the sanitizer, and the frames after it would not come. */
+static void test_header_past_the_payload(void)
+{
+	struct mstat m;
+	CHECK(module_status("vision", &m) && m.pid > 0);
+	int pid = m.pid;
+	char log[600];
+	tfmt(log, sizeof log, "%s/run/hangar/log/vision.log", T_root);
+	make_frame(0);
+	struct hg_frame_header lie;
+	memcpy(&lie, inbuf, sizeof lie);
+	lie.offset[2] = ftype.data_bytes - 16; /* the last plane starts 16 bytes before the end */
+	memcpy(inbuf, &lie, sizeof lie);
+	stamp += 33333333u;
+	CHECK_EQ_INT(hg_publish(P_in, inbuf, ftype.type.payload_bytes, stamp), 0);
+	CHECK(wait_file_contains(log, "planes do not lie inside", 5000));
+	lie.offset[2] = ftype.offset[2];
+	lie.stride[0] = 0x7fffffff; /* rows that far apart */
+	memcpy(inbuf, &lie, sizeof lie);
+	stamp += 33333333u;
+	CHECK_EQ_INT(hg_publish(P_in, inbuf, ftype.type.payload_bytes, stamp), 0);
+	sleep_ms(300);
+	/* No picture of either. */
+	struct hg_info info;
+	enum hg_result r = hg_latest(S_out, outbuf, ftype.type.payload_bytes, &info);
+	CHECK(r != HG_MSG || info.seq == out_seq);
+	CHECK(module_status("vision", &m) && m.pid == pid && strcmp(m.state, "ready") == 0);
+	/* And the frames after them: lib/vision's picture, from the frame given. */
+	EffectChainConfig cfg;
+	char err[160];
+	CHECK_EQ_INT(vision_chain_parse("blur:strength=3 sobel:threshold=40", &cfg, err, sizeof err), 0);
+	CHECK_EQ_INT(run_frames(&cfg), 0);
+	CHECK(module_status("vision", &m) && m.pid == pid);
+}
+
 static void test_idle_cpu(void)
 {
 	struct mstat m;
@@ -382,7 +422,7 @@ static void test_idle_cpu(void)
 	sleep_ms(1000);
 	double pct = th_cpu_percent(t0, th_cpu_ticks(m.pid), (long)((hg_now_ns() - a) / 1000000u));
 	printf("    vision at rest: %.1f %% of a core\n", pct);
-	CHECK(pct >= 0 && pct < 2);
+	CHECK(th_cpu_within(pct, 2));
 }
 
 static void test_shutdown(void)
@@ -405,6 +445,7 @@ int main(void)
 	RUN_TEST(test_presets_through_the_module);
 	RUN_TEST(test_refusals);
 	RUN_TEST(test_threads_restart);
+	RUN_TEST(test_header_past_the_payload);
 	RUN_TEST(test_idle_cpu);
 	RUN_TEST(test_shutdown);
 	hd_teardown();

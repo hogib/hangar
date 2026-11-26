@@ -129,6 +129,21 @@ u8  data[1843200]
 so a reader that expects 720p cannot attach to a 480p stream by mistake. Frame topics
 default to 4 slots.
 
+The type fixes the payload's size; the header inside each message is still the
+publisher's word, and a reader finds row `y` of plane `p` by it, at
+`data + offset[p] + y * stride[p]`. So a reader checks the header before it reads by
+it: `hg_frame_check(&header, data_bytes)`, on a copy of the header and the number of
+bytes after it in the payload. It passes a size of 1 to 16384 each way, a format
+`hg_frame_type` knows, even dimensions where the format subsamples, and planes that
+lie inside the data: for each plane the format has, a stride of at least the row's
+width, and `offset[p] + (rows - 1) * stride[p] + row width` at most `data_bytes`,
+summed in 64 bits. A frame that fails is dropped by the reader, with one line in its
+log, and the reader goes on. Whether the frame is the size and format the reader was
+set up for is the reader's own comparison. Every reader of frames in the tree goes
+through it (vision, topside_encoder); through a view ([In place](#in-place)) it is
+also what keeps a header that is half of one frame and half of the next from sizing
+a read.
+
 **Dataset rows** are messages too. The manager generates a row type from the dataset
 spec, and a manifest names it as `Type=dataset:<name>` ([06-recorder](06-recorder.md#the-row)).
 Its field names carry dots (`nav.state.depth_m`, `nav.state._seq`), which only a

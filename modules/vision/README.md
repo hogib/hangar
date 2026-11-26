@@ -24,7 +24,9 @@ older one still waiting is skipped and counted, never queued) and calls are serv
 Nothing in the wait set stays unread (hangar#1). At rest, with no frames, it
 measured 0.0 % of a core.
 
-Each frame: the planes are copied into a `VideoFrame`, the image statistics computed
+Each frame: the header is checked (`hg_frame_check`: I422, the size the first frame
+fixed, every plane inside the payload; a frame that fails is dropped), the planes
+are copied into a `VideoFrame`, the image statistics computed
 when the chain wants auto visibility, `apply_effect_chain_auto` run, and the result
 published with the input's capture stamp. When the chain ends in grayscale or an
 edge map (`chroma_neutral`), the chroma planes are written as 128 by `memset`
@@ -87,7 +89,14 @@ Then the module runs under a manager, with the suite publishing `cam.decoded` at
   custom chain is still in force.
 - `threads=2` restarts the module. The status line then says 2 threads and the
   output is still identical.
+- A header that lies: a last plane starting 16 bytes before the payload's end, and a
+  stride of 2³¹. Neither is processed (`hg_frame_check`, docs/01 "Frames"; the log
+  says so once), the module is the same process afterwards, and the frames after
+  them are identical again. Without the check the module died on the first.
 - At rest: 0.0 % of a core.
+
+`make check-asan-modules` runs this suite, module and manager included, under
+AddressSanitizer and UBSan.
 
 Measured on the development machine (12 threads, 1280×720), from publish to
 `cam.pilot`, median of 10 frames: normal 1.5 ms, edges 3.7 ms, sharpen 2.4 ms,

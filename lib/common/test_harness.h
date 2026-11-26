@@ -112,3 +112,20 @@ static inline double th_cpu_percent(long long ticks0, long long ticks1, long ms)
     return -1;
   return (double)(ticks1 - ticks0) * 100.0 * 1000.0 / ((double)hz * (double)ms);
 }
+
+/* Whether a reading is within a budget of `limit` percent. A budget is a
+ * claim about the optimized build: under a sanitizer (the Makefile's
+ * sanitized_check sets HANGAR_SANITIZED for the suites it runs) the same work
+ * costs several times as much, and the budget is ten times as wide, 90 at
+ * most: a module that spins on a wait is still found, at about 100. */
+#include <stdlib.h>
+
+static inline int th_cpu_within(double pct, double limit)
+{
+  if (getenv("HANGAR_SANITIZED")) {
+    limit *= 10;
+    if (limit > 90)
+      limit = 90;
+  }
+  return pct >= 0 && pct < limit;
+}

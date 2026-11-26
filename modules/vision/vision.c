@@ -114,10 +114,23 @@ static int setup(uint32_t w, uint32_t h)
 static void process(const struct hg_info *info)
 {
 	struct hg_frame_header hd;
+	if (in_cap < sizeof hd) {
+		if (!wrong++)
+			mod_log(WHO, "%s: %zu bytes a message, less than a frame's header: dropped", C.input, in_cap);
+		return;
+	}
 	memcpy(&hd, inbuf, sizeof hd);
 	if (hd.fourcc != HG_I422 || !hd.width || !hd.height || (hd.width & 1)) {
 		if (!wrong++)
 			mod_log(WHO, "%s: a frame that is not I422 (fourcc %08x): dropped", C.input, (unsigned)hd.fourcc);
+		return;
+	}
+	/* The header is the publisher's word: one whose strides and offsets reach
+	 * past the payload would have the copy below read past inbuf. */
+	if (hg_frame_check(&hd, in_cap - sizeof hd) < 0) {
+		if (!wrong++)
+			mod_log(WHO, "%s: a %ux%u frame whose planes do not lie inside its %zu bytes: dropped", C.input,
+				(unsigned)hd.width, (unsigned)hd.height, in_cap - sizeof hd);
 		return;
 	}
 	if (!pub_out && setup(hd.width, hd.height) < 0)

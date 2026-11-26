@@ -310,6 +310,94 @@ static void test_frame_type(void)
 	CHECK_EQ_INT(sizeof(struct hg_frame_header), 36);
 }
 
+/* hg_frame_check: what hg_frame_type lays out passes, to the byte; a header
+ * that would take a reader outside the data does not. */
+static void test_frame_check(void)
+{
+	static const uint32_t fmts[3] = { HG_I422, HG_I420, HG_GREY };
+	for (int i = 0; i < 3; i++) {
+		struct hg_frame_type ft;
+		CHECK_EQ_INT(hg_frame_type(1280, 720, fmts[i], &ft), 0);
+		struct hg_frame_header hd = { .width = 1280, .height = 720, .fourcc = fmts[i] };
+		memcpy(hd.stride, ft.stride, sizeof hd.stride);
+		memcpy(hd.offset, ft.offset, sizeof hd.offset);
+		CHECK_EQ_INT(hg_frame_check(&hd, ft.data_bytes), 0);
+		/* What a reader has: the payload after the header, rounded up to 8. */
+		CHECK_EQ_INT(hg_frame_check(&hd, ft.type.payload_bytes - sizeof hd), 0);
+		/* A payload one byte short of the last plane's last row. */
+		errno = 0;
+		CHECK_EQ_INT(hg_frame_check(&hd, ft.data_bytes - 1), -1);
+		CHECK_EQ_INT(errno, EINVAL);
+		CHECK_EQ_INT(hg_frame_check(&hd, 0), -1);
+		int planes = fmts[i] == HG_GREY ? 1 : 3;
+		for (int p = 0; p < 3; p++) {
+			struct hg_frame_header b = hd;
+			/* Each plane out of bounds: started one byte late against a
+			 * payload that ends where the last plane does (the last plane
+			 * then ends one byte outside; an earlier one overlaps the next,
+			 * which is allowed, so it is moved to the payload's end). */
+			b.offset[p] = ft.data_bytes - 16;
+			CHECK_EQ_INT(hg_frame_check(&b, ft.data_bytes), p < planes ? -1 : 0);
+			b = hd;
+			b.offset[p] = UINT32_MAX;
+			CHECK_EQ_INT(hg_frame_check(&b, ft.data_bytes), p < planes ? -1 : 0);
+			/* An absurd stride, and the largest: rows * stride is past 2^32,
+			 * and must not wrap back inside. */
+			b = hd;
+			b.stride[p] = 1u << 30;
+			CHECK_EQ_INT(hg_frame_check(&b, ft.data_bytes), p < planes ? -1 : 0);
+			b.stride[p] = UINT32_MAX;
+			CHECK_EQ_INT(hg_frame_check(&b, ft.data_bytes), p < planes ? -1 : 0);
+			/* The same stride in a payload that had the room would pass:
+			 * the sum is the true one, 719 * (2^32 - 1) and a row. */
+			CHECK_EQ_INT(hg_frame_check(&b, (size_t)1 << 42), 0);
+			CHECK_EQ_INT(hg_frame_check(&b, ((size_t)1 << 32) - 1), p < planes ? -1 : 0);
+			/* A stride shorter than a row: rows would overlap, and the last
+			 * row's width is what the reader takes. */
+			b = hd;
+			b.stride[p] = 0;
+			CHECK_EQ_INT(hg_frame_check(&b, ft.data_bytes), p < planes ? -1 : 0);
+		}
+		/* A stride with row padding: inside to the byte, and one short. (In
+		 * the planar formats the luma rows then run into the chroma, which
+		 * is the publisher's business: the check is of bounds.) */
+		struct hg_frame_header pad = hd;
+		pad.stride[0] = 1344;
+		CHECK_EQ_INT(hg_frame_check(&pad, 1344 * 719 + 1280), fmts[i] == HG_GREY ? 0 : -1);
+		CHECK_EQ_INT(hg_frame_check(&pad, 1344 * 719 + 1279), -1);
+		CHECK_EQ_INT(hg_frame_check(&pad, ft.data_bytes), fmts[i] == HG_GREY ? -1 : 0);
+	}
+	struct hg_frame_header hd = { .width = 64, .height = 48, .fourcc = HG_I422,
+				      .stride = { 64, 32, 32 }, .offset = { 0, 64 * 48, 64 * 48 + 32 * 48 } };
+	CHECK_EQ_INT(hg_frame_check(&hd, 64 * 48 * 2), 0);
+	struct hg_frame_header b = hd;
+	b.width = 0;
+	CHECK_EQ_INT(hg_frame_check(&b, 64 * 48 * 2), -1);
+	b = hd;
+	b.height = 0; /* rows - 1 would wrap */
+	CHECK_EQ_INT(hg_frame_check(&b, SIZE_MAX), -1);
+	b = hd;
+	b.width = 16386;
+	b.stride[0] = 16386;
+	CHECK_EQ_INT(hg_frame_check(&b, SIZE_MAX), -1);
+	b = hd;
+	b.height = UINT32_MAX;
+	CHECK_EQ_INT(hg_frame_check(&b, SIZE_MAX), -1);
+	b = hd;
+	b.width = 63; /* I422 subsamples across */
+	CHECK_EQ_INT(hg_frame_check(&b, 64 * 48 * 2), -1);
+	b = hd;
+	b.height = 47; /* but not down: 47 rows fit in 48 rows' bytes */
+	CHECK_EQ_INT(hg_frame_check(&b, 64 * 48 * 2), 0);
+	b.fourcc = HG_I420; /* which does */
+	CHECK_EQ_INT(hg_frame_check(&b, 64 * 48 * 2), -1);
+	b = hd;
+	b.fourcc = HG_FOURCC('M', 'J', 'P', 'G');
+	CHECK_EQ_INT(hg_frame_check(&b, 64 * 48 * 2), -1);
+	b.fourcc = 0;
+	CHECK_EQ_INT(hg_frame_check(&b, 64 * 48 * 2), -1);
+}
+
 static void test_frame_topic_defaults_to_4_slots(void)
 {
 	struct hg_frame_type ft;
@@ -399,6 +487,7 @@ int main(void)
 	RUN_TEST(test_layout_rules);
 	RUN_TEST(test_layout_bound);
 	RUN_TEST(test_frame_type);
+	RUN_TEST(test_frame_check);
 	RUN_TEST(test_frame_topic_defaults_to_4_slots);
 	RUN_TEST(test_reader_returns_on_a_wild_header);
 	RUN_TEST(test_names);

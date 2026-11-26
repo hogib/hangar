@@ -350,3 +350,44 @@ bad:
 	errno = EINVAL;
 	return -1;
 }
+
+int hg_frame_check(const struct hg_frame_header *hd, size_t data_bytes)
+{
+	/* 64-bit throughout: offset < 2^32, rows <= 2^14, stride < 2^32, so the
+	 * sum is below 2^47 and cannot wrap. */
+	uint64_t w = hd->width, h = hd->height, cw, ch;
+	int planes;
+	if (w == 0 || h == 0 || w > 16384 || h > 16384)
+		goto bad;
+	switch (hd->fourcc) {
+	case HG_I422:
+		if (w & 1)
+			goto bad;
+		planes = 3;
+		cw = w / 2;
+		ch = h;
+		break;
+	case HG_I420:
+		if ((w & 1) || (h & 1))
+			goto bad;
+		planes = 3;
+		cw = w / 2;
+		ch = h / 2;
+		break;
+	case HG_GREY:
+		planes = 1;
+		cw = ch = 0;
+		break;
+	default:
+		goto bad;
+	}
+	for (int p = 0; p < planes; p++) {
+		uint64_t pw = p ? cw : w, rows = p ? ch : h;
+		if (hd->stride[p] < pw || (uint64_t)hd->offset[p] + (rows - 1) * hd->stride[p] + pw > (uint64_t)data_bytes)
+			goto bad;
+	}
+	return 0;
+bad:
+	errno = EINVAL;
+	return -1;
+}

@@ -120,4 +120,22 @@ struct hg_frame_type {
  * odd dimensions where the format subsamples. */
 int hg_frame_type(uint32_t width, uint32_t height, uint32_t fourcc, struct hg_frame_type *out);
 
+/* Whether a frame header may be read by. The header is the publisher's word,
+ * and one read in place (hg_topic.h, hg_latest_view) may be half of one frame
+ * and half of the next: nothing in it sizes or indexes a read until this has
+ * passed it. `hd` is a copy of the payload's first bytes, `data_bytes` what
+ * follows the header in the payload (payload size - sizeof *hd).
+ *
+ * 0 if the size is 1..16384 each way, the fourcc one hg_frame_type knows, the
+ * dimensions even where the format subsamples, and every plane of the format
+ * lies inside the data: stride[p] at least the plane's row width, and
+ * offset[p] + (rows - 1) * stride[p] + row width at most data_bytes. A reader
+ * that takes row y of plane p at data + offset[p] + y * stride[p], row width
+ * bytes of it, then stays inside the payload. Planes the format lacks
+ * (GREY's chroma) are not looked at. -1 with errno EINVAL otherwise.
+ *
+ * It does not say the frame is the size or format the caller expects: that
+ * is the caller's comparison, made on the same copy. */
+int hg_frame_check(const struct hg_frame_header *hd, size_t data_bytes);
+
 #endif

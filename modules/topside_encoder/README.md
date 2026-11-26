@@ -27,7 +27,8 @@ hangar-topside-encoder /etc/hangar/topside_encoder.conf
   stopping line), and after three in a row the newest is copied, as before, so a writer
   faster than the conversion cannot starve the encoder. Until that check the frame's
   header is not believed: it must describe the picture the encoder is already open
-  for, and its strides and offsets must stay inside the payload. The first frame, a new
+  for, and its strides and offsets must stay inside the payload (the library's
+  `hg_frame_check`, docs/01 "Frames"). The first frame, a new
   size and a header that fails either test go by the copying path, which checks the same
   bounds on a whole message.
 - **Converts** full-range 4:2:2 to limited-range 4:2:0 itself, with `hellion`'s fixed
