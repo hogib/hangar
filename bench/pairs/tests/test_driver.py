@@ -60,7 +60,7 @@ check('the driver ends with status 0', rc == 0, text[-2000:])
 with open(os.path.join(a, 'results.json')) as f:
     doc = json.load(f)
 runs = doc['runs']
-systems = ['null', 'hangar', 'with-helper']
+systems = ['null', 'hangar', 'with-helper', 'unix-seqpacket', 'unix-stream']
 check('the systems that can run are run, the one that is not installed is named and skipped',
       list(doc['systems']) == systems and [s['system'] for s in doc['skipped']] == ['absent'], str(doc['skipped']))
 check('four cells from three sweeps', len(doc['cells']) == 4, str([driver.cell_key(c) for c in doc['cells']]))
@@ -97,7 +97,7 @@ check('the cost names its interval and the kind of memory', all(r['result']['cos
                                                                  set(r['result']['cost']['mem_kind'].values()) <= {'pss', 'rss'} for r in lat))
 st = [r for r in runs if r['cell']['type'] == 'startup' and not r['result'].get('not_run')]
 check('start-up and rejoin: a subscriber started beside a running publisher has its first message, twice',
-      len(st) == 4 and all(r['result'].get('startup_ms', 0) > 0 and r['result'].get('rejoin_ms', 0) > 0 for r in st), str([r['result'] for r in st]))
+      len(st) == 2 * (len(systems) - 1) and all(r['result'].get('startup_ms', 0) > 0 and r['result'].get('rejoin_ms', 0) > 0 for r in st), str([r['result'] for r in st]))
 env = doc['environment']
 check('the environment: session, boot, kernel, cores, priority class', all(env.get(k) for k in ('session', 'boot_id', 'kernel', 'cores', 'priority_class'))
       and env['session'].endswith(env['boot_id'][:8]))

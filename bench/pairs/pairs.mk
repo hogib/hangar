@@ -4,14 +4,14 @@
 # A GNU make fragment, included by the root Makefile after bench/bench.mk, whose
 # HG_COMMIT, HG_SRC, HG_CFLAGS, HG_LDLIBS and obj it uses:
 #
-#   make pairs         $(BUILDDIR)/hangar_pair and $(BUILDDIR)/null_pair
+#   make pairs         $(BUILDDIR)/hangar_pair, null_pair and unix_pair
 #   make check-pairs   the driver's smoke plan over them (part of check): the harness
 #                      proved, no number judged
 #
 # The compiler and its flags go into each node (--version), and from there into every
 # results file.
 
-PAIR_BINS := $(BUILDDIR)/hangar_pair $(BUILDDIR)/null_pair
+PAIR_BINS := $(BUILDDIR)/hangar_pair $(BUILDDIR)/null_pair $(BUILDDIR)/unix_pair
 PAIR_DEFS = -DPAIR_CFLAGS='"$(CC) $(HG_CFLAGS) $(CFLAGS)"' -DHG_COMMIT='"$(HG_COMMIT)"'
 
 $(OBJDIR)/bench/pairs/hangar_pair.o: bench/pairs/hangar_pair.c bench/pairs/pair.h
@@ -25,6 +25,11 @@ $(OBJDIR)/bench/pairs/null_pair.o: bench/pairs/null_pair.c bench/pairs/pair.h
 $(BUILDDIR)/hangar_pair: $(OBJDIR)/bench/pairs/hangar_pair.o $(call obj,$(HG_SRC))
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
+
+# The baselines that need nothing but libc (the others: tools/baselines.sh).
+$(BUILDDIR)/unix_pair: bench/pairs/unix_pair.c bench/pairs/pair.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(PAIR_DEFS) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $< $(LDLIBS)
 
 $(BUILDDIR)/null_pair: $(OBJDIR)/bench/pairs/null_pair.o
 	@mkdir -p $(dir $@)

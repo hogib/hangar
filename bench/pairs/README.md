@@ -9,16 +9,17 @@ This file is the protocol. A figure from here is quoted with the plan it came fr
 a reader who doubts one should find below what was done and what was not.
 
 ```sh
-make pairs                                    # hangar_pair and null_pair, in builddir/
+make pairs                                    # hangar_pair, null_pair and unix_pair, in builddir/
 bench/pairs/driver.py --plan bench/pairs/plans/smoke.json --var bin=$PWD/builddir \
-    --out /tmp/pairs-smoke --no-preflight     # a minute: the harness proved, no number
+    --var base=$PWD/builddir \
+    --out /tmp/pairs-smoke --no-preflight     # a minute a system: the harness proved, no number
 bench/pairs/driver.py --plan bench/pairs/plans/full.json --var bin=$HOME/hangar-root/bin \
     --out ~/hangar-results/<date>-pairs       # the measurement (on the Pi: below)
 bench/pairs/driver.py --report ~/hangar-results/*-pairs > pooled.md
 ```
 
-`make check-pairs` (part of `make check`) runs a plan of four cells over hangar and the
-null system and checks the counting, the records and the report: 44 checks, and no
+`make check-pairs` (part of `make check`) runs a plan of four cells over hangar, the
+null system and the Unix sockets and checks the counting, the records and the report: 44 checks, and no
 latency compared with anything.
 
 ## What is the same for every system
@@ -258,10 +259,27 @@ and it must say what a referee would ask of this system's row:
 | `null` | the harness alone | not a system |
 | `hangar` | lib/hg: a 16-slot ring in shared memory, the reader asleep in one futex and woken by the publish | one copy in, one copy out. A reader 16 messages behind loses the oldest; the writer never waits. No helper. The stamp is the harness's, carried in the payload like every system's (lib/hg has its own in the slot's header, not used here) |
 | `hangar-inplace` | the same, the message built in a loaned slot and read as a view | no copy. A view the writer overwrote while it was read is dropped and counted, which takes a reader about the ring's length behind |
+| `unix-seqpacket` | Unix domain sockets, `SOCK_SEQPACKET`: the kernel's own IPC with no middleware. **The floor** for anything that sends through the kernel | two copies and one system call a side; the reader asleep in `recv`, woken by the kernel. The publisher never waits: a subscriber whose buffer is full does not get the message. A socket then drops the **newest** and keeps the old (hangar's ring drops the oldest), and the buffer's depth is the kernel's count of bytes (`net.core.wmem_default`, 212992 B: some hundreds of small messages), not 16. A message must fit that buffer whole: up to 131072 B here, and the larger cells are not run. No discovery beyond a path, no type, no metadata |
+| `unix-stream` | the same with `SOCK_STREAM`, for any size | **another contract**: the publisher's send blocks while the reader's buffer is full, so nothing is lost and a slow reader slows the writer (it shows under "intended"). A megabyte is several send and receive calls. The reader has the message when it has collected all its bytes |
 
-Not in this directory yet: the node pairs of the baselines (Cyclone DDS, Fast DDS and
-Zenoh under ROS 2, iceoryx2 woken and polling, Unix domain sockets, MOOS, LCM). Each
-comes with its entry and its own lines for this table.
+Where each system's two stamps are taken is the same by construction: `publish_ns` is
+read in `pair.h` immediately before the node's `pub_send`, and the subscriber's clock is
+read in `pair.h` as soon as the node's `sub_recv` returns. What differs is what lies
+between, and that is this table's last column.
+
+**Choices made for the Unix sockets, and the alternatives.** The buffers are the
+kernel's defaults (`-- --sndbuf N` sets the publisher's): a buffer sized to hold 16
+messages would be nearer hangar's ring in depth, but the kernel accounts a small message
+at several times its size, so a byte count does not give a message count, and the
+default is what a program gets. `SOCK_DGRAM` would do as well as `SOCK_SEQPACKET` for one
+subscriber; the connection is what lets a publisher have several and learn that one has
+gone. The publisher takes new connections in before it reads the clock, outside the
+sample. A baseline's node is found through `--var base=DIR` (hangar's own through
+`--var bin=DIR`), since on the Pi they come from different archives.
+
+Not in this directory yet: the node pairs of the other baselines (Cyclone DDS, Fast DDS
+and Zenoh under ROS 2, iceoryx2 woken and polling, MOOS, LCM). Each comes with its entry
+and its own lines for this table.
 
 ## What this does not measure, and what could mislead
 
