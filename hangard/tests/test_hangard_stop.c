@@ -438,7 +438,11 @@ static void test_restart_self_does_not_undo_a_stop(void)
 	CHECK(wait_state("stub", "ready", 5000));
 	CHECK(strncmp(ctl("stop stub"), "ok", 2) == 0);
 	CHECK(wait_file_contains(T_log, "SIGKILL to its", 3000));
-	sleep_ms(800);
+	/* Stopped, however long a loaded machine takes to reap it; and still
+	 * stopped once a restart, had the stop been undone, would have come
+	 * (the back-off is 0.1 s to 1 s). */
+	CHECK(wait_state("stub", "stopped", 5000));
+	sleep_ms(1500);
 	struct mstat m;
 	CHECK(module_status("stub", &m));
 	CHECK(strcmp(m.state, "stopped") == 0);
