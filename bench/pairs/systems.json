@@ -1,0 +1,26 @@
+{
+  "systems": [
+    {
+      "name": "null",
+      "title": "the harness alone: a pointer handed over in one thread, nothing sent",
+      "kind": "single",
+      "node": ["{bin}/null_pair"],
+      "notes": "Not a system: the floor. What its row shows is the cost of the two clock readings and, under \"intended\", the schedule's own lateness. One process, so no subscriber count above 1, no start-up, and its CPU is the publisher loop's."
+    },
+    {
+      "name": "hangar",
+      "title": "hangar, lib/hg: a topic with a 16-slot ring in shared memory, the reader woken by one futex",
+      "node": ["{bin}/hangar_pair"],
+      "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
+      "notes": "The message is copied into the ring and out of it. A reader that falls 16 messages behind loses the oldest (counted as lost): the writer never waits."
+    },
+    {
+      "name": "hangar-inplace",
+      "title": "hangar, lib/hg, in place: the publisher fills a loaned slot, the reader is handed a view of it",
+      "node": ["{bin}/hangar_pair"],
+      "args": ["--in-place"],
+      "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
+      "notes": "Nothing is copied. The view is checked after the harness has read it; one the writer overwrote meanwhile is dropped and counted (discarded, and then lost)."
+    }
+  ]
+}

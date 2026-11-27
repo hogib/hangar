@@ -15,6 +15,13 @@ script that runs both and writes the table. It is not part of hangar's build or 
 | `linkbench.py` | the second-level comparison's measuring half: MAVROS against hangar's mavlink module ([below](#second-level-mavros-against-hangars-mavlink-module)) |
 | `Dockerfile` | ROS 2 Jazzy with Cyclone DDS and Zenoh added, for a machine without ROS 2 |
 
+> **For a comparison across several systems, `bench/pairs/` is the harness**
+> ([its README](../pairs/README.md)): there every system, hangar included, is measured
+> by the same node code, in interleaved rounds, with the whole latency distribution
+> kept. This directory compares `hg_bench` with a ROS 2 talker and listener, each with
+> its own stamps, and stays as what produced the figures of 2026-11-25. The two are
+> not the same measurement, and their figures do not go into one row.
+
 ## What is compared
 
 Two processes on one machine, one publishing fixed-size messages and one receiving them,

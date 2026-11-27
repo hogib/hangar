@@ -12,7 +12,8 @@
 # (x86_64-linux-musl here) as hangar-<version>-x86_64.tar.zst.
 #
 # What goes in (docs/13-deployment.md "A release", as far as the tree has it):
-#   bin/        hangard, hangar, hg_bench, lib/hg's test suites, eeye, hellion,
+#   bin/        hangard, hangar, hg_bench, hangar_pair and null_pair (bench/pairs),
+#               lib/hg's test suites, eeye, hellion,
 #               the toy modules of hangard/tests/modules: whatever the root
 #               Makefile knows how to build today. A target the Makefile does
 #               not have yet is skipped and listed, never an error.
@@ -278,6 +279,18 @@ else
 	     LDFLAGS="-static -s" "$builddir/hg_bench" >> "$work/make.log" 2>&1 || true
 fi
 
+# bench/pairs' node pairs that need nothing but this tree (bench/pairs/pairs.mk):
+# hangar's and the null system, for the comparison on equal terms.
+pair_bins=
+for b in hangar_pair null_pair; do
+	if known "$builddir/$b"; then
+		run_make -k -j "$jobs" "$builddir/$b" >> "$work/make.log" 2>&1 || true
+		pair_bins="$pair_bins $b"
+	else
+		skipped="$skipped $b"
+	fi
+done
+
 # hangard and hangar built again for size (docs/00's guide figure, about 200 KB;
 # bench/HANGARD-SIZE.md): -Os, no unwind tables, every function and datum in a
 # section of its own and the unused ones dropped at link. A build directory of
@@ -317,6 +330,9 @@ for t in $targets; do
 	put_bin "$t" "$(basename "$t")"
 done
 put_bin "$builddir/hg_bench" hg_bench
+for b in $pair_bins; do
+	put_bin "$builddir/$b" "$b"
+done
 # A manager or a command the Makefile built under another path: take it if
 # it is there, say so if not.
 for b in hangard hangar; do

@@ -321,6 +321,12 @@ The reason hangar exists, measured: `hangar bench` on hangar, and the scripts in
 same machine, for the same message sizes and rates. ROS 2 runs only on the comparison
 machine, in a container or on a separate SD card image, never on the vehicle.
 
+Several systems side by side (other middlewares, a floor, the marine incumbents) are
+measured by `bench/pairs/`: one node harness that hangar's node and every baseline's
+include, so that the stamps, the warm-up, the counting and the statistics are the same
+code for all, a plan of cells run in interleaved rounds, and each run's whole latency
+distribution kept. [Its README](../bench/pairs/README.md) is the protocol.
+
 Both measure:
 
 | | |

@@ -15,6 +15,7 @@ first run on real hardware is planned in [PI-TEST.md](PI-TEST.md).
 | `PI-TEST.md` | the Pi visit, step by step |
 | `e2e-depth-ff/` | the learning loop end to end in simulation ([README](e2e-depth-ff/README.md)): docs/09's adaptive depth hold, run and measured |
 | `ros2/` | the ROS 2 baseline: a talker/listener package, `run.sh`, which runs it and `hg_bench` and writes the comparison ([its README](ros2/README.md)) |
+| `pairs/` | every system on equal terms: one node harness (`pair.h`) that hangar's node and each baseline's include, a driver that runs a plan of cells over a registry of systems in interleaved rounds, and a report with the statistics a referee asks for ([its README](pairs/README.md) is the protocol). The comparison of the next lab session is taken with it; `hg_bench` and `ros2/` stay as what produced the earlier figures |
 
 ## Building
 

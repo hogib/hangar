@@ -1,0 +1,22 @@
+{
+  "title": "bench/pairs: the check's plan",
+  "smoke": true,
+  "repetitions": 2,
+  "seconds": 1,
+  "max_seconds": 1,
+  "target_samples": 200,
+  "warmup_s": 0,
+  "startup_settle_s": 0.3,
+  "max_temp_c": 200,
+  "hot_c": 200,
+  "busy_pct": 101,
+  "retries": 1,
+  "cool_wait_s": 0,
+  "cores": {"pub": -1, "sub": [-2]},
+  "conditions": {"quiet": {}, "load1": {"spinners": 1}, "rt": {"realtime": {"policy": "fifo", "priority": 10}}},
+  "sweeps": [
+    {"name": "one", "size": [256], "rate": [200], "subscribers": [1], "condition": ["quiet", "rt"]},
+    {"name": "fan-out", "size": [4096], "rate": [200], "subscribers": [2], "condition": ["load1"]},
+    {"name": "start-up", "cell": "startup", "size": [256], "rate": [200], "condition": ["quiet"]}
+  ]
+}

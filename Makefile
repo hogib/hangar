@@ -16,6 +16,8 @@
 #   make check-asan-modules  the suites of the modules that read frames and
 #                          packets (SAN_MODULE_CHECKS), manager and modules
 #                          included, under AddressSanitizer + UBSan
+#   make check-pairs       bench/pairs: the driver's smoke plan over hangar's node pair
+#                          and the null system (the harness proved, no number judged)
 #   make check-rov         tools/rov's guard: nothing stopped under an armed vehicle;
 #                          its preflight, judged over written facts; and
 #                          freeze and thaw, against a Pi that is a directory
@@ -534,6 +536,10 @@ check: check-nn
 
 # bench/hg_bench, hangar's side of the benchmark (bench/bench.mk).
 include bench/bench.mk
+
+# bench/pairs: every system's node pair through the same cells (bench/pairs/README.md).
+include bench/pairs/pairs.mk
+check: check-pairs
 
 # hangard, the manager, and the hangar command (hangard/README.md,
 # hangard/hangard.mk carries the rules): GPL-3.0-or-later, C11 over lib/hg.
