@@ -144,11 +144,11 @@ row.
 **The module** is `graph.h`, the same for every system, as `pair.h` is for a pair: one
 thread that waits for any of its inputs with a timeout at its next publication, counts
 what has come, and sends what is due. A system's node (`hangar_graph.c`,
-`unix_graph.c`, `iceoryx2_graph.c`, `ros2_pair/src/ros2_graph.cpp`, `lcm_graph.c`) is how it
-opens its
+`unix_graph.c`, `iceoryx2_graph.c`, `ros2_pair/src/ros2_graph.cpp`, `lcm_graph.c`,
+`moos_graph.cpp`) is how it opens its
 publications and subscriptions, sends, and waits for several things at once: `hg_wait`
 over all subscriptions; `ppoll`; a wait set with every listener attached; an executor;
-`lcm_handle_timeout`.
+`lcm_handle_timeout`; a condition variable the client's thread signals.
 The waiting may return late by what the system's call can express (`hg_wait` takes
 milliseconds), and a publication is then late by that, as a real module's is; every
 message carries the time it was really sent, so the latency is not touched.
@@ -167,8 +167,8 @@ whether a subscription came short.
 
 **Which entries run it, and why not the others** (the report lists each with its
 reason): `hangar`, `hangar-inplace`, `hangar-module`, `hangar-module-refs4`,
-`unix-seqpacket`, `iceoryx2`, `lcm`, `lcm-rcvbuf` and the seven ROS 2 entries that are
-two-process systems.
+`unix-seqpacket`, `iceoryx2`, `lcm`, `lcm-rcvbuf`, `moos` and the seven ROS 2 entries
+that are two-process systems.
 A run in which a system failed publications is flagged `publications-failed`, carries
 the mark † in every table, and is listed with the count.
 
@@ -369,6 +369,7 @@ and it must say what a referee would ask of this system's row:
 | `iceoryx2-poll` | the same, the subscriber asking in a loop that never sleeps | **not like for like**: iceoryx2's best latency at the price of a whole core, spent whether or not anything is published. No event is sent. Beside `iceoryx2` it is what waking costs |
 | `lcm` | LCM 1.5.3: no broker, no discovery; a message is a UDP multicast datagram on the loopback to a group every process has joined | lossy by design: a datagram the kernel has no room for is gone. A process is handed every topic's datagrams and drops in user space what it has not subscribed to. LCM reads its socket in a thread of its own and wakes the handling thread through a pipe: two wake-ups a message. Bytes as they are (no `lcm-gen` type, so no marshalling in the row). Above 65499 bytes a message is 65487-byte datagrams, and lost if one of them is: with the kernel's default receive buffer (212992 bytes, three of a megabyte's seventeen) **the 1 MB cells lose a large share** |
 | `lcm-rcvbuf` | the same with the 2 MB receive buffer LCM's documentation asks for | what its documentation says for large messages. The kernel grants at most `net.core.rmem_max`, 212992 on a stock Ubuntu: **where root has not raised it this row is `lcm` again**, and the report prints the limit |
+| `moos` | MOOS (core-moos v10.4.0), V10 asynchronous comms, every process a client of one `MOOSDB` over TCP | **a broker, the only one here**: a message goes from its publisher to the database and from the database to each subscriber, two hops by design. The `MOOSDB` is a **helper**, counted, and every message passes through it. A subscriber's callback runs in a thread of the client's and hands the message to the waiting thread: a wake-up more. TCP: nothing is dropped, what a slow reader has not taken waits for it |
 
 Where each system's two stamps are taken is the same by construction: `publish_ns` is
 read in `pair.h` immediately before the node's `pub_send`, and the subscriber's clock is
@@ -577,8 +578,40 @@ static programs and use the machine's own `libglib2.0-0`).
 - In the graph every process receives every topic's datagrams (one group): 474
   datagrams a second into each of eight processes, most of them dropped in user space.
 
-Not in this directory yet: the node pair of the last baseline (MOOS). It comes
-with its entry and its own lines for this table.
+### MOOS
+
+`moos_pair.cpp` and `moos_graph.cpp`, on core-moos v10.4.0's `libMOOS`
+(`MOOS::MOOSAsyncCommClient`), with core-moos's own `MOOSDB` as the helper. Built only
+by `tools/baselines.sh --with-moos`.
+
+- **Its licence is not one statement**, which is why it is built only when asked for.
+  The source archive of the tag has no licence file for the whole.
+  `Core/GPLCore.txt` is the GNU General Public License, "either version 2 of the
+  License, or (at your option) any later version". Of its 182 source files, 102 say
+  "made available under the terms of the GNU Lesser Public License v2.1" (the client
+  library, which the nodes link); 14, the database's, say "the GNU Public License"
+  and point at `gpl.txt`, with no version; one more is GPL; 33 are under the Boost
+  licence and 2 under the MIT licence (third-party parts); 30 say nothing. The
+  project's pages that a search finds (2026-11-28) state no licence for core-moos as a
+  whole; older MOOS trees carry the same `GPLCore.txt`. Read plainly: an LGPL-2.1
+  library and a GPL database. Linking the library into these nodes and running the
+  database on one's own machines raises nothing; **an archive that contains `MOOSDB`
+  is a GPL binary to whoever it is passed on to**, with the source owed (the pinned
+  archive in the `MANIFEST`).
+- **V10 asynchronous comms**, as MOOS's authors would have it run: the older client
+  talks to the database at a fixed rate and would read as that rate.
+- **A subscriber** takes its mail through an active queue, V10's way; the queue's
+  callback runs in a thread of the client's. Its first statement reads the clock; the
+  message and the reading go to the thread the harness waits in (`pair_deliver_at`).
+- **The database** is started by the driver for each run, on port 9123, with its
+  "suicide" listener off, and stopped after; its CPU and memory are in the system's
+  cost. It is in the path of every message.
+- **The version**: the tag is v10.4.0 (2018, the newest); the library calls itself
+  10.0.2. Both are in the node's version line.
+- **Binary notifies**, as they are. What MOOS does with a slow reader (it queues; no
+  bound was looked for) is not verified beyond "nothing was lost in the trials".
+
+Every baseline that was chosen is in this directory.
 
 ## Restarting a process
 

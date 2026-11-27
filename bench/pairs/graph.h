@@ -94,10 +94,11 @@ static inline void graph_sleep(int64_t ns)
 	clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
 }
 
-/* A message of subscription i in the process's hands: the clock is read here. */
-static inline void graph_deliver(int i, const void *bytes, long len)
+/* A message of subscription i in the process's hands, at `now`: for a system whose
+ * callback runs in a thread of its own, which reads the clock there (pair_now_ns) and
+ * hands the message over to the thread that waits. */
+static inline void graph_deliver_at(int i, const void *bytes, long len, uint64_t now)
 {
-	uint64_t now = pair_now_ns();
 	struct graph_end *e = &graph_o.sub[i];
 	if (len < (long)GRAPH_MIN_SIZE)
 		return;
@@ -116,6 +117,12 @@ static inline void graph_deliver(int i, const void *bytes, long len)
 		e->last_seq = seq;
 	e->n++;
 	pair_hist_add(&e->lat, now > pub ? now - pub : 0);
+}
+
+/* A message of subscription i in the process's hands: the clock is read here. */
+static inline void graph_deliver(int i, const void *bytes, long len)
+{
+	graph_deliver_at(i, bytes, len, pair_now_ns());
 }
 
 static int graph_end_parse(struct graph_end *e, const char *prefix, const char *spec, int pub)

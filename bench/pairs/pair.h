@@ -270,9 +270,18 @@ static struct {
 	uint64_t first_now; /* the reading at the very first message, or 0 */
 } pair_cb;
 
+/* The same for a system whose callback runs in a thread of its own: that thread reads
+ * the clock (pair_now_ns, its first statement) and hands the message and the reading
+ * to the thread sub_recv was called in, which calls this. */
+static inline void pair_deliver_at(const void *m, long len, uint64_t now);
+
 static inline void pair_deliver(const void *m, long len)
 {
-	uint64_t now = pair_now_ns();
+	pair_deliver_at(m, len, pair_now_ns());
+}
+
+static inline void pair_deliver_at(const void *m, long len, uint64_t now)
+{
 	if (!pair_cb.st || (unsigned long)len < PAIR_MIN_SIZE)
 		return;
 	if (!pair_cb.st->first_msg_ns)

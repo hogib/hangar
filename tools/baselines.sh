@@ -4,7 +4,8 @@
 # nothing is compiled on the Pi during a session (bench/pairs/README.md, "On the
 # Pi"; tools/rov/LAB-CHECKLIST.md, "Baselines").
 #
-#   tools/baselines.sh [--host] [--no-ros2] [--out DIR] [--work DIR]   build and pack
+#   tools/baselines.sh [--host] [--no-ros2] [--with-moos] [--out DIR] [--work DIR]
+#                                                            build and pack
 #   tools/baselines.sh ros2-smoke [--image IMAGE] [--reps N] the smoke plan over every
 #                                                            system, ROS 2's included,
 #                                                            in a container
@@ -51,6 +52,17 @@
 #     they are not static programs: they need an Ubuntu 24.04's libglib2.0-0, which
 #     the Pi has
 #
+#   core-moos v10.4.0, ONLY WITH --with-moos: its library and its database, MOOSDB,
+#     with cmake in the build container, and the two MOOS nodes. Left out unless asked
+#     for because its licence is not one statement: the source archive has no licence
+#     file for the whole; Core/GPLCore.txt is the GPL, version 2 or later; 102 of its
+#     182 source files say "GNU Lesser Public License v2.1" (the client library the
+#     nodes link), 14 (the database) say "GNU Public License" with no version, one is
+#     GPL, 33 are under the Boost licence, 2 under the MIT licence and 30 say nothing.
+#     An archive made with --with-moos has MOOSDB in it, a GPL program: for one's own
+#     machines that is no question; whoever passes that archive on passes on a GPL
+#     binary and owes its source (the pinned archive named in the MANIFEST).
+#
 # Needs zig, make, cargo with the target's rust-std (rustup target add
 # aarch64-unknown-linux-musl; for --host x86_64-unknown-linux-musl), curl, tar, zstd,
 # sha256sum; docker for the LCM nodes and the ROS 2 node. Nothing is installed on this
@@ -68,7 +80,11 @@ LCM_VERSION=1.5.3
 LCM_URL=https://github.com/lcm-proj/lcm/archive/refs/tags/v$LCM_VERSION.tar.gz
 LCM_SHA256=f7e693d50e229e37de00387ac8ab9228e16559dd57bddd155c4b5ca1c233834e
 
-host=no ros2=yes out= work= image=hangar-ros2-bench:jazzy reps=1 cmd=build
+MOOS_TAG=v10.4.0
+MOOS_URL=https://github.com/themoos/core-moos/archive/refs/tags/$MOOS_TAG.tar.gz
+MOOS_SHA256=31df6faebc2b2278dd10eced7c4df6d2453e551474dba1115e63d9dbd2ef871d
+
+host=no ros2=yes moos=no out= work= image=hangar-ros2-bench:jazzy reps=1 cmd=build
 build_image=hangar-baselines-build:noble
 
 # A pinned source: fetched once into DIR/src.tar.gz, checked, unpacked into DIR/src.
@@ -91,11 +107,12 @@ while [ $# -gt 0 ]; do
 	case $1 in
 	--host) host=yes ;;
 	--no-ros2) ros2=no ;;
+	--with-moos) moos=yes ;;
 	--out) shift; out=$1 ;;
 	--work) shift; work=$1 ;;
 	--image) shift; image=$1 ;;
 	--reps) shift; reps=$1 ;;
-	-h|--help) sed -n '3,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help) sed -n '3,70p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "baselines.sh: unknown argument $1" >&2; exit 2 ;;
 	esac
 	shift
@@ -112,7 +129,8 @@ if [ "$cmd" = ros2-smoke ]; then
 	command -v docker > /dev/null || { echo "baselines.sh: docker is not installed" >&2; exit 1; }
 	docker image inspect "$image" > /dev/null 2>&1 ||
 		{ echo "baselines.sh: no image $image: docker build -t $image bench/ros2" >&2; exit 1; }
-	"$0" --host --out "$out" ${work:+--work "$work"} > /dev/null
+	# With MOOS: this stage is for the proof on this machine and goes nowhere.
+	"$0" --host --with-moos --out "$out" ${work:+--work "$work"} > /dev/null
 	# The stage just made: the newest, where earlier versions' stages still lie beside it.
 	hostdir=$(ls -dt "$out"/work-"$(uname -m)"/stage/baselines-* | head -1)
 	ws=$out/ros2-$(uname -m)
@@ -229,6 +247,20 @@ if [ "$container" = yes ]; then
 	lcm_line="lcm_pair lcm_graph: this tree's bench/pairs, linked with LCM $LCM_VERSION (LGPL-2.1), static; GLib and the C library shared, the machine's own (Ubuntu 24.04's)"
 fi
 
+moos_line="not-built moos_pair moos_graph MOOSDB: only with --with-moos (this script's header says why)"
+if [ "$moos" = yes ]; then
+	[ "$container" = yes ] || { echo "baselines.sh: --with-moos needs docker" >&2; exit 1; }
+	mo=$work/moos
+	fetch_source "$mo" "$MOOS_URL" "$MOOS_SHA256" "core-moos $MOOS_TAG"
+	mkdir -p "$mo/out"
+	docker run --rm --user "$(id -u):$(id -g)" -e HOME=/out -v "$ROOT:/src:ro" -v "$mo/src:/moos:ro" -v "$mo/out:/out" \
+		"$build_image" sh /src/bench/pairs/container/moos.sh "$arch" "$MOOS_TAG" > "$mo/build.log" 2>&1 ||
+		{ tail -20 "$mo/build.log" >&2; echo "baselines.sh: core-moos did not build ($mo/build.log)" >&2; exit 1; }
+	cp "$mo/out/bin/moos_pair" "$mo/out/bin/moos_graph" "$mo/out/bin/MOOSDB" "$builddir/"
+	extra_bins="$extra_bins moos_pair moos_graph MOOSDB"
+	moos_line="moos_pair moos_graph: this tree's bench/pairs, linked with core-moos $MOOS_TAG's libMOOS (its files say LGPL-2.1), static, libstdc++ too. MOOSDB: core-moos's own program (its files say GNU Public License, no version; Core/GPLCore.txt is GPL-2.0-or-later), built here unchanged but for a version header its build takes from git"
+fi
+
 # The ROS 2 node, cross-compiled against an arm64 ROS 2 Jazzy as a sysroot.
 ros2_line="not-built ros2_pair_node: ros2-build.sh builds it on the machine it runs on, against its own ROS 2 Jazzy"
 ros2_ws=
@@ -280,6 +312,19 @@ for b in $bins; do cp "$builddir/$b" "$stage/bin/"; done
 if [ "$container" = yes ]; then
 	mkdir -p "$stage/licenses/lcm"
 	cp "$work/lcm/src/COPYING" "$stage/licenses/lcm/"
+fi
+if [ "$moos" = yes ]; then
+	mkdir -p "$stage/licenses/core-moos"
+	cp "$work/moos/src/Core/GPLCore.txt" "$stage/licenses/core-moos/"
+	cat > "$stage/licenses/core-moos/README" <<EOF
+core-moos $MOOS_TAG, from $MOOS_URL
+(SHA-256 $MOOS_SHA256): the source of bin/MOOSDB and of the library in
+bin/moos_pair and bin/moos_graph. Its archive has no licence file for the whole.
+Core/GPLCore.txt, beside this file, is the GNU General Public License, version 2 or
+later. Its source files say, each for itself: the client library (libMOOS, 102
+files) "GNU Lesser Public License v2.1"; the database (14 files) "GNU Public License"
+with no version; third-party parts the Boost and the MIT licences.
+EOF
 fi
 # The driver and what it reads, the ROS 2 node's source with them; no caches.
 (cd "$ROOT" && tar -cf - --exclude=__pycache__ --exclude='*.o' bench/pairs tools/rov/preflight.py msg/depth.msg) | tar -xf - -C "$stage"
@@ -333,6 +378,8 @@ chmod +x "$stage/ros2-build.sh"
 	echo "iceoryx2-source $IOX2_URL sha256 $IOX2_SHA256"
 	echo "$lcm_line"
 	echo "lcm-source $LCM_URL sha256 $LCM_SHA256"
+	echo "$moos_line"
+	[ "$moos" = yes ] && echo "moos-source $MOOS_URL sha256 $MOOS_SHA256"
 	echo "$ros2_line"
 	echo "files"
 	(cd "$stage" && find . -type f ! -name MANIFEST | sort | while read -r f; do

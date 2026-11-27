@@ -64,7 +64,7 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 |---|---|---|
 | ☐ | The Pi's own package list, if the Pi can be reached before the visit: `ssh bluerov2@192.168.2.10 "dpkg-query -W -f='\${Package} \${Version} \${Architecture}\n'" > pi-packages.txt` | without it the `.deb` list is computed against a stock image, which is a guess |
 | ☐ | `tools/baselines-debs.sh --status pi-packages.txt` | `N files in out/baselines/debs`; **read the "upgraded" line**: apt wanting newer versions of packages the Pi already has means the Pi's ROS 2 is older than today's, and those files are in the list too |
-| ☐ | `tools/baselines.sh` | `out/baselines/baselines-<version>-aarch64.tar.zst`: the static programs, the LCM nodes, and the ROS 2 node cross-built |
+| ☐ | `tools/baselines.sh --with-moos` (without the flag: no MOOS, and the `moos` row is skipped. The flag puts core-moos's `MOOSDB`, a GPL program, in the archive: `bench/pairs/README.md`, "MOOS") | `out/baselines/baselines-<version>-aarch64.tar.zst`: the static programs, the LCM and MOOS nodes, and the ROS 2 node cross-built |
 | ☐ | `tools/baselines.sh ros2-smoke` (about 25 minutes) | every entry `ok`, a report with a row for each: the registry proved in a container |
 
 **At the lab, in step 1**, after `deploy`:
@@ -83,7 +83,7 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 | ROS 2 Jazzy, Zenoh (`rmw_zenoh`) | `ros2-zenoh`, `ros2-zenoh-shm` (the router a helper) | **not installed** | `.deb` files 🔑 |
 | iceoryx2 0.10.1 | `iceoryx2` (woken), `iceoryx2-poll` (never sleeping) | nothing needed | a static program in the archive |
 | Unix domain sockets | `unix-seqpacket`, `unix-stream`: the floor | nothing needed | a static program in the archive |
-| MOOS, V10 asynchronous comms | through a MOOSDB (a helper) | not installed | **node pair not written yet** |
+| MOOS (core-moos v10.4.0), V10 asynchronous comms | `moos`: through a `MOOSDB` (a helper, counted) | nothing needed | programs in the archive, **only if it was made with `--with-moos`** |
 | LCM 1.5.3 | `lcm` (as it comes), `lcm-rcvbuf` (the 2 MB receive buffer of its documentation) | the Pi's own GLib (there on a stock image); a multicast route; for `lcm-rcvbuf` a sysctl 🔑 | programs in the archive |
 
 Every package is brought along as a file: nothing at the lab runs `apt update` or needs
