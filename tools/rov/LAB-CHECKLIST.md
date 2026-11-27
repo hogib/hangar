@@ -55,27 +55,37 @@ has the commands and what to do when one fails, [README.md](README.md) the detai
 
 ### Baselines
 
-<!-- BASELINES: to be completed from literature/notes/middleware-baselines.md (the research
-     on what to measure against) and by the work that writes each node pair. For each
-     system: what is installed on the Pi and how (an apt package, a .deb brought along, a
-     prebuilt tree under ~/hangar-bench), its registry entry, the helper it needs, and its
-     "not like for like" lines for bench/pairs/README.md. -->
+Decided (2026-11-27): the systems hangar is measured against. Everything for the Pi is
+made on the laptop beforehand; nothing is downloaded or compiled there.
 
-Decided (2026-11-27): the systems hangar is measured against. The install steps are
-not written yet.
+**At home, the day before** (each prints what it made):
 
-| System | Rows | On the Pi today | Node pair | Install step |
-|---|---|---|---|---|
-| ROS 2 Jazzy, Fast DDS | as installed; data-sharing with loaned messages | installed (2026-11-09) | to be written against `pair.h` (rclcpp) | none |
-| ROS 2 Jazzy, Cyclone DDS | as installed | **not installed** | the same node, by `RMW_IMPLEMENTATION` | **to be filled in** 🔑 |
-| ROS 2 Jazzy, Zenoh (`rmw_zenoh`) | with its router | **not installed** | the same node; the router is a helper | **to be filled in** 🔑 |
-| iceoryx2 | woken by its event service; busy-polling | not installed | to be written | **to be filled in** |
-| Unix domain sockets | a floor: the kernel alone | nothing to install | to be written | none |
-| MOOS, V10 asynchronous comms | through a MOOSDB (a helper) | not installed | to be written | **to be filled in** |
-| LCM | UDP multicast on loopback | not installed | to be written | **to be filled in** |
+| | | |
+|---|---|---|
+| ☐ | The Pi's own package list, if the Pi can be reached before the visit: `ssh bluerov2@192.168.2.10 "dpkg-query -W -f='\${Package} \${Version} \${Architecture}\n'" > pi-packages.txt` | without it the `.deb` list is computed against a stock image, which is a guess |
+| ☐ | `tools/baselines-debs.sh --status pi-packages.txt` | `N files in out/baselines/debs`; **read the "upgraded" line**: apt wanting newer versions of packages the Pi already has means the Pi's ROS 2 is older than today's, and those files are in the list too |
+| ☐ | `tools/baselines.sh` | `out/baselines/baselines-<version>-aarch64.tar.zst`: four static programs, and the ROS 2 node cross-built |
+| ☐ | `tools/baselines.sh ros2-smoke` | every entry `ok`, a report with a row for each: the registry proved in a container |
 
-Open until the research is in: whether the Pi has a way to the internet at the lab (for
-`apt`), or every package is brought along as files.
+**At the lab, in step 1**, after `deploy`:
+
+| | | |
+|---|---|---|
+| ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` | every file as its MANIFEST says; `ok` for each program with its version; `ok ros2_pair_node (prebuilt) loads against this ROS 2`; the `dpkg -i` line shown, one password, and dpkg ending without an error |
+| ☐ | If the prebuilt ROS 2 node does **not** load (the Pi's ROS 2 is of another date): on the Pi, before `freeze`'s measurements, `. /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh` | `ros2-build.sh: …/ros2_pair_node`. The one thing compiled on the Pi; then wait until it is cool again |
+
+| System | Rows (registry entries) | On the Pi | How it gets there |
+|---|---|---|---|
+| ROS 2 Jazzy, Fast DDS | `ros2-fastdds`, `ros2-fastdds-loan`; and, said to be no comparison, `ros2-fastdds-waitset`, `ros2-fastdds-composed` | installed (2026-11-09) | the node in the archive |
+| ROS 2 Jazzy, Cyclone DDS | `ros2-cyclonedds`, `ros2-cyclonedds-iceoryx` (RouDi a helper) | **not installed** | `.deb` files 🔑 |
+| ROS 2 Jazzy, Zenoh (`rmw_zenoh`) | `ros2-zenoh`, `ros2-zenoh-shm` (the router a helper) | **not installed** | `.deb` files 🔑 |
+| iceoryx2 0.10.1 | `iceoryx2` (woken), `iceoryx2-poll` (never sleeping) | nothing needed | a static program in the archive |
+| Unix domain sockets | `unix-seqpacket`, `unix-stream`: the floor | nothing needed | a static program in the archive |
+| MOOS, V10 asynchronous comms | through a MOOSDB (a helper) | not installed | **node pair not written yet** |
+| LCM | UDP multicast on loopback | not installed | **node pair not written yet** |
+
+Every package is brought along as a file: nothing at the lab runs `apt update` or needs
+the Pi to reach the internet.
 
 ## 0. The state as found (10 min)
 
@@ -92,8 +102,8 @@ Open until the research is in: whether the Pi has a way to the internet at the l
 |---|---|---|
 | ☐ | 🔑 `tools/rov/lab.sh freeze` | it prints each command, asks once, and ends with `frozen.` If an upgrade was running it waits for it (it says what it waits for, and never interrupts dpkg): let it. Status 3 means the package system still ran after 15 minutes: wait, and run `freeze` again |
 | ☐ | 🔑 `tools/rov/lab.sh deploy --realtime` | `lab: installed v0.1.6 (…)`, then `cap_ipc_lock,cap_sys_nice=ep` on `hangard`. (`--realtime` is for step 2's check; a second password) |
-| ☐ | The baselines' install steps, from "Baselines" above 🔑 | each system's programs are there |
-| ☐ | The harness onto the Pi: `tar -czf - bench/pairs tools/rov/preflight.py \| ssh bluerov2@192.168.2.10 'mkdir -p hangar-bench && tar -C hangar-bench -xzf -'` | — |
+| ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` ("Baselines" above) | each program `ok` with its version, the ROS 2 node loads, dpkg ends without an error |
+| ☐ | The harness is in the baselines' archive (`~/hangar-baselines/current/bench/pairs`, with the preflight beside it): nothing more to copy | — |
 | ☐ | Wait until the Pi is cool, then `tools/rov/lab.sh preflight --measure` | `ok pi frozen: since …`, no `FAIL`. A `warn` for real time is expected before step 2 |
 
 From here on the Pi stays frozen until step 7 (the end of the day).
@@ -117,13 +127,21 @@ believed.
 
 ## 3. The transport matrix, all systems interleaved (4.5 h a system; over as many days as it takes)
 
-hangar down (`lab.sh status`: no manager), the Pi frozen. On the Pi, in `~/hangar-bench`,
-in a `tmux` or `screen` so that it outlives the SSH connection:
+hangar down (`lab.sh status`: no manager), the Pi frozen. On the Pi, in
+`~/hangar-baselines/current`, in a `tmux` or `screen` so that it outlives the SSH
+connection. Every node, hangar's included, is the archive's (`B=$PWD/bin`): they were built
+from one `pair.h` with one compiler. For the ROS 2 entries the shell has ROS 2 in it first:
+
+```sh
+cd ~/hangar-baselines/current && B=$PWD/bin
+. /opt/ros/jazzy/setup.sh && . ros2/install/setup.sh
+V="--var bin=$B --var base=$B --var ros=$PWD/ros2/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy"
+```
 
 | | | Pass |
 |---|---|---|
-| ☐ | The smoke plan first: `bench/pairs/driver.py --plan bench/pairs/plans/smoke.json --var bin=$HOME/hangar-root/bin --out ~/pairs-smoke` (a minute a system) | every system has `ok` at the start (one that is `SKIP`ped is named with what is missing); `report.md` has a row for each; nothing failed |
-| ☐ | The plan: `bench/pairs/driver.py --plan bench/pairs/plans/full.json --var bin=$HOME/hangar-root/bin --out ~/pairs-$(date +%F) --reps N` | `round 0: preflight clean: …`. It stops by itself at a preflight `FAIL` and says which file has the line. `N` is what the day holds: one round is 26 minutes a system |
+| ☐ | The smoke plan first: `bench/pairs/driver.py --plan bench/pairs/plans/smoke.json $V --out ~/pairs-smoke` (a minute a system) | every system has `ok` at the start (one that is `SKIP`ped is named with what is missing); `report.md` has a row for each; nothing failed |
+| ☐ | The plan: `bench/pairs/driver.py --plan bench/pairs/plans/full.json $V --out ~/pairs-$(date +%F) --reps N` | `round 0: preflight clean: …`. It stops by itself at a preflight `FAIL` and says which file has the line. `N` is what the day holds: one round is 26 minutes a system |
 | ☐ | While it runs: leave the Pi alone. `tmux attach` to look; `vcgencmd measure_temp` is fine, a build or a copy over the tether is not | no `FLAGGED other-load` lines |
 | ☐ | At the end of the day: the folder home, `scp -r bluerov2@192.168.2.10:pairs-<date> ~/hangar-results/` | `report.md` in it; its section "Runs repeated, flagged, failed or not run" read |
 | ☐ | The next day: `freeze`, another `--out`, more rounds. Then `bench/pairs/driver.py --report ~/hangar-results/pairs-*` | ten rounds or more a cell in all; the table "Within a session and between sessions" says whether the days agree |

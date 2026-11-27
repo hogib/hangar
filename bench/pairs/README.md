@@ -272,6 +272,8 @@ and it must say what a referee would ask of this system's row:
 | `ros2-cyclonedds-iceoryx` | Cyclone DDS over iceoryx (classic) shared memory, loaned messages (`ros2_pair/config/cyclonedds-iceoryx.xml`) | no copy for a fixed-size type. Needs iceoryx's daemon **RouDi, a helper**: started before the pair, counted with the system. The messages do not pass through it; it owns the pools, whose default sizes bound how many samples can be out at once |
 | `ros2-zenoh` | ROS 2 Jazzy with Zenoh (`rmw_zenoh`) as installed | not DDS. Its **router is a helper**, counted: for discovery only, the messages then go peer to peer over TCP on the loopback |
 | `ros2-zenoh-shm` | the same with Zenoh's shared-memory transport on (`ZENOH_CONFIG_OVERRIDE`) | Zenoh uses it above a size threshold of its own; the small cells are as `ros2-zenoh` |
+| `iceoryx2` | iceoryx2 through its C binding: samples lent from shared memory, no daemon; the subscriber **woken** by an event service beside the publish-subscribe service | the nearest system in kind, and in contract: no copy, a subscriber buffer of 16 with safe overflow (the publisher never waits, a reader that far behind loses the oldest). iceoryx2's publish-subscribe by itself wakes nobody: the publisher notifies after each send, inside the sample, and the subscriber sleeps in its listener, as hangar's sleeps in `hg_wait` |
+| `iceoryx2-poll` | the same, the subscriber asking in a loop that never sleeps | **not like for like**: iceoryx2's best latency at the price of a whole core, spent whether or not anything is published. No event is sent. Beside `iceoryx2` it is what waking costs |
 
 Where each system's two stamps are taken is the same by construction: `publish_ns` is
 read in `pair.h` immediately before the node's `pub_send`, and the subscriber's clock is
@@ -341,8 +343,34 @@ On a machine without ROS 2 the same in the container of `bench/ros2/Dockerfile`
 (`tools/baselines.sh ros2-smoke` does it): a proof of the harness, never a measurement.
 An entry whose middleware is not installed is named and skipped (`needs`).
 
-Not in this directory yet: the node pairs of the other baselines (iceoryx2 woken and
-polling, MOOS, LCM). Each comes with its entry and its own lines for this table.
+### iceoryx2
+
+`iceoryx2_pair.c`, on iceoryx2's C binding (a static library built from its source by
+`tools/baselines.sh`; version and hash are pinned there and in the archive's
+`MANIFEST`).
+
+- **Woken or polling.** iceoryx2's publish-subscribe does not wake a subscriber; its
+  documentation and examples pair it with an event service for that. `iceoryx2` does
+  so and is the like-for-like row. `iceoryx2-poll` is the row its authors' own
+  benchmarks correspond to: the lowest latency, with a subscriber that never sleeps.
+  Polling on a timer, the third way, is not run: its latency is the timer's period and
+  says nothing of the transport.
+- **The buffer is 16**, to match hangar's ring, where iceoryx2's default is 2;
+  `-- --buffer 2` gives the default. Safe overflow is iceoryx2's default and is kept.
+- **The payload** is one fixed-size value of the cell's size, aligned to 8, declared as
+  such to the service; nothing is serialised.
+- **The end of a run.** The publisher sends one event, "gone", when it closes, in both
+  entries; a polling subscriber looks for it ten times a second, outside the samples.
+- **What it leaves behind.** iceoryx2 keeps its files under `/dev/shm` and
+  `/tmp/iceoryx2`, not in the run's directory. A subscriber killed in the start-up
+  cell leaves its node's files until another node cleans up after it, which iceoryx2
+  does when a node is created.
+- **Nothing here is iceoryx2's supervision or hangar's**: no provenance, no stale flag,
+  no schema in the file on iceoryx2's side; no dead-node clean-up on hangar's, which
+  has a manager for it.
+
+Not in this directory yet: the node pairs of the other baselines (MOOS, LCM). Each comes
+with its entry and its own lines for this table.
 
 ## What this does not measure, and what could mislead
 
@@ -374,21 +402,52 @@ the same warm-up and the same statistics. The earlier results stand as what they
 ## On the Pi
 
 Nothing is compiled on the Pi during a session (it heats it, and the session's state is
-frozen: `tools/rov/README.md`, "Freeze and thaw"). hangar's two nodes are in the release
-(`bin/hangar_pair`, `bin/null_pair`); a baseline's node is built for aarch64 beforehand.
+frozen: `tools/rov/README.md`, "Freeze and thaw"). Everything is made on the laptop:
 
 ```sh
-# from the laptop: the driver, the plans and the preflight beside the release
-tar -czf - bench/pairs tools/rov/preflight.py | ssh bluerov2@<the Pi> 'mkdir -p hangar-bench && tar -C hangar-bench -xzf -'
-# on the Pi, frozen (lab.sh freeze), hangar down:
-cd ~/hangar-bench
-bench/pairs/driver.py --plan bench/pairs/plans/smoke.json --var bin=$HOME/hangar-root/bin --out ~/pairs-smoke
-bench/pairs/driver.py --plan bench/pairs/plans/full.json  --var bin=$HOME/hangar-root/bin --out ~/pairs-$(date +%F)
+tools/baselines-debs.sh --status pi-packages.txt   # the .deb files of the middlewares the Pi lacks
+tools/baselines.sh                                 # out/baselines/baselines-<version>-aarch64.tar.zst
+tools/rov/lab.sh baselines --debs out/baselines/debs    # both to the Pi; dpkg -i under one sudo
 ```
 
-The full plan is 15 cells, 26 minutes a system a round (the runs at 100 Hz and below are
-two minutes each, for their samples): ten rounds are about four and a half hours for
-each system in the registry, so with the baselines it is a matter of days, not of one
-visit. It is made for that: `--reps N` runs fewer rounds at a time, Ctrl-C writes what
-there is, every session's folder carries its boot id, and `--report` pools as many
-folders as it is given and shows what the sessions differ by.
+The archive has every node, hangar's included, built from one `pair.h` with one
+compiler and one set of flags (static musl programs; `MANIFEST` says which, with each
+third-party source's version and hash), the ROS 2 node cross-built against an arm64
+ROS 2 Jazzy, this directory, and the preflight. `lab.sh baselines` unpacks it in
+`~/hangar-baselines`, checks every file against the `MANIFEST`, and has each node say
+its version there: one that does not run on the Pi is found then, not in round 3.
+
+```sh
+# on the Pi, frozen (lab.sh freeze), hangar down:
+cd ~/hangar-baselines/current && B=$PWD/bin
+. /opt/ros/jazzy/setup.sh && . ros2/install/setup.sh      # for the ROS 2 entries
+V="--var bin=$B --var base=$B --var ros=$PWD/ros2/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy"
+bench/pairs/driver.py --plan bench/pairs/plans/smoke.json $V --out ~/pairs-smoke
+bench/pairs/driver.py --plan bench/pairs/plans/full.json  $V --out ~/pairs-$(date +%F)
+```
+
+## Sessions
+
+The full plan is 15 cells, about 26 minutes a system a round (the runs at 100 Hz and
+below are two minutes each, for their samples; a system with a helper takes a little
+longer). The registry has fifteen systems: one round of all of them is six and a half
+hours, and ten rounds are days. It is made for that: `--reps N` runs fewer rounds at a
+time, Ctrl-C writes what there is, every session's folder carries its boot id, and
+`--report` pools as many folders as it is given and shows what the sessions differ by.
+
+One round of everything keeps every system minutes from every other in the same cell,
+and is the plan to prefer when a day allows it. Where it does not, `--only` runs a group,
+and **every group has hangar and the null system in it**, so that each session has the
+same reference rows and the sessions can be laid beside each other through them:
+
+| Group | `--only` | Systems | A round |
+|---|---|---|---|
+| A: the kernel and the nearest peer | `null,hangar,hangar-inplace,unix-seqpacket,unix-stream,iceoryx2,iceoryx2-poll` | 7 | about 3 h |
+| B: ROS 2 as installed | `null,hangar,hangar-inplace,ros2-fastdds,ros2-cyclonedds,ros2-zenoh,ros2-fastdds-waitset,ros2-fastdds-composed` | 8 | about 3.5 h |
+| C: ROS 2 over shared memory | `null,hangar,hangar-inplace,ros2-fastdds-loan,ros2-cyclonedds-iceoryx,ros2-zenoh-shm` | 6 | about 2.6 h |
+
+What a split costs: two systems of different groups were not measured minutes apart, so
+a difference between them is to be read against the table "Within a session and between
+sessions" for hangar's own rows, which says how much a day changes a figure. A
+difference smaller than that spread is not a finding. The times are computed from the
+plan (the driver prints its own estimate at the start), not measured on the Pi.

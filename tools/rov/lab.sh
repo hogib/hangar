@@ -49,6 +49,15 @@
 #   lab.sh thaw                      all of that put back as it was found (a reboot of
 #                                    the Pi undoes a freeze too). The last thing before
 #                                    leaving: status and down say while the Pi is frozen
+#   lab.sh baselines [--debs DIR] [TARBALL]
+#                                    the other systems of bench/pairs, to the Pi: the
+#                                    archive of tools/baselines.sh unpacked in
+#                                    ~/hangar-baselines (default: the newest under
+#                                    out/baselines/), each node asked for its version
+#                                    there; --debs DIR: the .deb files of
+#                                    tools/baselines-debs.sh checked and installed with
+#                                    dpkg -i under one sudo, the command shown first.
+#                                    Nothing is downloaded or compiled on the Pi
 #
 # Nothing here stops hangar under an armed vehicle (tools/rov/README.md, "The guard"):
 # up, which lays hangar out afresh, refuses while it is armed and disarms nothing.
@@ -90,7 +99,7 @@ chmod 700 "$LAB_STATE_DIR"
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$LAB_STATE_DIR/ssh-%C" -o ControlPersist=30m
           -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 
-usage() { sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,68p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "lab: $*"; }
 warn() { echo "lab: $*" >&2; }
 die() { warn "$*"; exit 1; }
@@ -1219,7 +1228,71 @@ cmd_down() {
     fi
 }
 
+# The baselines of bench/pairs to the Pi (tools/baselines.sh, tools/baselines-debs.sh):
+# unpacked beside hangar's install, never into it, and nothing fetched from there. The
+# .deb files are installed by dpkg from the files themselves: no `apt update`, which is
+# what would start the package machinery a frozen Pi keeps quiet.
+cmd_baselines() {
+    local debs= tarball=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --debs) shift; debs=${1:-}; [ -n "$debs" ] || usage 2 ;;
+            -*) usage 2 ;;
+            *) tarball=$1 ;;
+        esac
+        shift
+    done
+    [ -n "$tarball" ] || tarball=$(ls -t "$here"/../../out/baselines/baselines-*-aarch64.tar.zst 2>/dev/null | head -1)
+    [ -n "$tarball" ] && [ -f "$tarball" ] || die "no baselines archive: tools/baselines.sh makes one (or name it)"
+    [ -z "$debs" ] || [ -f "$debs/SHA256SUMS" ] || die "$debs has no SHA256SUMS: tools/baselines-debs.sh --out $debs"
+    reachable || exit 1
+    local name; name=$(basename "$tarball" .tar.zst)
+    say "the baselines $name to the Pi (~/hangar-baselines)"
+    rsh 'mkdir -p "$HOME/hangar-baselines"' || die "the Pi did not answer"
+    copy_to "$tarball" hangar-baselines || die "could not copy $tarball"
+    rsh NAME="$name" 'cd "$HOME/hangar-baselines" && tar --zstd -xf "$NAME.tar.zst" && rm -f "$NAME.tar.zst" && ln -sfn "$NAME" current &&
+        cd current && bad=0 &&
+        { sed -n "/^files\$/,\$p" MANIFEST | tail -n +2 | sha256sum -c --quiet - || bad=1; } &&
+        [ $bad = 0 ] && echo "lab: every file as its MANIFEST says"' || die "the archive did not unpack as its MANIFEST says"
+    # Each node says what it is, where it will run. One that cannot run is the finding.
+    rsh 'cd "$HOME/hangar-baselines/current" || exit 1
+        for n in bin/*; do
+            if v=$("$n" --version 2>&1); then echo "lab:   ok    $(basename "$n"): $(echo "$v" | sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p")"
+            else echo "lab:   FAIL  $(basename "$n") does not run here: $(echo "$v" | head -1)"; fi
+        done
+        if [ -d ros2/install ]; then
+            if [ -r /opt/ros/jazzy/setup.sh ]; then
+                if v=$(. /opt/ros/jazzy/setup.sh && . ros2/install/setup.sh && ros2_pair_node --version 2>&1); then
+                    echo "lab:   ok    ros2_pair_node (prebuilt) loads against this ROS 2: $(echo "$v" | sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p")"
+                else
+                    echo "lab:   FAIL  the prebuilt ros2_pair_node does not load against this ROS 2: $(echo "$v" | tail -1)"
+                    echo "lab:         build it here, once, before freezing: . /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh"
+                fi
+            else echo "lab:   skip  no /opt/ros/jazzy here: the ROS 2 entries will be skipped"; fi
+        fi'
+    if [ -n "$debs" ]; then
+        (cd "$debs" && sha256sum -c --quiet SHA256SUMS) || die "$debs: a file is not what SHA256SUMS says"
+        local n; n=$(wc -l < "$debs/SHA256SUMS")
+        say "$n .deb files to the Pi (~/hangar-baselines/debs), then, as root there:"
+        say "    dpkg -i ~/hangar-baselines/debs/*.deb"
+        [ -f "$debs/README.txt" ] && sed 's/^/lab:     /' "$debs/README.txt" | head -40
+        rsh 'rm -rf "$HOME/hangar-baselines/debs" && mkdir -p "$HOME/hangar-baselines/debs"'
+        local f
+        for f in "$debs"/*.deb "$debs/SHA256SUMS"; do copy_to "$f" hangar-baselines/debs || die "could not copy $f"; done
+        rsh 'cd "$HOME/hangar-baselines/debs" && sha256sum -c --quiet SHA256SUMS' || die "a .deb did not arrive whole"
+        say "sudo on the Pi, once, for the dpkg -i above"
+        if is_local; then say "rehearsal, skipped: sudo dpkg -i (nothing is installed on this laptop)"
+        else
+            # shellcheck disable=SC2016
+            remote_sudo sh -c 'dpkg -i /home/'"$LAB_USER"'/hangar-baselines/debs/*.deb' ||
+                warn "dpkg -i did not end well: read what it said; nothing else was changed"
+        fi
+    fi
+    say "on the Pi: ~/hangar-baselines/current (bench/pairs/README.md, \"On the Pi\")"
+}
+
 case "${1:-}" in
+    baselines) shift; cmd_baselines "$@" ;;
     deploy) shift; cmd_deploy "$@" ;;
     up) shift; cmd_up "$@" ;;
     status) cmd_status ;;

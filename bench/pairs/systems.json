@@ -357,6 +357,27 @@
         "ros-jazzy-rmw-zenoh-cpp",
         "ros-jazzy-zenoh-cpp-vendor"
       ]
+    },
+    {
+      "name": "iceoryx2",
+      "title": "iceoryx2, loaned samples in shared memory, the subscriber woken by its event service",
+      "node": [
+        "{base}/iceoryx2_pair"
+      ],
+      "install": "tools/baselines.sh builds it (iceoryx2's C binding, a static library): --var base=<the baselines' bin directory>",
+      "notes": "The system nearest hangar in kind: no daemon, no copy (the message is built in a sample borrowed from shared memory and read where it lies), a subscriber buffer of 16 with safe overflow, so the publisher never waits and a reader that far behind loses the oldest: hangar's contract (iceoryx2's default buffer is 2; 16 is set here to match the ring). iceoryx2's publish-subscribe does not wake a reader, so this entry pairs it with an event service as iceoryx2's own examples do: the publisher notifies after each send (inside the sample) and the subscriber sleeps in its listener. Like for like with hangar's hg_wait. The loan is taken before the clock is read, as hangar-inplace's is."
+    },
+    {
+      "name": "iceoryx2-poll",
+      "title": "iceoryx2, the subscriber asking in a loop that never sleeps",
+      "node": [
+        "{base}/iceoryx2_pair"
+      ],
+      "args": [
+        "--poll"
+      ],
+      "install": "tools/baselines.sh builds it (iceoryx2's C binding, a static library): --var base=<the baselines' bin directory>",
+      "notes": "iceoryx2's best latency and NOT like for like: no event is sent, and the subscriber asks for a sample again and again without sleeping, which takes a whole core whether or not anything is published (the cost table shows it). On a four-core vehicle computer with a thermal limit that is one core in four for one subscription. Beside the woken entry it shows what waking costs. With several subscribers each spins on its own, and they share the subscriber CPUs."
     }
   ]
 }
