@@ -516,6 +516,19 @@ def system_fits(system, cell, graphs=None):
     return None
 
 
+def estimate(plan, cells, systems, graphs):
+    """What one round takes, in seconds, for each system: the cells it runs, each with its
+    warm-up and what starting and ending a run takes. Computed from the plan, so nothing
+    that waits to cool or is repeated is in it."""
+    def one(c):
+        if c['type'] == 'latency':
+            return run_seconds(plan, c['rate']) + plan['warmup_s'] + 4
+        if c['type'] == 'graph':
+            return c['seconds'] + plan.get('graph_warmup_s', 5) + 6
+        return 12
+    return {s['name']: sum(one(c) for c in cells if not system_fits(s, c, graphs)) for s in systems}
+
+
 # ---- numbers -------------------------------------------------------------------------
 
 def bin_lower(i):
@@ -1018,6 +1031,8 @@ def main():
     ap.add_argument('--systems', action='append', default=[], help='a registry file; repeatable (default: systems.json beside this file)')
     ap.add_argument('--only', help='comma-separated systems to run, of those in the registry')
     ap.add_argument('--var', action='append', default=[], metavar='NAME=VALUE', help='a value for {NAME} in the registry\'s commands; repeatable')
+    ap.add_argument('--estimate', action='store_true', help='print what the plan takes, a system and a round, and exit: nothing is run '
+                    'and no system needs to be installed')
     ap.add_argument('--out', help='the results folder: results.json, report.md, logs/, config/')
     ap.add_argument('--reps', type=int, help='repetitions (rounds), in place of the plan\'s')
     ap.add_argument('--seed', type=int, help='the seed of the rounds\' orders (default: drawn, and recorded)')
@@ -1038,7 +1053,7 @@ def main():
                 docs.append(json.load(f))
         sys.stdout.write(report(docs))
         return 0
-    if not args.plan or not args.out:
+    if not args.plan or not (args.out or args.estimate):
         ap.error('--plan and --out are needed')
     with open(args.plan) as f:
         plan_text = f.read()
@@ -1046,6 +1061,27 @@ def main():
     plan.setdefault('conditions', {'quiet': {}})
     plan.setdefault('warmup_s', 2)
     reps = args.reps or plan.get('repetitions', 10)
+    if args.estimate:
+        cells = plan_cells(plan)
+        plan_dir = os.path.dirname(os.path.abspath(args.plan))
+        graphs = {c['graph']: load_graph(c['graph'], plan_dir) for c in cells if c['type'] == 'graph'}
+        names = args.only.split(',') if args.only else plan.get('systems')
+        reg = []
+        for path in args.systems or [os.path.join(HERE, 'systems.json')]:
+            with open(path) as f:
+                reg += json.load(f)['systems']
+        unknown = [n for n in names or [] if n not in [s['name'] for s in reg]]
+        if unknown:
+            raise SystemExit('plan: no such system in the registry: ' + ', '.join(unknown))
+        systems = [s for s in reg if not names or s['name'] in names]
+        est = estimate(plan, cells, systems, graphs)
+        for s in systems:
+            n = sum(1 for c in cells if not system_fits(s, c, graphs))
+            print(f'{s["name"]:32} {n:3} of {len(cells)} cells  {est[s["name"]] / 60:6.1f} min a round')
+        total = sum(est.values())
+        print(f'{len(systems)} systems, {len(cells)} cells: {total / 60:.0f} min a round, {reps} rounds {reps * total / 3600:.1f} h, '
+              'if nothing has to cool down or be repeated (computed from the plan, not measured)')
+        return 0
     max_temp = args.max_temp if args.max_temp is not None else plan.get('max_temp_c', 60.0)
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 31)
     out = os.path.abspath(args.out)
@@ -1099,8 +1135,7 @@ def main():
     for g in graphs.values():
         shutil.copy(g['file'], os.path.join(out, 'graph-' + os.path.basename(g['file'])))
 
-    per_round = sum(run_seconds(plan, c['rate']) + plan['warmup_s'] + 4 if c['type'] == 'latency' else
-                    c['seconds'] + plan.get('graph_warmup_s', 5) + 6 if c['type'] == 'graph' else 12 for c in cells) * len(systems)
+    per_round = sum(estimate(plan, cells, systems, graphs).values())
     say(f'session {env["session"]}: {len(cells)} cells x {len(systems)} systems x {reps} rounds, about {reps * per_round // 60 + 1} min '
         f'if nothing has to cool down or be repeated; seed {seed}')
 

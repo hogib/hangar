@@ -196,5 +196,35 @@ else:
     with open(os.path.join(g, 'report.md')) as f:
         check('and the report lists them', 'NEVER CLEAN' in f.read())
 
+print('== the plans of the sessions, and what they take')
+PLANS = os.path.join(os.path.dirname(HERE), 'plans')
+with open(os.path.join(os.path.dirname(HERE), 'systems.json')) as f:
+    registry = [x['name'] for x in json.load(f)['systems']]
+grouped, texts = [], {}
+for name in ('main', 'shared-memory', 'variants'):
+    with open(os.path.join(PLANS, name + '.json')) as f:
+        pl = json.load(f)
+    grouped += [x for x in pl['systems'] if x not in ('null', 'hangar', 'hangar-module')]
+    check(f'plans/{name}.json: the three reference rows are in it, and every system it names is in the registry',
+          all(x in pl['systems'] for x in ('null', 'hangar', 'hangar-module')) and all(x in registry for x in pl['systems']),
+          str(pl['systems']))
+    r = subprocess.run([sys.executable, '-I', DRIVER, '--plan', os.path.join(PLANS, name + '.json'), '--estimate'],
+                       capture_output=True, text=True)
+    texts[name] = r.stdout
+    check(f'plans/{name}.json: --estimate prints a line a system and the hours, and runs nothing',
+          r.returncode == 0 and all(x in r.stdout for x in pl['systems']) and 'min a round' in r.stdout and
+          f'{pl["repetitions"]} rounds' in r.stdout, r.stdout + r.stderr)
+check('every entry of the registry is in a plan, and beside the reference rows only iceoryx2 is in two',
+      sorted(set(grouped)) == sorted(x for x in registry if x not in ('null', 'hangar', 'hangar-module')) and
+      sorted({x for x in grouped if grouped.count(x) > 1}) == ['iceoryx2'],
+      str(sorted(set(registry) - set(grouped) - {'null', 'hangar', 'hangar-module'})) + str(sorted(x for x in grouped if grouped.count(x) > 1)))
+readme = open(os.path.join(os.path.dirname(HERE), 'README.md')).read()
+quoted = {name: texts[name].strip().splitlines()[-1].split(':')[1].split(',')[0].strip().replace(' a round', '') for name in texts}
+check('the README\'s "Sessions" quotes each plan\'s round as the driver computes it',
+      all(f'| {q} |' in readme for q in quoted.values()), str(quoted))
+r = subprocess.run([sys.executable, '-I', DRIVER, '--plan', os.path.join(PLANS, 'main.json'), '--estimate', '--only', 'null,nosuch'],
+                   capture_output=True, text=True)
+check('a system that is not in the registry is refused by name', r.returncode != 0 and 'nosuch' in r.stderr, r.stderr)
+
 print(f'pairs: {n} checks ok' if not fails else f'pairs: {fails} of {n} checks FAILED')
 sys.exit(1 if fails else 0)

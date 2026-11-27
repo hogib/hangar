@@ -1,0 +1,106 @@
+{
+  "title": "The shared-memory configurations of the ROS 2 middlewares, beside hangar and iceoryx2: the cells where a copy shows, five rounds",
+  "about": "Group 2 of 3 (README.md, \"Sessions\"). What each ROS 2 middleware does when it is set up for shared memory and loans, which is not how it comes. The cells where that matters: the sizes at 100 Hz, 1 MB at 30 Hz, the reference cell (256 B at 1 kHz) and the vehicle's graph, quiet. Five rounds: a side table, read against the main one through the three rows they share.",
+  "systems": [
+    "null",
+    "hangar",
+    "hangar-module",
+    "hangar-inplace",
+    "iceoryx2",
+    "ros2-fastdds-loan",
+    "ros2-fastdds-loan-besteffort",
+    "ros2-cyclonedds-iceoryx",
+    "ros2-zenoh-shm"
+  ],
+  "repetitions": 5,
+  "seconds": 20,
+  "max_seconds": 120,
+  "target_samples": 100000,
+  "warmup_s": 2,
+  "max_temp_c": 60,
+  "cool_wait_s": 600,
+  "hot_c": 80,
+  "busy_pct": 25,
+  "retries": 2,
+  "check_all": false,
+  "cores": {
+    "pub": -1,
+    "sub": [
+      -2
+    ],
+    "comment": "the two highest allowed CPUs; with more subscribers than sub CPUs they share them in turn; helpers and this script on the rest"
+  },
+  "conditions": {
+    "quiet": {},
+    "load2": {
+      "spinners": 2
+    },
+    "realtime": {
+      "realtime": {
+        "policy": "fifo",
+        "priority": 50
+      }
+    }
+  },
+  "sweeps": [
+    {
+      "name": "size",
+      "size": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "rate": [
+        100
+      ],
+      "subscribers": [
+        1
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "frames",
+      "size": [
+        1048576
+      ],
+      "rate": [
+        30
+      ],
+      "subscribers": [
+        1
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "reference",
+      "size": [
+        256
+      ],
+      "rate": [
+        1000
+      ],
+      "subscribers": [
+        1
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "vehicle",
+      "cell": "graph",
+      "graph": "rov-vehicle",
+      "seconds": 120,
+      "condition": [
+        "quiet"
+      ]
+    }
+  ],
+  "graph_warmup_s": 5
+}

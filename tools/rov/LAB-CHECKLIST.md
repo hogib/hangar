@@ -66,6 +66,7 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 | ☐ | `tools/baselines-debs.sh --status pi-packages.txt` | `N files in out/baselines/debs`; **read the "upgraded" line**: apt wanting newer versions of packages the Pi already has means the Pi's ROS 2 is older than today's, and those files are in the list too |
 | ☐ | `tools/baselines.sh --with-moos` (without the flag: no MOOS, and the `moos` row is skipped. The flag puts core-moos's `MOOSDB`, a GPL program, in the archive: `bench/pairs/README.md`, "MOOS") | `out/baselines/baselines-<version>-aarch64.tar.zst`: the static programs, the LCM and MOOS nodes, and the ROS 2 node cross-built |
 | ☐ | `tools/baselines.sh ros2-smoke` (about 25 minutes) | every entry `ok`, a report with a row for each: the registry proved in a container |
+| ☐ | Which plan, and how long: `bench/pairs/driver.py --plan bench/pairs/plans/main.json --estimate` (and `shared-memory.json`, `variants.json`) | a line a system and the hours: `bench/pairs/README.md`, "Sessions" |
 
 **At the lab, in step 1**, after `deploy`:
 
@@ -127,7 +128,7 @@ believed.
 | ☐ | **The camera's controls.** On the Pi: `v4l2-ctl -d /dev/video2 --list-ctrls`. Then `lab.sh camera brightness=…`, `auto_exposure=0 exposure_us=8000`, `gain=…` | the list (write it down: does the H.264 node take controls at all?); the picture in QGroundControl changes with each |
 | ☐ | `tools/rov/lab.sh down` | `the session is down` and `THE PI IS FROZEN` (it is: that is right) |
 
-## 3. The transport matrix, all systems interleaved (4.5 h a system; over as many days as it takes)
+## 3. The transport matrix, the systems of a plan interleaved (three plans, 75 h in all; over as many days as it takes)
 
 hangar down (`lab.sh status`: no manager), the Pi frozen. On the Pi, in
 `~/hangar-baselines/current`, in a `tmux` or `screen` so that it outlives the SSH
@@ -143,13 +144,14 @@ V="--var bin=$B --var base=$B --var ros=$PWD/ros2/install/ros2_pair/lib/ros2_pai
 | | | Pass |
 |---|---|---|
 | ☐ | The smoke plan first: `bench/pairs/driver.py --plan bench/pairs/plans/smoke.json $V --out ~/pairs-smoke` (a minute a system) | every system has `ok` at the start (one that is `SKIP`ped is named with what is missing); `report.md` has a row for each; nothing failed |
-| ☐ | The plan: `bench/pairs/driver.py --plan bench/pairs/plans/full.json $V --out ~/pairs-$(date +%F) --reps N` | `round 0: preflight clean: …`. It stops by itself at a preflight `FAIL` and says which file has the line. `N` is what the day holds: one round is 26 minutes a system |
+| ☐ | The plan: `bench/pairs/driver.py --plan bench/pairs/plans/main.json $V --out ~/pairs-main-$(date +%F) --reps N` | `round 0: preflight clean: …`. It stops by itself at a preflight `FAIL` and says which file has the line. `N` is what the day holds: a round of the main plan is 5.2 h (ten systems, ten rounds wanted: `--reps 2` is a night) |
+| ☐ | The two side plans, on days of their own, five rounds each: `plans/shared-memory.json` (2.5 h a round) and `plans/variants.json` (2.3 h a round), `--out ~/pairs-shm-$(date +%F)` and `~/pairs-variants-$(date +%F)` | the same. Each has `null`, `hangar` and `hangar-module` in it, which is what lays the days beside each other |
 | ☐ | While it runs: leave the Pi alone. `tmux attach` to look; `vcgencmd measure_temp` is fine, a build or a copy over the tether is not | no `FLAGGED other-load` lines |
 | ☐ | At the end of the day: the folder home, `scp -r bluerov2@192.168.2.10:pairs-<date> ~/hangar-results/` | `report.md` in it; its section "Runs repeated, flagged, failed or not run" read |
-| ☐ | The next day: `freeze`, another `--out`, more rounds. Then `bench/pairs/driver.py --report ~/hangar-results/pairs-*` | ten rounds or more a cell in all; the table "Within a session and between sessions" says whether the days agree |
+| ☐ | The next day: `freeze`, another `--out`, more rounds. Then, a plan at a time, `bench/pairs/driver.py --report ~/hangar-results/pairs-main-*` | ten rounds or more a cell in all for the main plan, five for the side plans; the table "Within a session and between sessions" says whether the days agree |
 | ☐ | Once, on any of the days, in the same shell (ROS 2 sourced, from the SSH session itself: `systemd --user` needs the session): `bench/pairs/restart.py --bin $B --msg $PWD/msg --out ~/restart-$(date +%F)` (about 50 minutes: 20 kills a supervisor, 35 s apart) | five supervisors, none `SKIP`ped; `restart.md` has a row for each, and "not restarted" is `0 of 10` in every row. These rows restart a process and say nothing of thrusters or arming: step 5 does |
 
-The plan's cells, conditions and repetitions are `bench/pairs/plans/full.json`; change
+A plan's systems, cells, conditions and repetitions are its file in `bench/pairs/plans/`; change
 the file, not the command: the file as it was is copied into the results.
 
 ## 4. The same with real time on, hangar only (4.5 h, a day of its own)

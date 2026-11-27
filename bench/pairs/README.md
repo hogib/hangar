@@ -13,13 +13,14 @@ make pairs                                    # hangar_pair, null_pair and unix_
 bench/pairs/driver.py --plan bench/pairs/plans/smoke.json --var bin=$PWD/builddir \
     --var base=$PWD/builddir \
     --out /tmp/pairs-smoke --no-preflight     # a minute a system: the harness proved, no number
-bench/pairs/driver.py --plan bench/pairs/plans/full.json --var bin=$HOME/hangar-root/bin \
-    --out ~/hangar-results/<date>-pairs       # the measurement (on the Pi: below)
+bench/pairs/driver.py --plan bench/pairs/plans/main.json --estimate    # what a plan takes
+bench/pairs/driver.py --plan bench/pairs/plans/main.json --var bin=$HOME/hangar-root/bin \
+    --out ~/hangar-results/<date>-pairs       # the measurement (on the Pi, and which plan: below)
 bench/pairs/driver.py --report ~/hangar-results/*-pairs > pooled.md
 ```
 
 `make check-pairs` (part of `make check`) runs a plan of four cells over hangar, the
-null system and the Unix sockets and checks the counting, the records and the report: 44 checks, and no
+null system and the Unix sockets and checks the counting, the records and the report: 58 checks, and no
 latency compared with anything.
 
 ## What is the same for every system
@@ -758,32 +759,69 @@ cd ~/hangar-baselines/current && B=$PWD/bin
 . /opt/ros/jazzy/setup.sh && . ros2/install/setup.sh      # for the ROS 2 entries
 V="--var bin=$B --var base=$B --var ros=$PWD/ros2/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy"
 bench/pairs/driver.py --plan bench/pairs/plans/smoke.json $V --out ~/pairs-smoke
-bench/pairs/driver.py --plan bench/pairs/plans/full.json  $V --out ~/pairs-$(date +%F)
+bench/pairs/driver.py --plan bench/pairs/plans/main.json  $V --out ~/pairs-main-$(date +%F) --reps 2
 ```
+
+Which plan and how many rounds: "Sessions", below.
 
 ## Sessions
 
-The full plan is 18 cells, the vehicle's graph under three conditions among them: 20 to
-33 minutes a system a round, by which cells the system runs (the runs at 100 Hz and
-below are two minutes each, for their samples, and so is each graph cell). The registry
-has fifteen systems: one round of all of them is seven and a third hours, and ten
-rounds are days. It is made for that: `--reps N` runs fewer rounds at a
-time, Ctrl-C writes what there is, every session's folder carries its boot id, and
-`--report` pools as many folders as it is given and shows what the sessions differ by.
+Everything at full depth (`plans/full.json`: 18 cells, ten rounds, all 21 entries of the
+registry) is 634 minutes a round and 106 hours. That is not the plan. A reader of the
+comparison needs **the main table deep and the side rows honest**, and a side row does
+not get more honest from ten rounds of cells it has nothing to say about. So there are
+three plans, each naming its systems, its cells and its rounds, and
+**each has `null`, `hangar` and `hangar-module` in it**: every session has the same
+three reference rows, and sessions are laid beside each other through them.
 
-One round of everything keeps every system minutes from every other in the same cell,
-and is the plan to prefer when a day allows it. Where it does not, `--only` runs a group,
-and **every group has hangar and the null system in it**, so that each session has the
-same reference rows and the sessions can be laid beside each other through them:
+| Plan | What it answers | Systems | Cells | A round | Rounds | In all |
+|---|---|---|---|---|---|---|
+| `plans/main.json` | how the systems compare, each as its users run it | `null`, `hangar`, `hangar-module`, `unix-seqpacket`, `iceoryx2`, `ros2-fastdds`, `ros2-cyclonedds`, `ros2-zenoh`, `lcm`, `moos` | all 18 | 309 min | 10 | 51.4 h |
+| `plans/shared-memory.json` | what the ROS 2 middlewares do once set up for shared memory and loans | the three, `hangar-inplace`, `iceoryx2`, `ros2-fastdds-loan`, `ros2-fastdds-loan-besteffort`, `ros2-cyclonedds-iceoryx`, `ros2-zenoh-shm` | 8 | 147 min | 5 | 12.2 h |
+| `plans/variants.json` | what one changed thing changes | the three, `hangar-module-refs4`, `unix-stream`, `iceoryx2-poll`, `ros2-fastdds-waitset`, `ros2-fastdds-composed`, `lcm-rcvbuf` | 8 | 138 min | 5 | 11.5 h |
 
-| Group | `--only` | Systems | A round |
-|---|---|---|---|
-| A: the kernel and the nearest peer | `null,hangar,hangar-inplace,unix-seqpacket,unix-stream,iceoryx2,iceoryx2-poll` | 7 | about 3.3 h |
-| B: ROS 2 as installed | `null,hangar,hangar-inplace,ros2-fastdds,ros2-cyclonedds,ros2-zenoh,ros2-fastdds-waitset,ros2-fastdds-composed` | 8 | about 3.8 h |
-| C: ROS 2 over shared memory | `null,hangar,hangar-inplace,ros2-fastdds-loan,ros2-cyclonedds-iceoryx,ros2-zenoh-shm` | 6 | about 3.0 h |
+75 hours in place of 106. The times are the driver's own, computed from the plan
+(`driver.py --plan P --estimate` prints them, a system a line, and needs nothing
+installed); they hold if nothing waits to cool or is repeated, and **none was measured
+on the Pi**.
 
-What a split costs: two systems of different groups were not measured minutes apart, so
-a difference between them is to be read against the table "Within a session and between
-sessions" for hangar's own rows, which says how much a day changes a figure. A
-difference smaller than that spread is not a finding. The times are computed from the
-plan (the driver prints its own estimate at the start), not measured on the Pi.
+**Why these three.**
+
+- *Main* has one entry a system: the one a user gets by following that system's own
+  documentation, and hangar as a vehicle's module runs it (`hangar-module`) beside the
+  bare library (`hangar`). Every cell, ten rounds: the interval of a median over ten
+  runs is what a claim "A is faster than B" rests on, and the claims are made here.
+- *Shared memory* is its own table because none of those configurations is how the
+  middleware comes: each needs a profile, a daemon or a QoS a user must know to ask
+  for. It is the fair answer to "but ROS 2 can do zero copy". `iceoryx2` is in it a
+  second time, as the system those configurations are nearest to, and `hangar-inplace`
+  because it is hangar's own form of a loan.
+- *Variants* are rows that are **not like for like** with the main ones (one process,
+  a spinning reader, a stream) or are a main row with one knob turned. Each is read
+  against its own main row and nothing else.
+- *The eight cells of the two side plans*: the five sizes at 100 Hz, 1 MB at 30 Hz,
+  256 B at 1 kHz (the cell every sweep of the main plan passes through, here as the
+  sweep `reference`) and the vehicle's graph, quiet. What is left out is what a side
+  row would only repeat: the rates, the fan-out, the conditions under load and real
+  time, start-up. A variant that turns out to matter in one of those is run through
+  `plans/full.json` with `--only`.
+- *Five rounds* for the side plans. The report prints an interval from three runs
+  up, and with five it is coarse: it can only fall on one of the five figures. That
+  is enough to say "the same as its main row within what a day changes" or "clearly
+  not", which is what a side row is for, and not enough to rank two side rows a few
+  per cent apart, **which the paper must then not do**. A side row that lands close to
+  a claim gets more rounds: the folders pool.
+
+**How to run them.** A plan is run a few rounds at a time: `--reps 2` of the main plan
+is ten and a third hours, a night. Ctrl-C writes what there is; every session's folder
+carries its boot id; `--report` pools as many folders as it is given and shows what the
+sessions differ by. `--only` narrows a plan to some of its systems; keep the three
+reference rows in.
+
+What splitting costs: two systems of different plans were not measured minutes apart,
+so a difference between them is read against the table "Within a session and between
+sessions" for the reference rows, which says how much a day changes a figure. A
+difference smaller than that spread is not a finding.
+
+`moos` is in the main plan and is built only by `tools/baselines.sh --with-moos`
+("MOOS" above): without it the driver names it as skipped and runs the rest.
