@@ -570,6 +570,34 @@
       "install": "tools/baselines.sh builds it (iceoryx2's C binding, a static library): --var base=<the baselines' bin directory>",
       "notes": "iceoryx2's best latency and NOT like for like: no event is sent, and the subscriber asks for a sample again and again without sleeping, which takes a whole core whether or not anything is published (the cost table shows it). On a four-core vehicle computer with a thermal limit that is one core in four for one subscription. Beside the woken entry it shows what waking costs. With several subscribers each spins on its own, and they share the subscriber CPUs.",
       "graph_why": "a polling module spins a core for the whole run: eight modules would want eight cores of a computer that has four, and the row would measure that shortage, not iceoryx2"
+    },
+    {
+      "name": "lcm",
+      "title": "LCM 1.5.3, UDP multicast on the loopback, as it comes",
+      "node": [
+        "{base}/lcm_pair"
+      ],
+      "graph": [
+        "{base}/lcm_graph"
+      ],
+      "install": "tools/baselines.sh builds it (LCM's library from its pinned source, in a container): --var base=<the baselines' bin directory>",
+      "notes": "LCM: no broker, no discovery; every message is a UDP multicast datagram on the loopback (ttl 0) to a group every process of the system has joined, and a process drops in user space what it has not subscribed to. Serialisation is not in the row (bytes are published as they are; lcm-gen's types are not used). LCM reads its socket in a thread of its own and wakes the handling thread through a pipe: two wake-ups a message, in the sample. UDP: a datagram the kernel has no room for is lost, and nothing is sent again. Above 65499 bytes a message is split into datagrams of 65487 bytes and is lost if any one of them is: a megabyte is 17. The queue of a subscription holds 16 (LCM's default is 30). AS IT COMES: the kernel's default receive buffer (net.core.rmem_default, 212992 bytes on Ubuntu), which holds three of a megabyte's seventeen datagrams. The 1 MB cells lose a large share of their messages with it, and that is the result of the default, recorded as such."
+    },
+    {
+      "name": "lcm-rcvbuf",
+      "title": "LCM 1.5.3 with the 2 MB receive buffer its documentation asks for",
+      "node": [
+        "{base}/lcm_pair"
+      ],
+      "graph": [
+        "{base}/lcm_graph"
+      ],
+      "args": [
+        "--recv-buf",
+        "2097152"
+      ],
+      "install": "tools/baselines.sh builds it (LCM's library from its pinned source, in a container): --var base=<the baselines' bin directory>",
+      "notes": "LCM: no broker, no discovery; every message is a UDP multicast datagram on the loopback (ttl 0) to a group every process of the system has joined, and a process drops in user space what it has not subscribed to. Serialisation is not in the row (bytes are published as they are; lcm-gen's types are not used). LCM reads its socket in a thread of its own and wakes the handling thread through a pipe: two wake-ups a message, in the sample. UDP: a datagram the kernel has no room for is lost, and nothing is sent again. Above 65499 bytes a message is split into datagrams of 65487 bytes and is lost if any one of them is: a megabyte is 17. The queue of a subscription holds 16 (LCM's default is 30). AS ITS DOCUMENTATION SAYS for large messages (\"Kernel UDP receive buffer sizing\"): a receive buffer of 2097152 bytes. The process asks for it; the kernel grants at most net.core.rmem_max, which is 212992 on a stock Ubuntu, and raising that is root's (sysctl -w net.core.rmem_max=2097152). Where it was not raised this entry is the same as `lcm`, and the run's environment record says what the limit was."
     }
   ]
 }

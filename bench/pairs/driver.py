@@ -138,6 +138,8 @@ def environment(args, plan, cores):
         'priority_class': f'{pol}, nice {os.nice(0)}: every process of every system inherits it from the driver, '
                           'except under a condition that says realtime',
         'uptime_s': float((read('/proc/uptime') or '0').split()[0]),
+        # What bounds a socket's buffers here: a system that asks for a larger one gets this at most.
+        'net_core': {k: (read(f'/proc/sys/net/core/{k}') or '').strip() for k in ('rmem_default', 'rmem_max', 'wmem_default', 'wmem_max')},
     }
 
 
@@ -702,6 +704,10 @@ def report(docs):
         pf = sorted({rd['preflight']['verdict'] for rd in d['rounds']})
         out.append(f'| {e["session"]} | {e["model"]} | {e["kernel"]} | {"/".join(d["state_start"]["governor"])} | {d["plan_sha"][:8]} | {d["seed"]} | '
                    f'{len(kept)} | {sum(1 for r in d["runs"] if r.get("superseded"))} | {sum(1 for r in kept if r.get("never_clean"))} | {", ".join(pf)} |')
+    lim = sorted({f'{d["environment"]["session"]}: rmem_max {d["environment"]["net_core"].get("rmem_max", "?")}, rmem_default '
+                  f'{d["environment"]["net_core"].get("rmem_default", "?")}' for d in docs if d['environment'].get('net_core')})
+    if lim:
+        out += ['', 'Socket buffer limits (net.core), which bound what a system that asks for a larger buffer gets: ' + '; '.join(lim) + '.']
     out += ['', 'Pinned: ' + '; '.join(f'{d["environment"]["session"]}: publisher CPU {d["environment"]["cores"]["pub"]}, subscribers '
                                        f'{d["environment"]["cores"]["sub"]}, helpers {d["environment"]["cores"]["other"]}' for d in docs) + '.',
             'Priority class: ' + first['environment']['priority_class'] + '.', '']

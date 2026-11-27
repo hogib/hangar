@@ -64,8 +64,8 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 |---|---|---|
 | ☐ | The Pi's own package list, if the Pi can be reached before the visit: `ssh bluerov2@192.168.2.10 "dpkg-query -W -f='\${Package} \${Version} \${Architecture}\n'" > pi-packages.txt` | without it the `.deb` list is computed against a stock image, which is a guess |
 | ☐ | `tools/baselines-debs.sh --status pi-packages.txt` | `N files in out/baselines/debs`; **read the "upgraded" line**: apt wanting newer versions of packages the Pi already has means the Pi's ROS 2 is older than today's, and those files are in the list too |
-| ☐ | `tools/baselines.sh` | `out/baselines/baselines-<version>-aarch64.tar.zst`: four static programs, and the ROS 2 node cross-built |
-| ☐ | `tools/baselines.sh ros2-smoke` | every entry `ok`, a report with a row for each: the registry proved in a container |
+| ☐ | `tools/baselines.sh` | `out/baselines/baselines-<version>-aarch64.tar.zst`: the static programs, the LCM nodes, and the ROS 2 node cross-built |
+| ☐ | `tools/baselines.sh ros2-smoke` (about 25 minutes) | every entry `ok`, a report with a row for each: the registry proved in a container |
 
 **At the lab, in step 1**, after `deploy`:
 
@@ -73,6 +73,8 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 |---|---|---|
 | ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` | every file as its MANIFEST says; `ok` for each program with its version; `ok ros2_pair_node (prebuilt) loads against this ROS 2`; the `dpkg -i` line shown, one password, and dpkg ending without an error |
 | ☐ | If the prebuilt ROS 2 node does **not** load (the Pi's ROS 2 is of another date): on the Pi, before `freeze`'s measurements, `. /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh` | `ros2-build.sh: …/ros2_pair_node`. The one thing compiled on the Pi; then wait until it is cool again |
+| ☐ | **LCM needs a route for its multicast group.** On the Pi: `ip route get 239.255.76.67` | a line with `dev`. If it says `unreachable` (a Pi with no default route, which a tether gives), 🔑 once: `sudo ip route add 224.0.0.0/4 dev lo` (LCM's documentation, "using LCM on a single host"); it is gone at the next boot. Not verified on the Pi; without it the `lcm` rows fail every publication and say so |
+| ☐ | **LCM's 1 MB cells (optional, 🔑).** `sysctl net.core.rmem_max` on the Pi: 212992 on a stock Ubuntu. For the row `lcm-rcvbuf` to be what its name says: `sudo sysctl -w net.core.rmem_max=2097152` (what LCM's documentation asks for), and at the end of the day `sudo sysctl -w net.core.rmem_max=212992` (or the reboot does it) | the report's line "Socket buffer limits" shows what was in force. Left alone, `lcm-rcvbuf` is `lcm` again, and LCM has no figure at 1 MB that may be quoted |
 
 | System | Rows (registry entries) | On the Pi | How it gets there |
 |---|---|---|---|
@@ -82,7 +84,7 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 | iceoryx2 0.10.1 | `iceoryx2` (woken), `iceoryx2-poll` (never sleeping) | nothing needed | a static program in the archive |
 | Unix domain sockets | `unix-seqpacket`, `unix-stream`: the floor | nothing needed | a static program in the archive |
 | MOOS, V10 asynchronous comms | through a MOOSDB (a helper) | not installed | **node pair not written yet** |
-| LCM | UDP multicast on loopback | not installed | **node pair not written yet** |
+| LCM 1.5.3 | `lcm` (as it comes), `lcm-rcvbuf` (the 2 MB receive buffer of its documentation) | the Pi's own GLib (there on a stock image); a multicast route; for `lcm-rcvbuf` a sysctl 🔑 | programs in the archive |
 
 Every package is brought along as a file: nothing at the lab runs `apt update` or needs
 the Pi to reach the internet.

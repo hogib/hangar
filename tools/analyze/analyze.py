@@ -41,8 +41,8 @@ EXTRA_FLAGS = {
     "bench/pairs/hangar_graph.c": PAIRS, "bench/pairs/unix_graph.c": PAIRS, "bench/pairs/restart_node.c": PAIRS,
 }
 # Nodes that include a header of a system this tree does not carry (iceoryx2's C
-# binding, built by tools/baselines.sh): not analysed here.
-SKIP = {"bench/pairs/iceoryx2_pair.c", "bench/pairs/iceoryx2_graph.c"}
+# binding and LCM's library, built by tools/baselines.sh): not analysed here.
+SKIP = {"bench/pairs/iceoryx2_pair.c", "bench/pairs/iceoryx2_graph.c", "bench/pairs/lcm_pair.c", "bench/pairs/lcm_graph.c"}
 FALLBACK = ["-std=gnu99", "-D_FILE_OFFSET_BITS=64", "-Ilib/common", "-Ilib/vision", "-Ilib/camera", "-Ilib/proc",
             "-Ilib/net", "-Ilib/video", "-Ilib/hg", "-pthread"]
 

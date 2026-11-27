@@ -144,9 +144,11 @@ row.
 **The module** is `graph.h`, the same for every system, as `pair.h` is for a pair: one
 thread that waits for any of its inputs with a timeout at its next publication, counts
 what has come, and sends what is due. A system's node (`hangar_graph.c`,
-`unix_graph.c`, `iceoryx2_graph.c`, `ros2_pair/src/ros2_graph.cpp`) is how it opens its
+`unix_graph.c`, `iceoryx2_graph.c`, `ros2_pair/src/ros2_graph.cpp`, `lcm_graph.c`) is how it
+opens its
 publications and subscriptions, sends, and waits for several things at once: `hg_wait`
-over all subscriptions; `ppoll`; a wait set with every listener attached; an executor.
+over all subscriptions; `ppoll`; a wait set with every listener attached; an executor;
+`lcm_handle_timeout`.
 The waiting may return late by what the system's call can express (`hg_wait` takes
 milliseconds), and a publication is then late by that, as a real module's is; every
 message carries the time it was really sent, so the latency is not touched.
@@ -165,7 +167,8 @@ whether a subscription came short.
 
 **Which entries run it, and why not the others** (the report lists each with its
 reason): `hangar`, `hangar-inplace`, `hangar-module`, `hangar-module-refs4`,
-`unix-seqpacket`, `iceoryx2` and the seven ROS 2 entries that are two-process systems.
+`unix-seqpacket`, `iceoryx2`, `lcm`, `lcm-rcvbuf` and the seven ROS 2 entries that are
+two-process systems.
 A run in which a system failed publications is flagged `publications-failed`, carries
 the mark † in every table, and is listed with the count.
 
@@ -364,6 +367,8 @@ and it must say what a referee would ask of this system's row:
 | `ros2-zenoh-shm` | the same with Zenoh's shared-memory transport on (`ZENOH_CONFIG_OVERRIDE`) | Zenoh uses it above a size threshold of its own; the small cells are as `ros2-zenoh` |
 | `iceoryx2` | iceoryx2 through its C binding: samples lent from shared memory, no daemon; the subscriber **woken** by an event service beside the publish-subscribe service | the nearest system in kind, and in contract: no copy, a subscriber buffer of 16 with safe overflow (the publisher never waits, a reader that far behind loses the oldest). iceoryx2's publish-subscribe by itself wakes nobody: the publisher notifies after each send, inside the sample, and the subscriber sleeps in its listener, as hangar's sleeps in `hg_wait` |
 | `iceoryx2-poll` | the same, the subscriber asking in a loop that never sleeps | **not like for like**: iceoryx2's best latency at the price of a whole core, spent whether or not anything is published. No event is sent. Beside `iceoryx2` it is what waking costs |
+| `lcm` | LCM 1.5.3: no broker, no discovery; a message is a UDP multicast datagram on the loopback to a group every process has joined | lossy by design: a datagram the kernel has no room for is gone. A process is handed every topic's datagrams and drops in user space what it has not subscribed to. LCM reads its socket in a thread of its own and wakes the handling thread through a pipe: two wake-ups a message. Bytes as they are (no `lcm-gen` type, so no marshalling in the row). Above 65499 bytes a message is 65487-byte datagrams, and lost if one of them is: with the kernel's default receive buffer (212992 bytes, three of a megabyte's seventeen) **the 1 MB cells lose a large share** |
+| `lcm-rcvbuf` | the same with the 2 MB receive buffer LCM's documentation asks for | what its documentation says for large messages. The kernel grants at most `net.core.rmem_max`, 212992 on a stock Ubuntu: **where root has not raised it this row is `lcm` again**, and the report prints the limit |
 
 Where each system's two stamps are taken is the same by construction: `publish_ns` is
 read in `pair.h` immediately before the node's `pub_send`, and the subscriber's clock is
@@ -543,7 +548,36 @@ An entry whose middleware is not installed is named and skipped (`needs`).
   no schema in the file on iceoryx2's side; no dead-node clean-up on hangar's, which
   has a manager for it.
 
-Not in this directory yet: the node pairs of the other baselines (MOOS, LCM). Each comes
+### LCM
+
+`lcm_pair.c` and `lcm_graph.c`, on LCM 1.5.3's C library (built from its pinned source
+by `tools/baselines.sh`, in a container, because LCM needs GLib: these two nodes are not
+static programs and use the machine's own `libglib2.0-0`).
+
+- **As it comes and as its documentation says.** `lcm` is LCM's default URL with `ttl=0`
+  (the datagrams stay on the host; LCM's default of 1 would put them on the tether).
+  `lcm-rcvbuf` asks for the receive buffer of 2097152 bytes that LCM's documentation
+  tells a user of large messages to set ("Kernel UDP receive buffer sizing":
+  `sysctl -w net.core.rmem_max=2097152`). A process may ask; only root raises the
+  kernel's limit. On the Pi that is one command, and one more to put it back:
+  `tools/rov/LAB-CHECKLIST.md` has both.
+- **1 MB at 30 Hz, judged.** With the default buffer LCM lost 19 of 60 messages in one
+  trial here, with 2 MB none (x86-64, the container, where `rmem_max` happens to be
+  7.5 MB; not a measurement). The loss with the default is LCM's behaviour with its
+  default, and the cell stands as it comes out; a figure for LCM at 1 MB is quoted from
+  `lcm-rcvbuf` and only from a session whose report shows `rmem_max` at 2097152 or
+  more. LCM is not made for megabyte messages, and its documentation does not say it is.
+- **No types.** LCM is normally used with types from `lcm-gen`, which marshal each
+  field; `lcm_publish` takes bytes, and the nodes use that, as every other row carries
+  bytes. A real LCM system pays the marshalling on top.
+- **The queue** of a subscription is 16 (LCM's default is 30), and LCM drops the newest
+  when it is full.
+- **The end of a run**: the publisher says "gone" on a channel of its own, three
+  times; that is the harness's, LCM has no such notion.
+- In the graph every process receives every topic's datagrams (one group): 474
+  datagrams a second into each of eight processes, most of them dropped in user space.
+
+Not in this directory yet: the node pair of the last baseline (MOOS). It comes
 with its entry and its own lines for this table.
 
 ## Restarting a process

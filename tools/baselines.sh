@@ -17,7 +17,9 @@
 #                 binaries, every one built from this tree's pair.h with the same
 #                 compiler and flags, hangar's own included (a release has
 #                 hangar_pair too; the one here shares its harness with the baselines
-#                 to the line)
+#                 to the line); restart_node and a static hangard for
+#                 bench/pairs/restart.py; and lcm_pair and lcm_graph, which are not
+#                 static (below)
 #   bench/pairs/  the driver, the registry, the plans, the ROS 2 node's source and
 #                 profiles
 #   tools/rov/preflight.py    which the driver runs before each round
@@ -29,7 +31,7 @@
 #                 every file
 #
 # The ROS 2 node cannot be static: it links the ROS 2 Jazzy of the machine it runs
-# on. It is cross-compiled in a container (bench/pairs/ros2_pair/cross: the amd64
+# on. It is cross-compiled in the build container (bench/pairs/container: the amd64
 # ros:jazzy-ros-base with Ubuntu's aarch64 compiler) against a sysroot that is the
 # arm64 ros:jazzy-ros-base image, unpacked and never run; the image's digest is in the
 # MANIFEST. Same distribution as the Pi's (noble), so the same glibc and libstdc++;
@@ -44,10 +46,16 @@
 # directory and built there with its own build, as tools/release.sh does:
 #
 #   iceoryx2 0.10.1 (Apache-2.0 OR MIT): its C binding, a static library, with cargo
+#   LCM 1.5.3 (LGPL-2.1): its library, static, with cmake in the build container
+#     (bench/pairs/container); the two LCM nodes link it and the machine's own GLib, so
+#     they are not static programs: they need an Ubuntu 24.04's libglib2.0-0, which
+#     the Pi has
 #
 # Needs zig, make, cargo with the target's rust-std (rustup target add
 # aarch64-unknown-linux-musl; for --host x86_64-unknown-linux-musl), curl, tar, zstd,
-# sha256sum. Nothing is installed by this script.
+# sha256sum; docker for the LCM nodes and the ROS 2 node. Nothing is installed on this
+# machine by this script; it builds one docker image (hangar-baselines-build:noble)
+# and pulls ros:jazzy-ros-base for it.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -56,8 +64,28 @@ IOX2_VERSION=0.10.1
 IOX2_URL=https://github.com/eclipse-iceoryx/iceoryx2/archive/refs/tags/v$IOX2_VERSION.tar.gz
 IOX2_SHA256=f6ad9608f61b93e7578645ef738c3b56ea980761f8765ee47aa49423cb12d763
 
+LCM_VERSION=1.5.3
+LCM_URL=https://github.com/lcm-proj/lcm/archive/refs/tags/v$LCM_VERSION.tar.gz
+LCM_SHA256=f7e693d50e229e37de00387ac8ab9228e16559dd57bddd155c4b5ca1c233834e
+
 host=no ros2=yes out= work= image=hangar-ros2-bench:jazzy reps=1 cmd=build
-cross_image=hangar-ros2-cross:jazzy
+build_image=hangar-baselines-build:noble
+
+# A pinned source: fetched once into DIR/src.tar.gz, checked, unpacked into DIR/src.
+fetch_source() { # dir url sha256 name
+	mkdir -p "$1"
+	if [ ! -f "$1/src.tar.gz" ] || [ "$(sha256sum < "$1/src.tar.gz" | cut -d' ' -f1)" != "$3" ]; then
+		curl -fsSL --retry 3 -o "$1/src.tar.gz.part" "$2"
+		local got; got=$(sha256sum < "$1/src.tar.gz.part" | cut -d' ' -f1)
+		[ "$got" = "$3" ] || { echo "baselines.sh: $4: SHA-256 $got, expected $3" >&2; exit 1; }
+		mv "$1/src.tar.gz.part" "$1/src.tar.gz"
+		rm -rf "$1/src"
+	fi
+	if [ ! -d "$1/src" ]; then
+		mkdir -p "$1/src"
+		tar -xzf "$1/src.tar.gz" -C "$1/src" --strip-components=1
+	fi
+}
 [ "${1:-}" = ros2-smoke ] && { cmd=ros2-smoke; shift; }
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -67,7 +95,7 @@ while [ $# -gt 0 ]; do
 	--work) shift; work=$1 ;;
 	--image) shift; image=$1 ;;
 	--reps) shift; reps=$1 ;;
-	-h|--help) sed -n '3,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help) sed -n '3,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "baselines.sh: unknown argument $1" >&2; exit 2 ;;
 	esac
 	shift
@@ -149,18 +177,7 @@ pair_cflags=$(make -C "$ROOT" -s --no-print-directory BUILD=release BUILDDIR="$b
 
 # iceoryx2: the pinned source, its C binding as a static library, then the pair.
 iox=$work/iceoryx2
-mkdir -p "$iox"
-if [ ! -f "$iox/src.tar.gz" ] || [ "$(sha256sum < "$iox/src.tar.gz" | cut -d' ' -f1)" != "$IOX2_SHA256" ]; then
-	curl -fsSL --retry 3 -o "$iox/src.tar.gz.part" "$IOX2_URL"
-	got=$(sha256sum < "$iox/src.tar.gz.part" | cut -d' ' -f1)
-	[ "$got" = "$IOX2_SHA256" ] || { echo "baselines.sh: iceoryx2 $IOX2_VERSION: SHA-256 $got, expected $IOX2_SHA256" >&2; exit 1; }
-	mv "$iox/src.tar.gz.part" "$iox/src.tar.gz"
-	rm -rf "$iox/src"
-fi
-if [ ! -d "$iox/src" ]; then
-	mkdir -p "$iox/src"
-	tar -xzf "$iox/src.tar.gz" -C "$iox/src" --strip-components=1
-fi
+fetch_source "$iox" "$IOX2_URL" "$IOX2_SHA256" "iceoryx2 $IOX2_VERSION"
 mkdir -p "$iox/wrap"
 printf '#!/bin/sh\nexec %s "$@"\n' "$cc" > "$iox/wrap/cc"
 printf '#!/bin/sh\nexec zig ar "$@"\n' > "$iox/wrap/ar"
@@ -184,16 +201,42 @@ for n in iceoryx2_pair iceoryx2_graph; do
 		> "$iox/link.log" 2>&1 || { cat "$iox/link.log" >&2; echo "baselines.sh: $n did not link" >&2; exit 1; }
 done
 
+# What cannot be a static musl program is built in a container (bench/pairs/container): an
+# Ubuntu 24.04 like the Pi's, with the aarch64 cross compiler. Without docker those
+# nodes are left out, and said.
+container=no
+if command -v docker > /dev/null 2>&1; then
+	docker image inspect "$build_image" > /dev/null 2>&1 ||
+		docker build -q -t "$build_image" "$ROOT/bench/pairs/container" > "$work/build-image.log" 2>&1 ||
+		{ tail -5 "$work/build-image.log" >&2; echo "baselines.sh: the build image did not build ($work/build-image.log)" >&2; exit 1; }
+	container=yes
+else
+	echo "baselines.sh: NOTE no docker: the LCM nodes and the ROS 2 node are not built" >&2
+fi
+extra_bins=
+lcm_line="not-built lcm_pair lcm_graph: no docker on the machine this archive was made on"
+if [ "$container" = yes ]; then
+	# LCM: its library from the pinned source, linked into the two nodes; GLib is the
+	# machine's own.
+	lcm=$work/lcm
+	fetch_source "$lcm" "$LCM_URL" "$LCM_SHA256" "LCM $LCM_VERSION"
+	mkdir -p "$lcm/out"
+	docker run --rm --user "$(id -u):$(id -g)" -e HOME=/out -v "$ROOT:/src:ro" -v "$lcm/src:/lcm:ro" -v "$lcm/out:/out" \
+		"$build_image" sh /src/bench/pairs/container/lcm.sh "$arch" > "$lcm/build.log" 2>&1 ||
+		{ tail -20 "$lcm/build.log" >&2; echo "baselines.sh: LCM did not build ($lcm/build.log)" >&2; exit 1; }
+	cp "$lcm/out/bin/lcm_pair" "$lcm/out/bin/lcm_graph" "$builddir/"
+	extra_bins="$extra_bins lcm_pair lcm_graph"
+	lcm_line="lcm_pair lcm_graph: this tree's bench/pairs, linked with LCM $LCM_VERSION (LGPL-2.1), static; GLib and the C library shared, the machine's own (Ubuntu 24.04's)"
+fi
+
 # The ROS 2 node, cross-compiled against an arm64 ROS 2 Jazzy as a sysroot.
 ros2_line="not-built ros2_pair_node: ros2-build.sh builds it on the machine it runs on, against its own ROS 2 Jazzy"
 ros2_ws=
+cross_image=$build_image
 if [ "$host" = no ] && [ "$ros2" = yes ]; then
-	if ! command -v docker > /dev/null 2>&1; then
+	if [ "$container" = no ]; then
 		echo "baselines.sh: NOTE no docker: the ROS 2 node is not prebuilt (ros2-build.sh on the Pi)" >&2
 	else
-		docker image inspect "$cross_image" > /dev/null 2>&1 ||
-			docker build -q -t "$cross_image" "$ROOT/bench/pairs/ros2_pair/cross" > "$work/cross-image.log" 2>&1 ||
-			{ tail -5 "$work/cross-image.log" >&2; echo "baselines.sh: the cross image did not build" >&2; exit 1; }
 		sys=$work/ros2-sysroot
 		mkdir -p "$sys"
 		if [ ! -d "$sys/root/opt/ros/jazzy" ]; then
@@ -232,8 +275,12 @@ fi
 # ---- the stage ------------------------------------------------------------------------
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/bench" "$stage/tools/rov" "$stage/licenses/iceoryx2"
-bins="hangar_pair null_pair unix_pair iceoryx2_pair hangar_graph unix_graph iceoryx2_graph restart_node hangard"
+bins="hangar_pair null_pair unix_pair iceoryx2_pair hangar_graph unix_graph iceoryx2_graph restart_node hangard$extra_bins"
 for b in $bins; do cp "$builddir/$b" "$stage/bin/"; done
+if [ "$container" = yes ]; then
+	mkdir -p "$stage/licenses/lcm"
+	cp "$work/lcm/src/COPYING" "$stage/licenses/lcm/"
+fi
 # The driver and what it reads, the ROS 2 node's source with them; no caches.
 (cd "$ROOT" && tar -cf - --exclude=__pycache__ --exclude='*.o' bench/pairs tools/rov/preflight.py msg/depth.msg) | tar -xf - -C "$stage"
 cp "$ROOT/LICENSE" "$stage/licenses/hangar-GPL-3.0-or-later"
@@ -284,6 +331,8 @@ chmod +x "$stage/ros2-build.sh"
 	echo "hangard: this tree's manager, for bench/pairs/restart.py alone: the same source as the release's, built here (GPL-3.0-or-later)"
 	echo "iceoryx2_pair iceoryx2_graph: this tree's bench/pairs, linked with iceoryx2 $IOX2_VERSION's C binding (Apache-2.0 OR MIT)"
 	echo "iceoryx2-source $IOX2_URL sha256 $IOX2_SHA256"
+	echo "$lcm_line"
+	echo "lcm-source $LCM_URL sha256 $LCM_SHA256"
 	echo "$ros2_line"
 	echo "files"
 	(cd "$stage" && find . -type f ! -name MANIFEST | sort | while read -r f; do

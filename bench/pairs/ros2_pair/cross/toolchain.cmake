@@ -1,4 +1,5 @@
-# bench/pairs/ros2_pair/cross/toolchain.cmake: aarch64 from an amd64 noble, against
+# bench/pairs/ros2_pair/cross/toolchain.cmake: aarch64 from an amd64 noble (the
+# container of bench/pairs/container), against
 # the sysroot at /sysroot (an arm64 ros:jazzy-ros-base, unpacked). Programs (the
 # rosidl generators, Python) are the build machine's; libraries, headers and CMake
 # packages are the sysroot's only.

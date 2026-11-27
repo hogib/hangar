@@ -15,10 +15,11 @@ this was written). Each is analysed with the `-I`, `-D` and `-std` flags its
 compile line has in `make -n -B all`, so a new module is covered when it is
 built by `all`; the nodes of `bench/pairs`, which `make pairs` builds, have
 their flags in `analyze.py` (`EXTRA_FLAGS`). Not analysed: the suites,
-`legacy/`, the rest of `bench/`, `fuzz/`, the generated `msg/*.c`, and the two
-nodes of `bench/pairs` that include iceoryx2's header, which this tree does not
-carry (`SKIP`: `tools/baselines.sh` builds them, and they were run through gcc's
-and clang's analysers by hand against the built header).
+`legacy/`, the rest of `bench/`, `fuzz/`, the generated `msg/*.c`, and the four
+nodes of `bench/pairs` that include iceoryx2's or LCM's header, which this tree
+does not carry (`SKIP`: `tools/baselines.sh` builds them, and they were run
+through gcc's analyser by hand against the built headers; iceoryx2's through
+clang's too).
 
 A tool that is not installed is skipped with a line saying so; the others
 still decide the result. It is not part of `make check`: with one process it
