@@ -186,7 +186,62 @@
       ],
       "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
       "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
-      "notes": "What Fast DDS's documentation gives for zero copy on one host: writer and reader share the writer's history in a file under /dev/shm, the publisher builds the message in a sample it borrows, and the subscription is handed that sample: no serialisation and no copy. The nearest thing in ROS 2 to hangar-inplace. The node says on its standard error whether the loan was granted (logs/). A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up. In a graph of many readers this configuration can refuse a loan: the publisher then has no sample to build in and the publication fails (counted under \"Publications that failed\"). Seen in the container on an x86-64 laptop; the pool of samples a writer may lend is Fast DDS's to size (resource limits), and it is left at what the profile gives.",
+      "notes": "What Fast DDS's documentation gives for zero copy on one host: writer and reader share the writer's history in a file under /dev/shm, the publisher builds the message in a sample it borrows, and the subscription is handed that sample: no serialisation and no copy. The nearest thing in ROS 2 to hangar-inplace. The node says on its standard error whether the loan was granted (logs/). A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up. KNOWN TO FAIL WHERE READERS JOIN A WRITER THAT IS ALREADY PUBLISHING: with data sharing and a reliable writer, Fast DDS 2.14.7 can leave the writer's pool of samples (history depth plus extra_samples: 17 here) empty for good, and every publication after that fails (counted under \"Publications that failed\"; with or without loans). It happens in the graph cell in most runs, and not in a pair, where the subscribers are up before the publisher. bench/pairs/README.md, \"Fast DDS, data sharing and a reliable writer\", has the evidence and ros2_pair/repro-datasharing.sh the smallest case. A figure of this entry from a run with failed publications is not a latency of Fast DDS.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-fastrtps-cpp",
+        "ros-jazzy-fastrtps"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
+      ]
+    },
+    {
+      "name": "ros2-fastdds-loan-besteffort",
+      "title": "ROS 2 Jazzy, Fast DDS with data sharing and loaned messages, best effort",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "args": [
+        "--loan",
+        "--qos",
+        "latest"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp",
+        "FASTRTPS_DEFAULT_PROFILES_FILE": "{here}/ros2_pair/config/fastdds-datasharing.xml",
+        "RMW_FASTRTPS_USE_QOS_FROM_XML": "1",
+        "ROS_DISABLE_LOANED_MESSAGES": "0"
+      },
+      "config_files": [
+        "{here}/ros2_pair/config/fastdds-datasharing.xml"
+      ],
+      "needs": [
+        "{ros_root}/lib/librmw_fastrtps_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "The same zero-copy path with ANOTHER CONTRACT: best effort, keep-last 1, where every other ROS 2 row here is reliable, keep-last 16. It is here because the reliable entry fails in the graph (its notes), and this one does not: of the two, it is the Fast DDS zero-copy configuration that runs a vehicle's graph. What it gives up: a reader that is not ready when a message comes does not get it, and nothing is kept for it. ROS 2 calls this the sensor-data way of subscribing, and it is what hg_latest means in hangar, not hg_next. A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock.",
       "packages": [
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-fastrtps-cpp",

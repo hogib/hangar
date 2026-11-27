@@ -1155,6 +1155,12 @@ def main():
             res['errors'] = run.errors
         rec.update(before=before, after=after, other_load_pct=other_load(before, after), result=res,
                    flags=run_flags(before, after, plan.get('hot_c', 80.0), plan.get('busy_pct', 25.0), run.cond.get('spinners', 0)))
+        # A run in which the system refused to send is not a run of the cell as planned:
+        # flagged, so that its figures carry the mark and it is listed.
+        refused = sum(p.get('send_failed', 0) for m in res.get('modules', []) for p in m.get('pubs', [])) + \
+            ((res.get('pub') or {}).get('send_failed', 0) if isinstance(res.get('pub'), dict) else 0)
+        if refused:
+            rec['flags'].append(f'publications-failed ({refused})')
         return rec
 
     stopped = None

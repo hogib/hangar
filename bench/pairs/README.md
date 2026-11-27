@@ -165,7 +165,9 @@ whether a subscription came short.
 
 **Which entries run it, and why not the others** (the report lists each with its
 reason): `hangar`, `hangar-inplace`, `hangar-module`, `hangar-module-refs4`,
-`unix-seqpacket`, `iceoryx2` and the six ROS 2 entries that are two-process systems.
+`unix-seqpacket`, `iceoryx2` and the seven ROS 2 entries that are two-process systems.
+A run in which a system failed publications is flagged `publications-failed`, carries
+the mark † in every table, and is listed with the count.
 
 | not run | why |
 |---|---|
@@ -352,7 +354,8 @@ and it must say what a referee would ask of this system's row:
 | `unix-seqpacket` | Unix domain sockets, `SOCK_SEQPACKET`: the kernel's own IPC with no middleware. **The floor** for anything that sends through the kernel | two copies and one system call a side; the reader asleep in `recv`, woken by the kernel. The publisher never waits: a subscriber whose buffer is full does not get the message. A socket then drops the **newest** and keeps the old (hangar's ring drops the oldest), and the buffer's depth is the kernel's count of bytes (`net.core.wmem_default`, 212992 B: some hundreds of small messages), not 16. A message must fit that buffer whole: up to 131072 B here, and the larger cells are not run. No discovery beyond a path, no type, no metadata |
 | `unix-stream` | the same with `SOCK_STREAM`, for any size | **another contract**: the publisher's send blocks while the reader's buffer is full, so nothing is lost and a slow reader slows the writer (it shows under "intended"). A megabyte is several send and receive calls. The reader has the message when it has collected all its bytes |
 | `ros2-fastdds` | ROS 2 Jazzy with Fast DDS as installed, ROS 2's default: one rclcpp node a process | serialised into Fast DDS's shared-memory transport and out of it, inside the sample. Reliable, keep-last 16 (see below). No helper |
-| `ros2-fastdds-loan` | the same with Fast DDS's data sharing and loaned messages (`ros2_pair/config/fastdds-datasharing.xml`) | no serialisation and no copy: the publisher builds the message in a sample it borrowed, the subscription is handed that sample. The nearest thing in ROS 2 to `hangar-inplace`. Whether the loan was granted is in the node's standard error (`logs/`). |
+| `ros2-fastdds-loan` | the same with Fast DDS's data sharing and loaned messages (`ros2_pair/config/fastdds-datasharing.xml`) | no serialisation and no copy: the publisher builds the message in a sample it borrowed, the subscription is handed that sample. The nearest thing in ROS 2 to `hangar-inplace`. Whether the loan was granted is in the node's standard error (`logs/`). **In the graph its publications fail in most runs** ("Fast DDS, data sharing and a reliable writer", below) |
+| `ros2-fastdds-loan-besteffort` | the same zero-copy path, best effort and keep-last 1 | **another contract** than the other ROS 2 rows (reliable, keep-last 16): a reader that is not ready when a message comes does not get it. Here because the reliable entry fails in the graph and this one does not |
 | `ros2-fastdds-waitset` | Fast DDS as installed, the subscriber waiting in an `rclcpp::WaitSet` and taking the message itself | **not how a ROS 2 node is written.** Beside `ros2-fastdds` it separates what the executor costs from what the middleware costs |
 | `ros2-fastdds-composed` | publisher and subscription in **one process**, rclcpp's intra-process delivery | **not the comparison**: nothing leaves the process, and one failing node takes the other with it. Its own row because the question is asked |
 | `ros2-cyclonedds` | ROS 2 Jazzy with Cyclone DDS as installed | serialised, through the loopback network stack. No helper |
@@ -448,6 +451,59 @@ their environment (`RMW_IMPLEMENTATION` and a profile), not in code.
   `SharedMemory` enabled and RouDi running both the publisher and the subscription
   report loans (checked in the x86-64 container on 2026-11-27; the Pi's own binary is to
   be checked the same way, by the node's line in `logs/`).
+
+#### Fast DDS, data sharing and a reliable writer
+
+`ros2-fastdds-loan` fails publications in the graph cell, in most runs. This is what was
+found, so that nobody reads those runs as Fast DDS's latency or as this node's misuse.
+
+- **What is seen.** A writer sends about 17 messages (sometimes a few more) and from
+  then on every publication fails, to the end of the run: with loans the borrow is
+  refused, without them `publish()` fails. Which topics it hits differs from run to run.
+- **What bounds it, by Fast DDS's own account.** With data sharing "Fast DDS will
+  pre-allocate a pool of `max_samples` + `extra_samples` samples", loans are taken from
+  that pool, and "the samples in the preallocated pool are never reused unless they
+  have been acknowledged ... If there is no reusable sample in the pool, the writing
+  operation in the DataWriter will be blocked until one is available or until
+  `max_blocking_time` is reached" (Fast DDS 2.14 documentation, "Data-sharing delivery":
+  "Blocking reuse of samples until acknowledged"; "Zero-Copy communication"). For a
+  keep-last history the pool's `max_samples` is the history depth
+  (`DataWriterHistory.cpp`, `to_history_attributes`, 2.14.x), and `extra_samples` is 1
+  by default: 16 + 1 = 17, the number the stalled writers stop at. A loan cannot wait:
+  `DataWriterImpl::loan_sample` returns `RETCODE_OUT_OF_RESOURCES` when the pool has
+  no free sample.
+- **What it depends on, by experiment** (x86-64, the container of `bench/ros2`, Fast DDS
+  2.14.7, 2026-11-28; `ros2_pair/repro-datasharing.sh` is the smallest case):
+
+  | case | stalled |
+  |---|---|
+  | one writer, 1 or 5 readers started before it; a reader stopped for 3 s; a reader killed; five readers started together 1.5 s after it | 0 of 1 each |
+  | one writer, seven readers joining 0.15 s apart while it publishes; reliable, loaned | 2 runs of 6 |
+  | the same, reliable, **not loaned** | 3 runs of 8 |
+  | the same, **best effort**, loaned | 0 runs of 8 |
+  | the graph: reliable, loaned | 5 runs of 6 |
+  | the graph: reliable, loaned, `extra_samples` 64 | 3 runs of 6, each stopping at 80 to 89 messages (16 + 64 + 1) |
+  | the graph: reliable, not loaned; reliable, loaned, subscribers copying | 6 of 6; 6 of 6 |
+  | the graph: best effort, loaned | 0 of 6 |
+
+- **What follows.** It is not the loan, and not how this node takes or returns one: it
+  happens without loans. It needs a reliable writer and readers that join while it
+  publishes, which is what a system coming up is. `extra_samples`, which the
+  documentation offers against blocking, only moves the point at which the pool is
+  empty. Why the pool is not refilled was not found; a reader that had read everything
+  and is then stopped does not cause it. In a pair cell it has not been seen in the
+  driver (the subscribers are up before the publisher is started). One early 1 MB run
+  of the pair lost 3 of 60 with a mean of 45 ms; thirty repetitions of 1 MB at 30 Hz with
+  one reader (2026-11-28) lost nothing and failed nothing, so that one is not explained
+  and not reproduced.
+- **What the registry does about it.** `ros2-fastdds-loan` stays as it is, reliable,
+  like every other ROS 2 row, and its failed publications are counted and printed; a
+  run of it with failed publications is not quoted as a latency. Beside it,
+  `ros2-fastdds-loan-besteffort` is the same zero-copy path with best effort and
+  keep-last 1, which did not fail: another contract (a reader that is not ready does
+  not get the message), said in its row, and the Fast DDS zero-copy configuration
+  that does run the vehicle's graph. `ros2-fastdds`, without data sharing, is reliable
+  and has not failed.
 
 Running it: with ROS 2 Jazzy and the built package sourced,
 
