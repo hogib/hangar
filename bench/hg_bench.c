@@ -768,7 +768,7 @@ static void pair_writer(struct pair_shared *sh, int cpu, unsigned rate_hz, int s
 		_exit(1);
 	pin_to_cpu(cpu);
 	prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0); /* a 10 kHz module would; the default slack is 50 us */
-	hg_pub *p = open_pub("bench.wake", WAKE_TYPE, 16, rate_hz * 1000000u);
+	hg_pub *p = open_pub("bench.wake", WAKE_TYPE, 16, rate_hz * 1000u); /* mHz */
 	atomic_store(&sh->pub_open, 1);
 	while (!atomic_load(&sh->go))
 		sleep_ms(1);
