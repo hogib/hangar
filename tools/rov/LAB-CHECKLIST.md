@@ -1,226 +1,193 @@
-# Lab checklist: the sessions with v0.1.4 and v0.1.5
+# Lab plan: the session of measurements on equal terms (v0.1.6)
 
-What to run at the next lab visit, in order, with what a pass looks like. Written
-2026-11-21 for v0.1.4. Nothing new since v0.1.2 had run on the vehicle then: steps 1 and 2
-repeat what v0.1.2 passed, and every step after them was a first.
+What to run at the lab next, in order, with what a pass looks like. Written 2026-11-27
+for v0.1.6. It replaces the checklist of the v0.1.4 and v0.1.5 sessions (in this file's
+history; what those sessions found is in [README.md](README.md), "Results", and in
+`~/hangar-results/`).
 
-**Where it stands after the session of 2026-11-24 (v0.1.4).** Steps 1 to 4 passed. Step 5
-came up on the Pixhawk's serial line; its arm tests and its bench were not made. Steps 6
-and 7 were not reached, and step 6 needs cooling on the Pi: without it the Pi throttles.
-What that session showed differently from what is written below:
+**What this session is for.** One set of numbers that stands before a referee: hangar
+and each baseline through the same cells, on a Pi that is in the same state for all of
+them. Three things made earlier numbers unequal, and each has its answer here:
 
-- **Step 1:** safety killed while armed came back plainly disarmed, with no failsafe to
-  clear.
-- **Step 4:** the vehicle's bridge *killed* fires nothing (the manager has it back before
-  its topic is stale); *suspended* (`kill -STOP`) it fires `input` within 0.3 s. A pull of
-  the laptop's USB adapter costs about 7 s of packets, so a short silence is made by
-  suspending the laptop's bridge process for 1 s and 2.5 s.
-- **sudo on the Pi asks for a password:** `lab.sh deploy`, and any `up` after the Pi was
-  power-cycled (its clock), are run from your own terminal.
-- **New in v0.1.5, to confirm first:** with the bridge up and the sticks working, start the
-  topside alone again (`BRIDGE=1 tools/rov/rov.sh topside reset`, then `topside up`): the
-  thrusters follow the sticks at once. With v0.1.4 they were dead for as long as the
-  topside had run before.
+| What went wrong | Answer |
+|---|---|
+| `unattended-upgrade` started by itself and held a core (three visits) | `lab.sh freeze` (step 1): it cannot start until the Pi's next boot, and a measurement on a Pi that is not frozen is refused |
+| The lab's eeye and hellion ran beside some blocks and not beside others; the governor changed half-way | the same freeze: both stopped and `performance` set for the whole session |
+| Systems were measured one after the other, the later on a warmer Pi | `bench/pairs` (step 3): interleaved rounds, a temperature gate before every run, throttled runs repeated |
+
+**There is no time limit.** The transport matrix alone is about four and a half hours
+for each system, and it is made to be taken over several days and pooled
+(`bench/pairs/README.md`). A day at the lab is: freeze, some rounds, thaw. The steps
+below say what one day must hold and what can wait for the next.
 
 The commands are `tools/rov/lab.sh` and `tools/rov/rov.sh`; [QUICKSTART.md](QUICKSTART.md)
-has the five commands and what to do when one fails, [README.md](README.md) the detail.
-Below, `rov.sh` on the Pi is `~/hangar-root/share/hangar/rov.sh`, and `hangar` on the Pi
-is `HANGAR_ROOT=/dev/shm/hangar-vehicle ~/hangar-root/bin/hangar`.
+has the commands and what to do when one fails, [README.md](README.md) the detail.
+`hangar` on the Pi is `HANGAR_ROOT=/dev/shm/hangar-vehicle ~/hangar-root/bin/hangar`.
 
-**Rules for the whole session**
+**Rules for every day**
 
-- **Props off** for every armed step here. Nothing below needs water.
-- **Stop at the first step that fails,** write down what it said, and go to "Before
-  leaving". Later steps build on earlier ones.
-- **`lab.sh down` before leaving, whatever happened.** It restores ArduSub's parameters
-  and the lab's services, and names anything it could not put back.
-- **Disarm before anything that stops hangar.** `lab.sh up` on a running session and
-  `rov.sh down`, `reset`, `relay down` and `topside down` refuse while the vehicle is
-  armed or its state cannot be read (README, "The guard"); `lab.sh down` disarms first
-  and stops nothing unless the vehicle then reads disarmed. `--force` is for a vehicle
-  QGroundControl shows disarmed while hangar cannot say so.
-- A fan on the Pi, or the tube's lid off: closed on the bench it reached 86 to 91 °C in
-  earlier sessions and throttled.
+- **Props off** for every armed step. Nothing here needs water.
+- **A step marked 🔑 asks for the Pi's sudo password**: run it yourself, in your own
+  terminal. Each prints what it will run as root before it asks.
+- **`lab.sh down`, then `lab.sh thaw`, before leaving, whatever happened.** `down`
+  restores ArduSub's parameters; `thaw` the apt timers, the lab's services and the
+  governor. `status` and `down` say `THE PI IS FROZEN` until it is thawed. A thaw that
+  is forgotten ends with the Pi's next boot by itself.
+- **Nothing is built or installed on the Pi during a measurement.** Building heats it,
+  and what is installed half-way through changes the machine between two rounds.
+- **A run that was not clean is not repaired by hand.** The driver repeats a throttled
+  run by itself and marks what never ran clean; a block with `NOT-CLEAN` in its folder
+  is taken again another day, not quoted with a footnote.
+- **Disarm before anything that stops hangar** (README, "The guard").
 
-## Before leaving for the lab
+## Before leaving home
 
 | | Check |
 |---|---|
-| ☐ | `git pull` on the laptop; `git describe` says `v0.1.5` or later |
-| ☐ | `make -j8 all` (a plain `make` does not build the modules) |
-| ☐ | The vehicle's release: v0.1.5's `hangar-v0.1.5-aarch64.tar.zst` under `out/release/v0.1.5/` with the checkout at the tag, or one **built from this checkout** if it is past the tag (`tools/release.sh`; `lab.sh deploy` takes the newest under `out/release/`). The v0.1.3 tarball will not do for steps 3 to 5: `up --bridge` and `up --serial` need this checkout's `rov.sh` on the Pi and say so if it is older, and with the bridge both ends must be the same build, or nothing crosses (`up --bridge` compares them before it starts anything) |
-| ☐ | A rehearsal on the laptop passes: `tools/release.sh --host`, then `tools/rov/rehearse.sh out/release/hangar-<…>-x86_64.tar.zst` ends with `rehearse: all passed` (QUICKSTART, "Rehearsing without the vehicle"; `make check` first, for the fake ArduSub) |
-| ☐ | The controller, and QGroundControl starting |
-| ☐ | The battery or a 12 to 16 V supply for the vehicle. The Pixhawk reads no battery voltage, so `up` needs `--no-battery-check` (QUICKSTART, "The battery check") |
+| ☐ | `git describe` on the laptop says `v0.1.6` or later; `make -j8 all` |
+| ☐ | The vehicle's release under `out/release/` (`tools/release.sh`): it has `bin/hangar_pair` and `bin/null_pair` beside `hg_bench` (`tar -tf … \| grep _pair`) |
+| ☐ | A rehearsal passes: `tools/release.sh --host`, then `tools/rov/rehearse.sh out/release/hangar-<…>-x86_64.tar.zst plain bridge serial both` ends with `rehearse: all passed`. The `plain` run freezes and thaws a stand-in Pi |
+| ☐ | The harness proved here: `make check-pairs`, and the smoke plan (`bench/pairs/README.md`, the first lines) |
+| ☐ | **The baselines, packaged for aarch64**, so that nothing compiles on the Pi: "Baselines" below. Each one's node pair built, its entry in the registry, and the smoke plan run over it here or in an aarch64 container |
+| ☐ | For step 2's one-second limit: a manifest of a module that never sleeps, under `[Schedule] Policy=fifo` (docs/02). **Not prepared yet**: nothing in the release spins on purpose |
+| ☐ | The controller; QGroundControl starting; the battery charged (the soak of step 6 needs a full one) or a 12 to 16 V supply. The Pixhawk reads no battery voltage: `up --no-battery-check` |
+| ☐ | The heat sink is on the Pi. Without it the Pi throttles under two busy cores and the matrix cannot run |
 
-## 1. Deploy, and the v0.1.2 checks again (15 min)
+### Baselines
 
-This is also the first run of the AArch64 manager built with the size flags.
+<!-- BASELINES: to be completed from literature/notes/middleware-baselines.md (the research
+     on what to measure against) and by the work that writes each node pair. For each
+     system: what is installed on the Pi and how (an apt package, a .deb brought along, a
+     prebuilt tree under ~/hangar-bench), its registry entry, the helper it needs, and its
+     "not like for like" lines for bench/pairs/README.md. -->
 
-```sh
-tools/rov/lab.sh deploy
-tools/rov/lab.sh up --no-battery-check
-tools/rov/lab.sh status
-```
+Decided (2026-11-27): the systems hangar is measured against. The install steps are
+not written yet.
 
-| | Pass |
-|---|---|
-| ☐ | `lab: installed v0.1.5 (…)`, then `lab: READY TO ARM` |
-| ☐ | The preflight `up` prints first ends `0 FAIL`. Its warnings are the session's notes: an `apt` timer active (stop both for the session, start them when leaving), the lab's own services, real time not reachable |
-| ☐ | `status`: every module `ready`, `throttled=0x0` |
-| ☐ | Arm in QGroundControl, disarm: ArduSub follows within about 0.5 s each way |
-| ☐ | Armed, kill safety on the Pi (`pkill -KILL -f "[h]angar-safety"`): ArduSub disarmed and the thrusters neutral within about 0.3 s (267 ms on 2026-11-19). Then `hangar call safety.clear` |
+| System | Rows | On the Pi today | Node pair | Install step |
+|---|---|---|---|---|
+| ROS 2 Jazzy, Fast DDS | as installed; data-sharing with loaned messages | installed (2026-11-09) | to be written against `pair.h` (rclcpp) | none |
+| ROS 2 Jazzy, Cyclone DDS | as installed | **not installed** | the same node, by `RMW_IMPLEMENTATION` | **to be filled in** 🔑 |
+| ROS 2 Jazzy, Zenoh (`rmw_zenoh`) | with its router | **not installed** | the same node; the router is a helper | **to be filled in** 🔑 |
+| iceoryx2 | woken by its event service; busy-polling | not installed | to be written | **to be filled in** |
+| Unix domain sockets | a floor: the kernel alone | nothing to install | to be written | none |
+| MOOS, V10 asynchronous comms | through a MOOSDB (a helper) | not installed | to be written | **to be filled in** |
+| LCM | UDP multicast on loopback | not installed | to be written | **to be filled in** |
 
-New since v0.1.2, to notice here: an `arm` sent while safety is restarting is refused with
-"safety restarted after this arm was sent: send it again". Send it again.
+Open until the research is in: whether the Pi has a way to the internet at the lab (for
+`apt`), or every package is brought along as files.
 
-## 2. The cost on the Pi (5 min)
-
-```sh
-tools/rov/lab.sh preflight --measure
-tools/rov/lab.sh bench 60
-```
-
-| | Pass |
-|---|---|
-| ☐ | `preflight --measure` ends `0 FAIL` before the block: no package upgrade running, the Pi under 80 °C and not throttled, its clock right, nothing of another's above a fifth of a core. Before every block, not once: `unattended-upgrade` starts by itself some 25 minutes after the Pi boots |
-| ☐ | The run's folder has `preflight-before.txt` and `preflight-after.txt` and no `NOT-CLEAN` |
-| ☐ | All of hangar at 5 to 6 % of a core, as on 2026-11-20. The table now has a wake-ups column: write down the two largest |
-| ☐ | Saved under `~/hangar-results/<date>-lab` |
-
-## 3. The bridge on the tether (30 min). First time
-
-The topside role moves to the laptop. Step 1's session stays open (its parameter backup
-is the one `down` restores); `up` again lays the vehicle out with the bridge:
-
-```sh
-tools/rov/lab.sh up --bridge --no-battery-check
-tools/rov/lab.sh status
-tools/rov/lab.sh bench 60
-```
-
-`up --bridge` compares the two builds, starts the vehicle role on the Pi, copies
-`bridge.key` from the Pi to the laptop's `~/hangar-rov/` (mode 600; never into the
-repository), starts the topside role on the laptop from `builddir/`, and waits for the
-link. Rehearsed on loopback with both roles on the laptop; the copy of the key over
-`scp`, and the link on the tether, have never run. By hand, if `lab.sh` gets in the way:
-README, "The topside on the laptop" (`BRIDGE=1 rov.sh up` on the Pi, `BRIDGE=1
-tools/rov/rov.sh topside up` on the laptop; then the parameters are yours to save and restore).
-
-Below, `hangar` on the laptop is `HANGAR_ROOT=/dev/shm/hangar-topside builddir/hangar`.
-
-| | Pass |
-|---|---|
-| ☐ | `up`: `lab: both ends are the same build`, then `lab: the link is up: up 192.168.2.10:5614, rtt … ms, offset … ms`, then `lab: READY TO ARM`. `NOT THE SAME BUILD` stops it before anything starts: deploy a release of this checkout |
-| ☐ | `status`: under `== the Pi`, `bridge  ready … up 192.168.2.1:5614`; under `== this laptop`, `bridge  ready … up 192.168.2.10:5614` and `topside_mavlink … link up`. Write down the rtt and the clock offset |
-| ☐ | `bench`: `hangar-bridge` in both tables; the link topics before and after are in the results' README (`loss_rx`, `retransmits`, `rejected`) |
-| ☐ | `hangar call safety.check` on the laptop answers across the tether |
-| ☐ | QGroundControl on the laptop connects, arms and disarms through the bridge |
-| ☐ | The controller drives (thrusters turn, props off) |
-
-If the link does not come up, three things are new since v0.1.2:
-
-- A fixed `Peer=` must be the address **and port** the other end sends from. A laptop with
-  two addresses on the tether interface is refused; the bridge's log says so once.
-- The laptop's firewall must let UDP 5614 in from the Pi.
-- Before this checkout, `rov.sh topside up` had the laptop's `topside_mavlink` bind the
-  Pi's address, which fails on the tether (it never showed on loopback). Fixed, and the
-  fix has not met the tether either: if QGroundControl does not connect, look at
-  `/dev/shm/hangar-topside/run/hangar/log/topside_mavlink.log` first.
-- `hangar echo bridge.topside.link` has the counters: a rising `rejected` means datagrams
-  arrive and are refused.
-
-## 4. The tether trigger (15 min). First time, props off
-
-With the bridge the trigger is on: arming needs the link up. Stay in step 3's setup
-(`lab.sh up --bridge`).
-
-| | Do | Pass |
-|---|---|---|
-| ☐ | Link down (stop the laptop's topside: `BRIDGE=1 tools/rov/rov.sh topside down`), wait 2 s, then try to arm on the Pi: `hangar call safety.arm` | Refused: `tether: no packet from the topside for … s` (from 1.5 s after the last packet, half of `tether_timeout`), and `bridge.vehicle.link connecting` once the Pi's bridge has called the link lost (about 3 s) |
-| ☐ | Topside up again (`BRIDGE=1 tools/rov/rov.sh topside up`; `lab.sh status` shows the link), arm, then **unplug the tether** at the laptop | Neutral failsafe and ArduSub disarmed about 3 s after the unplug (`tether_timeout`). Time it |
-| ☐ | Plug in again; when the link is up, `hangar call safety.clear` | Cleared; arming works again. Before the link is back, `clear` is refused |
-| ☐ | Armed, kill the **vehicle's** bridge: on the Pi `pkill -KILL -f "[h]angar-bridge"` | Neutral within about 0.3 s (the `input` trigger: the link topic went stale). The manager restarts the bridge; when the link is up, `clear` |
-| ☐ | Armed, unplug for 1 s and plug in again | Nothing fires |
-
-This was tested against a stand-in for the bridge only. If a short hiccup of the link
-disarms the vehicle, or the 0.3 s rule fires on an ordinary bridge restart more often
-than is bearable, write down when: the alternative (judge a silent bridge by the 3 s
-timeout alone) is a small change.
-
-## 5. Serial MAVLink, without MAVROS (30 min). First time
-
-MAVROS is the largest cost on the vehicle (28 % of a core, 128 MB). The mavlink module can
-hold the Pixhawk's USB serial itself:
-
-```sh
-tools/rov/lab.sh up --serial --no-battery-check      # with --bridge too, if step 3 passed
-tools/rov/lab.sh status
-tools/rov/lab.sh bench 60
-```
-
-`up --serial` lays the vehicle out from the profile's `mavlink.conf.serial` and
-`mavlink.module.serial` (`rov.sh`'s `MAVLINK=serial`); the installed profile is not
-changed, so there are no files to put back. Rehearsed against the tests' fake ArduSub on
-a pseudo-terminal, parameters saved, set and restored; **never on the Pixhawk's
-`/dev/ttyACM0`.** If the module does not come up `ready`, `lab.sh up --no-battery-check`
-(without `--serial`) goes back to the relay in the same session. By hand: `MAVLINK=serial
-rov.sh up` on the Pi after `rov.sh reset`.
-
-| | Pass |
-|---|---|
-| ☐ | `up` does not say `/dev/ttyACM0 on the Pi is held by something else`. If it does, it has changed nothing and names the process and its systemd unit: stop it, or put the unit in `LAB_SERIAL_SERVICES` (`lab.conf`) for `up` to stop and `down` to start again; write down what it was |
-| ☐ | `up`: `lab: saving ArduSub's parameters …` only if this is the session's first `up`; then `lab: READY TO ARM` |
-| ☐ | `status`: `mavlink  ready … serial open; ardusub disarmed`, MANUAL; `MAVROS relay: not running (--serial: …)` |
-| ☐ | On the Pi, `rov.sh params via` says `hangar`; `rov.sh params diff <the session's backup>` lists only what `ardusub-setup` set |
-| ☐ | Arm, disarm, kill safety while armed: as in step 1 |
-| ☐ | `bench`: no `mavros_node` in the Pi's table, and the mavlink module's own CPU written down |
-| ☐ | The module's log has few `resync` lines (noise on the line) |
-
-## 6. The ROS 2 baseline (60 min, mostly waiting)
-
-For the paper's comparison. The steps and their commands are in
-[bench/ros2/README.md](../../bench/ros2/README.md), "On the Pi, step by step"; in short:
-
-| | |
-|---|---|
-| ☐ | hangar down on the Pi, the lab's `eeye` and `hellion` stopped, nothing else running, `throttled=0x0` |
-| ☐ | `bench/ros2` and `bench/procbench.py` copied to the Pi (the README's `tar … \| ssh` line) |
-| ☐ | `bench/ros2/run.sh --quick --hg-bench ~/hangar-root/bin/hg_bench` runs and names the middlewares it found |
-| ☐ | The run itself (about 40 minutes with Fast DDS alone), then under `performance` if there is time |
-| ☐ | `eeye` and `hellion` started again; the results copied to `~/hangar-results/<date>-ros2` |
-
-It needs `cmake` and a C++ compiler on the Pi; if either is missing it stops, having
-changed nothing, and the comparison waits for whoever owns the Pi.
-
-## 7. If there is time
+## 0. The state as found (10 min)
 
 | | | Pass |
 |---|---|---|
-| ☐ | **The native video path.** Today `lab.sh up --video` uses electric-eye on the laptop. hangar's own `video_relay`, `vision` and `topside_encoder` have not met the real camera | A picture in QGroundControl through them; this decides when `legacy/` can go |
-| ☐ | **The camera unplugged** while the encoder runs | The encoder exits and is restarted with a back-off; plugged in again, the picture returns without a restart of hangar |
-| ☐ | **The console in a browser** (the address `lab.sh up` prints; by address, not by host name) | The Fly view shows the state; Arm is greyed out while the state is unknown; Disarm and E-STOP never are |
-| ☐ | **The joystick module** instead of QGroundControl's (README; needs the bridge) | The thrusters follow the sticks with QGroundControl closed |
-| ☐ | **Real time**, props off (README, "Real time"): `lab.sh deploy --realtime` (the Pi's sudo password), `lab.sh up --serial --bridge --realtime` | `up` ends with `OK schedule` lines; `hangar status` on the Pi has no `not in force:` line; arm, sticks, disarm as before; then `hg_bench` and the failure tests again beside the numbers taken without |
+| ☐ | The tether up, `ssh bluerov2@192.168.2.10 true` answers | no password asked (the key; `ssh-copy-id` if it is gone again) |
+| ☐ | `tools/rov/lab.sh status` | what runs on the Pi before anything is touched: write down the lab's services, the temperature, `throttled=` |
+| ☐ | `tools/rov/lab.sh preflight` | read every `warn` and `FAIL`: it changes nothing. The Pi's clock days behind is expected (no battery clock) |
+| ☐ | ArduSub's parameters are saved by the first `up` of the session (step 2) and restored by `down` | — |
 
-## Before leaving
+## 1. Freeze, deploy, install (30 min, more if an upgrade is running)
 
-| | |
-|---|---|
-| ☐ | Disarmed |
-| ☐ | Whatever the preflight had stopped or changed by hand is as it was: the two `apt` timers started again, the governor back |
-| ☐ | `tools/rov/lab.sh down`, whichever of `--bridge`, `--serial` and `--video` the last `up` had: it disarms if the vehicle is not disarmed (and says so), reads the state again, restores ArduSub's parameters from the session's first backup and compares them (over the serial line if the session was on it), stops the topside on the laptop and hangar on the Pi, and starts the lab's services it stopped |
-| ☐ | `lab: everything as found`. If it names a step that failed, fix that and run `down` again |
-| ☐ | Only if `rov.sh` was used by hand instead: `rov.sh params restore <the file saved first>` and `rov.sh params diff <it>` says nothing differs; `BRIDGE=1 tools/rov/rov.sh topside reset` on the laptop, `rov.sh down` on the Pi (each refuses unless the vehicle reads disarmed) |
-| ☐ | The lab's services running again on the Pi: `systemctl is-active eeye hellion` says `active` twice (and any unit named in `LAB_SERIAL_SERVICES`) |
-| ☐ | `pgrep -a hangard` on the laptop shows nothing. `~/hangar-rov/bridge.key` stays on the laptop (and on the Pi) for the next visit; it is not in the repository |
-| ☐ | The results under `~/hangar-results/`, and for every step: passed, failed with what it said, or not reached |
+| | | Pass |
+|---|---|---|
+| ☐ | 🔑 `tools/rov/lab.sh freeze` | it prints each command, asks once, and ends with `frozen.` If an upgrade was running it waits for it (it says what it waits for, and never interrupts dpkg): let it. Status 3 means the package system still ran after 15 minutes: wait, and run `freeze` again |
+| ☐ | 🔑 `tools/rov/lab.sh deploy --realtime` | `lab: installed v0.1.6 (…)`, then `cap_ipc_lock,cap_sys_nice=ep` on `hangard`. (`--realtime` is for step 2's check; a second password) |
+| ☐ | The baselines' install steps, from "Baselines" above 🔑 | each system's programs are there |
+| ☐ | The harness onto the Pi: `tar -czf - bench/pairs tools/rov/preflight.py \| ssh bluerov2@192.168.2.10 'mkdir -p hangar-bench && tar -C hangar-bench -xzf -'` | — |
+| ☐ | Wait until the Pi is cool, then `tools/rov/lab.sh preflight --measure` | `ok pi frozen: since …`, no `FAIL`. A `warn` for real time is expected before step 2 |
+
+From here on the Pi stays frozen until step 7 (the end of the day).
+
+## 2. Checks, props off (about 75 min; once, on the first day)
+
+Each of these is a first on the vehicle. They come before the measurements because
+they decide whether real time is measured at all, and whether the preflight can be
+believed.
+
+| | | Pass |
+|---|---|---|
+| ☐ | **The preflight on the real Pi.** `lab.sh preflight` and `--measure` | the temperature and throttling lines read as `lab.sh status` does; the clock line within 2 s after `freeze`; nothing of the package system. Write down any line that reads wrong: it was built without the Pi |
+| ☐ | **hangar up**: `tools/rov/lab.sh up --serial --bridge --no-battery-check` | `lab: READY TO ARM`, `lab: the link is up`; arm in QGroundControl, the thrusters follow, disarm |
+| ☐ | **Real time in force, for the first time anywhere.** `lab.sh down`, then `tools/rov/lab.sh up --serial --bridge --no-battery-check --realtime` | `OK schedule` lines at the end of `up`. On the Pi: `hangar check --strict` exits 0; `hangar status` has no `not in force:` line; `hangar show safety`: its `in force` line says `fifo`, and locked memory above 0 kB |
+| ☐ | The same session: arm, sticks, disarm | as before. A module that does not start under `fifo` is the finding: its log, and `hangard.log` |
+| ☐ | **The one-second limit.** The module that never sleeps (prepared at home), added to the running vehicle root and started | the kernel kills it within about a second; the manager says so and backs off; SSH stays usable the whole time. **If SSH hangs: the Pi's power, and that is the finding** |
+| ☐ | **`encoder.params` across a topside restart, with video.** `lab.sh down`, `lab.sh up --video --bridge --serial --no-battery-check`; `lab.sh camera brightness=140`; on the laptop `BRIDGE=1 tools/rov/rov.sh topside reset`, then `topside up`, then `HANGAR_ROOT=/dev/shm/hangar-topside builddir/hangar echo encoder.params --count 1` | the message comes at once, with the brightness that was set, and nothing was set again (before v0.1.6 the restarted topside saw none until the next change) |
+| ☐ | **The camera's controls.** On the Pi: `v4l2-ctl -d /dev/video2 --list-ctrls`. Then `lab.sh camera brightness=…`, `auto_exposure=0 exposure_us=8000`, `gain=…` | the list (write it down: does the H.264 node take controls at all?); the picture in QGroundControl changes with each |
+| ☐ | `tools/rov/lab.sh down` | `the session is down` and `THE PI IS FROZEN` (it is: that is right) |
+
+## 3. The transport matrix, all systems interleaved (4.5 h a system; over as many days as it takes)
+
+hangar down (`lab.sh status`: no manager), the Pi frozen. On the Pi, in `~/hangar-bench`,
+in a `tmux` or `screen` so that it outlives the SSH connection:
+
+| | | Pass |
+|---|---|---|
+| ☐ | The smoke plan first: `bench/pairs/driver.py --plan bench/pairs/plans/smoke.json --var bin=$HOME/hangar-root/bin --out ~/pairs-smoke` (a minute a system) | every system has `ok` at the start (one that is `SKIP`ped is named with what is missing); `report.md` has a row for each; nothing failed |
+| ☐ | The plan: `bench/pairs/driver.py --plan bench/pairs/plans/full.json --var bin=$HOME/hangar-root/bin --out ~/pairs-$(date +%F) --reps N` | `round 0: preflight clean: …`. It stops by itself at a preflight `FAIL` and says which file has the line. `N` is what the day holds: one round is 26 minutes a system |
+| ☐ | While it runs: leave the Pi alone. `tmux attach` to look; `vcgencmd measure_temp` is fine, a build or a copy over the tether is not | no `FLAGGED other-load` lines |
+| ☐ | At the end of the day: the folder home, `scp -r bluerov2@192.168.2.10:pairs-<date> ~/hangar-results/` | `report.md` in it; its section "Runs repeated, flagged, failed or not run" read |
+| ☐ | The next day: `freeze`, another `--out`, more rounds. Then `bench/pairs/driver.py --report ~/hangar-results/pairs-*` | ten rounds or more a cell in all; the table "Within a session and between sessions" says whether the days agree |
+
+The plan's cells, conditions and repetitions are `bench/pairs/plans/full.json`; change
+the file, not the command: the file as it was is copied into the results.
+
+## 4. The same with real time on, hangar only (4.5 h, a day of its own)
+
+The full plan has a `realtime` condition, which the driver runs only where the user may
+have a real-time priority. On the Pi that is one more sudo, for the shell the driver is
+started from, and gone when that shell ends:
+
+| | | Pass |
+|---|---|---|
+| ☐ | 🔑 On the Pi, in the shell that will run the driver: `sudo prlimit --pid $$ --rtprio=50:50` | `ulimit -r` says 50. **Not tried anywhere yet** |
+| ☐ | `bench/pairs/driver.py --plan bench/pairs/plans/full.json --only null,hangar,hangar-inplace --var bin=$HOME/hangar-root/bin --out ~/pairs-rt-$(date +%F)` | no `NOTE condition realtime: this user may not …` at the start; the `realtime` cell has figures, beside `quiet` and `load2` of the same rounds |
+| ☐ | The whole matrix under `fifo` (every cell, not the one condition) is a plan of its own: a copy of `full.json` with `"realtime"` in every sweep's `condition` | optional; the results say which plan it was |
+
+## 5. Cost and failure tests on serial (about 2 h)
+
+| | | Pass |
+|---|---|---|
+| ☐ | `tools/rov/lab.sh up --serial --bridge --no-battery-check`, then `tools/rov/lab.sh bench 60`, three times, disarmed; once armed with the sticks moving | a folder each under `~/hangar-results/`, none with `NOT-CLEAN`; hangar's CPU near 1.9 % of a core idle (2026-11-25: 1.86) |
+| ☐ | The same with `--video` | the encoder's share, the frame rate |
+| ☐ | `tools/rov/failtest.py --props-off all` | every block's `preflight: no FAIL`; the times to neutral as on 2026-11-25. Now on a frozen Pi, with eeye and hellion stopped in every block alike |
+| ☐ | `tools/rov/failtest.py --props-off all --load 2` | the same under two busy cores |
+| ☐ | With `--realtime` (step 2 passed): `bench 60` and `failtest.py --props-off all` again | beside the numbers without: this is where real time should show, if it shows anywhere |
+
+## 6. Soak, if battery and time allow (1 h)
+
+| | | Pass |
+|---|---|---|
+| ☐ | Armed, serial with video, an hour: `~/hangar-results/2026-11-25/scripts/soak.py` (written for that session, not run then) | no failsafe, no module restarted, the temperature flat, no growth in any process's memory |
+
+## 7. Thaw, everything as found (10 min; every day)
+
+| | | Pass |
+|---|---|---|
+| ☐ | Disarmed. `tools/rov/lab.sh down` | `the session is down`, `THE PI IS FROZEN`; ArduSub's parameters restored and compared |
+| ☐ | 🔑 `tools/rov/lab.sh thaw` | `lab: thawed`: the apt timers, eeye, hellion and the governor as `freeze` found them |
+| ☐ | `tools/rov/lab.sh status` | no `FROZEN` line; `eeye: active`, `hellion: active` (if they were); no manager |
+| ☐ | If `deploy --realtime` was used and the lab should not keep it: on the Pi, `sudo setcap -r ~/hangar-root/bin/hangard` 🔑 | `getcap` prints nothing. (It is on hangar's own file, in hangar's own install) |
+| ☐ | `pgrep -a hangard` on the laptop shows nothing | — |
+
+## If the time is short
+
+What one day must hold: steps 0, 1, the first two lines of 2, the smoke plan and at
+least one round of step 3, and 7. In this order, drop: step 6; step 4; the camera's
+controls and the one-second limit of step 2; the `--load` and `--realtime` lines of
+step 5. Do not drop the freeze, the preflight or the thaw, and do not shorten a plan to
+fit a day: run fewer rounds of the whole plan, and pool.
 
 ## What to bring back
 
-- For each step, pass or fail, and the numbers asked for (times to neutral, the rtt, CPU).
-- The logs of anything that failed: on the Pi, `/dev/shm/hangar-vehicle/hangard.log` and
-  `/dev/shm/hangar-vehicle/run/hangar/log/<module>.log` (copy them before `rov.sh reset`
-  or `lab.sh down`, which remove the root), and `~/hangar-rov/relay.log`.
-- Whether the tether trigger's two rules (step 4) are bearable in practice.
-- The ROS 2 results directory.
+- Every results folder, with its `report.md` read: `~/pairs-*` from the Pi,
+  `~/hangar-results/<date>-lab*` and `-failtests` from the laptop.
+- For each line of step 2: passed, failed with what it said, or not reached. The four
+  that have never run in force anywhere: a module under `fifo`, memory locked, the
+  kill of a module that never sleeps, file capabilities on the Pi's filesystem.
+- `v4l2-ctl --list-ctrls` of the camera's H.264 node.
+- What `freeze` printed the first time, whole: it is the first run of it on a real
+  systemd, and the first SIGTERM to a real `unattended-upgrade` if one was running.
+- Anything the preflight said that was wrong for this Pi.
+- The logs of anything that failed: on the Pi, `/dev/shm/hangar-vehicle/hangard.log`
+  and `/dev/shm/hangar-vehicle/run/hangar/log/<module>.log`, copied before `lab.sh down`
+  removes the root.
