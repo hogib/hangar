@@ -7,12 +7,15 @@
  * each module of the graph, in every system alike.
  *
  *   node --module NAME --prefix P --from NS --until NS
- *        [--pub TOPIC:BYTES:HZ]... [--sub TOPIC:BYTES]... [-- system's own options]
+ *        [--pub TOPIC:BYTES:HZ[:INPUT+INPUT...]]... [--sub TOPIC:BYTES[:HZ]]...
+ *        [-- system's own options]
  *   node --version
  *
  * One thread, as a module is written: it waits for any of its inputs, with a timeout
  * at its next publication's instant; a message that has come is counted; a publication
- * that is due is sent. The waiting is the system's own (graph_system.wait), and may
+ * that is due is sent. A publication may name the topics its module computes it from
+ * (its manifest's Inputs) and a subscription its topic's rate: what a system that
+ * records such things needs to know, and the others ignore. The waiting is the system's own (graph_system.wait), and may
  * return late by what the system's waiting call can express: a publication is then
  * late by that, and since every message carries the time it was really sent, the
  * latency is not touched by it.
@@ -43,7 +46,8 @@ extern "C" {
 struct graph_end {
 	char topic[96];      /* prefix and name: unique to the run */
 	char name[64];       /* the graph's name for it */
-	unsigned size, rate; /* rate: publications only, Hz */
+	unsigned size, rate; /* rate: Hz; a subscription's may be 0, not said */
+	char inputs[200];    /* a publication's Inputs, '+' between them, or empty */
 	/* a publication */
 	uint64_t period_ns, next_ns, seq, sent, failed, measured;
 	/* a subscription */
@@ -123,11 +127,15 @@ static int graph_end_parse(struct graph_end *e, const char *prefix, const char *
 		return -1;
 	memcpy(name, spec, (size_t)(c - spec));
 	name[c - spec] = 0;
-	if (sscanf(c + 1, pub ? "%u:%u" : "%u", &size, &rate) != (pub ? 2 : 1))
+	if (sscanf(c + 1, "%u:%u", &size, &rate) < (pub ? 2 : 1))
 		return -1;
-	if (size < GRAPH_MIN_SIZE || size % 8 || (pub && (!rate || rate > 100000)))
+	if (size < GRAPH_MIN_SIZE || size % 8 || (pub && !rate) || rate > 100000)
 		return -1;
 	memset(e, 0, sizeof *e);
+	const char *in = strchr(c + 1, ':');
+	in = in ? strchr(in + 1, ':') : NULL;
+	if (pub && in)
+		snprintf(e->inputs, sizeof e->inputs, "%s", in + 1);
 	snprintf(e->name, sizeof e->name, "%s", name);
 	snprintf(e->topic, sizeof e->topic, "%s.%s", prefix, name);
 	e->size = size;

@@ -4,11 +4,23 @@
  * its subscriptions are read in order, and it sleeps in one hg_wait over all of them
  * with a timeout at its next publication.
  *
- *   hangar_graph --module NAME ... [-- --in-place]
+ *   hangar_graph --module NAME ... [-- --in-place] [-- --wired [--refs N]]
  *
  * hg_wait's timeout is in milliseconds, so a publication can be up to a millisecond
  * late: as a real module's is. --in-place: publications built in a loaned slot,
- * subscriptions read as views (docs/01 "In place"). */
+ * subscriptions read as views (docs/01 "In place").
+ *
+ * --wired: as a module under the manager is. The process writes the wiring a manager
+ * would hand it (every topic with its type and its declared rate, every publication
+ * with its manifest's Inputs, which the graph gives) and calls hg_init. A read then
+ * says whether its topic is stale against its rate, and a publish records a reference
+ * to the message last read from each of its Inputs, and whether any of them was
+ * stale: what a vehicle's modules do. --refs N (1 to 4): every publication declares as
+ * Inputs the first N of its module's subscriptions, in place of what the graph gives;
+ * with 4, the most lib/hg records, it is the most this work can cost. (A graph whose
+ * modules all compute from one another has no message that is not computed from a
+ * stale one once one was, at the start: the flag stays set through such a run. The
+ * work is the same.) */
 #include "graph.h"
 
 #include "hg_topic.h"
@@ -23,7 +35,67 @@ static hg_pub *pubs[GRAPH_MAX];
 static hg_sub *subs[GRAPH_MAX];
 static struct hg_schema schemas[2 * GRAPH_MAX];
 static void *bufs[GRAPH_MAX];
-static int in_place;
+static int in_place, wired, refs;
+static unsigned long seen_msgs, seen_refs, seen_stale;
+
+static const struct hg_type *type_of(int slot, unsigned size);
+
+/* The wiring a manager would hand this module, written by itself, and hg_init. */
+static int wire(const struct graph_opts *o)
+{
+	const char *dir = getenv("HANGAR_TOPIC_DIR");
+	char path[512];
+	if (!dir || !*dir) {
+		fprintf(stderr, "hangar_graph: --wired needs HANGAR_TOPIC_DIR\n");
+		return -1;
+	}
+	snprintf(path, sizeof path, "%s/%s-%s.wiring", dir, o->prefix, o->module);
+	FILE *f = fopen(path, "w");
+	if (!f) {
+		fprintf(stderr, "hangar_graph: %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+	fprintf(f, "hangar-wiring 1\nmodule %s\n", o->module);
+	for (int i = 0; i < o->nsub; i++) {
+		const struct hg_type *t = type_of(GRAPH_MAX + i, o->sub[i].size);
+		if (!t) {
+			fclose(f);
+			return -1;
+		}
+		fprintf(f, "sub %s type=g%u hash=%016llx", o->sub[i].topic, o->sub[i].size, (unsigned long long)t->hash);
+		if (o->sub[i].rate)
+			fprintf(f, " rate=%u", o->sub[i].rate);
+		fputc('\n', f);
+	}
+	for (int i = 0; i < o->npub; i++) {
+		const struct hg_type *t = type_of(i, o->pub[i].size);
+		if (!t) {
+			fclose(f);
+			return -1;
+		}
+		fprintf(f, "pub %s type=g%u hash=%016llx rate=%u slots=16", o->pub[i].topic, o->pub[i].size,
+			(unsigned long long)t->hash, o->pub[i].rate);
+		if (refs) {
+			for (int k = 0; k < o->nsub && k < refs; k++)
+				fprintf(f, "%s%s", k ? "," : " inputs=", o->sub[k].topic);
+		} else if (o->pub[i].inputs[0]) {
+			/* The graph's names, '+' between them, each given the run's prefix. */
+			char names[sizeof o->pub[i].inputs], *save = NULL;
+			snprintf(names, sizeof names, "%s", o->pub[i].inputs);
+			int k = 0;
+			for (char *n = strtok_r(names, "+", &save); n && k < HG_MAX_REFS; n = strtok_r(NULL, "+", &save), k++)
+				fprintf(f, "%s%s.%s", k ? "," : " inputs=", o->prefix, n);
+		}
+		fputc('\n', f);
+	}
+	fclose(f);
+	setenv("HANGAR_WIRING_FILE", path, 1);
+	if (hg_init() < 0) {
+		fprintf(stderr, "hangar_graph: hg_init: %s\n", hg_init_error());
+		return -1;
+	}
+	return 0;
+}
 
 static const struct hg_type *type_of(int slot, unsigned size)
 {
@@ -42,11 +114,21 @@ static int open_all(const struct graph_opts *o)
 	for (int i = 0; i < o->argc; i++) {
 		if (!strcmp(o->argv[i], "--in-place")) {
 			in_place = 1;
+		} else if (!strcmp(o->argv[i], "--wired")) {
+			wired = 1;
+		} else if (!strcmp(o->argv[i], "--refs") && i + 1 < o->argc) {
+			refs = atoi(o->argv[++i]);
 		} else {
 			fprintf(stderr, "hangar_graph: unknown option %s\n", o->argv[i]);
 			return -1;
 		}
 	}
+	if (refs < 0 || refs > HG_MAX_REFS || (refs && !wired)) {
+		fprintf(stderr, "hangar_graph: --refs 1 to %d, with --wired\n", HG_MAX_REFS);
+		return -1;
+	}
+	if (wired && wire(o) < 0)
+		return -1;
 	for (int i = 0; i < o->npub; i++) {
 		const struct hg_type *t = type_of(i, o->pub[i].size);
 		struct hg_pub_opts po = { .slots = 16, .rate_mhz = o->pub[i].rate * 1000u };
@@ -101,6 +183,9 @@ static int wait_any(int64_t timeout_ns)
 			} else {
 				if (hg_next(subs[i], bufs[i], O->sub[i].size, &info) != HG_MSG)
 					break;
+				seen_msgs++;
+				seen_refs += info.n_inputs;
+				seen_stale += (info.flags & HG_SLOT_STALE) != 0;
 				graph_deliver(i, bufs[i], (long)O->sub[i].size);
 			}
 		}
@@ -110,6 +195,9 @@ static int wait_any(int64_t timeout_ns)
 
 static void close_all(void)
 {
+	/* In the run's log, so that a row said to carry references can be seen to. */
+	fprintf(stderr, "hangar_graph: %s, %lu messages read, %lu references in them, %lu flagged as computed from stale inputs\n",
+		wired ? "wired" : "not wired", seen_msgs, seen_refs, seen_stale);
 	for (int i = 0; i < O->npub; i++)
 		hg_pub_close(pubs[i]);
 	for (int i = 0; i < O->nsub; i++)

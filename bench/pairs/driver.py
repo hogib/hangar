@@ -357,9 +357,10 @@ class Run:
         for m in g['modules']:
             cmd = base + ['--module', m['name'], '--prefix', self.vars['topic'], '--from', str(start_ns), '--until', str(until_ns)]
             for t in m['pub']:
-                cmd += ['--pub', f'{t}:{g["topics"][t]["size"]}:{g["topics"][t]["rate"]}']
+                ins = '+'.join(g['topics'][t].get('inputs', []))
+                cmd += ['--pub', f'{t}:{g["topics"][t]["size"]}:{g["topics"][t]["rate"]}' + (':' + ins if ins else '')]
             for t in m['sub']:
-                cmd += ['--sub', f'{t}:{g["topics"][t]["size"]}']
+                cmd += ['--sub', f'{t}:{g["topics"][t]["size"]}:{g["topics"][t]["rate"]}']
             self.start('mod-' + m['name'], cmd + (['--'] + args if args else []), set(self.ctx['allowed']))
         lead = min(0.5, seconds / 4.0)
         time.sleep(max(0.0, (start_ns - time.monotonic_ns()) / 1e9) + lead)

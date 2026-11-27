@@ -3,6 +3,8 @@
     {"name": "null", "title": "the harness alone", "kind": "single", "node": ["{bin}/null_pair"]},
     {"name": "hangar", "title": "hangar", "node": ["{bin}/hangar_pair"], "graph": ["{bin}/hangar_graph"], "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
      "config_files": ["{here}/plan-check.json"]},
+    {"name": "hangar-refs", "title": "hangar wired as a module, four references a message", "node": ["{bin}/hangar_pair"],
+     "graph": ["{bin}/hangar_graph"], "args": ["--wired", "--refs", "4"], "env": {"HANGAR_TOPIC_DIR": "{rundir}"}},
     {"name": "with-helper", "title": "hangar in place, beside a helper process that does nothing",
      "node": ["{bin}/hangar_pair"], "args": ["--in-place"], "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
      "helpers": [{"name": "sleeper", "cmd": ["sleep", "30"], "ready_s": 0.1, "version": ["sleep", "--version"]}],

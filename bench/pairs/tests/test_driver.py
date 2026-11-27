@@ -65,7 +65,7 @@ check('the driver ends with status 0', rc == 0, text[-2000:])
 with open(os.path.join(a, 'results.json')) as f:
     doc = json.load(f)
 runs = doc['runs']
-systems = ['null', 'hangar', 'with-helper', 'unix-seqpacket', 'unix-stream']
+systems = ['null', 'hangar', 'hangar-refs', 'with-helper', 'unix-seqpacket', 'unix-stream']
 check('the systems that can run are run, the one that is not installed is named and skipped',
       list(doc['systems']) == systems and [s['system'] for s in doc['skipped']] == ['absent'], str(doc['skipped']))
 check('five cells from four sweeps, a graph among them', len(doc['cells']) == 5 and sum(c['type'] == 'graph' for c in doc['cells']) == 1, str([driver.cell_key(c) for c in doc['cells']]))
@@ -103,8 +103,25 @@ check('the cost names its interval and the kind of memory', all(r['result']['cos
 gr = [r for r in runs if r['cell']['type'] == 'graph']
 gran = [r for r in gr if not r['result'].get('not_run')]
 check('the graph: run by the systems that have a node for a module, recorded as not run with the reason by the others',
-      sorted({r['system'] for r in gran}) == ['hangar', 'unix-seqpacket'] and all(r['result'].get('not_run') for r in gr if r not in gran),
+      sorted({r['system'] for r in gran}) == ['hangar', 'hangar-refs', 'unix-seqpacket'] and all(r['result'].get('not_run') for r in gr if r not in gran),
       str([(r['system'], r['result'].get('not_run')) for r in gr]))
+# The wired entry: its readers' own log lines say what the messages carried.
+def refs_logged(pattern):
+    import glob
+    import re
+    out = []
+    for f in glob.glob(os.path.join(a, 'logs', pattern)):
+        with open(f) as fh:
+            m = re.search(r'wired, (\d+) messages read, (\d+) references in them', fh.read())
+        if m:
+            out.append((int(m.group(1)), int(m.group(2))))
+    return out
+pr = refs_logged('*-hangar-refs-0-sub*.err')
+check('a wired pair with four references: every message its subscribers read carried four',
+      pr and all(n > 0 and r == 4 * n for n, r in pr), str(pr))
+gr_refs = refs_logged('*-hangar-refs-0-mod-*.err')
+check('a wired graph: the modules that read messages found references in them',
+      gr_refs and all(r > 0 for n, r in gr_refs if n > 0), str(gr_refs))
 gm = [driver.run_metrics(r) for r in gran]
 check('the graph: a process a module, each ended with its line; 2 s of 200 Hz to two readers and 20 Hz to two',
       all(len(r['result']['modules']) == 3 and r['result']['processes'] == 3 for r in gran) and

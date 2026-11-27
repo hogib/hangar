@@ -128,9 +128,18 @@ and they are the first thing to question:
 - `recorder` and `console` subscribe to everything;
 - the payload is the harness's (a count and a stamp), not the type's fields: what is
   measured is the transport of messages of these sizes at these rates between these
-  processes, not what a module computes. hangar's own modules do more than this (they
-  record provenance, check staleness, answer calls): none of that is in this cell, on
-  either side.
+  processes, not what a module computes;
+- a topic's `inputs` are its manifest's `Inputs=`: the topics a message of it is
+  computed from, which hangar records a reference to in each message
+  (`ardusub.manual_control` from `ctl.wrench`, `ardusub.state` from `safety.state`;
+  no other topic of this profile declares any). A system that records no such thing
+  ignores them.
+
+hangar's own modules do more than carry messages: they record those references and
+check staleness against the declared rates. The `hangar` row leaves that out, as the
+other systems' rows have nothing like it; **`hangar-module` has it, and is the row for
+what the vehicle runs** ("hangar's own rows", below). Calls and the recorder are in no
+row.
 
 **The module** is `graph.h`, the same for every system, as `pair.h` is for a pair: one
 thread that waits for any of its inputs with a timeout at its next publication, counts
@@ -155,8 +164,8 @@ the measured part is not seen by this; `Deliveries measured` beside the rates sa
 whether a subscription came short.
 
 **Which entries run it, and why not the others** (the report lists each with its
-reason): `hangar`, `hangar-inplace`, `unix-seqpacket`, `iceoryx2` and the six ROS 2
-entries that are two-process systems.
+reason): `hangar`, `hangar-inplace`, `hangar-module`, `hangar-module-refs4`,
+`unix-seqpacket`, `iceoryx2` and the six ROS 2 entries that are two-process systems.
 
 | not run | why |
 |---|---|
@@ -338,10 +347,12 @@ and it must say what a referee would ask of this system's row:
 | `null` | the harness alone | not a system |
 | `hangar` | lib/hg: a 16-slot ring in shared memory, the reader asleep in one futex and woken by the publish | one copy in, one copy out. A reader 16 messages behind loses the oldest; the writer never waits. No helper. The stamp is the harness's, carried in the payload like every system's (lib/hg has its own in the slot's header, not used here) |
 | `hangar-inplace` | the same, the message built in a loaned slot and read as a view | no copy. A view the writer overwrote while it was read is dropped and counted, which takes a reader about the ring's length behind |
+| `hangar-module` | hangar **as a vehicle's module runs it**: the process wired as the manager wires a module, the topic's rate declared, the references its manifest's Inputs call for | the transport of `hangar` and, on top, what lib/hg does for a module and the bare transport leaves out: every read says whether its topic is stale against its rate, every publish records a reference to the message last read from each of its Inputs and whether any was stale. In a pair the topic has no Inputs; in the graph, the profile's. **This is the row that says what a vehicle pays** |
+| `hangar-module-refs4` | the same, every message carrying four references, the most lib/hg records | the upper bound of the provenance work, not what the profile asks for. In a pair the four are topics of the publisher's own, published once (it has read nothing): the recording is in the row, the reading of four inputs is not. In the graph, the first four subscriptions of each module |
 | `unix-seqpacket` | Unix domain sockets, `SOCK_SEQPACKET`: the kernel's own IPC with no middleware. **The floor** for anything that sends through the kernel | two copies and one system call a side; the reader asleep in `recv`, woken by the kernel. The publisher never waits: a subscriber whose buffer is full does not get the message. A socket then drops the **newest** and keeps the old (hangar's ring drops the oldest), and the buffer's depth is the kernel's count of bytes (`net.core.wmem_default`, 212992 B: some hundreds of small messages), not 16. A message must fit that buffer whole: up to 131072 B here, and the larger cells are not run. No discovery beyond a path, no type, no metadata |
 | `unix-stream` | the same with `SOCK_STREAM`, for any size | **another contract**: the publisher's send blocks while the reader's buffer is full, so nothing is lost and a slow reader slows the writer (it shows under "intended"). A megabyte is several send and receive calls. The reader has the message when it has collected all its bytes |
 | `ros2-fastdds` | ROS 2 Jazzy with Fast DDS as installed, ROS 2's default: one rclcpp node a process | serialised into Fast DDS's shared-memory transport and out of it, inside the sample. Reliable, keep-last 16 (see below). No helper |
-| `ros2-fastdds-loan` | the same with Fast DDS's data sharing and loaned messages (`ros2_pair/config/fastdds-datasharing.xml`) | no serialisation and no copy: the publisher builds the message in a sample it borrowed, the subscription is handed that sample. The nearest thing in ROS 2 to `hangar-inplace`. Whether the loan was granted is in the node's standard error (`logs/`) |
+| `ros2-fastdds-loan` | the same with Fast DDS's data sharing and loaned messages (`ros2_pair/config/fastdds-datasharing.xml`) | no serialisation and no copy: the publisher builds the message in a sample it borrowed, the subscription is handed that sample. The nearest thing in ROS 2 to `hangar-inplace`. Whether the loan was granted is in the node's standard error (`logs/`). |
 | `ros2-fastdds-waitset` | Fast DDS as installed, the subscriber waiting in an `rclcpp::WaitSet` and taking the message itself | **not how a ROS 2 node is written.** Beside `ros2-fastdds` it separates what the executor costs from what the middleware costs |
 | `ros2-fastdds-composed` | publisher and subscription in **one process**, rclcpp's intra-process delivery | **not the comparison**: nothing leaves the process, and one failing node takes the other with it. Its own row because the question is asked |
 | `ros2-cyclonedds` | ROS 2 Jazzy with Cyclone DDS as installed | serialised, through the loopback network stack. No helper |
@@ -365,6 +376,37 @@ subscriber; the connection is what lets a publisher have several and learn that 
 gone. The publisher takes new connections in before it reads the clock, outside the
 sample. A baseline's node is found through `--var base=DIR` (hangar's own through
 `--var bin=DIR`), since on the Pi they come from different archives.
+
+### hangar's own rows, and which one a vehicle runs
+
+hangar has four rows, and they are an ablation of its own features:
+
+| row | wired | staleness | references a message | copies |
+|---|---|---|---|---|
+| `hangar` | no | not computed | none | in and out |
+| `hangar-inplace` | no | not computed | none | none |
+| `hangar-module` | yes | computed at every read and publish | those its manifest's Inputs call for | in and out |
+| `hangar-module-refs4` | yes | computed | four | in and out |
+
+- **`hangar` is the bare transport**, and the row that stands beside the other systems'
+  transports: none of them records what a message was computed from or says that a
+  topic is stale, and neither does this row.
+- **`hangar-module` is what a vehicle runs.** A module under the manager has a wiring,
+  declared rates and the Inputs of its manifest, and the library does that work on
+  every read and every publish. A figure quoted as "what hangar costs on the vehicle"
+  is this row's. `hangar-module` minus `hangar` is the price of the feature in the
+  vehicle's own configuration; `hangar-module-refs4` minus `hangar` is the most it can
+  be.
+- A wired node writes its own wiring file (the text the manager would hand it) into the
+  run's directory and calls `hg_init`; there is no manager in these cells. What the
+  manager itself publishes (its two topics) is in the graph as the `hangard` process's
+  publications; its supervision is not in any cell.
+- A wired subscriber's log line (`logs/*-sub*.err`, `*-mod-*.err`) says how many
+  references the messages it read carried and how many were flagged as computed from
+  stale inputs, so a row said to carry references can be seen to. In the graph with
+  `refs4`, where every module computes from the others, the flag stays set once a
+  first message was computed before its inputs existed: the work is the same.
+- Still not in any row: calls, parameters, the recorder.
 
 ### ROS 2
 

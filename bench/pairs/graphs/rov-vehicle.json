@@ -9,7 +9,8 @@
     "recorder and console subscribe to *: to every topic of the graph.",
     "The bridge is the vehicle's end of the tether: it publishes what the topside sends down (pilot.wrench, pilot.buttons) and its link status, and subscribes to what it mirrors up. The tether itself is not in the graph: one machine.",
     "vehicle.leak and ctl.depth_hold have no publisher in this profile and are left out.",
-    "The payloads are the harness's (a count and a stamp), not the types' fields: what is measured is the transport of messages of these sizes at these rates between these processes, not what a module computes."
+    "The payloads are the harness's (a count and a stamp), not the types' fields: what is measured is the transport of messages of these sizes at these rates between these processes, not what a module computes.",
+    "A topic's inputs are its manifest's Inputs= (mavlink's two: ardusub.manual_control from ctl.wrench, ardusub.state from safety.state). They are what hangar records a reference to in each message; a system that records no such thing ignores them."
   ],
   "topics": {
     "hangar.vehicle.system": {
@@ -28,13 +29,19 @@
       "type": "manual_control",
       "payload": 16,
       "size": 16,
-      "rate": 50
+      "rate": 50,
+      "inputs": [
+        "ctl.wrench"
+      ]
     },
     "ardusub.state": {
       "type": "ardusub_state",
       "payload": 176,
       "size": 256,
-      "rate": 10
+      "rate": 10,
+      "inputs": [
+        "safety.state"
+      ]
     },
     "nav.attitude": {
       "type": "attitude",

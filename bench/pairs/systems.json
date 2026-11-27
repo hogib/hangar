@@ -19,7 +19,7 @@
       "env": {
         "HANGAR_TOPIC_DIR": "{rundir}"
       },
-      "notes": "The message is copied into the ring and out of it. A reader that falls 16 messages behind loses the oldest (counted as lost): the writer never waits.",
+      "notes": "The message is copied into the ring and out of it. A reader that falls 16 messages behind loses the oldest (counted as lost): the writer never waits. The bare transport: no wiring, no references, no staleness. A vehicle's modules do more (`hangar-module`); this row is what stands beside the other systems' transports, which do none of it either.",
       "graph": [
         "{bin}/hangar_graph"
       ]
@@ -40,6 +40,42 @@
       "graph": [
         "{bin}/hangar_graph"
       ]
+    },
+    {
+      "name": "hangar-module",
+      "title": "hangar as a vehicle's module runs it: wired, the topic's rate declared, the references its manifest calls for",
+      "node": [
+        "{bin}/hangar_pair"
+      ],
+      "graph": [
+        "{bin}/hangar_graph"
+      ],
+      "args": [
+        "--wired"
+      ],
+      "env": {
+        "HANGAR_TOPIC_DIR": "{rundir}"
+      },
+      "notes": "WHAT A VEHICLE RUNS. The same transport as `hangar`, with what the library does for a module under the manager and the bare transport leaves out: the process has a wiring (written by itself here, as the manager would hand it) and calls hg_init; every read says whether its topic is stale against its declared rate; every publish records a reference to the message last read from each topic its manifest names as Inputs, and whether any was stale. In a pair the topic has no Inputs, as most of a vehicle's sensor topics have none; in the graph the Inputs are the profile's (two of sixteen topics). The difference from `hangar` is what that costs."
+    },
+    {
+      "name": "hangar-module-refs4",
+      "title": "the same, every message carrying four references: the most lib/hg records",
+      "node": [
+        "{bin}/hangar_pair"
+      ],
+      "graph": [
+        "{bin}/hangar_graph"
+      ],
+      "args": [
+        "--wired",
+        "--refs",
+        "4"
+      ],
+      "env": {
+        "HANGAR_TOPIC_DIR": "{rundir}"
+      },
+      "notes": "The upper bound of hangar's provenance work, not what the vehicle's profile asks for: every publication declares four Inputs (in the graph, the first four subscriptions of its module; fewer where a module has fewer) and every message carries four references, recorded at the publish and handed to the reader with the message. In a pair the publisher has read nothing, so the four are topics of its own, published once: the recording is in the row, the reading of four inputs is not. No other system here records what a message was computed from."
     },
     {
       "name": "unix-seqpacket",
