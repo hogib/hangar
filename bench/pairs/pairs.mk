@@ -14,7 +14,7 @@
 # results file.
 
 PAIR_BINS := $(BUILDDIR)/hangar_pair $(BUILDDIR)/null_pair $(BUILDDIR)/unix_pair \
-	$(BUILDDIR)/hangar_graph $(BUILDDIR)/unix_graph
+	$(BUILDDIR)/hangar_graph $(BUILDDIR)/unix_graph $(BUILDDIR)/restart_node
 PAIR_DEFS = -DPAIR_CFLAGS='"$(CC) $(HG_CFLAGS) $(CFLAGS)"' -DHG_COMMIT='"$(HG_COMMIT)"'
 
 $(OBJDIR)/bench/pairs/hangar_pair.o: bench/pairs/hangar_pair.c bench/pairs/pair.h
@@ -42,6 +42,16 @@ $(BUILDDIR)/unix_graph: bench/pairs/unix_graph.c bench/pairs/graph.h bench/pairs
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(PAIR_DEFS) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $< $(LDLIBS)
 
+# What bench/pairs/restart.py has killed and restarted (README.md, "Restarting a
+# process"): one program for every supervisor.
+$(OBJDIR)/bench/pairs/restart_node.o: bench/pairs/restart_node.c
+	@mkdir -p $(dir $@)
+	$(CC) $(LIB_CPPFLAGS) -Imsg $(CPPFLAGS) $(HG_CFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(BUILDDIR)/restart_node: $(OBJDIR)/bench/pairs/restart_node.o $(OBJDIR)/msg/depth.o $(call obj,$(HG_SRC))
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
+
 # The baselines that need nothing but libc (the others: tools/baselines.sh).
 $(BUILDDIR)/unix_pair: bench/pairs/unix_pair.c bench/pairs/pair.h
 	@mkdir -p $(dir $@)
@@ -60,6 +70,19 @@ check-baselines:
 	@mkdir -p $(BUILDDIR); if tools/baselines.sh ros2-smoke > $(BUILDDIR)/baselines-smoke.log 2>&1 && \
 	    ! grep -q 'SKIP' $(BUILDDIR)/baselines-smoke.log; then echo "ok    baselines"; \
 	else echo "FAIL  baselines"; tail -30 $(BUILDDIR)/baselines-smoke.log; exit 1; fi
+
+# restart.py proved under hangard (part of check): a publisher and a subscriber killed
+# twice each, restarted, their messages back. No time is judged. The other supervisors
+# (systemd --user, ros2 launch) need what a CI machine may lack and are run by hand, or
+# by check-baselines.
+.PHONY: check-restart
+check-restart: $(BUILDDIR)/restart_node $(BUILDDIR)/hangard
+	@mkdir -p $(TESTDIR); \
+	if python3 -I bench/pairs/restart.py --bin $(abspath $(BUILDDIR)) --out $(abspath $(TESTDIR))/restart-smoke --smoke \
+	    --only hangard,hangard-fast > $(TESTDIR)/restart.log 2>&1 && \
+	   [ "$$(grep -c 'running .* ms, messages .* ms' $(TESTDIR)/restart.log)" = 8 ]; then \
+	  echo "ok    bench restart"; \
+	else echo "FAIL  bench restart"; cat $(TESTDIR)/restart.log; exit 1; fi
 
 .PHONY: pairs check-pairs
 pairs: $(PAIR_BINS)

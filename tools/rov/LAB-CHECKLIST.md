@@ -145,6 +145,7 @@ V="--var bin=$B --var base=$B --var ros=$PWD/ros2/install/ros2_pair/lib/ros2_pai
 | ☐ | While it runs: leave the Pi alone. `tmux attach` to look; `vcgencmd measure_temp` is fine, a build or a copy over the tether is not | no `FLAGGED other-load` lines |
 | ☐ | At the end of the day: the folder home, `scp -r bluerov2@192.168.2.10:pairs-<date> ~/hangar-results/` | `report.md` in it; its section "Runs repeated, flagged, failed or not run" read |
 | ☐ | The next day: `freeze`, another `--out`, more rounds. Then `bench/pairs/driver.py --report ~/hangar-results/pairs-*` | ten rounds or more a cell in all; the table "Within a session and between sessions" says whether the days agree |
+| ☐ | Once, on any of the days, in the same shell (ROS 2 sourced, from the SSH session itself: `systemd --user` needs the session): `bench/pairs/restart.py --bin $B --msg $PWD/msg --out ~/restart-$(date +%F)` (about 50 minutes: 20 kills a supervisor, 35 s apart) | five supervisors, none `SKIP`ped; `restart.md` has a row for each, and "not restarted" is `0 of 10` in every row. These rows restart a process and say nothing of thrusters or arming: step 5 does |
 
 The plan's cells, conditions and repetitions are `bench/pairs/plans/full.json`; change
 the file, not the command: the file as it was is copied into the results.

@@ -98,8 +98,14 @@ if [ "$cmd" = ros2-smoke ]; then
 		source /work/install/setup.bash
 		python3 -I /b/bench/pairs/driver.py --plan /b/bench/pairs/plans/smoke.json --reps '"$reps"' \
 			--var bin=/b/bin --var base=/b/bin --var ros=/work/install/ros2_pair/lib/ros2_pair \
-			--var ros_root=/opt/ros/jazzy --out /work/smoke --no-preflight'
-	echo "baselines.sh: $ws/smoke/report.md (a proof of the harness, not a measurement)"
+			--var ros_root=/opt/ros/jazzy --out /work/smoke --no-preflight
+		# The restart row, for the one supervisor a container has that make check does
+		# not prove: ros2 launch. (No systemd in the container, and hangard cannot start
+		# a module there: docker refuses clone3 by default. make check-restart is
+		# hangard on the machine itself.)
+		python3 -I /b/bench/pairs/restart.py --bin /b/bin --msg /b/msg --out /work/restart-smoke --smoke \
+			--only ros2-launch'
+	echo "baselines.sh: $ws/smoke/report.md and $ws/restart-smoke/restart.md (a proof of the harness, not a measurement)"
 	exit 0
 fi
 
@@ -135,7 +141,7 @@ echo "  work      $work"
 # hangar's own pairs and the Unix sockets: this tree's Makefile, as a release builds.
 make -C "$ROOT" BUILD=release BUILDDIR="$builddir" CC="$cc" HOSTCC="zig cc" LDFLAGS="-static -s" \
 	"$builddir/hangar_pair" "$builddir/null_pair" "$builddir/unix_pair" "$builddir/hangar_graph" "$builddir/unix_graph" \
-	> "$work/make.log" 2>&1 ||
+	"$builddir/restart_node" "$builddir/hangard" > "$work/make.log" 2>&1 ||
 	{ tail -20 "$work/make.log" >&2; echo "baselines.sh: make failed ($work/make.log)" >&2; exit 1; }
 # The flags make gave them, for the pairs that make does not build.
 pair_cflags=$(make -C "$ROOT" -s --no-print-directory BUILD=release BUILDDIR="$builddir" CC="$cc" \
@@ -226,10 +232,10 @@ fi
 # ---- the stage ------------------------------------------------------------------------
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/bench" "$stage/tools/rov" "$stage/licenses/iceoryx2"
-bins="hangar_pair null_pair unix_pair iceoryx2_pair hangar_graph unix_graph iceoryx2_graph"
+bins="hangar_pair null_pair unix_pair iceoryx2_pair hangar_graph unix_graph iceoryx2_graph restart_node hangard"
 for b in $bins; do cp "$builddir/$b" "$stage/bin/"; done
 # The driver and what it reads, the ROS 2 node's source with them; no caches.
-(cd "$ROOT" && tar -cf - --exclude=__pycache__ --exclude='*.o' bench/pairs tools/rov/preflight.py) | tar -xf - -C "$stage"
+(cd "$ROOT" && tar -cf - --exclude=__pycache__ --exclude='*.o' bench/pairs tools/rov/preflight.py msg/depth.msg) | tar -xf - -C "$stage"
 cp "$ROOT/LICENSE" "$stage/licenses/hangar-GPL-3.0-or-later"
 cp "$ROOT/LICENSE.LGPL" "$stage/licenses/hangar-lib-LGPL-3.0-or-later"
 cp "$iox/src/LICENSE-APACHE" "$iox/src/LICENSE-MIT" "$stage/licenses/iceoryx2/"
@@ -274,7 +280,8 @@ chmod +x "$stage/ros2-build.sh"
 	echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ) zig $(zig version) $(rustc --version)"
 	echo "flags $cc $pair_cflags -static -s"
 	echo "binaries $bins"
-	echo "hangar_pair null_pair unix_pair hangar_graph unix_graph: this tree, bench/pairs (GPL-3.0-or-later; lib/hg LGPL-3.0-or-later)"
+	echo "hangar_pair null_pair unix_pair hangar_graph unix_graph restart_node: this tree, bench/pairs (GPL-3.0-or-later; lib/hg LGPL-3.0-or-later)"
+	echo "hangard: this tree's manager, for bench/pairs/restart.py alone: the same source as the release's, built here (GPL-3.0-or-later)"
 	echo "iceoryx2_pair iceoryx2_graph: this tree's bench/pairs, linked with iceoryx2 $IOX2_VERSION's C binding (Apache-2.0 OR MIT)"
 	echo "iceoryx2-source $IOX2_URL sha256 $IOX2_SHA256"
 	echo "$ros2_line"

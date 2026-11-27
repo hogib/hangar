@@ -448,6 +448,63 @@ An entry whose middleware is not installed is named and skipped (`needs`).
 Not in this directory yet: the node pairs of the other baselines (MOOS, LCM). Each comes
 with its entry and its own lines for this table.
 
+## Restarting a process
+
+hangar's failure tests (`tools/rov/failtest.py`) kill a module under an armed vehicle
+and time what the system does about it. No system in this directory has anything to set
+beside that: they are transports, and none of them supervises a process. What a
+conventional stack has is something that **restarts** a process, and `restart.py`
+measures that, beside hangar's manager doing the same:
+
+```sh
+bench/pairs/restart.py --bin builddir --out ~/restart-$(date +%F)        # about 50 minutes
+bench/pairs/restart.py --bin builddir --out /tmp/restart-smoke --smoke   # a minute: the script proved
+```
+
+**These rows restart a process, and that is all they compare.** None of them, hangar's
+included, is asked here for what `safety` does when a module dies under an armed vehicle
+(thrusters to neutral, ArduSub disarmed). systemd and ROS 2's launch have nothing that
+corresponds to it: they do not know what a process publishes, whether it is stale, or
+that there is a vehicle.
+
+| row | what restarts the process |
+|---|---|
+| `hangard` | hangar's manager, a manifest's defaults: `Backoff=0.1s..10s`, doubling, `ResetAfter=30s`, giving up after `Burst=5/60s` |
+| `hangard-fast` | the same with `Backoff=1ms..10s` |
+| `systemd` | `systemd --user`, a transient service (`systemd-run`), `Restart=always`, the rest at its defaults (`RestartSec=100ms`; 5 starts in 10 s and the unit is left failed) |
+| `systemd-fast` | the same with `RestartSec=0` and no start limit: the fastest setting that is still a supervisor |
+| `ros2-launch` | `ros2 launch`, `ExecuteProcess(respawn=True)`, `respawn_delay` 0: its default and its fastest |
+
+**The process** is the same under every one: `restart_node`, a publisher and a
+subscriber of one lib/hg topic at 100 Hz. Under `ros2 launch` too: launch respawns any
+executable, and what is compared is the restarting, not rclcpp. The subscriber is killed
+with `SIGKILL` ten times, then the publisher ten times, and from each kill two times are
+taken, on the clock the node writes its log with:
+
+| time | from the kill to |
+|---|---|
+| **running** | the first statement of the new process's `main` |
+| **messages** | the first message in a subscriber's hands that involves the new process (its own first, or the first from the new publisher). At 100 Hz no such figure is finer than 10 ms after the process runs |
+
+**Spacing is part of the protocol.** Every supervisor here treats a process that keeps
+dying differently from one that died once: hangard doubles its delay until the module
+has been healthy for 30 s, systemd stops after five starts in ten seconds. The kills are
+35 s apart, so that each is a first failure for all of them. What a supervisor does
+with the fifth failure in a minute is a policy, not a latency, and is in the table
+above, not in the numbers.
+
+**What each row needs.** `hangard`: the manager's program and the `depth` message type
+(both in the baselines' archive). `systemd`: a user manager to talk to, which exists
+while the user has a session: an SSH login is one, so on the Pi it runs from the SSH
+session as it is. Only a run that must outlive every session needs lingering
+(`loginctl enable-linger bluerov2`), which on Ubuntu asks for authentication, so sudo;
+a `tmux` inside the SSH session does not need it while the session stays. There is no
+systemd in the container of `bench/ros2`, so that row is not in `check-baselines`.
+`ros2-launch`: ROS 2 sourced. A row whose supervisor is not there is named and skipped.
+
+`make check-restart` (part of `make check`) proves the script under hangard: two kills
+of each role, each restarted and its messages back. It judges no time.
+
 ## What this does not measure, and what could mislead
 
 - **One machine.** Publisher and subscribers on one host: nothing here is a tether or
