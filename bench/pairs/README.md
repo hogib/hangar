@@ -540,6 +540,21 @@ found, so that nobody reads those runs as Fast DDS's latency or as this node's m
   of the pair lost 3 of 60 with a mean of 45 ms; thirty repetitions of 1 MB at 30 Hz with
   one reader (2026-11-28) lost nothing and failed nothing, so that one is not explained
   and not reproduced.
+- **Is it known?** The issue tracker and release notes of Fast DDS were searched on
+  2026-11-28 for this symptom (a data-sharing writer whose pool stays empty after
+  readers join late; reliable only). **Nothing that matches it was found, and no
+  release that says it fixes it.** The nearest reports, none of them this, read only
+  as search summaries: a late-joining volatile reader that loops in
+  `ReaderPool::init_shared_segment` (eProsima/Fast-DDS issue 6338, against 3.0.1); a
+  reliable sample that stays undelivered after matching with data sharing (issue
+  6560, whose reporter avoids it by turning data sharing off); `write()` blocking
+  when a subscriber joins (issues 1042 and 3566, older and not about data sharing).
+  The release notes of 2.14.6 list "Avoid sending duplicated ACKs in DataSharing";
+  the behaviour here is of 2.14.7, so that was not its cure. Fast DDS's
+  documentation of data sharing does describe the state, without calling it a
+  fault: "the DataWriter history can be empty and the write operation be still
+  blocked because all samples in the pool are unacknowledged".
+  So this is recorded here as observed in 2.14.7, not as a known defect with a fix.
 - **What the registry does about it.** `ros2-fastdds-loan` stays as it is, reliable,
   like every other ROS 2 row, and its failed publications are counted and printed; a
   run of it with failed publications is not quoted as a latency. Beside it,
