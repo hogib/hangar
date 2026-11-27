@@ -1,0 +1,235 @@
+{
+  "name": "rov-vehicle",
+  "title": "the vehicle's role of the lab BlueROV2: profiles/rov-vehicle with the bridge, the serial line and the camera's encoder",
+  "source": "profiles/rov-vehicle/*.module, bridge.conf and encoder.module.off for who publishes and subscribes what and at which rate; msg/*.h for each type's payload size; hangard/hangard.c for the manager's two topics",
+  "rules": [
+    "A process a module, the manager included (it publishes hangar.vehicle.system and .modules): eight processes.",
+    "A size is the type's payload rounded up to a power of two, 16 bytes at least, so that every system carries the same sizes and ROS 2 has one fixed-size type a size.",
+    "Only topics with a rate are in the graph. Event topics (ardusub.param, ardusub.params_job, mux.params, safety.params, encoder.params, recorder.status, recorder.session) carry nothing while a vehicle just runs, and calls are not topics here.",
+    "recorder and console subscribe to *: to every topic of the graph.",
+    "The bridge is the vehicle's end of the tether: it publishes what the topside sends down (pilot.wrench, pilot.buttons) and its link status, and subscribes to what it mirrors up. The tether itself is not in the graph: one machine.",
+    "vehicle.leak and ctl.depth_hold have no publisher in this profile and are left out.",
+    "The payloads are the harness's (a count and a stamp), not the types' fields: what is measured is the transport of messages of these sizes at these rates between these processes, not what a module computes."
+  ],
+  "topics": {
+    "hangar.vehicle.system": {
+      "type": "hangar_system",
+      "payload": 96,
+      "size": 128,
+      "rate": 1
+    },
+    "hangar.vehicle.modules": {
+      "type": "hangar_modules",
+      "payload": 192,
+      "size": 256,
+      "rate": 1
+    },
+    "ardusub.manual_control": {
+      "type": "manual_control",
+      "payload": 16,
+      "size": 16,
+      "rate": 50
+    },
+    "ardusub.state": {
+      "type": "ardusub_state",
+      "payload": 176,
+      "size": 256,
+      "rate": 10
+    },
+    "nav.attitude": {
+      "type": "attitude",
+      "payload": 40,
+      "size": 64,
+      "rate": 50
+    },
+    "nav.imu": {
+      "type": "imu",
+      "payload": 40,
+      "size": 64,
+      "rate": 50
+    },
+    "nav.depth": {
+      "type": "depth",
+      "payload": 16,
+      "size": 16,
+      "rate": 50
+    },
+    "power.battery": {
+      "type": "battery",
+      "payload": 16,
+      "size": 16,
+      "rate": 2
+    },
+    "thr.out": {
+      "type": "thruster_out",
+      "payload": 16,
+      "size": 16,
+      "rate": 50
+    },
+    "ctl.wrench": {
+      "type": "wrench",
+      "payload": 24,
+      "size": 32,
+      "rate": 50
+    },
+    "mux.state": {
+      "type": "mux_state",
+      "payload": 40,
+      "size": 64,
+      "rate": 10
+    },
+    "safety.state": {
+      "type": "safety_state",
+      "payload": 128,
+      "size": 128,
+      "rate": 10
+    },
+    "pilot.wrench": {
+      "type": "wrench",
+      "payload": 24,
+      "size": 32,
+      "rate": 50
+    },
+    "pilot.buttons": {
+      "type": "pilot_buttons",
+      "payload": 8,
+      "size": 16,
+      "rate": 50
+    },
+    "bridge.vehicle.link": {
+      "type": "bridge_link",
+      "payload": 288,
+      "size": 512,
+      "rate": 10
+    },
+    "video.index": {
+      "type": "video_index",
+      "payload": 96,
+      "size": 128,
+      "rate": 30
+    }
+  },
+  "modules": [
+    {
+      "name": "hangard",
+      "pub": [
+        "hangar.vehicle.system",
+        "hangar.vehicle.modules"
+      ],
+      "sub": []
+    },
+    {
+      "name": "mavlink",
+      "pub": [
+        "ardusub.manual_control",
+        "ardusub.state",
+        "nav.attitude",
+        "nav.imu",
+        "nav.depth",
+        "power.battery",
+        "thr.out"
+      ],
+      "sub": [
+        "ctl.wrench",
+        "safety.state"
+      ]
+    },
+    {
+      "name": "mux",
+      "pub": [
+        "ctl.wrench",
+        "mux.state"
+      ],
+      "sub": [
+        "pilot.wrench",
+        "nav.depth",
+        "safety.state"
+      ]
+    },
+    {
+      "name": "safety",
+      "pub": [
+        "safety.state"
+      ],
+      "sub": [
+        "hangar.vehicle.modules",
+        "hangar.vehicle.system",
+        "power.battery",
+        "nav.depth",
+        "ardusub.state",
+        "bridge.vehicle.link"
+      ]
+    },
+    {
+      "name": "bridge",
+      "pub": [
+        "pilot.wrench",
+        "pilot.buttons",
+        "bridge.vehicle.link"
+      ],
+      "sub": [
+        "safety.state",
+        "hangar.vehicle.system",
+        "hangar.vehicle.modules",
+        "nav.attitude",
+        "nav.imu",
+        "nav.depth",
+        "power.battery",
+        "mux.state",
+        "ardusub.state",
+        "video.index"
+      ]
+    },
+    {
+      "name": "encoder",
+      "pub": [
+        "video.index"
+      ],
+      "sub": []
+    },
+    {
+      "name": "recorder",
+      "pub": [],
+      "sub": [
+        "ardusub.manual_control",
+        "ardusub.state",
+        "bridge.vehicle.link",
+        "ctl.wrench",
+        "hangar.vehicle.modules",
+        "hangar.vehicle.system",
+        "mux.state",
+        "nav.attitude",
+        "nav.depth",
+        "nav.imu",
+        "pilot.buttons",
+        "pilot.wrench",
+        "power.battery",
+        "safety.state",
+        "thr.out",
+        "video.index"
+      ]
+    },
+    {
+      "name": "console",
+      "pub": [],
+      "sub": [
+        "ardusub.manual_control",
+        "ardusub.state",
+        "bridge.vehicle.link",
+        "ctl.wrench",
+        "hangar.vehicle.modules",
+        "hangar.vehicle.system",
+        "mux.state",
+        "nav.attitude",
+        "nav.depth",
+        "nav.imu",
+        "pilot.buttons",
+        "pilot.wrench",
+        "power.battery",
+        "safety.state",
+        "thr.out",
+        "video.index"
+      ]
+    }
+  ]
+}

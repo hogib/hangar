@@ -344,6 +344,48 @@ class Run:
             self.errors.append(f'the publisher gave no result (exit status {pub.returncode})')
         return res
 
+    def graph(self, g, seconds):
+        """A whole graph: one process a module, each with all its publications and
+        subscriptions, started together and left to the scheduler over every allowed
+        CPU (a vehicle's modules are not pinned). The measured part begins a warm-up
+        after the last process was started, at an instant every process is given."""
+        warm = self.ctx['plan'].get('graph_warmup_s', 5)
+        base = fill(self.sys['graph'], self.vars)
+        args = fill(self.sys.get('args', []), self.vars)
+        start_ns = time.monotonic_ns() + int((warm + 0.2 * len(g['modules'])) * 1e9)
+        until_ns = start_ns + int(seconds * 1e9)
+        for m in g['modules']:
+            cmd = base + ['--module', m['name'], '--prefix', self.vars['topic'], '--from', str(start_ns), '--until', str(until_ns)]
+            for t in m['pub']:
+                cmd += ['--pub', f'{t}:{g["topics"][t]["size"]}:{g["topics"][t]["rate"]}']
+            for t in m['sub']:
+                cmd += ['--sub', f'{t}:{g["topics"][t]["size"]}']
+            self.start('mod-' + m['name'], cmd + (['--'] + args if args else []), set(self.ctx['allowed']))
+        lead = min(0.5, seconds / 4.0)
+        time.sleep(max(0.0, (start_ns - time.monotonic_ns()) / 1e9) + lead)
+        dead = [n for n, p in self.procs.items() if n.startswith('mod-') and p.poll() is not None]
+        if dead:
+            raise RuntimeError('ended before the measured part: ' + ', '.join(f'{n} (logs/{self.tag}-{n}.err)' for n in dead))
+        a = self.sample()
+        time.sleep(max(0.1, seconds - 2 * lead))
+        b = self.sample()
+        res = {'cost': self.cost(a, b), 'processes': len(g['modules']), 'modules': []}
+        limit = time.monotonic() + lead + 20
+        for m in g['modules']:
+            name = 'mod-' + m['name']
+            p = self.procs[name]
+            try:
+                p.wait(max(0.1, limit - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                self.errors.append(f'{name} did not end: killed')
+                stop(p, signal.SIGKILL)
+            j = last_json(self.path(name, 'out'))
+            if not j or j.get('error') or j.get('failed'):
+                self.errors.append(f'{name}: ' + ((j or {}).get('error') or ('its waiting failed' if j else f'no result (exit status {p.returncode})')))
+            if j:
+                res['modules'].append(j)
+        return res
+
     def startup(self):
         """With the publisher running: a subscriber started, to its first message; then
         a subscriber killed and another started, to its first message."""
@@ -383,6 +425,18 @@ class Run:
 def plan_cells(plan):
     cells, seen = [], set()
     for sw in plan['sweeps']:
+        if sw.get('cell') == 'graph':
+            # A whole graph of modules (graphs/<name>.json): no size, rate or count of
+            # its own; they are the graph's.
+            for cond in sw.get('condition', ['quiet']):
+                if cond not in plan['conditions']:
+                    raise SystemExit(f'plan: sweep {sw["name"]} names a condition {cond} the plan does not define')
+                c = {'type': 'graph', 'graph': sw['graph'], 'size': 0, 'rate': 0, 'subscribers': 0, 'condition': cond,
+                     'seconds': sw.get('seconds', plan.get('graph_seconds', 60))}
+                if cell_key(c) not in seen:
+                    seen.add(cell_key(c))
+                    cells.append(dict(c, sweeps=[sw['name']]))
+            continue
         for size in sw.get('size', [256]):
             for rate in sw.get('rate', [1000]):
                 for subs in sw.get('subscribers', [1]):
@@ -400,7 +454,31 @@ def plan_cells(plan):
 
 
 def cell_key(c):
+    if c['type'] == 'graph':
+        return f'graph/{c["graph"]}/{c["condition"]}'
     return f'{c["type"]}/{c["size"]}B/{c["rate"]}Hz/{c["subscribers"]}sub/{c["condition"]}'
+
+
+def load_graph(name, plan_dir):
+    """graphs/<name>.json beside the plan or beside this file: its modules, each with
+    what it publishes (topic, size, rate) and what it subscribes to (topic, size)."""
+    for d in (plan_dir, os.path.join(plan_dir, '..', 'graphs'), os.path.join(HERE, 'graphs')):
+        path = os.path.join(d, name if name.endswith('.json') else name + '.json')
+        if os.path.isfile(path):
+            break
+    else:
+        raise SystemExit(f'plan: no graph {name} beside the plan or in {os.path.join(HERE, "graphs")}')
+    with open(path) as f:
+        g = json.load(f)
+    for m in g['modules']:
+        for t in m['pub'] + m['sub']:
+            if t not in g['topics']:
+                raise SystemExit(f'{path}: module {m["name"]} names a topic {t} the graph does not define')
+    pubs = [t for m in g['modules'] for t in m['pub']]
+    if len(pubs) != len(set(pubs)):
+        raise SystemExit(f'{path}: a topic has two publishers')
+    g['file'] = path
+    return g
 
 
 def run_seconds(plan, rate):
@@ -410,8 +488,18 @@ def run_seconds(plan, rate):
     return int(max(plan['seconds'], min(want, plan.get('max_seconds', plan['seconds']))))
 
 
-def system_fits(system, cell):
+def system_fits(system, cell, graphs=None):
     """None, or why this system does not run this cell."""
+    if cell['type'] == 'graph':
+        if not system.get('graph'):
+            return system.get('graph_why', 'the system has no node for a graph\'s module')
+        if system.get('graph_missing'):
+            return system['graph_missing']
+        sizes = sorted({t['size'] for t in (graphs or {}).get(cell['graph'], {}).get('topics', {}).values()})
+        bad = [z for z in sizes if z > system.get('max_size', 1 << 40) or (system.get('graph_sizes') and z not in system['graph_sizes'])]
+        if bad:
+            return 'the graph has messages of %s B, which the system does not carry' % ', '.join(map(str, bad))
+        return None
     if cell['type'] not in system.get('cells', ['latency', 'startup']):
         return f'the system has no {cell["type"]} cell'
     if system.get('kind') == 'single' and (cell['subscribers'] != 1 or cell['type'] != 'latency'):
@@ -464,6 +552,8 @@ def hist_quantile(h, q):
 def run_metrics(run):
     """One run's figures. A percentile is there only if the run has the samples."""
     m, r = {}, run['result']
+    if run['cell']['type'] == 'graph':
+        return graph_metrics(run)
     if run['cell']['type'] == 'startup':
         for k in ('startup_ms', 'rejoin_ms'):
             if k in r:
@@ -497,6 +587,48 @@ def run_metrics(run):
         helpers = [n for n in c['cpu_pct'] if n.startswith('helper-')]
         if helpers:
             m['helpers_cpu_pct'] = sum(c['cpu_pct'][n] for n in helpers)
+    return m
+
+
+def graph_metrics(run):
+    """A graph's run: per topic, the latency over all its subscriptions and what they
+    lost; and the cost of every process together."""
+    m, r = {'topics': {}}, run['result']
+    per = {}
+    for mod in r.get('modules', []):
+        for s in mod.get('subs', []):
+            per.setdefault(s['topic'], []).append(s)
+    for t, ss in per.items():
+        h = hist_merge(s['latency'] for s in ss)
+        d = {'n': h['n'], 'subscriptions': len(ss), 'lost': sum(s['lost'] for s in ss), 'out_of_order': sum(s['out_of_order'] for s in ss)}
+        for p in ('p50', 'p99', 'p999'):
+            if h['n'] >= NEED[p]:
+                d[p + '_us'] = hist_quantile(h, Q[p]) / 1000.0
+        if h['n']:
+            d['max_us'] = h['max_ns'] / 1000.0
+        m['topics'][t] = d
+    allh = hist_merge(s['latency'] for ss in per.values() for s in ss)
+    m['n'] = allh['n']
+    for p in ('p50', 'p99', 'p999'):
+        if allh['n'] >= NEED[p]:
+            m[p + '_us'] = hist_quantile(allh, Q[p]) / 1000.0
+    if allh['n']:
+        m['max_us'] = allh['max_ns'] / 1000.0
+    sent = {p['topic']: p['measured'] for mod in r.get('modules', []) for p in mod.get('pubs', [])}
+    m['published'] = sum(sent.values())
+    m['expected'] = sum(sent.get(s['topic'], 0) for ss in per.values() for s in ss)
+    # Lost: what a subscription saw gaps of, and what never came at all (the edges of
+    # the measured part can differ by a message or two a subscription, either way).
+    m['lost_gaps'] = sum(d['lost'] for d in m['topics'].values())
+    m['short'] = max(0, m['expected'] - allh['n'])
+    m['send_failed'] = sum(p['send_failed'] for mod in r.get('modules', []) for p in mod.get('pubs', []))
+    c = r.get('cost') or {}
+    if c.get('cpu_pct'):
+        m['cpu_pct'] = c['cpu_pct_total']
+        m['mem_kb'] = c['mem_kb_total']
+        m['helpers_cpu_pct'] = sum(v for n, v in c['cpu_pct'].items() if n.startswith('helper-'))
+        m['helpers_mem_kb'] = sum(v for n, v in c['mem_kb'].items() if n.startswith('helper-'))
+        m['processes'] = len(c['cpu_pct'])
     return m
 
 
@@ -601,6 +733,8 @@ def report(docs):
     for key, title in METRICS:
         rows = []
         for c in cells:
+            if c['type'] == 'graph':
+                continue
             line, any_value = [], False
             for n in systems:
                 rs = by.get((cell_key(c), n), [])
@@ -635,7 +769,7 @@ def report(docs):
                 else:
                     cell = 'not run' if skipped_why else '–'
                 line.append(cell)
-            if any_value:
+            if any_value and c['type'] != 'graph':
                 rows.append(f'| {c["size"]} B | {c["rate"]} Hz | {c["subscribers"]} | {c["condition"]} | ' + ' | '.join(line) + ' |')
         if rows and key == 'mem_kb':
             kinds = sorted({k for r in runs for k in (r['result'].get('cost') or {}).get('mem_kind', {}).values()})
@@ -648,6 +782,7 @@ def report(docs):
                     '|---|---|---|---|' + '---|' * len(systems)] + rows + ['']
     if notes:
         out += ['## Percentiles not printed', ''] + [f'- {n}' for n in sorted(set(notes))] + ['']
+    out += graph_report(docs, cells, systems, by, first['seed'])
 
     # Spread within a session against spread between sessions, on the headline figure.
     sessions = sorted({r['session'] for r in runs})
@@ -693,6 +828,67 @@ def report(docs):
         out.append('None: every run ran once, with no flag.')
     out.append('')
     return '\n'.join(out)
+
+
+def graph_report(docs, cells, systems, by, seed):
+    """The sections of the graph cells: for each graph and condition, the cost of the
+    whole graph in each system, then the latency topic by topic."""
+    out = []
+
+    def med(xs):
+        xs = [x for x in xs if x is not None]
+        if not xs:
+            return '–'
+        s = num(statistics.median(xs))
+        ci = bootstrap_ci(xs, seed)
+        return s + (f' [{num(ci[0])}–{num(ci[1])}]' if ci else f' (n={len(xs)})')
+
+    for c in cells:
+        if c['type'] != 'graph':
+            continue
+        g = next((d['graphs'][c['graph']] for d in docs if c['graph'] in d.get('graphs', {})), None)
+        if not g:
+            continue
+        ran = [n for n in systems if any(not r['result'].get('not_run') for r in by.get((cell_key(c), n), []))]
+        ms = {n: [run_metrics(r) for r in by.get((cell_key(c), n), []) if not r['result'].get('not_run') and r['result'].get('modules')] for n in ran}
+        nsub = sum(len(m['sub']) for m in g['modules'])
+        out += [f'## A whole graph: {g["name"]}, {c["condition"]}', '',
+                f'{g["title"]}. {len(g["modules"])} processes, {len(g["topics"])} topics, {nsub} subscriptions; '
+                f'{sum(t["rate"] for t in g["topics"].values())} messages a second published and '
+                f'{sum(g["topics"][t]["rate"] for m in g["modules"] for t in m["sub"])} delivered, for {c["seconds"]} s a run. '
+                'Every system runs the same processes with the same publications and subscriptions (bench/pairs/README.md, '
+                '"A vehicle\'s graph"); helpers are counted in the cost.', '']
+        if not ran:
+            out += ['No system ran it.', '']
+            continue
+        head = '| | ' + ' | '.join(f'`{n}`' for n in ran) + ' |'
+        sep = '|---|' + '---|' * len(ran)
+        rows = [('CPU, every process and helper, % of one core', 'cpu_pct'), ('of which helpers', 'helpers_cpu_pct'),
+                ('Memory, every process and helper, kB', 'mem_kb'), ('of which helpers', 'helpers_mem_kb'),
+                ('Processes, helpers included', 'processes'),
+                ('Latency over every delivery, median (µs)', 'p50_us'), ('the same, 99th percentile (µs)', 'p99_us'),
+                ('the same, 99.9th percentile (µs)', 'p999_us'), ('the same, the largest sample of a run (µs)', 'max_us'),
+                ('Deliveries measured, a run', 'n'), ('Deliveries missing in a subscription\'s counts, a run', 'lost_gaps'),
+                ('Publications that failed, a run', 'send_failed')]
+        out += ['### The whole graph', '', head, sep]
+        for title, key in rows:
+            out.append(f'| {title} | ' + ' | '.join(med([m.get(key) for m in ms[n]]) for n in ran) + ' |')
+        out.append('')
+        for title, key in (('Latency by topic, median (µs)', 'p50_us'), ('Latency by topic, 99th percentile (µs)', 'p99_us'),
+                           ('Latency by topic, the largest sample of a run (µs)', 'max_us')):
+            body = []
+            for t, td in g['topics'].items():
+                cells_ = [med([m['topics'].get(t, {}).get(key) for m in ms[n]]) for n in ran]
+                if any(x != '–' for x in cells_):
+                    nsubs = sum(1 for m in g['modules'] if t in m['sub'])
+                    body.append(f'| `{t}` | {td["size"]} B | {td["rate"]} Hz | {nsubs} | ' + ' | '.join(cells_) + ' |')
+            if body:
+                out += [f'### {title}', '', '| topic | size | rate | subscribers | ' + ' | '.join(f'`{n}`' for n in ran) + ' |',
+                        '|---|---|---|---|' + '---|' * len(ran)] + body + ['']
+        if key == 'max_us':
+            out += ['A percentile is printed only where a run has the samples for it (200 for the median, 10 000 for the 99th): a topic '
+                    'at 1 Hz has neither in a run of a minute, and shows its largest sample only.', '']
+    return out
 
 
 def state_line(s):
@@ -751,6 +947,10 @@ def system_ready(s, variables, out):
     for f in fill(s.get('needs', []), dict(v, here=os.path.dirname(s['file']))):
         if not os.path.exists(f):
             return f'{f} is not there' + (f' ({s["install"]})' if s.get('install') else ''), None
+    if s.get('graph'):
+        exe = fill(s['graph'], v)[0]
+        if not (os.path.isfile(exe) and os.access(exe, os.X_OK)) and not shutil.which(exe):
+            s['graph_missing'] = f'{exe} is not there'
     rec = {'title': s['title'], 'notes': s.get('notes', ''), 'entry': {k: s[k] for k in s if k != 'file'}, 'version': None, 'config': []}
     try:
         # In the system's own environment: a node may say there which middleware it loaded.
@@ -852,6 +1052,8 @@ def main():
     cores = pick_cores(plan, allowed)
     os.sched_setaffinity(0, set(cores['other']))   # this script stays off the pair's CPUs
     cells = plan_cells(plan)
+    plan_dir = os.path.dirname(os.path.abspath(args.plan))
+    graphs = {c['graph']: load_graph(c['graph'], plan_dir) for c in cells if c['type'] == 'graph'}
 
     reg = load_systems(args.systems or [os.path.join(HERE, 'systems.json')], variables)
     only = args.only.split(',') if args.only else plan.get('systems')
@@ -884,10 +1086,14 @@ def main():
     s0 = machine_state([cores['pub']] + cores['sub'])
     doc = {'bench_pairs': 1, 'smoke': bool(plan.get('smoke')), 'environment': env, 'plan': plan,
            'plan_sha': hashlib.sha256(plan_text.encode()).hexdigest(), 'seed': seed, 'repetitions': reps, 'max_temp_c': max_temp,
-           'systems': records, 'skipped': skipped, 'cells': cells, 'state_start': s0, 'rounds': [], 'runs': []}
+           'systems': records, 'skipped': skipped, 'cells': cells, 'state_start': s0, 'rounds': [], 'runs': [],
+           'graphs': {n: {k: v for k, v in g.items() if k != 'file'} for n, g in graphs.items()}}
     ctx = {'plan': plan, 'cores': cores, 'allowed': allowed, 'out': out, 'vars': variables}
+    for g in graphs.values():
+        shutil.copy(g['file'], os.path.join(out, 'graph-' + os.path.basename(g['file'])))
 
-    per_round = sum(run_seconds(plan, c['rate']) + plan['warmup_s'] + 4 if c['type'] == 'latency' else 12 for c in cells) * len(systems)
+    per_round = sum(run_seconds(plan, c['rate']) + plan['warmup_s'] + 4 if c['type'] == 'latency' else
+                    c['seconds'] + plan.get('graph_warmup_s', 5) + 6 if c['type'] == 'graph' else 12 for c in cells) * len(systems)
     say(f'session {env["session"]}: {len(cells)} cells x {len(systems)} systems x {reps} rounds, about {reps * per_round // 60 + 1} min '
         f'if nothing has to cool down or be repeated; seed {seed}')
 
@@ -911,9 +1117,9 @@ def main():
             time.sleep(5)
 
     def attempt(rnd, cell, system, n, tag):
-        rec = {'round': rnd, 'cell': {k: cell[k] for k in ('type', 'size', 'rate', 'subscribers', 'condition')}, 'system': system['name'],
-               'attempt': n, 'flags': [], 'result': {}}
-        why = system_fits(system, cell)
+        rec = {'round': rnd, 'cell': {k: cell[k] for k in ('type', 'size', 'rate', 'subscribers', 'condition', 'graph', 'seconds') if k in cell},
+               'system': system['name'], 'attempt': n, 'flags': [], 'result': {}}
+        why = system_fits(system, cell, graphs)
         if not why and cell['condition'] in rt_ok and not rt_ok[cell['condition']]:
             why = 'real time is not permitted to this user here'
         if why:
@@ -925,13 +1131,14 @@ def main():
             rec['result'] = {'errors': [f'not started: still {temperature()} °C after waiting {waited:.0f} s for {max_temp} °C']}
             rec['flags'] = ['too-hot-to-start']
             return rec
-        seconds = run_seconds(plan, cell['rate'])
+        seconds = cell['seconds'] if cell['type'] == 'graph' else run_seconds(plan, cell['rate'])
         rec['seconds'] = seconds
         run = Run(ctx, system, cell, tag)
         before = machine_state([cores['pub']] + cores['sub'])
         try:
             run.begin()
-            res = run.latency(seconds) if cell['type'] == 'latency' else run.startup()
+            res = run.latency(seconds) if cell['type'] == 'latency' else \
+                run.graph(graphs[cell['graph']], seconds) if cell['type'] == 'graph' else run.startup()
         except (OSError, RuntimeError) as e:
             res = {}
             run.errors.append(str(e))

@@ -1,0 +1,42 @@
+{
+  "name": "graph-check",
+  "title": "three modules, for the driver's own check",
+  "topics": {
+    "a.fast": {
+      "size": 16,
+      "rate": 200
+    },
+    "b.slow": {
+      "size": 128,
+      "rate": 20
+    }
+  },
+  "modules": [
+    {
+      "name": "one",
+      "pub": [
+        "a.fast"
+      ],
+      "sub": [
+        "b.slow"
+      ]
+    },
+    {
+      "name": "two",
+      "pub": [
+        "b.slow"
+      ],
+      "sub": [
+        "a.fast"
+      ]
+    },
+    {
+      "name": "three",
+      "pub": [],
+      "sub": [
+        "a.fast",
+        "b.slow"
+      ]
+    }
+  ]
+}

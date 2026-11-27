@@ -80,7 +80,8 @@ A cell is **size × rate × subscribers × condition**, and a plan's sweeps are 
 
 `plans/full.json` has a size sweep (32 B to 1 MB at 100 Hz), a rate sweep (10 Hz to
 10 kHz at 256 B), 1, 2, 4 and 8 subscribers, a camera's frames (1 MB at 30 Hz), the
-three conditions, and start-up. A cell that two sweeps name is run once.
+three conditions, start-up, and the vehicle's whole graph under each condition ("A
+vehicle's graph" below). A cell that two sweeps name is run once.
 
 **Conditions** are the plan's too:
 
@@ -101,6 +102,81 @@ process is created (so the process's own start is in it, the same for all); then
 subscriber that has been receiving is killed with SIGKILL and another started, and the
 time to its first message taken again (`rejoin`). `open` (to the system's subscribe call
 returning) is recorded beside both.
+
+## A vehicle's graph
+
+A pair is one topic. A vehicle is some processes with several publications and several
+subscriptions each, at different rates, all running at once, and what a system costs
+there is not the sum of its pairs. A **graph cell** runs that:
+
+```json
+{"name": "vehicle", "cell": "graph", "graph": "rov-vehicle", "seconds": 120, "condition": ["quiet", "load2", "realtime"]}
+```
+
+**The graph is data**, `graphs/rov-vehicle.json`: the vehicle's role of the lab
+BlueROV2, read from hangar's own profile (`profiles/rov-vehicle`, with the bridge, the
+serial line and the encoder). Eight processes (the manager, `mavlink`, `mux`, `safety`,
+`bridge`, `encoder`, `recorder`, `console`), 16 topics, 53 subscriptions; 474 messages a
+second published and 1406 delivered. Its `rules` say how it was read from the profile,
+and they are the first thing to question:
+
+- a process a module, the manager included;
+- only topics with a rate (event topics carry nothing while a vehicle just runs, and
+  calls are not topics here);
+- a size is the type's payload rounded up to a power of two, 16 bytes at least, so that
+  every system carries the same sizes and ROS 2 has one fixed-size type a size;
+- `recorder` and `console` subscribe to everything;
+- the payload is the harness's (a count and a stamp), not the type's fields: what is
+  measured is the transport of messages of these sizes at these rates between these
+  processes, not what a module computes. hangar's own modules do more than this (they
+  record provenance, check staleness, answer calls): none of that is in this cell, on
+  either side.
+
+**The module** is `graph.h`, the same for every system, as `pair.h` is for a pair: one
+thread that waits for any of its inputs with a timeout at its next publication, counts
+what has come, and sends what is due. A system's node (`hangar_graph.c`,
+`unix_graph.c`, `iceoryx2_graph.c`, `ros2_pair/src/ros2_graph.cpp`) is how it opens its
+publications and subscriptions, sends, and waits for several things at once: `hg_wait`
+over all subscriptions; `ppoll`; a wait set with every listener attached; an executor.
+The waiting may return late by what the system's call can express (`hg_wait` takes
+milliseconds), and a publication is then late by that, as a real module's is; every
+message carries the time it was really sent, so the latency is not touched.
+
+**A run**: the helpers, then one process a module, all left to the scheduler over every
+allowed CPU (a vehicle's modules are not pinned). The measured part begins a warm-up
+after the last was started, at an instant every process is given, and lasts the cell's
+`seconds`; a sample is a delivery's clock reading minus the stamp taken immediately
+before its send. Per topic the samples of all its subscribers are one distribution.
+**Cost** is every process and helper together, as for a pair.
+
+**Counting.** A subscription counts a gap between two measured messages as missing and
+a count not above the one before as out of order. A message missing at the very edge of
+the measured part is not seen by this; `Deliveries measured` beside the rates says
+whether a subscription came short.
+
+**Which entries run it, and why not the others** (the report lists each with its
+reason): `hangar`, `hangar-inplace`, `unix-seqpacket`, `iceoryx2` and the six ROS 2
+entries that are two-process systems.
+
+| not run | why |
+|---|---|
+| `null` | not a system |
+| `unix-stream` | its writer waits for its reader, and a module that waits for the slowest of its readers is not what a vehicle's module may be |
+| `iceoryx2-poll` | a polling module spins a core for the whole run: eight modules want eight cores of a computer that has four, and the row would measure the shortage |
+| `ros2-fastdds-waitset` | the graph's ROS 2 node is a node as they are written, with an executor |
+| `ros2-fastdds-composed` | one process is not a graph of processes |
+
+**What is not like for like in this cell.** A ROS 2 process is a node with its own
+discovery and its own threads, which is what ROS 2 costs for eight processes, and is in
+the row. Fast DDS and Cyclone DDS discover one another between all eight; iceoryx2
+creates two services a topic (the data and the event that wakes); hangar's `hg_wait` and
+the others' waits differ in what a timeout can express. The ROS 2 entries with loaned
+messages lend for every size here, small ones included, where a deployment would lend
+only its large messages.
+
+**Percentiles.** The same rule: only where a run has the samples. A topic at 1 Hz has
+120 deliveries a subscriber in the full plan's two minutes, and shows its largest
+sample only; the topics at 50 Hz have the samples for a 99th percentile.
 
 ## One run, one round
 
@@ -428,10 +504,11 @@ bench/pairs/driver.py --plan bench/pairs/plans/full.json  $V --out ~/pairs-$(dat
 
 ## Sessions
 
-The full plan is 15 cells, about 26 minutes a system a round (the runs at 100 Hz and
-below are two minutes each, for their samples; a system with a helper takes a little
-longer). The registry has fifteen systems: one round of all of them is six and a half
-hours, and ten rounds are days. It is made for that: `--reps N` runs fewer rounds at a
+The full plan is 18 cells, the vehicle's graph under three conditions among them: 20 to
+33 minutes a system a round, by which cells the system runs (the runs at 100 Hz and
+below are two minutes each, for their samples, and so is each graph cell). The registry
+has fifteen systems: one round of all of them is seven and a third hours, and ten
+rounds are days. It is made for that: `--reps N` runs fewer rounds at a
 time, Ctrl-C writes what there is, every session's folder carries its boot id, and
 `--report` pools as many folders as it is given and shows what the sessions differ by.
 
@@ -442,9 +519,9 @@ same reference rows and the sessions can be laid beside each other through them:
 
 | Group | `--only` | Systems | A round |
 |---|---|---|---|
-| A: the kernel and the nearest peer | `null,hangar,hangar-inplace,unix-seqpacket,unix-stream,iceoryx2,iceoryx2-poll` | 7 | about 3 h |
-| B: ROS 2 as installed | `null,hangar,hangar-inplace,ros2-fastdds,ros2-cyclonedds,ros2-zenoh,ros2-fastdds-waitset,ros2-fastdds-composed` | 8 | about 3.5 h |
-| C: ROS 2 over shared memory | `null,hangar,hangar-inplace,ros2-fastdds-loan,ros2-cyclonedds-iceoryx,ros2-zenoh-shm` | 6 | about 2.6 h |
+| A: the kernel and the nearest peer | `null,hangar,hangar-inplace,unix-seqpacket,unix-stream,iceoryx2,iceoryx2-poll` | 7 | about 3.3 h |
+| B: ROS 2 as installed | `null,hangar,hangar-inplace,ros2-fastdds,ros2-cyclonedds,ros2-zenoh,ros2-fastdds-waitset,ros2-fastdds-composed` | 8 | about 3.8 h |
+| C: ROS 2 over shared memory | `null,hangar,hangar-inplace,ros2-fastdds-loan,ros2-cyclonedds-iceoryx,ros2-zenoh-shm` | 6 | about 3.0 h |
 
 What a split costs: two systems of different groups were not measured minutes apart, so
 a difference between them is to be read against the table "Within a session and between

@@ -162,6 +162,10 @@ static void pair_usage_json(FILE *f)
 #define PAIR_CFLAGS "not recorded"
 #endif
 
+/* graph.h, the harness of a whole graph's module, takes the histogram, the clock and
+ * the usage line from here and nothing below. */
+#ifndef PAIR_NO_MAIN
+
 static void pair_head_json(FILE *f, const struct pair_system *sys, const struct pair_opts *o)
 {
 	fprintf(f, "{\"system\": \"%s\", \"role\": \"%s\", \"id\": %d, \"size\": %u, \"rate\": %u, \"seconds\": %u, \"warmup\": %u, ",
@@ -516,6 +520,8 @@ usage:
 		argv[0], sys->name, argv[0], PAIR_MIN_SIZE);
 	return 2;
 }
+
+#endif /* PAIR_NO_MAIN */
 
 #ifdef __cplusplus
 }

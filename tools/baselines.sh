@@ -12,7 +12,8 @@
 # Produces out/baselines/baselines-<git describe>-aarch64.tar.zst (--host: for this
 # machine, for a rehearsal):
 #
-#   bin/          hangar_pair, null_pair, unix_pair, iceoryx2_pair: static musl
+#   bin/          hangar_pair, null_pair, unix_pair, iceoryx2_pair, and the graph's
+#                 modules hangar_graph, unix_graph, iceoryx2_graph: static musl
 #                 binaries, every one built from this tree's pair.h with the same
 #                 compiler and flags, hangar's own included (a release has
 #                 hangar_pair too; the one here shares its harness with the baselines
@@ -84,7 +85,8 @@ if [ "$cmd" = ros2-smoke ]; then
 	docker image inspect "$image" > /dev/null 2>&1 ||
 		{ echo "baselines.sh: no image $image: docker build -t $image bench/ros2" >&2; exit 1; }
 	"$0" --host --out "$out" ${work:+--work "$work"} > /dev/null
-	hostdir=$(ls -d "$out"/work-"$(uname -m)"/stage/baselines-* | head -1)
+	# The stage just made: the newest, where earlier versions' stages still lie beside it.
+	hostdir=$(ls -dt "$out"/work-"$(uname -m)"/stage/baselines-* | head -1)
 	ws=$out/ros2-$(uname -m)
 	mkdir -p "$ws"
 	rm -rf "$ws/smoke" "$ws/build" "$ws/install" "$ws/log" # a workspace remembers its source's path
@@ -132,7 +134,8 @@ echo "  work      $work"
 
 # hangar's own pairs and the Unix sockets: this tree's Makefile, as a release builds.
 make -C "$ROOT" BUILD=release BUILDDIR="$builddir" CC="$cc" HOSTCC="zig cc" LDFLAGS="-static -s" \
-	"$builddir/hangar_pair" "$builddir/null_pair" "$builddir/unix_pair" > "$work/make.log" 2>&1 ||
+	"$builddir/hangar_pair" "$builddir/null_pair" "$builddir/unix_pair" "$builddir/hangar_graph" "$builddir/unix_graph" \
+	> "$work/make.log" 2>&1 ||
 	{ tail -20 "$work/make.log" >&2; echo "baselines.sh: make failed ($work/make.log)" >&2; exit 1; }
 # The flags make gave them, for the pairs that make does not build.
 pair_cflags=$(make -C "$ROOT" -s --no-print-directory BUILD=release BUILDDIR="$builddir" CC="$cc" \
@@ -168,10 +171,12 @@ iox_lib=$iox/target/$rust_target/release/libiceoryx2_ffi_c.a
 iox_inc=$(dirname "$(dirname "$(find "$iox/target/$rust_target" -path '*include/iox2/iceoryx2.h' | head -1)")")
 [ -f "$iox_lib" ] && [ -f "$iox_inc/iox2/iceoryx2.h" ] ||
 	{ echo "baselines.sh: iceoryx2's library or header is not where expected under $iox/target" >&2; exit 1; }
-# shellcheck disable=SC2086
-$cc $pair_cflags -static -s -DIOX2_VERSION="\"$IOX2_VERSION\"" -DPAIR_CFLAGS="\"$cc $pair_cflags\"" \
-	-I"$ROOT/bench/pairs" -I"$iox_inc" -o "$builddir/iceoryx2_pair" "$ROOT/bench/pairs/iceoryx2_pair.c" "$iox_lib" -lunwind \
-	> "$iox/link.log" 2>&1 || { cat "$iox/link.log" >&2; echo "baselines.sh: iceoryx2_pair did not link" >&2; exit 1; }
+for n in iceoryx2_pair iceoryx2_graph; do
+	# shellcheck disable=SC2086
+	$cc $pair_cflags -static -s -DIOX2_VERSION="\"$IOX2_VERSION\"" -DPAIR_CFLAGS="\"$cc $pair_cflags\"" \
+		-I"$ROOT/bench/pairs" -I"$iox_inc" -o "$builddir/$n" "$ROOT/bench/pairs/$n.c" "$iox_lib" -lunwind \
+		> "$iox/link.log" 2>&1 || { cat "$iox/link.log" >&2; echo "baselines.sh: $n did not link" >&2; exit 1; }
+done
 
 # The ROS 2 node, cross-compiled against an arm64 ROS 2 Jazzy as a sysroot.
 ros2_line="not-built ros2_pair_node: ros2-build.sh builds it on the machine it runs on, against its own ROS 2 Jazzy"
@@ -221,7 +226,7 @@ fi
 # ---- the stage ------------------------------------------------------------------------
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/bench" "$stage/tools/rov" "$stage/licenses/iceoryx2"
-bins="hangar_pair null_pair unix_pair iceoryx2_pair"
+bins="hangar_pair null_pair unix_pair iceoryx2_pair hangar_graph unix_graph iceoryx2_graph"
 for b in $bins; do cp "$builddir/$b" "$stage/bin/"; done
 # The driver and what it reads, the ROS 2 node's source with them; no caches.
 (cd "$ROOT" && tar -cf - --exclude=__pycache__ --exclude='*.o' bench/pairs tools/rov/preflight.py) | tar -xf - -C "$stage"
@@ -269,8 +274,8 @@ chmod +x "$stage/ros2-build.sh"
 	echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ) zig $(zig version) $(rustc --version)"
 	echo "flags $cc $pair_cflags -static -s"
 	echo "binaries $bins"
-	echo "hangar_pair null_pair unix_pair: this tree, bench/pairs (GPL-3.0-or-later; lib/hg LGPL-3.0-or-later)"
-	echo "iceoryx2_pair: this tree's bench/pairs/iceoryx2_pair.c, linked with iceoryx2 $IOX2_VERSION's C binding (Apache-2.0 OR MIT)"
+	echo "hangar_pair null_pair unix_pair hangar_graph unix_graph: this tree, bench/pairs (GPL-3.0-or-later; lib/hg LGPL-3.0-or-later)"
+	echo "iceoryx2_pair iceoryx2_graph: this tree's bench/pairs, linked with iceoryx2 $IOX2_VERSION's C binding (Apache-2.0 OR MIT)"
 	echo "iceoryx2-source $IOX2_URL sha256 $IOX2_SHA256"
 	echo "$ros2_line"
 	echo "files"

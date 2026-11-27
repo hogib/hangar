@@ -1,13 +1,13 @@
 {
   "systems": [
     {"name": "null", "title": "the harness alone", "kind": "single", "node": ["{bin}/null_pair"]},
-    {"name": "hangar", "title": "hangar", "node": ["{bin}/hangar_pair"], "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
+    {"name": "hangar", "title": "hangar", "node": ["{bin}/hangar_pair"], "graph": ["{bin}/hangar_graph"], "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
      "config_files": ["{here}/plan-check.json"]},
     {"name": "with-helper", "title": "hangar in place, beside a helper process that does nothing",
      "node": ["{bin}/hangar_pair"], "args": ["--in-place"], "env": {"HANGAR_TOPIC_DIR": "{rundir}"},
      "helpers": [{"name": "sleeper", "cmd": ["sleep", "30"], "ready_s": 0.1, "version": ["sleep", "--version"]}],
      "max_size": 1024, "max_size_why": "the check's own limit"},
-    {"name": "unix-seqpacket", "title": "Unix domain sockets, a message a send", "node": ["{bin}/unix_pair"], "env": {"PAIR_DIR": "{rundir}"}},
+    {"name": "unix-seqpacket", "title": "Unix domain sockets, a message a send", "node": ["{bin}/unix_pair"], "graph": ["{bin}/unix_graph"], "env": {"PAIR_DIR": "{rundir}"}},
     {"name": "unix-stream", "title": "Unix domain sockets, a stream", "node": ["{bin}/unix_pair"], "args": ["--stream"], "env": {"PAIR_DIR": "{rundir}"}},
     {"name": "absent", "title": "a system that is not installed", "node": ["{bin}/no_such_pair"], "install": "nothing installs it"}
   ]

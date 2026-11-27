@@ -7,7 +7,8 @@
       "node": [
         "{bin}/null_pair"
       ],
-      "notes": "Not a system: the floor. What its row shows is the cost of the two clock readings and, under \"intended\", the schedule's own lateness. One process, so no subscriber count above 1, no start-up, and its CPU is the publisher loop's."
+      "notes": "Not a system: the floor. What its row shows is the cost of the two clock readings and, under \"intended\", the schedule's own lateness. One process, so no subscriber count above 1, no start-up, and its CPU is the publisher loop's.",
+      "graph_why": "not a system"
     },
     {
       "name": "hangar",
@@ -18,7 +19,10 @@
       "env": {
         "HANGAR_TOPIC_DIR": "{rundir}"
       },
-      "notes": "The message is copied into the ring and out of it. A reader that falls 16 messages behind loses the oldest (counted as lost): the writer never waits."
+      "notes": "The message is copied into the ring and out of it. A reader that falls 16 messages behind loses the oldest (counted as lost): the writer never waits.",
+      "graph": [
+        "{bin}/hangar_graph"
+      ]
     },
     {
       "name": "hangar-inplace",
@@ -32,7 +36,10 @@
       "env": {
         "HANGAR_TOPIC_DIR": "{rundir}"
       },
-      "notes": "Nothing is copied. The view is checked after the harness has read it; one the writer overwrote meanwhile is dropped and counted (discarded, and then lost)."
+      "notes": "Nothing is copied. The view is checked after the harness has read it; one the writer overwrote meanwhile is dropped and counted (discarded, and then lost).",
+      "graph": [
+        "{bin}/hangar_graph"
+      ]
     },
     {
       "name": "unix-seqpacket",
@@ -46,7 +53,10 @@
       "max_size": 131072,
       "max_size_why": "a message must fit the socket's send buffer whole: 212992 B by default, and more needs privileges",
       "install": "make pairs, or the baselines archive: --var base=<its bin directory>",
-      "notes": "The floor for anything that sends through the kernel. The reader sleeps in recv and is woken by the kernel: no polling. Two copies (user to kernel, kernel to user) and one system call a side. The publisher never waits: a subscriber whose buffer is full does not get the message, and a socket then drops the newest and keeps the old, where hangar's ring drops the oldest. The buffer's depth is the kernel's accounting of bytes (net.core.wmem_default), some hundreds of small messages, not 16. No helper, no discovery beyond a path, no type, no metadata."
+      "notes": "The floor for anything that sends through the kernel. The reader sleeps in recv and is woken by the kernel: no polling. Two copies (user to kernel, kernel to user) and one system call a side. The publisher never waits: a subscriber whose buffer is full does not get the message, and a socket then drops the newest and keeps the old, where hangar's ring drops the oldest. The buffer's depth is the kernel's accounting of bytes (net.core.wmem_default), some hundreds of small messages, not 16. No helper, no discovery beyond a path, no type, no metadata.",
+      "graph": [
+        "{base}/unix_graph"
+      ]
     },
     {
       "name": "unix-stream",
@@ -61,7 +71,8 @@
         "PAIR_DIR": "{rundir}"
       },
       "install": "make pairs, or the baselines archive: --var base=<its bin directory>",
-      "notes": "What a megabyte through a socket is: a run of bytes, several send and receive calls a message, two copies. Another contract than the others': the publisher's send blocks while the reader's buffer is full, so nothing is ever lost and a slow reader slows the writer (it shows under \"intended\"). With several subscribers the publisher writes to each in turn. The reader has the message when it has collected all its bytes."
+      "notes": "What a megabyte through a socket is: a run of bytes, several send and receive calls a message, two copies. Another contract than the others': the publisher's send blocks while the reader's buffer is full, so nothing is ever lost and a slow reader slows the writer (it shows under \"intended\"). With several subscribers the publisher writes to each in turn. The reader has the message when it has collected all its bytes.",
+      "graph_why": "a stream's writer waits for its reader, and a module that waits for the slowest of its readers is not what a vehicle's module may be: the packet entry stands for the sockets"
     },
     {
       "name": "ros2-fastdds",
@@ -91,6 +102,20 @@
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-fastrtps-cpp",
         "ros-jazzy-fastrtps"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
       ]
     },
     {
@@ -125,11 +150,25 @@
       ],
       "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
       "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
-      "notes": "What Fast DDS's documentation gives for zero copy on one host: writer and reader share the writer's history in a file under /dev/shm, the publisher builds the message in a sample it borrows, and the subscription is handed that sample: no serialisation and no copy. The nearest thing in ROS 2 to hangar-inplace. The node says on its standard error whether the loan was granted (logs/). A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "notes": "What Fast DDS's documentation gives for zero copy on one host: writer and reader share the writer's history in a file under /dev/shm, the publisher builds the message in a sample it borrows, and the subscription is handed that sample: no serialisation and no copy. The nearest thing in ROS 2 to hangar-inplace. The node says on its standard error whether the loan was granted (logs/). A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up. In a graph of many readers this configuration can refuse a loan: the publisher then has no sample to build in and the publication fails (counted under \"Publications that failed\"). Seen in the container on an x86-64 laptop; the pool of samples a writer may lend is Fast DDS's to size (resource limits), and it is left at what the profile gives.",
       "packages": [
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-fastrtps-cpp",
         "ros-jazzy-fastrtps"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
       ]
     },
     {
@@ -163,7 +202,8 @@
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-fastrtps-cpp",
         "ros-jazzy-fastrtps"
-      ]
+      ],
+      "graph_why": "the graph's node is a ROS 2 node as they are written, with an executor: ros2-fastdds"
     },
     {
       "name": "ros2-fastdds-composed",
@@ -197,7 +237,8 @@
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-fastrtps-cpp",
         "ros-jazzy-fastrtps"
-      ]
+      ],
+      "graph_why": "one process is not a graph of processes"
     },
     {
       "name": "ros2-cyclonedds",
@@ -228,6 +269,20 @@
         "ros-jazzy-rmw-cyclonedds-cpp",
         "ros-jazzy-cyclonedds",
         "ros-jazzy-iceoryx-posh"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
       ]
     },
     {
@@ -277,6 +332,20 @@
         "ros-jazzy-rmw-cyclonedds-cpp",
         "ros-jazzy-cyclonedds",
         "ros-jazzy-iceoryx-posh"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
       ]
     },
     {
@@ -316,6 +385,20 @@
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-zenoh-cpp",
         "ros-jazzy-zenoh-cpp-vendor"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
       ]
     },
     {
@@ -356,6 +439,20 @@
         "ros-jazzy-rclcpp",
         "ros-jazzy-rmw-zenoh-cpp",
         "ros-jazzy-zenoh-cpp-vendor"
+      ],
+      "graph": [
+        "{ros}/ros2_graph_node"
+      ],
+      "graph_sizes": [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        4096,
+        65536,
+        1048576
       ]
     },
     {
@@ -365,7 +462,10 @@
         "{base}/iceoryx2_pair"
       ],
       "install": "tools/baselines.sh builds it (iceoryx2's C binding, a static library): --var base=<the baselines' bin directory>",
-      "notes": "The system nearest hangar in kind: no daemon, no copy (the message is built in a sample borrowed from shared memory and read where it lies), a subscriber buffer of 16 with safe overflow, so the publisher never waits and a reader that far behind loses the oldest: hangar's contract (iceoryx2's default buffer is 2; 16 is set here to match the ring). iceoryx2's publish-subscribe does not wake a reader, so this entry pairs it with an event service as iceoryx2's own examples do: the publisher notifies after each send (inside the sample) and the subscriber sleeps in its listener. Like for like with hangar's hg_wait. The loan is taken before the clock is read, as hangar-inplace's is."
+      "notes": "The system nearest hangar in kind: no daemon, no copy (the message is built in a sample borrowed from shared memory and read where it lies), a subscriber buffer of 16 with safe overflow, so the publisher never waits and a reader that far behind loses the oldest: hangar's contract (iceoryx2's default buffer is 2; 16 is set here to match the ring). iceoryx2's publish-subscribe does not wake a reader, so this entry pairs it with an event service as iceoryx2's own examples do: the publisher notifies after each send (inside the sample) and the subscriber sleeps in its listener. Like for like with hangar's hg_wait. The loan is taken before the clock is read, as hangar-inplace's is.",
+      "graph": [
+        "{base}/iceoryx2_graph"
+      ]
     },
     {
       "name": "iceoryx2-poll",
@@ -377,7 +477,8 @@
         "--poll"
       ],
       "install": "tools/baselines.sh builds it (iceoryx2's C binding, a static library): --var base=<the baselines' bin directory>",
-      "notes": "iceoryx2's best latency and NOT like for like: no event is sent, and the subscriber asks for a sample again and again without sleeping, which takes a whole core whether or not anything is published (the cost table shows it). On a four-core vehicle computer with a thermal limit that is one core in four for one subscription. Beside the woken entry it shows what waking costs. With several subscribers each spins on its own, and they share the subscriber CPUs."
+      "notes": "iceoryx2's best latency and NOT like for like: no event is sent, and the subscriber asks for a sample again and again without sleeping, which takes a whole core whether or not anything is published (the cost table shows it). On a four-core vehicle computer with a thermal limit that is one core in four for one subscription. Beside the woken entry it shows what waking costs. With several subscribers each spins on its own, and they share the subscriber CPUs.",
+      "graph_why": "a polling module spins a core for the whole run: eight modules would want eight cores of a computer that has four, and the row would measure that shortage, not iceoryx2"
     }
   ]
 }

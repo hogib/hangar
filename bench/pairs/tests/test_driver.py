@@ -63,7 +63,7 @@ runs = doc['runs']
 systems = ['null', 'hangar', 'with-helper', 'unix-seqpacket', 'unix-stream']
 check('the systems that can run are run, the one that is not installed is named and skipped',
       list(doc['systems']) == systems and [s['system'] for s in doc['skipped']] == ['absent'], str(doc['skipped']))
-check('four cells from three sweeps', len(doc['cells']) == 4, str([driver.cell_key(c) for c in doc['cells']]))
+check('five cells from four sweeps, a graph among them', len(doc['cells']) == 5 and sum(c['type'] == 'graph' for c in doc['cells']) == 1, str([driver.cell_key(c) for c in doc['cells']]))
 check('two rounds, each with every cell and every system once, in an order that is written down',
       len(doc['rounds']) == 2 and all(sorted(k for k, _ in r['order']) == sorted(driver.cell_key(c) for c in doc['cells']) and
                                       all(sorted(ss) == sorted(systems) for _, ss in r['order']) for r in doc['rounds']))
@@ -95,6 +95,17 @@ check('a helper process is started and its CPU and memory counted with the syste
       helper and all('helper-sleeper' in r['result']['cost']['cpu_pct'] and r['result']['cost']['mem_kb'].get('helper-sleeper', 0) > 0 for r in helper))
 check('the cost names its interval and the kind of memory', all(r['result']['cost']['interval_s'] > 0 and
                                                                  set(r['result']['cost']['mem_kind'].values()) <= {'pss', 'rss'} for r in lat))
+gr = [r for r in runs if r['cell']['type'] == 'graph']
+gran = [r for r in gr if not r['result'].get('not_run')]
+check('the graph: run by the systems that have a node for a module, recorded as not run with the reason by the others',
+      sorted({r['system'] for r in gran}) == ['hangar', 'unix-seqpacket'] and all(r['result'].get('not_run') for r in gr if r not in gran),
+      str([(r['system'], r['result'].get('not_run')) for r in gr]))
+gm = [driver.run_metrics(r) for r in gran]
+check('the graph: a process a module, each ended with its line; 2 s of 200 Hz to two readers and 20 Hz to two',
+      all(len(r['result']['modules']) == 3 and r['result']['processes'] == 3 for r in gran) and
+      all(abs(m['topics']['a.fast']['n'] - 800) <= 8 and abs(m['topics']['b.slow']['n'] - 80) <= 4 for m in gm), str([m.get('topics') for m in gm]))
+check('the graph: nothing missing in a subscription\'s counts, no publication failed, the cost of all three processes',
+      all(m['lost_gaps'] == 0 and m['send_failed'] == 0 and m['processes'] == 3 and m['mem_kb'] > 0 for m in gm), str(gm)[:400])
 st = [r for r in runs if r['cell']['type'] == 'startup' and not r['result'].get('not_run')]
 check('start-up and rejoin: a subscriber started beside a running publisher has its first message, twice',
       len(st) == 2 * (len(systems) - 1) and all(r['result'].get('startup_ms', 0) > 0 and r['result'].get('rejoin_ms', 0) > 0 for r in st), str([r['result'] for r in st]))
@@ -106,7 +117,7 @@ v = doc['systems']['hangar']['version']
 check('each system\'s version, compiler and flags', v.get('version', '').startswith('lib/hg') and v.get('compiler') and '-O' in v.get('flags', ''), str(v))
 check('a helper\'s version beside it', 'helper sleeper' in doc['systems']['with-helper']['version'])
 check('the plan, the registry and a system\'s configuration file are copied into the results',
-      all(os.path.isfile(os.path.join(a, p)) for p in ('plan.json', 'systems.json', 'config/hangar/plan-check.json', 'report.md')))
+      all(os.path.isfile(os.path.join(a, p)) for p in ('plan.json', 'systems.json', 'config/hangar/plan-check.json', 'report.md', 'graph-graph-check.json')))
 check('nothing left in /dev/shm', not [d for d in os.listdir('/dev/shm') if d.startswith('pairs-')])
 
 print('== the report')

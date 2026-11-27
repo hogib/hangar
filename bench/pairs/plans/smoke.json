@@ -10,16 +10,95 @@
   "hot_c": 200,
   "busy_pct": 101,
   "retries": 0,
-  "cores": {"pub": -1, "sub": [-2]},
+  "cores": {
+    "pub": -1,
+    "sub": [
+      -2
+    ]
+  },
   "conditions": {
     "quiet": {},
-    "load1": {"spinners": 1},
-    "rt": {"realtime": {"policy": "fifo", "priority": 50}}
+    "load1": {
+      "spinners": 1
+    },
+    "rt": {
+      "realtime": {
+        "policy": "fifo",
+        "priority": 50
+      }
+    }
   },
   "sweeps": [
-    {"name": "size", "size": [32, 4096], "rate": [500], "subscribers": [1], "condition": ["quiet"]},
-    {"name": "fan-out", "size": [256], "rate": [500], "subscribers": [1, 2], "condition": ["quiet"]},
-    {"name": "conditions", "size": [256], "rate": [500], "subscribers": [1], "condition": ["load1", "rt"]},
-    {"name": "start-up", "cell": "startup", "size": [256], "rate": [500], "condition": ["quiet"]}
-  ]
+    {
+      "name": "size",
+      "size": [
+        32,
+        4096
+      ],
+      "rate": [
+        500
+      ],
+      "subscribers": [
+        1
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "fan-out",
+      "size": [
+        256
+      ],
+      "rate": [
+        500
+      ],
+      "subscribers": [
+        1,
+        2
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "conditions",
+      "size": [
+        256
+      ],
+      "rate": [
+        500
+      ],
+      "subscribers": [
+        1
+      ],
+      "condition": [
+        "load1",
+        "rt"
+      ]
+    },
+    {
+      "name": "start-up",
+      "cell": "startup",
+      "size": [
+        256
+      ],
+      "rate": [
+        500
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "vehicle",
+      "cell": "graph",
+      "graph": "rov-vehicle",
+      "seconds": 3,
+      "condition": [
+        "quiet"
+      ]
+    }
+  ],
+  "graph_warmup_s": 2
 }

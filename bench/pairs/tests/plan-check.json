@@ -12,11 +12,78 @@
   "busy_pct": 101,
   "retries": 1,
   "cool_wait_s": 0,
-  "cores": {"pub": -1, "sub": [-2]},
-  "conditions": {"quiet": {}, "load1": {"spinners": 1}, "rt": {"realtime": {"policy": "fifo", "priority": 10}}},
+  "cores": {
+    "pub": -1,
+    "sub": [
+      -2
+    ]
+  },
+  "conditions": {
+    "quiet": {},
+    "load1": {
+      "spinners": 1
+    },
+    "rt": {
+      "realtime": {
+        "policy": "fifo",
+        "priority": 10
+      }
+    }
+  },
   "sweeps": [
-    {"name": "one", "size": [256], "rate": [200], "subscribers": [1], "condition": ["quiet", "rt"]},
-    {"name": "fan-out", "size": [4096], "rate": [200], "subscribers": [2], "condition": ["load1"]},
-    {"name": "start-up", "cell": "startup", "size": [256], "rate": [200], "condition": ["quiet"]}
-  ]
+    {
+      "name": "one",
+      "size": [
+        256
+      ],
+      "rate": [
+        200
+      ],
+      "subscribers": [
+        1
+      ],
+      "condition": [
+        "quiet",
+        "rt"
+      ]
+    },
+    {
+      "name": "fan-out",
+      "size": [
+        4096
+      ],
+      "rate": [
+        200
+      ],
+      "subscribers": [
+        2
+      ],
+      "condition": [
+        "load1"
+      ]
+    },
+    {
+      "name": "start-up",
+      "cell": "startup",
+      "size": [
+        256
+      ],
+      "rate": [
+        200
+      ],
+      "condition": [
+        "quiet"
+      ]
+    },
+    {
+      "name": "graph",
+      "cell": "graph",
+      "graph": "graph-check",
+      "seconds": 2,
+      "condition": [
+        "quiet"
+      ]
+    }
+  ],
+  "graph_warmup_s": 1
 }

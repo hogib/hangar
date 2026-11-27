@@ -13,7 +13,8 @@
 # The compiler and its flags go into each node (--version), and from there into every
 # results file.
 
-PAIR_BINS := $(BUILDDIR)/hangar_pair $(BUILDDIR)/null_pair $(BUILDDIR)/unix_pair
+PAIR_BINS := $(BUILDDIR)/hangar_pair $(BUILDDIR)/null_pair $(BUILDDIR)/unix_pair \
+	$(BUILDDIR)/hangar_graph $(BUILDDIR)/unix_graph
 PAIR_DEFS = -DPAIR_CFLAGS='"$(CC) $(HG_CFLAGS) $(CFLAGS)"' -DHG_COMMIT='"$(HG_COMMIT)"'
 
 $(OBJDIR)/bench/pairs/hangar_pair.o: bench/pairs/hangar_pair.c bench/pairs/pair.h
@@ -27,6 +28,19 @@ $(OBJDIR)/bench/pairs/null_pair.o: bench/pairs/null_pair.c bench/pairs/pair.h
 $(BUILDDIR)/hangar_pair: $(OBJDIR)/bench/pairs/hangar_pair.o $(call obj,$(HG_SRC))
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
+
+# The graph's modules (graph.h): hangar's, and the Unix sockets'.
+$(OBJDIR)/bench/pairs/hangar_graph.o: bench/pairs/hangar_graph.c bench/pairs/graph.h bench/pairs/pair.h
+	@mkdir -p $(dir $@)
+	$(CC) $(LIB_CPPFLAGS) $(CPPFLAGS) $(PAIR_DEFS) $(HG_CFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(BUILDDIR)/hangar_graph: $(OBJDIR)/bench/pairs/hangar_graph.o $(call obj,$(HG_SRC))
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
+
+$(BUILDDIR)/unix_graph: bench/pairs/unix_graph.c bench/pairs/graph.h bench/pairs/pair.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(PAIR_DEFS) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $< $(LDLIBS)
 
 # The baselines that need nothing but libc (the others: tools/baselines.sh).
 $(BUILDDIR)/unix_pair: bench/pairs/unix_pair.c bench/pairs/pair.h
