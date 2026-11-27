@@ -3,9 +3,10 @@
 """make analyze: the static analysers over hangar's C code (tools/analyze/README.md).
 
 Runs, of clang's static analyzer, gcc -fanalyzer, cppcheck and clang-tidy, those
-that are installed, over every .c file under lib/, hangard/, hangar/, modules/
-and tools/ that is not a test, each with the flags the build compiles it with
-(read from `make -n`). A finding is one line: file:line: [tool:checker] text.
+that are installed, over every .c file under lib/, hangard/, hangar/, modules/,
+tools/ and bench/pairs/ that is not a test, each with the flags the build compiles
+it with (read from `make -n`). Left out: the nodes of bench/pairs that need another
+project's headers, which this tree does not have (SKIP). A finding is one line: file:line: [tool:checker] text.
 Findings matched by a line of tools/analyze/suppress-<tool>.txt are dropped;
 whatever is left is printed and the exit status is 1. A suppression that
 matched nothing is noted, and does not fail the run.
@@ -25,16 +26,23 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DIRS = ["lib", "hangard", "hangar", "modules", "tools"]
+DIRS = ["lib", "hangard", "hangar", "modules", "tools", "bench/pairs"]
 HERE = os.path.join("tools", "analyze")
 
 # Sources no `make all` compile line covers: built by a rule that compiles and
 # links at once (msggen), or only into the suites (the manager stub). The two
 # of tools/equivalence (`make equivalence`) take FALLBACK, lib/vision's flags.
+PAIRS = ["-std=c11", "-Ibench/pairs", "-Ilib/hg", "-Imsg", "-pthread"]
 EXTRA_FLAGS = {
     "tools/msggen/msggen.c": ["-std=c11"],
     "lib/hg/hg_manager_stub.c": ["-std=c11", "-Ilib/hg", "-pthread"],
+    # bench/pairs: built by `make pairs`, not by `make all`.
+    "bench/pairs/hangar_pair.c": PAIRS, "bench/pairs/null_pair.c": PAIRS, "bench/pairs/unix_pair.c": PAIRS,
+    "bench/pairs/hangar_graph.c": PAIRS, "bench/pairs/unix_graph.c": PAIRS, "bench/pairs/restart_node.c": PAIRS,
 }
+# Nodes that include a header of a system this tree does not carry (iceoryx2's C
+# binding, built by tools/baselines.sh): not analysed here.
+SKIP = {"bench/pairs/iceoryx2_pair.c", "bench/pairs/iceoryx2_graph.c"}
 FALLBACK = ["-std=gnu99", "-D_FILE_OFFSET_BITS=64", "-Ilib/common", "-Ilib/vision", "-Ilib/camera", "-Ilib/proc",
             "-Ilib/net", "-Ilib/video", "-Ilib/hg", "-pthread"]
 
@@ -70,7 +78,7 @@ def sources():
     for d in DIRS:
         for base, dirs, files in os.walk(d):
             dirs[:] = sorted(x for x in dirs if x != "tests")
-            out += [os.path.join(base, f) for f in sorted(files) if f.endswith(".c")]
+            out += [os.path.join(base, f) for f in sorted(files) if f.endswith(".c") and os.path.join(base, f) not in SKIP]
     return out
 
 

@@ -34,29 +34,46 @@ static int path_of(struct sockaddr_un *a, const char *topic)
 		       : -1;
 }
 
+/* The listening sockets opened so far, closed: an open that fails leaves none. */
+static int give_up(int n)
+{
+	for (int i = 0; i < n; i++)
+		if (pubs[i].lfd >= 0) {
+			close(pubs[i].lfd);
+			pubs[i].lfd = -1;
+		}
+	return -1;
+}
+
 static int open_all(const struct graph_opts *o)
 {
 	O = o;
 	unsigned biggest = GRAPH_MIN_SIZE;
 	for (int i = 0; i < o->npub; i++) {
 		struct sockaddr_un a;
+		pubs[i].lfd = -1;
 		if (path_of(&a, o->pub[i].topic) < 0)
-			return -1;
+			return give_up(i);
 		unlink(a.sun_path);
-		pubs[i].lfd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-		if (pubs[i].lfd < 0 || bind(pubs[i].lfd, (struct sockaddr *)&a, sizeof a) < 0 || listen(pubs[i].lfd, MAX_READERS) < 0) {
+		int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+		if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, MAX_READERS) < 0) {
 			fprintf(stderr, "unix_graph: %s: %s\n", a.sun_path, strerror(errno));
-			return -1;
+			if (fd >= 0)
+				close(fd);
+			return give_up(i);
 		}
+		pubs[i].lfd = fd;
 	}
 	for (int i = 0; i < o->nsub; i++) {
 		subs[i] = -1;
 		if (path_of(&sub_addr[i], o->sub[i].topic) < 0)
-			return -1;
+			return give_up(o->npub);
 		if (o->sub[i].size > biggest)
 			biggest = o->sub[i].size;
 	}
-	return (buf = malloc(biggest)) ? 0 : -1;
+	if (!(buf = malloc(biggest)))
+		return give_up(o->npub);
+	return 0;
 }
 
 static int pub_send(int i, void *msg, size_t n)
@@ -96,7 +113,7 @@ static int wait_any(int64_t timeout_ns)
 	if (ppoll(p, (nfds_t)n, &ts, NULL) <= 0)
 		return 0;
 	for (int i = 0; i < O->nsub; i++) {
-		if (!(p[i].revents & (POLLIN | POLLHUP | POLLERR)))
+		if (subs[i] < 0 || !(p[i].revents & (POLLIN | POLLHUP | POLLERR)))
 			continue;
 		for (;;) {
 			ssize_t k = recv(subs[i], buf, O->sub[i].size, MSG_DONTWAIT);
