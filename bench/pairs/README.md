@@ -825,3 +825,25 @@ difference smaller than that spread is not a finding.
 
 `moos` is in the main plan and is built only by `tools/baselines.sh --with-moos`
 ("MOOS" above): without it the driver names it as skipped and runs the rest.
+
+## What building the baselines leaves on this machine
+
+`tools/baselines.sh` and `tools/baselines-debs.sh` install nothing, and leave:
+
+| Where | What | Size here | To remove |
+|---|---|---|---|
+| `out/baselines/work-<arch>/` | the pinned sources (iceoryx2, LCM, core-moos with `--with-moos`), their build trees, the arm64 ROS 2 sysroot, the staged archive | 1 to 2 GB each | `tools/baselines.sh clean` |
+| `out/baselines/ros2-<arch>/` | the workspace and the results of `ros2-smoke` | tens of MB | `tools/baselines.sh clean` |
+| `out/baselines/baselines-*.tar.zst`, `out/baselines/debs/` | the archives and the Pi's `.deb` files | tens of MB | `tools/baselines.sh clean --all` |
+| docker image `hangar-baselines-build:noble` | the cross compiler and GLib for both architectures (`bench/pairs/container/Dockerfile`) | 1.9 GB | `tools/baselines.sh clean --all` |
+| docker image `hangar-ros2-bench:jazzy` | ROS 2 Jazzy with Cyclone DDS and Zenoh, for `ros2-smoke` (`bench/ros2/Dockerfile`; built by hand, `bench/ros2/README.md`) | 1.4 GB | `docker rmi hangar-ros2-bench:jazzy` |
+| docker images `ros:jazzy-ros-base` | amd64, the base of both images; and arm64, pulled by digest, untagged, never run: the sysroot | 2.6 and 1.3 GB | `docker rmi ros:jazzy-ros-base`; the other by its id (`docker images --digests ros`) |
+| rustup targets | `aarch64-unknown-linux-musl` (and `x86_64-unknown-linux-musl` for `--host`), **added by hand** because the script asks for them | about 100 MB each | `rustup target remove ...` |
+| `~/.cargo/registry` | the crates iceoryx2's build fetched | — | cargo's own |
+| `/dev/shm/iox2_*`, `/tmp/iceoryx2/` | what iceoryx2's nodes leave when a run of them is killed, and one management file a version that stays | kilobytes | by hand, when no iceoryx2 program runs |
+
+`clean` removes only what is in the first two rows (with `--all` the third and fourth),
+only under `out/baselines`, and prints the rest of this table with the commands: the
+images and the targets may be on the machine for another reason. Nothing is ever
+written outside `out/`, docker's store and what is named above; `make check-pairs`
+checks that its own drivers leave nothing in `/dev/shm`.

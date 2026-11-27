@@ -9,6 +9,11 @@
 #   tools/baselines.sh ros2-smoke [--image IMAGE] [--reps N] the smoke plan over every
 #                                                            system, ROS 2's included,
 #                                                            in a container
+#   tools/baselines.sh clean [--all]                         remove the work directories
+#                                                            under out/baselines (--all:
+#                                                            the archives, debs/ and the
+#                                                            build image too), and say
+#                                                            what else is on the machine
 #
 # Produces out/baselines/baselines-<git describe>-aarch64.tar.zst (--host: for this
 # machine, for a rehearsal):
@@ -103,6 +108,8 @@ fetch_source() { # dir url sha256 name
 	fi
 }
 [ "${1:-}" = ros2-smoke ] && { cmd=ros2-smoke; shift; }
+[ "${1:-}" = clean ] && { cmd=clean; shift; }
+all=no
 while [ $# -gt 0 ]; do
 	case $1 in
 	--host) host=yes ;;
@@ -112,7 +119,8 @@ while [ $# -gt 0 ]; do
 	--work) shift; work=$1 ;;
 	--image) shift; image=$1 ;;
 	--reps) shift; reps=$1 ;;
-	-h|--help) sed -n '3,70p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	--all) all=yes ;;
+	-h|--help) sed -n '3,75p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "baselines.sh: unknown argument $1" >&2; exit 2 ;;
 	esac
 	shift
@@ -120,6 +128,44 @@ done
 out=${out:-$ROOT/out/baselines}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
+
+# ---- clean ----------------------------------------------------------------------------
+# What this script and tools/baselines-debs.sh leave on a developer's machine
+# (bench/pairs/README.md, "What building the baselines leaves on this machine"). Only
+# what is named here, and only under the output directory, is removed; the rest is
+# said, with the command, because it may be somebody's for another reason.
+if [ "$cmd" = clean ]; then
+	[ -n "$out" ] && [ "$out" != / ] && [ -d "$out" ] || { echo "baselines.sh: no output directory" >&2; exit 1; }
+	n=0
+	for d in "$out"/work-* "$out"/ros2-x86_64 "$out"/ros2-aarch64; do
+		[ -d "$d" ] || continue
+		echo "baselines.sh: removing $d"
+		rm -rf -- "$d"
+		n=$((n + 1))
+	done
+	if [ "$all" = yes ]; then
+		for f in "$out"/baselines-*.tar.zst "$out"/debs; do
+			[ -e "$f" ] || continue
+			echo "baselines.sh: removing $f"
+			rm -rf -- "$f"
+			n=$((n + 1))
+		done
+		if command -v docker > /dev/null && docker image inspect "$build_image" > /dev/null 2>&1; then
+			echo "baselines.sh: removing the docker image $build_image"
+			docker rmi "$build_image" > /dev/null || echo "baselines.sh: docker would not remove it (in use?)" >&2
+		fi
+	fi
+	echo "baselines.sh: $n removed under $out$([ "$all" = yes ] || echo " (the archives, debs/ and the build image stay: clean --all)")"
+	cat <<EOF
+baselines.sh: not removed, because they may be yours for another reason:
+  docker images     docker rmi ros:jazzy-ros-base $image
+                    (and the arm64 ros:jazzy-ros-base, pulled by digest: docker images --digests ros)
+  rust targets      rustup target remove aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+  cargo's registry  ~/.cargo/registry holds the crates iceoryx2 needed
+  /dev/shm/iox2_*, /tmp/iceoryx2    what iceoryx2's nodes left, if a run of them was killed
+EOF
+	exit 0
+fi
 
 # ---- ros2-smoke ---------------------------------------------------------------------
 # A proof that every entry of the registry runs, on a machine without ROS 2: the
