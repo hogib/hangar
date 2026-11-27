@@ -1,0 +1,54 @@
+# .github/workflows/baselines.yml: the baselines of bench/pairs proved on a native
+# aarch64 machine (bench/pairs/README.md, tools/baselines.sh). Run by hand only
+# (Actions, "baselines", "Run workflow"): it builds iceoryx2 and a ROS 2 container and
+# takes more minutes than a push should cost, and nothing here is part of hangar.
+#
+# What it shows: that every node of the registry builds for aarch64 and runs there,
+# natively, through the smoke plan, ROS 2's entries included. What it does not: a
+# measurement (a shared runner's numbers mean nothing), and the cross-built ROS 2 node
+# of the Pi's archive, which is built on a laptop (here the node is built natively in
+# the container).
+name: baselines
+
+on:
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  aarch64:
+    name: baselines (aarch64 native, the smoke plan over the registry)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe names the archive
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential python3 zstd curl
+      - name: Zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xJf zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+      - name: Rust's musl target
+        run: rustup target add aarch64-unknown-linux-musl
+      - name: The ROS 2 container
+        run: docker build -t hangar-ros2-bench:jazzy bench/ros2
+      - name: Every node built for this machine, and the smoke plan over the registry
+        run: make check-baselines
+      - name: The report
+        if: always()
+        run: cat out/baselines/ros2-aarch64/smoke/report.md || true
+      - name: Logs on failure
+        if: failure()
+        run: |
+          cat builddir/baselines-smoke.log || true
+          tail -50 out/baselines/work-aarch64/iceoryx2/cargo.log || true
+      - name: The archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: baselines-aarch64-native
+          path: out/baselines/baselines-*.tar.zst

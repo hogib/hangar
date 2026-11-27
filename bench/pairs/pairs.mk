@@ -7,6 +7,8 @@
 #   make pairs         $(BUILDDIR)/hangar_pair, null_pair and unix_pair
 #   make check-pairs   the driver's smoke plan over them (part of check): the harness
 #                      proved, no number judged
+#   make check-baselines   the same over every system of the registry, in a container
+#                      (not part of check)
 #
 # The compiler and its flags go into each node (--version), and from there into every
 # results file.
@@ -34,6 +36,16 @@ $(BUILDDIR)/unix_pair: bench/pairs/unix_pair.c bench/pairs/pair.h
 $(BUILDDIR)/null_pair: $(OBJDIR)/bench/pairs/null_pair.o
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# Every entry of the registry, the baselines' included, through the smoke plan in a
+# container that has ROS 2 (tools/baselines.sh ros2-smoke: docker, cargo, the image of
+# bench/ros2/Dockerfile). Not part of check: it needs what a stock CI machine lacks, and
+# minutes. A proof that each system's node runs, never a measurement.
+.PHONY: check-baselines
+check-baselines:
+	@mkdir -p $(BUILDDIR); if tools/baselines.sh ros2-smoke > $(BUILDDIR)/baselines-smoke.log 2>&1 && \
+	    ! grep -q 'SKIP' $(BUILDDIR)/baselines-smoke.log; then echo "ok    baselines"; \
+	else echo "FAIL  baselines"; tail -30 $(BUILDDIR)/baselines-smoke.log; exit 1; fi
 
 .PHONY: pairs check-pairs
 pairs: $(PAIR_BINS)

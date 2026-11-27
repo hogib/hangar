@@ -87,7 +87,7 @@ if [ "$cmd" = ros2-smoke ]; then
 	hostdir=$(ls -d "$out"/work-"$(uname -m)"/stage/baselines-* | head -1)
 	ws=$out/ros2-$(uname -m)
 	mkdir -p "$ws"
-	rm -rf "$ws/smoke"
+	rm -rf "$ws/smoke" "$ws/build" "$ws/install" "$ws/log" # a workspace remembers its source's path
 	docker run --rm --user "$(id -u):$(id -g)" -e HOME=/work --shm-size 2g \
 		-v "$hostdir:/b:ro" -v "$ws:/work" "$image" bash -c '
 		set -e
