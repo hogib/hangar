@@ -38,7 +38,8 @@ f = {"host": "rov", "user": "bluerov2", "uptime_s": 7200.0, "busy": [{"pct": 4.0
      "home_avail_mb": 20000, "ports": [], "services": {"eeye": "inactive", "hellion": "inactive"},
      "release": {"version": "v0.1.6", "commit": "a" * 40},
      "rt": {"rtprio": 0, "memlock": 8388608, "root": False, "hangard": True, "caps": "cap_ipc_lock,cap_sys_nice=ep", "nosuid": False},
-     "not_in_force": [], "now": time.time()}
+     "not_in_force": [], "frozen": {"since": "2026-12-01T09:00:00Z", "masked": ["apt-daily.timer", "apt-daily-upgrade.timer"], "stopped": ["eeye", "hellion"]},
+     "now": time.time()}
 exec(sys.argv[2])
 json.dump(f, open(sys.argv[1], "w"))
 EOF
@@ -67,6 +68,16 @@ echo "== the judge"
 facts "$T/clean.json"
 judge up "$T/clean.json";      expect "a clean Pi, before a session" 0 '^preflight \(up\): [0-9]+ ok, 0 warn, 0 FAIL$' 'ok +pi +real time: reachable by file capabilities'
 judge measure "$T/clean.json"; expect "a clean Pi, before a measurement" 0 '^preflight \(measure\): [0-9]+ ok, 0 warn, 0 FAIL$'
+facts "$T/thawed.json" 'f["frozen"] = None'
+judge measure "$T/thawed.json"; expect "a Pi that is not frozen: a FAIL before a measurement, with the command" 1 'FAIL +pi +frozen: not frozen' 'lab.sh freeze'
+judge up "$T/thawed.json";      expect "not frozen before a session: said, no more" 0 'ok +pi +frozen: not frozen'
+facts "$T/old.json" 'del f["frozen"]'
+judge measure "$T/old.json";    expect "facts that say nothing of it: not frozen" 1 'FAIL +pi +frozen'
+judge measure "$T/clean.json";  expect "a frozen Pi: said, with what is held" 0 'ok +pi +frozen: since 2026-12-01T09:00:00Z: 2 unit\(s\) masked until the next boot, eeye, hellion stopped'
+facts "$T/lap.json" 'f["frozen"] = None; f["host"] = "mousev"'
+judge measure "$T/clean.json" --laptop "$T/lap.json" --pi-read-at "$(date +%s.%N)"
+expect "the laptop judged beside it" 0 '(ok|warn) +laptop +governor'
+refuse "the laptop is never asked to be frozen" '(ok|warn|FAIL) +laptop +frozen'
 
 facts "$T/apt.json" 'f["apt"] = [{"comm": "unattended-upgr", "pid": 4242, "cmdline": "/usr/bin/python3 /usr/bin/unattended-upgrade"}]'
 judge up "$T/apt.json";      expect "the package system running: a warning before a session" 0 'warn +pi +package system: running now: unattended-upgr \(pid 4242\)'

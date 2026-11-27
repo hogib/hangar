@@ -6,6 +6,7 @@ tools/rov/lab.sh runs it; it changes nothing on either machine.
 
   preflight.py probe [--ports udp:5610,tcp:8080 ...] [--services "eeye hellion"]
                      [--root INSTALL] [--hangar-root ROOT[,ROOT]] [--own-pidfiles A,B]
+                     [--frozen-file PATH]
         One machine's facts as a JSON object on standard output. The standard library
         alone: lab.sh sends this file to the Pi's python3 on standard input.
 
@@ -79,7 +80,7 @@ def mount_options(path):
 
 
 def probe(argv):
-    opt = {"--ports": "", "--services": "", "--root": "", "--hangar-root": "", "--own-pidfiles": ""}
+    opt = {"--ports": "", "--services": "", "--root": "", "--hangar-root": "", "--own-pidfiles": "", "--frozen-file": ""}
     for i in range(0, len(argv) - 1, 2):
         if argv[i] in opt:
             opt[argv[i]] = argv[i + 1]
@@ -185,6 +186,15 @@ def probe(argv):
         rc, out = run([cli, "status"], timeout=5)
         if rc == 0:
             facts["not_in_force"] = [l[len("not in force: "):] for l in out.splitlines() if l.startswith("not in force: ")]
+    # lab.sh freeze's record (tools/rov/freeze.sh): there while the machine is frozen.
+    facts["frozen"] = None
+    if opt["--frozen-file"]:
+        rec = read(opt["--frozen-file"])
+        if rec:
+            m = re.search(r"^frozen_at (\S+)", rec, re.M)
+            facts["frozen"] = {"since": m.group(1) if m else "?",
+                               "masked": re.findall(r"^masked (\S+)", rec, re.M),
+                               "stopped": re.findall(r"^stopped (\S+)", rec, re.M)}
     facts["now"] = time.time()  # last: the caller holds it against its own clock
     json.dump(facts, sys.stdout)
     print()
@@ -222,6 +232,19 @@ class Report:
 def judge_machine(r, name, f, mode, own_pids, expect_services):
     measure = mode == "measure"
     hard = "FAIL" if measure else "warn"
+
+    # Frozen (lab.sh freeze): the Pi alone; the laptop is its user's own machine.
+    if name == "pi":
+        fr = f.get("frozen")
+        if fr:
+            r.add("ok", name, "frozen", "since %s: %d unit(s) masked until the next boot, %s stopped"
+                  % (fr["since"], len(fr["masked"]), ", ".join(fr["stopped"]) or "no service"))
+        elif measure:
+            r.add("FAIL", name, "frozen", "not frozen: the package system can start by itself, and the governor and the lab's "
+                  "services are as they happen to be. No two measurements are then taken on the same terms",
+                  "lab.sh freeze   (one sudo on the Pi; lab.sh thaw puts it back)")
+        else:
+            r.add("ok", name, "frozen", "not frozen (lab.sh freeze before measurements)")
 
     # The package system.
     if f["apt"]:

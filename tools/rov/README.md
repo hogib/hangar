@@ -163,8 +163,13 @@ with a file `NOT-CLEAN` and the first lines of its README saying so if either ha
 `<block>.preflight.txt` and writes the verdict into every row. A measurement is never
 refused: it is marked.
 
+A measurement on a Pi that is not frozen is a `FAIL` ("Freeze and thaw", below): the
+checks of this table say what the machine was doing when it was looked at, and only a
+frozen Pi stays that way until the block is over.
+
 | Check | Before a session | Before a measurement | Why that line |
 |---|---|---|---|
+| The Pi not frozen (`lab.sh freeze`) | ok | FAIL | the package system can start by itself, the governor and the lab's services are as they happen to be |
 | Package system: a process of `apt`, `dpkg` or `unattended-upgrade` (not Ubuntu's idle `unattended-upgrade-shutdown`) | warn | FAIL | it holds a core for minutes and heats the Pi |
 | `apt-daily.timer`, `apt-daily-upgrade.timer` active | warn | warn | it can start in the middle of a block |
 | The Pi's clock against this laptop's, over 2 s | warn (`up` sets it) | FAIL | recordings and logs are stamped by it; 2 s is what `up` tolerates |
@@ -200,6 +205,72 @@ The probe is `tools/rov/preflight.py`, sent to the Pi's `python3` on its standar
 input, so the release installed there need not have it. `make check-rov` runs its
 judge over written facts, one case a line of the table, and the probe on the machine
 it runs on.
+
+## Freeze and thaw
+
+`lab.sh freeze` holds the Pi still for a session of measurements, and `lab.sh thaw` puts
+it back. Three things made earlier numbers unequal: `unattended-upgrade` starting by
+itself (three visits), the lab's eeye and hellion running beside some blocks and not
+beside others (2026-11-25), and the governor changed half-way through a session. A
+freeze takes all three out of the session at once, and the preflight refuses a
+measurement on a Pi that is not frozen.
+
+What freeze does, in this order, as root under **one** sudo (it prints every command
+first, read from the Pi as it is at that moment):
+
+1. **The state as found, written down**: whether each timer, unit and service runs, and
+   each CPU's governor, in `/run/hangar-frozen` on the Pi (a copy is kept on this
+   laptop, in lab.sh's state directory). Before anything is changed, so that a freeze
+   interrupted half-way is thawed from it.
+2. **Nothing of the package system starts again in this boot**:
+   `systemctl mask --runtime --now` for `apt-daily.timer` and `apt-daily-upgrade.timer`,
+   `systemctl mask --runtime` for the two services they start (`LAB_FREEZE_TIMERS`,
+   `LAB_FREEZE_UNITS` in `lab.conf`).
+3. **What of it runs now is waited for**: `unattended-upgrade` is sent SIGTERM, on
+   which it ends after the package it is at; `apt`, `apt-get` and `dpkg` are sent
+   nothing. Then freeze waits, up to `LAB_FREEZE_WAIT` (900 s), and says every 30 s
+   what it waits for. Nothing is ever sent SIGKILL, and dpkg is never interrupted: a
+   package half installed on the lab's vehicle is worse than a late measurement. If
+   the wait runs out, freeze does the rest, ends with status 3 and says so; the
+   preflight's `package system` line then keeps a measurement from being taken for
+   clean until it has ended.
+4. **The lab's own services stopped** (`LAB_SERVICES`: eeye and hellion), those that
+   ran.
+5. **The governor `performance`** on every CPU (`LAB_FREEZE_GOVERNOR`).
+6. **The clock set from this laptop's**, if it is more than 2 s off.
+
+Ubuntu's `unattended-upgrades.service` is left alone: it is the idle waiter that is
+there from boot to shutdown (`unattended-upgrade-shutdown`), holds no core, and the
+preflight does not count it. snapd's refreshes are not held either: if one runs, the
+preflight's `other load` line shows it.
+
+`thaw` reads the record and puts back exactly that: the masks taken off, each timer
+and each of the lab's services started again **if it ran when the Pi was frozen** (one
+that was already stopped stays stopped), each governor as it was. The clock stays as
+set. The package system's services are not started: their timers are, and run them when
+they are due. Run twice, the second finds no record and does nothing. thaw refuses
+while hangar runs on the Pi (`lab.sh down` first): it starts the lab's services, which
+hold the camera.
+
+**A thaw that was forgotten** ends with the Pi's next boot: the masks are systemd's
+runtime ones and the record is under `/run`, so both are gone, the governor is the
+boot's own again and the lab's services start as they always do. The lab's Pi cannot be
+left without updates by this. So that it is not forgotten quietly all the same,
+`lab.sh status` says `THE PI IS FROZEN` while it is, and `lab.sh down` on a frozen Pi
+ends with that line in place of `everything as found`. While the Pi is frozen, `down`
+leaves the lab's services stopped (a session with `--video` would otherwise start them
+between two blocks); thaw starts them.
+
+This laptop is not frozen: it is its user's own machine. The preflight goes on
+reporting its governor, its load and its own `hellion.service`.
+
+The work on the Pi is `tools/rov/freeze.sh`, sent there by `lab.sh` (the release
+installed on the Pi need not have it). `make check-rov` runs it against a Pi that is a
+directory (`tests/fake-pi.sh`): the record, the masks, a timer that was already stopped,
+the governor back to `ondemand`, thaw twice, an upgrade that takes a while to end, dpkg
+at work, a package system that does not end, a freeze stopped half-way. A rehearsal
+(`LAB_HOST=local`) freezes the same stand-in, never the laptop. Not shown by either:
+the real `systemctl` and the real `unattended-upgrade` on the Pi.
 
 ## Real time (opt-in, an experiment)
 

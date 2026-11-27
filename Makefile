@@ -17,7 +17,8 @@
 #                          packets (SAN_MODULE_CHECKS), manager and modules
 #                          included, under AddressSanitizer + UBSan
 #   make check-rov         tools/rov's guard: nothing stopped under an armed vehicle;
-#                          and its preflight, judged over written facts
+#                          its preflight, judged over written facts; and
+#                          freeze and thaw, against a Pi that is a directory
 #   make equivalence       hash every lib/vision operator's output and
 #                          compare with electric-eye v0.3.1's (tools/equivalence/)
 #   make fuzz              every fuzz harness for FUZZ_SECONDS each (fuzz/README.md)
@@ -644,6 +645,9 @@ check-rov:
 	@if bash tools/rov/tests/test_preflight.sh > $(TESTDIR)/rov_preflight.log 2>&1; then \
 	  echo "ok    rov preflight"; \
 	else echo "FAIL  rov preflight"; cat $(TESTDIR)/rov_preflight.log; exit 1; fi
+	@if bash tools/rov/tests/test_freeze.sh > $(TESTDIR)/rov_freeze.log 2>&1; then \
+	  echo "ok    rov freeze"; \
+	else echo "FAIL  rov freeze"; cat $(TESTDIR)/rov_freeze.log; exit 1; fi
 check: check-rov
 
 # Fuzzing (fuzz/README.md, fuzz/fuzz.mk carries the rules): a harness for every

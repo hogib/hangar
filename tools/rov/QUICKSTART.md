@@ -40,6 +40,14 @@ puts it right. `up` runs it first and stops at a `FAIL` (`up --no-preflight` goe
 `bench` runs `preflight --measure` before and after and marks a run that was not clean
 in its own folder (README, "Preflight").
 
+For a session of measurements there are two more, around all the others: `lab.sh
+freeze` first (the Pi's package timers kept from starting until its next boot, a
+running upgrade waited for, the lab's eeye and hellion stopped, the governor
+`performance`, the clock set; one sudo password, every command shown before it runs)
+and `lab.sh thaw` last, which puts back what freeze found. `preflight --measure` is a
+`FAIL` on a Pi that is not frozen, and `status` and `down` say `THE PI IS FROZEN` while
+it is (README, "Freeze and thaw").
+
 Then arm in QGroundControl (**Disarmed → Arm**), drive with the sticks, disarm, and
 `lab.sh down` before leaving. Run `down` even when something went wrong: it does every
 step it can and names the ones that failed.

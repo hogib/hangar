@@ -92,8 +92,13 @@ is() { # what command...: the command succeeds
     local what=$1; shift
     if "$@" > /dev/null 2>&1; then ok "$what"; else bad "$what"; fi
 }
-as_found() { # after a down
-    has down "down ends with: everything as found" '^lab: everything as found$'
+as_found() { # after a down; `frozen`: of a frozen Pi, which is not yet as found
+    if [ "${1:-}" = frozen ]; then
+        has down "down of a frozen Pi: the session down, and said that the Pi is still frozen" 'THE PI IS FROZEN \(since 20'
+        hasnt down "down of a frozen Pi does not say: everything as found" '^lab: everything as found$'
+    else
+        has down "down ends with: everything as found" '^lab: everything as found$'
+    fi
     is "no manager left, both roots gone" eval '[ ! -e "$RV" ] && [ ! -e "$RT" ] && ! pgrep -u "$(id -u)" -f "^$H/hangar-labtest/bin/hangard|^$repo/builddir/hangard" > /dev/null'
     is "the session file gone" eval '[ ! -e "$LAB_STATE_DIR/session" ] && [ ! -e "$H/hangar-rov/lab-session" ]'
 }
@@ -126,16 +131,31 @@ for run in "$@"; do
     echo "== $run"
     case $run in
     plain)
+        # Frozen first, as a session of measurements begins (README "Freeze and thaw";
+        # rehearsing, the Pi that is frozen is a directory).
+        lab unfrozen preflight --measure
+        has unfrozen "not frozen: the preflight refuses a measurement" 'FAIL +pi +frozen: not frozen'
+        lab freeze freeze
+        has freeze "freeze: the commands shown before they are run" '# .*systemctl mask --runtime --now apt-daily-upgrade.timer'
+        has freeze "freeze: done" '^freeze: frozen\. Until lab.sh thaw'
         lab up up
         has up "up: both roles, no Pixhawk" 'RELAY=0: no Pixhawk'
         has up "up: the preflight first, without a FAIL" '^preflight \(up\): [0-9]+ ok, [0-9]+ warn, 0 FAIL$'
         lab preflight preflight --measure
         has preflight "preflight --measure: a report, the session's ports left out" '^preflight \(measure\): '
+        has preflight "preflight --measure: the Pi reads frozen" 'ok +pi +frozen: since 20'
         hasnt preflight "preflight --measure: no port lines" ' pi +(UDP|TCP) [0-9]'
         lab status status
         has status "status: the topside's root on the Pi" 'topside_mavlink'
+        has status "status: the Pi is frozen, said" 'THE PI IS FROZEN'
+        lab thaw-up thaw
+        has thaw-up "thaw with hangar up: refused" 'hangar runs on the Pi: lab.sh down first'
         lab down down
-        as_found ;;
+        as_found frozen
+        lab thaw thaw
+        has thaw "thaw: put back" '^lab: thawed$'
+        lab status-thawed status
+        hasnt status-thawed "after thaw: status is quiet about it" 'FROZEN' ;;
 
     bridge)
         # A release whose msg/ tree is not this checkout's: refused, nothing started.

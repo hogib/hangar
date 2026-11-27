@@ -40,6 +40,15 @@
 #   lab.sh down [--force]            everything put back as found: disarmed first if
 #                                    it is armed, and nothing stopped unless the
 #                                    vehicle then reads disarmed (--force: all the same)
+#   lab.sh freeze                    the Pi held still for measurements, under one sudo:
+#                                    the package system's timers kept from starting until
+#                                    the next boot, a running upgrade asked to end and
+#                                    waited for, the lab's own services stopped, the
+#                                    governor performance, the clock set. What was found
+#                                    is written down first, and the commands are shown
+#   lab.sh thaw                      all of that put back as it was found (a reboot of
+#                                    the Pi undoes a freeze too). The last thing before
+#                                    leaving: status and down say while the Pi is frozen
 #
 # Nothing here stops hangar under an armed vehicle (tools/rov/README.md, "The guard"):
 # up, which lays hangar out afresh, refuses while it is armed and disarms nothing.
@@ -81,7 +90,7 @@ chmod 700 "$LAB_STATE_DIR"
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$LAB_STATE_DIR/ssh-%C" -o ControlPersist=30m
           -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 
-usage() { sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { echo "lab: $*"; }
 warn() { echo "lab: $*" >&2; }
 die() { warn "$*"; exit 1; }
@@ -328,6 +337,101 @@ stop_services() { # unit...
     remote_sudo systemctl stop "$@"
 }
 
+# ---- freeze and thaw -----------------------------------------------------------------
+
+# tools/rov/freeze.sh on the Pi (README "Freeze and thaw"). Rehearsing, it runs here
+# against a Pi that is a directory (tests/fake-pi.sh): nothing of this laptop is changed.
+FREEZE_SH=$here/freeze.sh
+FROZEN_FILE=/run/hangar-frozen
+FREEZE_SEAMS=()
+if is_local; then
+    FAKE_PI=$LAB_STATE_DIR/freeze-rehearsal
+    FROZEN_FILE=$FAKE_PI/run/hangar-frozen
+fi
+freeze_args() { # the settings, in FREEZE_ARGS
+    FREEZE_ARGS=(SERVICES="$LAB_SERVICES" GOVERNOR="$LAB_FREEZE_GOVERNOR" TIMERS="$LAB_FREEZE_TIMERS"
+                 UNITS="$LAB_FREEZE_UNITS" WAIT="$LAB_FREEZE_WAIT")
+    if is_local; then
+        [ -d "$FAKE_PI" ] || bash "$here/tests/fake-pi.sh" make "$FAKE_PI"
+        readarray -t FREEZE_SEAMS < <(bash "$here/tests/fake-pi.sh" seams "$FAKE_PI")
+    fi
+}
+# The record of a frozen Pi, on standard output; nothing and status 1 if it is not.
+frozen_record() { rsh FILE="$FROZEN_FILE" 'cat "$FILE" 2>/dev/null'; }
+frozen_since() { frozen_record | sed -n 's/^frozen_at //p' | head -1; }
+# The script onto the Pi, its path there in FREEZE_REMOTE.
+freeze_send() {
+    rsh DATA="$(base64 -w0 < "$FREEZE_SH")" \
+        'mkdir -p "$HOME/hangar-rov" && echo "$DATA" | base64 -d > "$HOME/hangar-rov/freeze.sh"' || return 1
+    FREEZE_REMOTE=$(rsh 'echo "$HOME/hangar-rov/freeze.sh"')
+}
+
+cmd_freeze() {
+    [ $# -eq 0 ] || usage 2
+    reachable || exit 1
+    freeze_args
+    local rc
+    if is_local; then
+        say "rehearsal: a Pi that is a directory ($FAKE_PI); nothing of this laptop is changed"
+        bash "$FREEZE_SH" plan "${FREEZE_ARGS[@]}" "${FREEZE_SEAMS[@]}"
+        bash "$FREEZE_SH" freeze "${FREEZE_ARGS[@]}" "${FREEZE_SEAMS[@]}"; rc=$?
+    else
+        freeze_send || die "could not copy freeze.sh to the Pi"
+        local theirs ours
+        theirs=$(remote <<< 'date -u +%s') || die "the Pi did not answer"
+        ours=$(date -u +%s)
+        FREEZE_ARGS+=(CLOCK_OURS="$ours" CLOCK_THEIRS="$theirs")
+        # What will be run as root, read from the Pi as it is now, before the password.
+        rsh "$(printf '%q ' bash "$FREEZE_REMOTE" plan "${FREEZE_ARGS[@]}")"
+        say "sudo on the Pi, once, for the commands above"
+        remote_sudo bash "$FREEZE_REMOTE" freeze "${FREEZE_ARGS[@]}"; rc=$?
+    fi
+    if frozen_record > "$LAB_STATE_DIR/frozen.tmp" && [ -s "$LAB_STATE_DIR/frozen.tmp" ]; then
+        mv "$LAB_STATE_DIR/frozen.tmp" "$LAB_STATE_DIR/frozen"
+        say "the record is on the Pi ($FROZEN_FILE) and here ($LAB_STATE_DIR/frozen)"
+        say "lab.sh thaw before leaving. A reboot of the Pi undoes the freeze too, record and all"
+    else
+        rm -f "$LAB_STATE_DIR/frozen.tmp"
+        warn "the Pi does not read frozen: freeze did not run (the password? lab.sh freeze again)"
+        exit 1
+    fi
+    [ "$rc" = 0 ] || warn "freeze ended with status $rc: read what it said above; lab.sh preflight --measure says what is left"
+    return "$rc"
+}
+
+cmd_thaw() {
+    [ $# -eq 0 ] || usage 2
+    reachable || exit 1
+    if [ -z "$(frozen_since)" ]; then
+        say "the Pi is not frozen: nothing to put back"
+        [ ! -f "$LAB_STATE_DIR/frozen" ] ||
+            { say "  (it was frozen at $(sed -n 's/^frozen_at //p' "$LAB_STATE_DIR/frozen"): it has been thawed or rebooted since)"; rm -f "$LAB_STATE_DIR/frozen"; }
+        return 0
+    fi
+    # thaw starts the lab's own services again: with a session up that would give the
+    # camera and the serial line back under hangar's hands.
+    hangar_running && die "hangar runs on the Pi: lab.sh down first, then thaw (thaw starts the lab's own services again)"
+    freeze_args
+    if is_local; then
+        bash "$FREEZE_SH" thaw "${FREEZE_SEAMS[@]}" || exit 1
+    else
+        freeze_send || die "could not copy freeze.sh to the Pi"
+        say "sudo on the Pi, once, to put back what freeze wrote down"
+        remote_sudo bash "$FREEZE_REMOTE" thaw || exit 1
+    fi
+    [ -z "$(frozen_since)" ] || die "the Pi still reads frozen: thaw did not run (the password? lab.sh thaw again)"
+    rm -f "$LAB_STATE_DIR/frozen"
+    say "thawed"
+}
+
+# One line for status and down while the Pi is frozen; nothing if it is not.
+frozen_notice() {
+    local since; since=$(frozen_since)
+    [ -n "$since" ] || return 1
+    warn "THE PI IS FROZEN (since $since): its apt timers are masked, the lab's own services"
+    warn "  stopped, the governor set. lab.sh thaw before leaving (a reboot undoes it too)."
+}
+
 # ---- the clock -----------------------------------------------------------------------
 
 # The Pi has no clock of its own and nothing sets it over the tether: every log and
@@ -444,7 +548,7 @@ preflight_run() {
     done
     tmp=$(mktemp -d)
     local pargs=(probe --services "$LAB_SERVICES $LAB_SERIAL_SERVICES" --root "$ROV_ROOT" --hangar-root "$RV,$RT"
-                 --own-pidfiles hangar-rov/relay.pid)
+                 --own-pidfiles hangar-rov/relay.pid --frozen-file "$FROZEN_FILE")
     if is_local; then
         python3 -I - "${pargs[@]}" --ports "$pp${lp:+,$lp}" < "$PF" > "$tmp/pi.json" 2> "$tmp/pi.err"
         pi_at=$(date +%s.%N)
@@ -835,6 +939,8 @@ EOF
     fi
     echo "== the session"
     if [ -f "$SESSION" ]; then sed 's/^/  /' "$SESSION"; else echo "  none open"; fi
+    frozen_notice
+    return 0
 }
 
 # ---- bench ---------------------------------------------------------------------------
@@ -1067,12 +1173,24 @@ cmd_down() {
         step "the topside role on this laptop stopped, its root removed" eval 'LAB_FORCE=$force topside reset > /dev/null'
     fi
     step "hangar and the relay stopped, the roots removed" rsh ROV_FORCE="$force" '"$ROV" reset > /dev/null'
-    local services; services=$(sess_get services_stopped)
+    # The lab's own services, unless the Pi is frozen: the freeze holds them stopped
+    # for the measurements, and thaw starts the ones that ran when it began.
+    local services held="" rec; services=$(sess_get services_stopped)
+    rec=$(frozen_record)
+    if [ -n "$services" ] && [ -n "$rec" ]; then
+        local s keep=""
+        for s in $services; do
+            if grep -qx "stopped $s" <<< "$rec"; then held+="$s "; else keep+="$s "; fi
+        done
+        services=${keep% }
+        [ -z "$held" ] || say "ok    the lab's ${held% } left stopped: the Pi is frozen, and lab.sh thaw starts them"
+    fi
     if [ -n "$services" ]; then
         # shellcheck disable=SC2086
         step "the lab's $services started again" remote_sudo systemctl start $services
     fi
     if [ "$lost" = 1 ]; then
+        [ -z "$rec" ] || frozen_notice
         down_without_session "$was_up" "${#failed[@]}"
         return
     fi
@@ -1083,9 +1201,15 @@ cmd_down() {
 
     if [ "${#failed[@]}" -eq 0 ]; then
         rm -f "$SESSION" "$LAB_STATE_DIR/eeye.json"
-        say "everything as found"
+        if [ -n "$rec" ]; then
+            say "the session is down; NOT everything is as found yet:"
+            warn "THE PI IS FROZEN (since $(sed -n 's/^frozen_at //p' <<< "$rec" | head -1)): lab.sh thaw before leaving (a reboot undoes it too)"
+        else
+            say "everything as found"
+        fi
     else
         warn "not everything could be put back: ${failed[*]}"
+        [ -z "$rec" ] || frozen_notice
         warn "the session file ($SESSION) is kept: fix what failed and run lab.sh down again"
         # The Pi's rov.sh asks once more as it stops: its refusal (NOT DONE, above) is an
         # arm, or a module gone, since down's own check.
@@ -1103,6 +1227,8 @@ case "${1:-}" in
     bench) shift; cmd_bench "$@" ;;
     camera) shift; cmd_camera "$@" ;;
     down) shift; cmd_down "$@" ;;
+    freeze) shift; cmd_freeze "$@" ;;
+    thaw) shift; cmd_thaw "$@" ;;
     -h|--help|help|'') usage 0 ;;
     *) warn "unknown command $1"; usage 2 ;;
 esac
