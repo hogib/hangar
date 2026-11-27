@@ -31,11 +31,16 @@ def check(what, cond, detail=''):
         print(f'  FAIL  {what}' + (f': {detail}' if detail else ''))
 
 
+DRIVERS = []  # the drivers this test started: each keeps its runs in /dev/shm/pairs-<its pid>-*
+
+
 def run(out, *more, plan='plan-check.json'):
     cmd = [sys.executable, '-I', DRIVER, '--plan', os.path.join(HERE, plan), '--systems', os.path.join(HERE, 'systems-check.json'),
            '--var', f'bin={BIN}', '--out', out, '--seed', '11'] + list(more)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    return r.returncode, r.stdout + r.stderr
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    text, _ = p.communicate(timeout=600)
+    DRIVERS.append(p.pid)
+    return p.returncode, text
 
 
 print('== the histogram, against pair.h\'s two lines')
@@ -118,7 +123,10 @@ check('each system\'s version, compiler and flags', v.get('version', '').startsw
 check('a helper\'s version beside it', 'helper sleeper' in doc['systems']['with-helper']['version'])
 check('the plan, the registry and a system\'s configuration file are copied into the results',
       all(os.path.isfile(os.path.join(a, p)) for p in ('plan.json', 'systems.json', 'config/hangar/plan-check.json', 'report.md', 'graph-graph-check.json')))
-check('nothing left in /dev/shm', not [d for d in os.listdir('/dev/shm') if d.startswith('pairs-')])
+# Its own only: restart.py's suite (pairs-restart-<pid>) and another checkout's driver
+# run beside this one under make -j, and theirs are not this test's to judge.
+left = [d for d in os.listdir('/dev/shm') if any(d.startswith(f'pairs-{pid}-') for pid in DRIVERS)]
+check('nothing of this test\'s drivers left in /dev/shm', DRIVERS and not left, str(left))
 
 print('== the report')
 with open(os.path.join(a, 'report.md')) as f:
