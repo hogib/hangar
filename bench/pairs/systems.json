@@ -62,6 +62,301 @@
       },
       "install": "make pairs, or the baselines archive: --var base=<its bin directory>",
       "notes": "What a megabyte through a socket is: a run of bytes, several send and receive calls a message, two copies. Another contract than the others': the publisher's send blocks while the reader's buffer is full, so nothing is ever lost and a slow reader slows the writer (it shows under \"intended\"). With several subscribers the publisher writes to each in turn. The reader has the message when it has collected all its bytes."
+    },
+    {
+      "name": "ros2-fastdds",
+      "title": "ROS 2 Jazzy, Fast DDS as installed (ROS 2's default middleware)",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp"
+      },
+      "needs": [
+        "{ros_root}/lib/librmw_fastrtps_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "As installed: on one host Fast DDS uses its shared-memory transport beside UDP; the message is serialised into it and deserialised out of it, inside the sample. No helper. A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-fastrtps-cpp",
+        "ros-jazzy-fastrtps"
+      ]
+    },
+    {
+      "name": "ros2-fastdds-loan",
+      "title": "ROS 2 Jazzy, Fast DDS with data sharing and loaned messages",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "args": [
+        "--loan"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp",
+        "FASTRTPS_DEFAULT_PROFILES_FILE": "{here}/ros2_pair/config/fastdds-datasharing.xml",
+        "RMW_FASTRTPS_USE_QOS_FROM_XML": "1",
+        "ROS_DISABLE_LOANED_MESSAGES": "0"
+      },
+      "config_files": [
+        "{here}/ros2_pair/config/fastdds-datasharing.xml"
+      ],
+      "needs": [
+        "{ros_root}/lib/librmw_fastrtps_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "What Fast DDS's documentation gives for zero copy on one host: writer and reader share the writer's history in a file under /dev/shm, the publisher builds the message in a sample it borrows, and the subscription is handed that sample: no serialisation and no copy. The nearest thing in ROS 2 to hangar-inplace. The node says on its standard error whether the loan was granted (logs/). A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-fastrtps-cpp",
+        "ros-jazzy-fastrtps"
+      ]
+    },
+    {
+      "name": "ros2-fastdds-waitset",
+      "title": "ROS 2 Jazzy, Fast DDS as installed, the subscriber without an executor",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "args": [
+        "--waitset"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp"
+      },
+      "needs": [
+        "{ros_root}/lib/librmw_fastrtps_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "Not how a ROS 2 node is usually written: the subscriber waits in an rclcpp::WaitSet and takes the message itself. Beside ros2-fastdds it shows what the executor costs and what the middleware costs. The sample ends when take() has returned the message.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-fastrtps-cpp",
+        "ros-jazzy-fastrtps"
+      ]
+    },
+    {
+      "name": "ros2-fastdds-composed",
+      "title": "ROS 2 Jazzy, publisher and subscription in ONE process (rclcpp intra-process)",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "kind": "single",
+      "args": [
+        "--intra"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_fastrtps_cpp"
+      },
+      "needs": [
+        "{ros_root}/lib/librmw_fastrtps_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "NOT the comparison: every other row is two processes, as hangar's modules are, and here nothing leaves the process (a pointer is handed over inside rclcpp, and one failing node takes the other with it). Its own row because the question is asked. One process, so one subscriber and no start-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-fastrtps-cpp",
+        "ros-jazzy-fastrtps"
+      ]
+    },
+    {
+      "name": "ros2-cyclonedds",
+      "title": "ROS 2 Jazzy, Cyclone DDS as installed",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp"
+      },
+      "needs": [
+        "{ros_root}/lib/librmw_cyclonedds_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "As installed: on one host through the loopback network stack (UDP), serialised and deserialised inside the sample. No helper. A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-cyclonedds-cpp",
+        "ros-jazzy-cyclonedds",
+        "ros-jazzy-iceoryx-posh"
+      ]
+    },
+    {
+      "name": "ros2-cyclonedds-iceoryx",
+      "title": "ROS 2 Jazzy, Cyclone DDS over iceoryx shared memory, loaned messages",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "args": [
+        "--loan"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
+        "CYCLONEDDS_URI": "file://{here}/ros2_pair/config/cyclonedds-iceoryx.xml",
+        "ROS_DISABLE_LOANED_MESSAGES": "0"
+      },
+      "helpers": [
+        {
+          "name": "roudi",
+          "cmd": [
+            "{ros_root}/bin/iox-roudi"
+          ],
+          "ready_s": 2.0
+        }
+      ],
+      "config_files": [
+        "{here}/ros2_pair/config/cyclonedds-iceoryx.xml"
+      ],
+      "needs": [
+        "{ros_root}/lib/librmw_cyclonedds_cpp.so",
+        "{ros_root}/bin/iox-roudi"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "Cyclone DDS's zero-copy path: samples of fixed-size types travel through iceoryx's shared memory and the publisher borrows them from it. It needs iceoryx's daemon, RouDi, which is a helper here: started before the pair and its CPU and memory counted with the system. The messages do not pass through RouDi; it owns the memory pools and the discovery. RouDi's default pools decide how many samples of a size can be out at once: a run that exhausts them shows as send failures or losses, and is a result of the default configuration. A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-cyclonedds-cpp",
+        "ros-jazzy-cyclonedds",
+        "ros-jazzy-iceoryx-posh"
+      ]
+    },
+    {
+      "name": "ros2-zenoh",
+      "title": "ROS 2 Jazzy, Zenoh (rmw_zenoh) as installed",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_zenoh_cpp"
+      },
+      "helpers": [
+        {
+          "name": "zenohd",
+          "cmd": [
+            "{ros_root}/lib/rmw_zenoh_cpp/rmw_zenohd"
+          ],
+          "ready_s": 3.0
+        }
+      ],
+      "needs": [
+        "{ros_root}/lib/librmw_zenoh_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "Not DDS. Its router (rmw_zenohd) is a helper here, started before the pair and counted with the system; it is for discovery, and the messages then go from peer to peer over TCP on the loopback. A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-zenoh-cpp",
+        "ros-jazzy-zenoh-cpp-vendor"
+      ]
+    },
+    {
+      "name": "ros2-zenoh-shm",
+      "title": "ROS 2 Jazzy, Zenoh (rmw_zenoh) with its shared-memory transport",
+      "node": [
+        "{ros}/ros2_pair_node"
+      ],
+      "env": {
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+        "ROS_DOMAIN_ID": "77",
+        "RMW_IMPLEMENTATION": "rmw_zenoh_cpp",
+        "ZENOH_CONFIG_OVERRIDE": "transport/shared_memory/enabled=true"
+      },
+      "helpers": [
+        {
+          "name": "zenohd",
+          "cmd": [
+            "{ros_root}/lib/rmw_zenoh_cpp/rmw_zenohd"
+          ],
+          "ready_s": 3.0
+        }
+      ],
+      "needs": [
+        "{ros_root}/lib/librmw_zenoh_cpp.so"
+      ],
+      "sizes": [
+        32,
+        256,
+        4096,
+        65536,
+        1048576
+      ],
+      "sizes_why": "one fixed-size message type a size, so that a middleware may lend its samples",
+      "install": "source ROS 2 Jazzy and the ros2_pair workspace, then --var ros=<workspace>/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy (bench/pairs/README.md, \"ROS 2\")",
+      "notes": "The same with Zenoh's shared-memory transport switched on (ZENOH_CONFIG_OVERRIDE), which its documentation gives for large messages on one host; Zenoh applies it above a size threshold of its own. The router is a helper, counted. A node as ROS 2 nodes are written: a SingleThreadedExecutor and a subscription callback, whose first statement is the harness's reading of the clock. Reliable, keep-last 16, volatile: every message while the reader keeps up, the writer not waiting, which is what hangar's ring read in order means. Discovery happens in the warm-up.",
+      "packages": [
+        "ros-jazzy-rclcpp",
+        "ros-jazzy-rmw-zenoh-cpp",
+        "ros-jazzy-zenoh-cpp-vendor"
+      ]
     }
   ]
 }

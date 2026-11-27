@@ -235,7 +235,7 @@ class Run:
         self.cond = ctx['plan']['conditions'][cell['condition']]
         self.rt = self.cond.get('realtime')
         self.rundir = f'/dev/shm/pairs-{os.getpid()}-{tag}'
-        self.vars = dict(ctx['vars'], rundir=self.rundir, topic=f'r{tag}'.replace('-', ''))
+        self.vars = dict(ctx['vars'], rundir=self.rundir, topic=f'r{tag}'.replace('-', ''), here=os.path.dirname(system['file']))
         self.env = dict(os.environ)
         for k, val in system.get('env', {}).items():
             self.env[k] = fill([val], self.vars)[0]
@@ -418,6 +418,8 @@ def system_fits(system, cell):
         return 'one process: one subscriber, and nothing to start or rejoin'
     if cell['size'] > system.get('max_size', 1 << 40):
         return 'messages above %d B are not carried (%s)' % (system['max_size'], system.get('max_size_why', "the system's limit"))
+    if system.get('sizes') and cell['size'] not in system['sizes']:
+        return 'no message of %d B (%s)' % (cell['size'], system.get('sizes_why', "the system's sizes"))
     if cell['subscribers'] > system.get('max_subscribers', 1 << 30):
         return f'more than {system["max_subscribers"]} subscribers are not supported'
     return None
@@ -579,7 +581,8 @@ def report(docs):
     for n in systems:
         s = next(d['systems'][n] for d in docs if n in d['systems'])
         v = s.get('version') or {}
-        out.append(f'| `{n}` | {s["title"]} | {v.get("version", "?")} | {v.get("compiler", "?")}; {v.get("flags", "?")} | {s.get("notes", "")} |')
+        ver = v.get("version", "?") + (f' ({v["packages"].rstrip("; ")})' if v.get('packages') else '')
+        out.append(f'| `{n}` | {s["title"]} | {ver} | {v.get("compiler", "?")}; {v.get("flags", "?")} | {s.get("notes", "")} |')
     skipped = [(d['environment']['session'], s) for d in docs for s in d.get('skipped', [])]
     if skipped:
         out += ['', 'Not run: ' + '; '.join(f'`{s["system"]}` ({ses}): {s["reason"]}' for ses, s in skipped) + '.']
@@ -744,13 +747,26 @@ def system_ready(s, variables, out):
     for exe in need:
         if not (os.path.isfile(exe) and os.access(exe, os.X_OK)) and not shutil.which(exe):
             return f'{exe} is not there' + (f' ({s["install"]})' if s.get('install') else ''), None
+    # What the node loads at run time and would fail without (a middleware's library).
+    for f in fill(s.get('needs', []), dict(v, here=os.path.dirname(s['file']))):
+        if not os.path.exists(f):
+            return f'{f} is not there' + (f' ({s["install"]})' if s.get('install') else ''), None
     rec = {'title': s['title'], 'notes': s.get('notes', ''), 'entry': {k: s[k] for k in s if k != 'file'}, 'version': None, 'config': []}
     try:
-        r = subprocess.run(fill(s.get('version') or (s['node'] + ['--version']), v), capture_output=True, text=True, timeout=20)
+        # In the system's own environment: a node may say there which middleware it loaded.
+        env = dict(os.environ, **{k: fill([val], dict(v, here=os.path.dirname(s['file'])))[0] for k, val in s.get('env', {}).items()})
+        r = subprocess.run(fill(s.get('version') or (s['node'] + ['--version']), v), capture_output=True, text=True, timeout=20, env=env)
         line = (r.stdout.strip().splitlines() or [''])[-1]
         rec['version'] = json.loads(line) if line.startswith('{') else {'version': line or 'not said'}
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         rec['version'] = {'version': f'not read ({e})'}
+    if s.get('packages'):
+        # The installed packages a system consists of, with their versions (dpkg's).
+        try:
+            r = subprocess.run(['dpkg-query', '-W', '-f', '${Package} ${Version}; '] + s['packages'], capture_output=True, text=True, timeout=20)
+            rec['version']['packages'] = r.stdout.strip() or 'not read (dpkg-query said nothing)'
+        except (OSError, subprocess.SubprocessError) as e:
+            rec['version']['packages'] = f'not read ({e})'
     for h in s.get('helpers', []):
         if h.get('version'):
             try:

@@ -32,6 +32,10 @@
  * is the two in one thread, send then receive, for a system that hands over within a
  * process (the null system: what the harness itself costs).
  *
+ * A system that delivers in a callback calls pair_deliver(bytes, length) as the
+ * callback's first statement: the clock is read there, and the message read and
+ * counted before the callback returns.
+ *
  * Histograms are log-spaced, 32 bins to the octave (a bin is at most 3.1 % wide), in
  * nanoseconds, written sparse as [[index, count], ...]. Index i < 32 is the value i;
  * above, with e = 5 + (i - 32) / 32 and s = (i - 32) % 32, a bin starts at
@@ -248,6 +252,31 @@ static inline int pair_sub_take(const struct pair_system *sys, struct pair_sub_s
 	return seq >= st->total;
 }
 
+/* For a system that delivers in a callback (README, "Adding a system"): the callback
+ * calls pair_deliver as its first statement, and the clock is read here, at once.
+ * The bytes need be good only for the length of the call, so a message the system
+ * lent for the callback alone is read where it lies. The node's sub_recv, inside which
+ * the system's executor ran the callback, then returns 0. */
+static struct {
+	const struct pair_system *sys;
+	struct pair_sub_state *st;
+	const struct pair_opts *o;
+	unsigned n;         /* delivered during the current sub_recv */
+	int last;           /* the run's last message was among them */
+	uint64_t first_now; /* the reading at the very first message, or 0 */
+} pair_cb;
+
+static inline void pair_deliver(const void *m, long len)
+{
+	uint64_t now = pair_now_ns();
+	if (!pair_cb.st || (unsigned long)len < PAIR_MIN_SIZE)
+		return;
+	if (!pair_cb.st->first_msg_ns)
+		pair_cb.first_now = now;
+	pair_cb.last |= pair_sub_take(pair_cb.sys, pair_cb.st, pair_cb.o, m, len, now);
+	pair_cb.n++;
+}
+
 static void pair_sub_json(const struct pair_system *sys, const struct pair_opts *o, const struct pair_sub_state *st,
 			  uint64_t t_open, int gone, int timed_out)
 {
@@ -283,6 +312,9 @@ static int pair_run_sub(const struct pair_system *sys, const struct pair_opts *o
 	static struct pair_sub_state st;
 	if (pair_sub_init(&st, o) < 0)
 		return pair_fail(sys, o, "out of memory");
+	pair_cb.sys = sys;
+	pair_cb.st = &st;
+	pair_cb.o = o;
 	if (sys->sub_open(o) < 0)
 		return pair_fail(sys, o, "the subscriber could not be opened");
 	uint64_t t_open = pair_now_ns();
@@ -297,8 +329,19 @@ static int pair_run_sub(const struct pair_system *sys, const struct pair_opts *o
 	int gone = 0, timed_out = 0;
 	for (;;) {
 		const void *m = NULL;
+		pair_cb.n = 0;
 		long len = sys->sub_recv(&m, 100);
 		uint64_t now = pair_now_ns();
+		if (pair_cb.n) { /* taken in the system's callback, with its own reading */
+			if (pair_cb.first_now) {
+				deadline = pair_cb.first_now + span;
+				pair_cb.first_now = 0;
+			}
+			if (pair_cb.last || (o->first_only && st.first_msg_ns))
+				break;
+			if (len <= 0)
+				continue;
+		}
 		if (len < 0) {
 			gone = 1;
 			break;
@@ -333,6 +376,11 @@ static int pair_run_pub(const struct pair_system *sys, const struct pair_opts *o
 	if (!own || (both && pair_sub_init(&st, o) < 0)) {
 		free(own);
 		return pair_fail(sys, o, "out of memory");
+	}
+	if (both) {
+		pair_cb.sys = sys;
+		pair_cb.st = &st;
+		pair_cb.o = o;
 	}
 	if (both && sys->sub_open(o) < 0) {
 		free(own);

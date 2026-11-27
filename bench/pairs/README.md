@@ -209,8 +209,9 @@ int main(int argc, char **argv) {
 
 `pub_buffer` lends the harness the system's own slot to build the message in (zero
 copy); `sub_done` lets a system say, after the harness has read a view, that it was not
-a whole message. A system that delivers by callback hands the message from its callback
-to `sub_recv` (its executor run inside `sub_recv` until one has come). Build it with
+a whole message. A system that delivers by callback calls `pair_deliver(bytes, length)`
+as the callback's first statement: the clock is read there and the message read before
+the callback returns, and `sub_recv`, inside which the system's executor ran, returns 0. Build it with
 `-DPAIR_CFLAGS='"<compiler and flags>"'`, so that they are in the results.
 
 **The entry**, in `systems.json` or in a file of its own given with `--systems`:
@@ -232,7 +233,9 @@ to `sub_recv` (its executor run inside `sub_recv` until one has come). Build it 
 `{bin}` and any other `{NAME}` come from `--var NAME=value`; `{rundir}` is the run's
 directory in `/dev/shm`, `{topic}` its topic name, `{here}` the entry's own directory.
 `pub` and `sub` in place of `node` for two programs; `"kind": "single"` for one process
-(`--role both`). A system whose programs are not there is named, with its `install`
+(`--role both`). `"sizes"` lists the only sizes a system has (with `sizes_why`),
+`"needs"` files the node loads at run time and cannot run without, `"packages"` the
+installed packages whose versions belong in the results (`dpkg-query`). A system whose programs are not there is named, with its `install`
 line, and skipped: nothing is ever installed from here.
 
 **`notes` is not optional in spirit.** It is printed in the report beside the system,
@@ -261,6 +264,14 @@ and it must say what a referee would ask of this system's row:
 | `hangar-inplace` | the same, the message built in a loaned slot and read as a view | no copy. A view the writer overwrote while it was read is dropped and counted, which takes a reader about the ring's length behind |
 | `unix-seqpacket` | Unix domain sockets, `SOCK_SEQPACKET`: the kernel's own IPC with no middleware. **The floor** for anything that sends through the kernel | two copies and one system call a side; the reader asleep in `recv`, woken by the kernel. The publisher never waits: a subscriber whose buffer is full does not get the message. A socket then drops the **newest** and keeps the old (hangar's ring drops the oldest), and the buffer's depth is the kernel's count of bytes (`net.core.wmem_default`, 212992 B: some hundreds of small messages), not 16. A message must fit that buffer whole: up to 131072 B here, and the larger cells are not run. No discovery beyond a path, no type, no metadata |
 | `unix-stream` | the same with `SOCK_STREAM`, for any size | **another contract**: the publisher's send blocks while the reader's buffer is full, so nothing is lost and a slow reader slows the writer (it shows under "intended"). A megabyte is several send and receive calls. The reader has the message when it has collected all its bytes |
+| `ros2-fastdds` | ROS 2 Jazzy with Fast DDS as installed, ROS 2's default: one rclcpp node a process | serialised into Fast DDS's shared-memory transport and out of it, inside the sample. Reliable, keep-last 16 (see below). No helper |
+| `ros2-fastdds-loan` | the same with Fast DDS's data sharing and loaned messages (`ros2_pair/config/fastdds-datasharing.xml`) | no serialisation and no copy: the publisher builds the message in a sample it borrowed, the subscription is handed that sample. The nearest thing in ROS 2 to `hangar-inplace`. Whether the loan was granted is in the node's standard error (`logs/`) |
+| `ros2-fastdds-waitset` | Fast DDS as installed, the subscriber waiting in an `rclcpp::WaitSet` and taking the message itself | **not how a ROS 2 node is written.** Beside `ros2-fastdds` it separates what the executor costs from what the middleware costs |
+| `ros2-fastdds-composed` | publisher and subscription in **one process**, rclcpp's intra-process delivery | **not the comparison**: nothing leaves the process, and one failing node takes the other with it. Its own row because the question is asked |
+| `ros2-cyclonedds` | ROS 2 Jazzy with Cyclone DDS as installed | serialised, through the loopback network stack. No helper |
+| `ros2-cyclonedds-iceoryx` | Cyclone DDS over iceoryx (classic) shared memory, loaned messages (`ros2_pair/config/cyclonedds-iceoryx.xml`) | no copy for a fixed-size type. Needs iceoryx's daemon **RouDi, a helper**: started before the pair, counted with the system. The messages do not pass through it; it owns the pools, whose default sizes bound how many samples can be out at once |
+| `ros2-zenoh` | ROS 2 Jazzy with Zenoh (`rmw_zenoh`) as installed | not DDS. Its **router is a helper**, counted: for discovery only, the messages then go peer to peer over TCP on the loopback |
+| `ros2-zenoh-shm` | the same with Zenoh's shared-memory transport on (`ZENOH_CONFIG_OVERRIDE`) | Zenoh uses it above a size threshold of its own; the small cells are as `ros2-zenoh` |
 
 Where each system's two stamps are taken is the same by construction: `publish_ns` is
 read in `pair.h` immediately before the node's `pub_send`, and the subscriber's clock is
@@ -277,9 +288,61 @@ gone. The publisher takes new connections in before it reads the clock, outside 
 sample. A baseline's node is found through `--var base=DIR` (hangar's own through
 `--var bin=DIR`), since on the Pi they come from different archives.
 
-Not in this directory yet: the node pairs of the other baselines (Cyclone DDS, Fast DDS
-and Zenoh under ROS 2, iceoryx2 woken and polling, MOOS, LCM). Each comes with its entry
-and its own lines for this table.
+### ROS 2
+
+One node, `ros2_pair/` (an ament package: `ros2_pair_node`, five fixed-size message
+types, the two shared-memory profiles), for every middleware: the entries differ in
+their environment (`RMW_IMPLEMENTATION` and a profile), not in code.
+
+- **The subscriber is a ROS 2 node as they are written**: a `SingleThreadedExecutor`
+  spun until a message has come, and a subscription callback. The callback's first
+  statement is the harness's `pair_deliver`, which reads the clock and reads the message
+  where it lies (a loaned sample is the subscription's only for the callback's length).
+  So the sample ends where `bench/ros2` ended it, at the callback's first statement, and
+  everything rclcpp does between the middleware and the callback is in it, as it is in
+  every ROS 2 system. `ros2-fastdds-waitset` is the same without the executor.
+- **The publisher's stamp** is the harness's, read immediately before `publish()`:
+  serialisation, where the middleware has one, is inside the sample.
+- **QoS: reliable, keep-last 16, volatile** (`-- --qos queue`, the default here). It is
+  the nearest to hangar's ring of 16 read in order: every message while the reader
+  keeps up, and a keep-last history does not make the writer wait. The alternative,
+  `-- --qos latest` (best effort, keep-last 1), is what a sensor stream is often given
+  in ROS 2 and is what `hg_latest` means; it is not in the registry, to keep the table
+  readable, and an entry for it is the same lines with that argument.
+- **Sizes.** A middleware may only lend a sample of a fixed-size type, so there is one
+  message type a size (32, 256, 4096, 65536 and 1048576 bytes: an array of `uint64`), and
+  a cell of another size is recorded as not run for the ROS 2 entries.
+- **Discovery** falls in the warm-up: the subscribers are started first and the publisher
+  publishes from the moment it exists. A reliable volatile writer's messages from before
+  the match are not delivered, and are not counted. The start-up cell measures it.
+- **As installed and as recommended.** For each middleware one entry is what `apt`
+  gives and one is what its own documentation gives for one host: data sharing with
+  loans for Fast DDS, iceoryx shared memory for Cyclone DDS, the shared-memory transport
+  for Zenoh. Nothing else is tuned: no socket buffers, no segment sizes, no thread
+  priorities. A referee who wants a tuned row gets the file to change in
+  `config/<system>/` of every results folder.
+- **Isolation.** `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and `ROS_DOMAIN_ID=77` for
+  every entry; the node starts no parameter services.
+- **Does Jazzy's Cyclone DDS lend messages?** Its documentation is of two minds. The
+  binary does: `librmw_cyclonedds_cpp.so` (2.2.4) links `libiceoryx_binding_c`, and with
+  `SharedMemory` enabled and RouDi running both the publisher and the subscription
+  report loans (checked in the x86-64 container on 2026-11-27; the Pi's own binary is to
+  be checked the same way, by the node's line in `logs/`).
+
+Running it: with ROS 2 Jazzy and the built package sourced,
+
+```sh
+colcon build --base-paths bench/pairs/ros2_pair --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+bench/pairs/driver.py ... --var ros=$PWD/install/ros2_pair/lib/ros2_pair --var ros_root=/opt/ros/jazzy
+```
+
+On a machine without ROS 2 the same in the container of `bench/ros2/Dockerfile`
+(`tools/baselines.sh ros2-smoke` does it): a proof of the harness, never a measurement.
+An entry whose middleware is not installed is named and skipped (`needs`).
+
+Not in this directory yet: the node pairs of the other baselines (iceoryx2 woken and
+polling, MOOS, LCM). Each comes with its entry and its own lines for this table.
 
 ## What this does not measure, and what could mislead
 
