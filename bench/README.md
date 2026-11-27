@@ -9,6 +9,7 @@ first run on real hardware is planned in [PI-TEST.md](PI-TEST.md).
 | File | |
 |---|---|
 | `hg_bench.c` | the harness (C11, GPL-3.0-or-later); each measurement's method is the comment above its function |
+| `spin.c` | a module that never sleeps, on purpose: what `rov.sh spin` starts under `fifo` to try the manager's one-second limit ([docs/13](../docs/13-deployment.md)) |
 | `bench.mk` | GNU make fragment; the root Makefile includes it (`make bench`, `make bench-quick`) |
 | `pi/manifests/` | `eeye.module`, `hellion.module`: electric-eye as phase-A legacy modules ([docs/11](../docs/11-electric-eye.md)) |
 | `pi/hangard.conf`, `pi/install-root.sh` | a manager run out of one directory, `$HANGAR_ROOT` |

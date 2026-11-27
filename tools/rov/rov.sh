@@ -9,6 +9,9 @@
 #   rov.sh down [--force]     both managers, then the relay; refused unless disarmed
 #   rov.sh status             both managers' status, the relay's
 #   rov.sh armed              what the guard reads: disarmed, armed or unknown, and why
+#   rov.sh spin               the one-second limit tried: a module that never sleeps, under
+#                             fifo (needs REALTIME=1 in force); 0 ended by the kernel,
+#                             3 real time not in force, 1 it ran on
 #   rov.sh reset [--force]    down, then remove both roots (the next up lays them out)
 #   rov.sh relay up|down|status  MAVROS alone (down: refused unless disarmed)
 #   rov.sh params save [FILE] every Pixhawk parameter to FILE (default under $HANGAR_ROV_STATE)
@@ -396,6 +399,43 @@ cmd_armed() {
     case $STATE_WORD in disarmed) return 0 ;; armed) return 4 ;; *) return 5 ;; esac
 }
 
+# The one-second limit, tried (docs/13 "Real-time scheduling without root"): a module
+# that never sleeps, started under fifo at a priority below every module of hangar's.
+# The kernel must end it within about a second (RLIMIT_RTTIME, which the manager sets
+# on every real-time module). Where the manager cannot grant fifo there is nothing to
+# try, and the module is not left spinning. Exit 0 ended by the kernel, 3 real time
+# not in force, 1 it ran on (stopped here: that is the finding).
+cmd_spin() {
+    running "$RV/hangard.pid" || die "spin: no vehicle manager: rov.sh up first (REALTIME=1)"
+    [ -x "$bin/spin" ] || die "spin: $bin/spin is not in this release"
+    guard vehicle "$RV" "starting a module that never sleeps"
+    local f=$RV/etc/hangar/modules/spin.module rc=1 i line
+    printf '[Module]\nExec=%s\n[Restart]\nPolicy=never\n[Schedule]\nPolicy=fifo\nPriority=%s\n' \
+        "$bin/spin" "${SPIN_PRIORITY:-5}" > "$f"
+    hg_vehicle reload > /dev/null || { rm -f "$f"; die "spin: the manager refused the manifest"; }
+    hg_vehicle start spin > /dev/null 2>&1 || true
+    sleep 0.3
+    line=$(hg_vehicle show spin 2>/dev/null | grep '^in force' || true)
+    case $line in
+        *fifo*)
+            say "spin: running under fifo (${line#in force }); the kernel should end it within a second"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                sleep 0.5
+                hg_vehicle show spin 2>/dev/null | grep -q '^in force   not running' && { rc=0; break; }
+            done
+            if [ $rc = 0 ]; then say "spin: ended after about $((i / 2)).$((i % 2 * 5)) s: the limit holds"
+            else say "spin: STILL RUNNING after 5 s under fifo: the limit did not end it (stopping it now)"; fi ;;
+        *)
+            rc=3
+            say "spin: real time is not in force here (${line:-no reading}): nothing to try" ;;
+    esac
+    hg_vehicle stop spin > /dev/null 2>&1 || true
+    grep ' spin: ' "$RV/hangard.log" 2>/dev/null | tail -6 | sed 's/^/rov:   /'
+    rm -f "$f"
+    hg_vehicle reload > /dev/null || true
+    return $rc
+}
+
 # ---- the relay ------------------------------------------------------------------
 
 # MAVROS, run in its own process group (setsid) so that stopping it is a signal to
@@ -685,6 +725,7 @@ case "${1:-}" in
     down) cmd_down ;;
     status) cmd_status ;;
     armed) cmd_armed ;;
+    spin) cmd_spin ;;
     reset) cmd_down "stopping hangar and removing its roots"; rm -rf "$RV" "$RT"; say "roots removed" ;;
     relay)
         case "${2:-}" in

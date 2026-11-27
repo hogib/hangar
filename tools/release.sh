@@ -282,7 +282,7 @@ fi
 # bench/pairs' node pairs that need nothing but this tree (bench/pairs/pairs.mk):
 # hangar's and the null system, for the comparison on equal terms.
 pair_bins=
-for b in hangar_pair null_pair; do
+for b in hangar_pair null_pair spin; do
 	if known "$builddir/$b"; then
 		run_make -k -j "$jobs" "$builddir/$b" >> "$work/make.log" 2>&1 || true
 		pair_bins="$pair_bins $b"

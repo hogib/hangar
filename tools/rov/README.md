@@ -102,6 +102,13 @@ outlive a module that died or hangs, and that last word is not the state now.
 `rov.sh armed` prints the reading: `disarmed: …` (status 0), `armed: …` (4),
 `unknown: …` (5), or `no manager`.
 
+`rov.sh spin` tries the manager's one-second limit: it starts the release's `bin/spin`,
+a module that never sleeps, under `fifo` at priority 5 (below every module of hangar's;
+`SPIN_PRIORITY`), and waits for the kernel to end it. Status 0: ended, within about a
+second; 3: real time is not in force on this machine, so there was nothing to try; 1: it
+ran on for 5 s and was stopped, which is the finding. It refuses under an armed vehicle,
+and removes its manifest whatever happened.
+
 | The reading | `down`, `reset`, `relay down` |
 |---|---|
 | no manager under the vehicle's root | proceed: nothing of hangar drives anything |

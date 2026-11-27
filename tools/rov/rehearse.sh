@@ -248,6 +248,11 @@ for run in "$@"; do
             is "armed: both managers are the ones that ran before, the vehicle still armed" eval '[ "$(cat "$RV/hangard.pid")" = "$vpid" ] && [ "$(cat "$RT/hangard.pid")" = "$tpid" ] && kill -0 "$vpid" "$tpid" && VH status | grep -E "^safety .* armed"'
             is "disarmed from the topside" eval 'TH call safety.disarm && until_line 5 eval "VH status | grep -E \"^safety .*disarmed\""'
             is "disarmed: rov.sh armed on the Pi says so" until_line 5 eval '"$H/hangar-labtest/share/hangar/rov.sh" armed | grep -E "^disarmed: safety: disarmed; ArduSub: disarmed"'
+            # The one-second limit's check. A machine that grants no real time (this
+            # one, CI's) has nothing to try: said, status 3, and nothing left spinning.
+            "$H/hangar-labtest/share/hangar/rov.sh" spin > "$H/log/$run-spin.txt" 2>&1; grc=$?
+            has spin "spin: says what it found" 'spin: (real time is not in force here|ended after about .* the limit holds)'
+            is "spin: status $grc, its manifest gone, nothing left spinning" eval '{ [ "$grc" = 3 ] || [ "$grc" = 0 ]; } && [ ! -e "$RV/etc/hangar/modules/spin.module" ] && ! pgrep -x spin'
             # The vehicle's bridge calls the link lost after about 3 s of silence; an arm
             # sent before that is still taken (and the tether trigger then ends it).
             BRIDGE=1 bash "$here/rov.sh" topside down > /dev/null 2>&1

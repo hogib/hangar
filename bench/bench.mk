@@ -59,8 +59,13 @@ $(BUILDDIR)/hg_bench: $(BENCH_OBJ) $(call obj,$(HG_SRC))
 	@mkdir -p $(dir $@)
 	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $^ $(HG_LDLIBS) $(LDLIBS)
 
+# The module that never sleeps (bench/spin.c), for `rov.sh spin`.
+$(BUILDDIR)/spin: $(BENCH_DIR)spin.c
+	@mkdir -p $(dir $@)
+	$(CC) $(HG_CFLAGS) $(CFLAGS) $(ALL_LDFLAGS) -o $@ $< $(LDLIBS)
+
 .PHONY: bench bench-quick
-bench: $(BUILDDIR)/hg_bench
+bench: $(BUILDDIR)/hg_bench $(BUILDDIR)/spin
 
 # Short runs of every measurement: proves the harness, not the numbers.
 bench-quick: $(BUILDDIR)/hg_bench
