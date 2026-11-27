@@ -266,6 +266,43 @@ the bookkeeping between them cost; its `intended` row is the schedule's own late
 (the wake-up after `clock_nanosleep`). No system can read below it, and a difference
 between two systems that is of its size is not a difference.
 
+## A cross-check against performance_test
+
+The harness is ours, and so is every figure from it. One cell is therefore measured a
+second time by a tool that is not: `performance_test` (Apex.AI's, the one the ROS 2
+project measures its middlewares with; the package `ros-jazzy-performance-test`,
+2.3.0). `crosscheck.sh` runs it and `ros2_pair_node` in turn, five rounds of 20 s each,
+on the same two CPUs: 256 bytes at 1 kHz, a publisher process and a subscriber
+process, Fast DDS as it comes, reliable, keep last 16 in both.
+
+What can be compared is **the mean of publish call to callback**: performance_test
+stamps its message before `publish()`, as `pair.h` does, and reports a mean, a
+smallest and a largest for each second, and no percentile. Its message is its own
+type (`Array256`: the 256 bytes, a time stamp and an id), its executor the same
+single-threaded one.
+
+Where it was run (2026-11-28): in the container on the development laptop, x86-64,
+nothing isolated or frozen. **The figures are not results**; what the run says is
+whether two tools agree on one machine in one quarter of an hour:
+
+| | median of five rounds' means | the five means | smallest sample | lost |
+|---|---|---|---|---|
+| performance_test | 57.3 µs | 55.3 to 57.8 µs | 30.0 to 31.9 µs | 0 of 100 011 |
+| `ros2_pair_node` | 57.6 µs | 54.0 to 61.5 µs | 27.6 to 30.0 µs | 0 of 100 000 |
+
+They agree: the medians are 0.5 % apart, and each tool's five means lie inside or
+within 4 µs of the other's (ours spread more from round to round, 7.5 µs against
+2.5 µs, and five rounds do not say why). So for this cell the harness's clock readings, its
+message and its counting give what an independent tool gives. What it does not show:
+anything about the percentiles (performance_test has none to compare), about the
+other systems (it speaks only ROS 2), or about the Pi.
+
+**On the Pi** the same check is `ros-jazzy-performance-test` added to the `.deb` list
+(`tools/baselines-debs.sh ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-rmw-zenoh-cpp
+ros-jazzy-performance-test`), then, frozen and with ROS 2 sourced,
+`bash bench/pairs/crosscheck.sh $PWD/ros2/install/ros2_pair/lib/ros2_pair/ros2_pair_node --out ~/crosscheck-$(date +%F)`:
+four minutes. It has not been run there.
+
 ## What is recorded with every session
 
 `results.json`: the session (date, boot id, host), the machine (model, kernel, kernel
