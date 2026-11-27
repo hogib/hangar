@@ -1257,18 +1257,45 @@ cmd_baselines() {
     # Each node says what it is, where it will run. One that cannot run is the finding.
     rsh 'cd "$HOME/hangar-baselines/current" || exit 1
         for n in bin/*; do
-            if v=$("$n" --version 2>&1); then echo "lab:   ok    $(basename "$n"): $(echo "$v" | sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p")"
+            # Not ours and with no --version: core-moos'"'"'s database would start and stay.
+            if [ "$(basename "$n")" = MOOSDB ]; then
+                if v=$(timeout 10 "$n" --moos_print_version 2>&1); then echo "lab:   ok    MOOSDB: $(echo "$v" | grep -m1 "MOOS version")"
+                else echo "lab:   FAIL  MOOSDB does not run here: $(echo "$v" | head -1)"; fi
+                continue
+            fi
+            # hangard and restart_node have no --version: their usage line is them running.
+            case $(basename "$n") in hangard|restart_node)
+                v=$(timeout 10 "$n" --version 2>&1)
+                case $v in usage:*) echo "lab:   ok    $(basename "$n"): runs here (it has no version to say)" ;;
+                    *) echo "lab:   FAIL  $(basename "$n") does not run here: $(echo "$v" | head -1)" ;; esac
+                continue ;;
+            esac
+            if v=$(timeout 10 "$n" --version 2>&1); then echo "lab:   ok    $(basename "$n"): $(echo "$v" | sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p")"
             else echo "lab:   FAIL  $(basename "$n") does not run here: $(echo "$v" | head -1)"; fi
         done
-        if [ -d ros2/install ]; then
-            if [ -r /opt/ros/jazzy/setup.sh ]; then
-                if v=$(. /opt/ros/jazzy/setup.sh && . ros2/install/setup.sh && ros2_pair_node --version 2>&1); then
-                    echo "lab:   ok    ros2_pair_node (prebuilt) loads against this ROS 2: $(echo "$v" | sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p")"
-                else
-                    echo "lab:   FAIL  the prebuilt ros2_pair_node does not load against this ROS 2: $(echo "$v" | tail -1)"
-                    echo "lab:         build it here, once, before freezing: . /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh"
-                fi
-            else echo "lab:   skip  no /opt/ros/jazzy here: the ROS 2 entries will be skipped"; fi
+        # The ROS 2 node: which of four cases this Pi is, said in one line that starts
+        # "ROS 2 node, case". Only case 2 and 3 ask for anything.
+        fallback() {
+            echo "lab:         the fallback, on the Pi, once, BEFORE freeze and before any measurement:"
+            echo "lab:             . /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh"
+            echo "lab:         It is the one thing compiled on the Pi: colcon builds nine message types and two"
+            echo "lab:         programs, on all four cores. How long it takes there and how hot the Pi gets"
+            echo "lab:         HAS NOT BEEN MEASURED (several minutes is a guess, from 36 s on a laptop): note the time and the"
+            echo "lab:         temperature before and after (vcgencmd measure_temp), and start nothing until"
+            echo "lab:         the Pi is back at the temperature it idled at."
+        }
+        if [ ! -r /opt/ros/jazzy/setup.sh ]; then
+            echo "lab:   ROS 2 node, case 4: no /opt/ros/jazzy on this Pi: the ROS 2 entries will be skipped"
+        elif [ ! -d ros2/install ]; then
+            echo "lab:   ROS 2 node, case 3: this archive has no prebuilt node (it was made without docker, or with --no-ros2)"
+            fallback
+        elif v=$(. /opt/ros/jazzy/setup.sh && . ros2/install/setup.sh && ros2_pair_node --version 2>&1); then
+            echo "lab:   ROS 2 node, case 1: ok, the prebuilt ros2_pair_node loads against this ROS 2: $(echo "$v" | sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p")"
+            echo "lab:         nothing to build here"
+        else
+            echo "lab:   ROS 2 node, case 2: FAIL, the prebuilt ros2_pair_node does not load against this ROS 2"
+            echo "lab:         (this Pi has ROS 2 packages of another date than the node was built against): $(echo "$v" | tail -1)"
+            fallback
         fi'
     if [ -n "$debs" ]; then
         (cd "$debs" && sha256sum -c --quiet SHA256SUMS) || die "$debs: a file is not what SHA256SUMS says"

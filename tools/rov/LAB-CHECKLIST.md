@@ -62,8 +62,8 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 
 | | | |
 |---|---|---|
-| ☐ | The Pi's own package list, if the Pi can be reached before the visit: `ssh bluerov2@192.168.2.10 "dpkg-query -W -f='\${Package} \${Version} \${Architecture}\n'" > pi-packages.txt` | without it the `.deb` list is computed against a stock image, which is a guess |
-| ☐ | `tools/baselines-debs.sh --status pi-packages.txt` | `N files in out/baselines/debs`; **read the "upgraded" line**: apt wanting newer versions of packages the Pi already has means the Pi's ROS 2 is older than today's, and those files are in the list too |
+| ☐ | **The Pi's own package list**, whenever the Pi can be reached before the visit (it changes nothing there and needs no password), from the checkout: `ssh bluerov2@192.168.2.10 "dpkg-query -W -f='\${Package} \${Version} \${Architecture}\n'" > pi-packages.txt` | a file of about two thousand lines, `name version arm64`. **Give it to Claude in the session (the path is enough)**, or keep it for the next line. Without it the `.deb` list is computed against a stock image, which is a guess, and whether the prebuilt ROS 2 node will load is not known before the lab |
+| ☐ | `tools/baselines-debs.sh --status pi-packages.txt` | `N files in out/baselines/debs`; **read the "upgraded" line**: apt wanting newer versions of packages the Pi already has means the Pi's ROS 2 is older than today's (those files are in the list too), and it is the sign that the prebuilt ROS 2 node may not load: case 2 below |
 | ☐ | `tools/baselines.sh --with-moos` (without the flag: no MOOS, and the `moos` row is skipped. The flag puts core-moos's `MOOSDB`, a GPL program, in the archive: `bench/pairs/README.md`, "MOOS") | `out/baselines/baselines-<version>-aarch64.tar.zst`: the static programs, the LCM and MOOS nodes, and the ROS 2 node cross-built |
 | ☐ | `tools/baselines.sh ros2-smoke` (about 25 minutes) | every entry `ok`, a report with a row for each: the registry proved in a container |
 | ☐ | Which plan, and how long: `bench/pairs/driver.py --plan bench/pairs/plans/main.json --estimate` (and `shared-memory.json`, `variants.json`) | a line a system and the hours: `bench/pairs/README.md`, "Sessions" |
@@ -72,8 +72,9 @@ made on the laptop beforehand; nothing is downloaded or compiled there.
 
 | | | |
 |---|---|---|
-| ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` | every file as its MANIFEST says; `ok` for each program with its version; `ok ros2_pair_node (prebuilt) loads against this ROS 2`; the `dpkg -i` line shown, one password, and dpkg ending without an error |
-| ☐ | If the prebuilt ROS 2 node does **not** load (the Pi's ROS 2 is of another date): on the Pi, before `freeze`'s measurements, `. /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh` | `ros2-build.sh: …/ros2_pair_node`. The one thing compiled on the Pi; then wait until it is cool again |
+| ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` | every file as its MANIFEST says; `ok` for each program with its version (the LCM nodes need the Pi's own GLib: a `FAIL` there is that); one line `ROS 2 node, case N`; the `dpkg -i` line shown, one password, and dpkg ending without an error |
+| ☐ | **Read the `ROS 2 node, case` line.** Case 1: the prebuilt node loads, nothing to do. Case 4: no ROS 2 on the Pi, its rows are skipped | — |
+| ☐ | Case 2 (the prebuilt node does not load: the Pi's ROS 2 is of another date) or case 3 (the archive has none): on the Pi, **before any measurement**, note `vcgencmd measure_temp` and the time, then `. /opt/ros/jazzy/setup.sh && sh ~/hangar-baselines/current/ros2-build.sh`, and note both again | `ros2-build.sh: …/ros2_pair_node`. The one thing compiled on the Pi: nine message types and two programs, all four cores busy. **How long and how hot is not known: it was never run there** (several minutes is a guess from 36 s on a twelve-core laptop). Then wait until the Pi is back at the temperature it idled at, and write the two figures down: they go into this line |
 | ☐ | **LCM needs a route for its multicast group.** On the Pi: `ip route get 239.255.76.67` | a line with `dev`. If it says `unreachable` (a Pi with no default route, which a tether gives), 🔑 once: `sudo ip route add 224.0.0.0/4 dev lo` (LCM's documentation, "using LCM on a single host"); it is gone at the next boot. Not verified on the Pi; without it the `lcm` rows fail every publication and say so |
 | ☐ | **LCM's 1 MB cells (optional, 🔑).** `sysctl net.core.rmem_max` on the Pi: 212992 on a stock Ubuntu. For the row `lcm-rcvbuf` to be what its name says: `sudo sysctl -w net.core.rmem_max=2097152` (what LCM's documentation asks for), and at the end of the day `sudo sysctl -w net.core.rmem_max=212992` (or the reboot does it) | the report's line "Socket buffer limits" shows what was in force. Left alone, `lcm-rcvbuf` is `lcm` again, and LCM has no figure at 1 MB that may be quoted |
 
@@ -105,7 +106,7 @@ the Pi to reach the internet.
 |---|---|---|
 | ☐ | 🔑 `tools/rov/lab.sh freeze` | it prints each command, asks once, and ends with `frozen.` If an upgrade was running it waits for it (it says what it waits for, and never interrupts dpkg): let it. Status 3 means the package system still ran after 15 minutes: wait, and run `freeze` again |
 | ☐ | 🔑 `tools/rov/lab.sh deploy --realtime` | `lab: installed v0.1.6 (…)`, then `cap_ipc_lock,cap_sys_nice=ep` on `hangard`. (`--realtime` is for step 2's check; a second password) |
-| ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` ("Baselines" above) | each program `ok` with its version, the ROS 2 node loads, dpkg ends without an error |
+| ☐ | 🔑 `tools/rov/lab.sh baselines --debs out/baselines/debs` ("Baselines" above) | each program `ok` with its version, `ROS 2 node, case 1` (or the fallback done and the Pi cool again), dpkg ends without an error |
 | ☐ | The harness is in the baselines' archive (`~/hangar-baselines/current/bench/pairs`, with the preflight beside it): nothing more to copy | — |
 | ☐ | Wait until the Pi is cool, then `tools/rov/lab.sh preflight --measure` | `ok pi frozen: since …`, no `FAIL`. A `warn` for real time is expected before step 2 |
 
